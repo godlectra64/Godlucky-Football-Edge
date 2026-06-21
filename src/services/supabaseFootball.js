@@ -37,7 +37,7 @@ const matchSelect = `
 
 export async function getTodayMatches() {
   const client = requireSupabase()
-  const { start, end } = todayRange()
+  const { start, end } = todayAndTomorrowRangeBangkok()
 
   const { data, error } = await client
     .from('football_matches')
@@ -134,6 +134,8 @@ export function getConnectionState() {
 
 export function normalizeMatch(row) {
   const analysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
+  const fallbackAnalysis = createFallbackAnalysis(row)
+  const activeAnalysis = analysis ?? fallbackAnalysis
   const raw = row.raw ?? {}
 
   return {
@@ -148,23 +150,51 @@ export function normalizeMatch(row) {
     league: row.league,
     homeTeam: row.homeTeam,
     awayTeam: row.awayTeam,
-    analysis: analysis ?? {},
-    homeForm: analysis?.raw?.homeForm ?? raw.homeForm ?? null,
-    awayForm: analysis?.raw?.awayForm ?? raw.awayForm ?? null,
+    analysis: activeAnalysis,
+    homeForm: activeAnalysis?.raw?.homeForm ?? raw.homeForm ?? null,
+    awayForm: activeAnalysis?.raw?.awayForm ?? raw.awayForm ?? null,
     raw,
-    updatedAt: analysis?.updated_at ?? row.updated_at,
+    updatedAt: activeAnalysis?.updated_at ?? row.updated_at ?? row.created_at,
   }
 }
 
-function todayRange() {
-  const now = new Date()
-  const start = new Date(now)
-  start.setHours(0, 0, 0, 0)
+function todayAndTomorrowRangeBangkok() {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+  const today = formatter.format(new Date())
+  const start = new Date(`${today}T00:00:00+07:00`)
   const end = new Date(start)
-  end.setDate(start.getDate() + 1)
+  end.setDate(end.getDate() + 2)
 
   return {
     start: start.toISOString(),
     end: end.toISOString(),
+  }
+}
+
+function createFallbackAnalysis(row) {
+  return {
+    team_strength_score: 50,
+    form_score: 50,
+    goal_quality_score: 50,
+    tactical_score: 50,
+    home_away_score: 50,
+    motivation_score: 50,
+    market_context_score: 50,
+    risk_score: 60,
+    confidence_score: 60,
+    recommendation: 'น่าติดตาม',
+    risk_level: 'medium',
+    thai_reason: 'มีข้อมูลการแข่งขันจาก football_matches แล้ว แต่ยังไม่มีผลวิเคราะห์เชิงลึกจาก match_analysis ระบบจึงแสดงรายการจริงจากฐานข้อมูลก่อน',
+    raw: {
+      fallback: true,
+      homeForm: null,
+      awayForm: null,
+    },
+    updated_at: row.updated_at ?? row.created_at,
   }
 }

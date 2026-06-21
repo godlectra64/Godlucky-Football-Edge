@@ -4,12 +4,13 @@ import MatchCard from '../components/MatchCard'
 import { recommendationLabels } from '../utils/analysisEngine'
 import { formatThaiDate } from '../utils/formatters'
 
-const filters = ['ทั้งหมด', recommendationLabels.strong, recommendationLabels.watch, recommendationLabels.skip]
+const allFilter = 'ทั้งหมด'
+const filters = [allFilter, recommendationLabels.strong, recommendationLabels.watch, recommendationLabels.skip]
 
 export default function TodayPage({ matches, loading, error, notice, onRefresh, onOpenMatch }) {
-  const [filter, setFilter] = useState('ทั้งหมด')
+  const [filter, setFilter] = useState(allFilter)
   const visibleMatches = useMemo(() => {
-    if (filter === 'ทั้งหมด') return matches
+    if (filter === allFilter) return matches
     return matches.filter((match) => match.recommendation === filter)
   }, [filter, matches])
 
@@ -17,7 +18,7 @@ export default function TodayPage({ matches, loading, error, notice, onRefresh, 
     <main className="mx-auto max-w-[430px] px-4 py-4">
       <section className="rounded-lg border border-emerald-400/20 bg-gradient-to-br from-pitch-800 to-pitch-900 p-4">
         <p className="text-sm text-emerald-200">{formatThaiDate()}</p>
-        <h2 className="mt-1 text-2xl font-black text-white">Top 10 คู่เด่นวันนี้</h2>
+        <h2 className="mt-1 text-2xl font-black text-white">รายการคู่จริงวันนี้และพรุ่งนี้</h2>
         <div className="mt-4 grid grid-cols-2 gap-2">
           <MiniStat label="จำนวนคู่" value={`${matches.length} คู่`} />
           <MiniStat label="สถานะข้อมูล" value={notice || 'กำลังตรวจสอบ'} />
@@ -52,7 +53,7 @@ export default function TodayPage({ matches, loading, error, notice, onRefresh, 
       {loading ? <StateBox title="กำลังโหลดข้อมูลจริง" message="กำลังอ่านข้อมูลจาก Supabase" /> : null}
       {error && !loading ? <StateBox title="โหลดข้อมูลไม่สำเร็จ" message={`${error} · ข้อมูลล่าสุดที่บันทึกไว้`} tone="error" /> : null}
       {!loading && !error && !visibleMatches.length ? (
-        <StateBox title="ยังไม่มีคู่เด่นวันนี้" message="กด sync ในหน้าแอดมิน หรือรอ Cron รอบถัดไป" />
+        <StateBox title="ยังไม่มีรายการคู่ในช่วงวันนี้ถึงพรุ่งนี้" message="กด sync ในหน้าแอดมิน หรือรอ Cron รอบถัดไป" />
       ) : null}
 
       <div className="mt-4 space-y-4">

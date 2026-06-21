@@ -6,8 +6,7 @@ import MatchDetailPage from './pages/MatchDetailPage'
 import ResultTrackerPage from './pages/ResultTrackerPage'
 import StatsPage from './pages/StatsPage'
 import TodayPage from './pages/TodayPage'
-import { getConnectionState, getTodayMatches, getTodayTopMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
-import { getTopMatches } from './utils/analysisEngine'
+import { getConnectionState, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
 import { loadDevFallbackMatches } from './utils/storage'
 
 function App() {
@@ -45,8 +44,11 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [loadToday])
 
-  const topMatches = useMemo(() => getTopMatches(matches, 10), [matches])
-  const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? topMatches[0] ?? matches[0]
+  const visibleMatches = useMemo(
+    () => [...matches].sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt)),
+    [matches],
+  )
+  const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? visibleMatches[0] ?? matches[0]
 
   const openMatch = (id) => {
     setSelectedMatchId(id)
@@ -59,7 +61,7 @@ function App() {
 
     try {
       await triggerManualSync()
-      const data = await getTodayTopMatches()
+      const data = await getTodayMatches()
       setMatches(data)
       setNotice('sync สำเร็จและโหลดข้อมูลล่าสุดแล้ว')
     } catch (err) {
@@ -76,7 +78,7 @@ function App() {
 
     try {
       await resetTodayData()
-      const data = await getTodayTopMatches()
+      const data = await getTodayMatches()
       setMatches(data)
       setNotice('รีเซ็ตและ sync ข้อมูลวันนี้สำเร็จ')
     } catch (err) {
@@ -88,7 +90,7 @@ function App() {
   }
 
   const titles = {
-    today: 'Top 10 คู่เด่นวันนี้',
+    today: 'รายการคู่จริง',
     analysis: 'รายละเอียดวิเคราะห์',
     admin: 'ศูนย์ควบคุมข้อมูล',
     results: 'ผลการแข่งขัน',
@@ -101,7 +103,7 @@ function App() {
       <div className="pb-24">
         {activePage === 'today' ? (
           <TodayPage
-            matches={topMatches}
+            matches={visibleMatches}
             loading={loading}
             error={error}
             notice={notice}
