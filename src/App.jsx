@@ -7,6 +7,7 @@ import ResultTrackerPage from './pages/ResultTrackerPage'
 import StatsPage from './pages/StatsPage'
 import TodayPage from './pages/TodayPage'
 import { getConnectionState, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
+import { getTopMatches } from './utils/analysisEngine'
 import { loadDevFallbackMatches } from './utils/storage'
 
 function App() {
@@ -48,18 +49,8 @@ function App() {
     () => [...matches].sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt)),
     [matches],
   )
-  const todayDebug = useMemo(() => {
-    const firstMatch = visibleMatches[0]
-
-    return {
-      supabaseUrl: connection.debug.maskedUrl,
-      projectRef: connection.debug.projectRef || '-',
-      rowsFetched: visibleMatches.length,
-      firstMatchId: firstMatch?.id || '-',
-      firstMatchDate: firstMatch?.kickoffAt || '-',
-    }
-  }, [connection.debug.maskedUrl, connection.debug.projectRef, visibleMatches])
-  const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? visibleMatches[0] ?? matches[0]
+  const topMatches = useMemo(() => getTopMatches(visibleMatches, 10), [visibleMatches])
+  const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? topMatches[0] ?? visibleMatches[0] ?? matches[0]
 
   const openMatch = (id) => {
     setSelectedMatchId(id)
@@ -118,7 +109,6 @@ function App() {
             loading={loading}
             error={error}
             notice={notice}
-            debug={todayDebug}
             onRefresh={loadToday}
             onOpenMatch={openMatch}
           />

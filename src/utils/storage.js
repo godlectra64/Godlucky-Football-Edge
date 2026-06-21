@@ -69,9 +69,9 @@ export async function loadDevFallbackMatches() {
 
 function mapDevRecommendation(match) {
   const score = Number(match.modules?.teamStrength ?? 0) + Number(match.modules?.recentForm ?? 0)
-  if (score >= 16 && mapDevRisk(match.riskLevel) !== 'high') return recommendationLabels.strong
-  if (score >= 12) return recommendationLabels.watch
-  return recommendationLabels.skip
+  if (score >= 16 && mapDevRisk(match.riskLevel) !== 'high') return recommendationLabels.bet
+  if (score >= 12) return recommendationLabels.lean
+  return recommendationLabels.noBet
 }
 
 function mapDevRisk(riskLevel) {

@@ -1,28 +1,31 @@
 # Godlucky Football Edge
 
-Ultimate Real Data Version สำหรับวิเคราะห์ฟุตบอลแบบ mobile-first PWA โดยใช้ Supabase Database, Supabase Edge Functions และข้อมูลฟุตบอลจริงจาก provider ที่ตั้งค่าใน Supabase secrets
+Ultimate Real Data Version สำหรับวิเคราะห์ฟุตบอลแบบ mobile-first PWA โดยใช้ Supabase Database, Supabase Edge Functions และข้อมูลจริงจาก football-data.org v4
 
 ## ฟีเจอร์หลัก
 
-- หน้า “Top 10 คู่เด่นวันนี้” อ่านข้อมูลจาก Supabase เป็นหลัก
-- หน้า Match Detail แสดงคะแนนวิเคราะห์ 8 โมดูล, ฟอร์ม 5 นัดหลัง, สถิติยิงได้/เสีย และเหตุผลภาษาไทย
-- หน้า Admin เรียก Edge Function เพื่อ sync ข้อมูลวันนี้, อ่าน Sync Logs, เปิด/ปิดลีก และจัดลำดับความสำคัญลีก
-- หน้า Result Tracker แสดงสถานะการแข่งขันและสกอร์จากข้อมูล sync ล่าสุด
-- หน้า Stats คำนวณภาพรวมจากข้อมูลจริงใน Supabase
-- Demo data ใช้เป็น dev fallback เท่านั้นเมื่อยังไม่ตั้งค่า `VITE_SUPABASE_URL` และ `VITE_SUPABASE_ANON_KEY`
+- หน้า Today แสดง "Top 10 คู่เด่นวันนี้และพรุ่งนี้" จากข้อมูลจริงใน Supabase
+- Ranking เรียงจาก confidence สูง, risk ต่ำ, league priority สูง และ data completeness สูง
+- Match Detail แสดงคะแนนแต่ละโมดูล, ฟอร์ม 5 นัดหลัง, ประตูได้เสีย, ตารางคะแนนถ้ามี, เหตุผลภาษาไทย และข้อควรระวัง
+- หน้า Admin เรียก Edge Function `sync-football-data` เพื่อ manual sync แล้ว refresh รายการล่าสุด
+- หน้า Result Tracker และ Stats อ่านข้อมูล sync ล่าสุดจากฐานข้อมูล
+- Demo data ใช้เฉพาะ dev fallback เมื่อยังไม่ได้ตั้งค่า `VITE_SUPABASE_URL` และ `VITE_SUPABASE_ANON_KEY`
 
 ## ENV
 
-คัดลอกจาก `.env.example` เป็น `.env.local`
+Frontend ใช้เฉพาะค่า public ของ Supabase:
 
 ```bash
 VITE_SUPABASE_URL=
 VITE_SUPABASE_ANON_KEY=
-FOOTBALL_API_BASE_URL=
-FOOTBALL_API_KEY=
 ```
 
-ใช้เฉพาะ `VITE_*` ใน frontend ส่วน `FOOTBALL_API_KEY` ต้องตั้งเป็น Supabase secret สำหรับ Edge Function เท่านั้น
+Football API token ห้ามใส่ใน frontend ให้ตั้งเป็น Supabase Edge Function secrets เท่านั้น:
+
+```bash
+FOOTBALL_API_BASE_URL=https://api.football-data.org/v4
+FOOTBALL_API_KEY=your_football_data_token
+```
 
 ## คำสั่ง
 
@@ -36,10 +39,37 @@ npm run build
 ## Deploy Edge Function
 
 ```bash
-supabase functions deploy sync-football-data
-supabase secrets set FOOTBALL_API_KEY=your_key FOOTBALL_API_BASE_URL=https://v3.football.api-sports.io
+supabase functions deploy sync-football-data --project-ref fzjbnxomflqopwhzxfog
+supabase secrets set FOOTBALL_API_KEY=your_key FOOTBALL_API_BASE_URL=https://api.football-data.org/v4 --project-ref fzjbnxomflqopwhzxfog
 ```
 
-## ตั้ง Cron
+## ตั้ง Cron Sync
 
-รัน SQL ใน `supabase/cron/sync-football-data.sql` หลังตั้งค่า `app.supabase_url` และ `app.supabase_service_role_key` ใน Supabase database settings
+รันไฟล์ `supabase/cron/sync-football-data.sql` ใน Supabase SQL Editor ของ project `fzjbnxomflqopwhzxfog`
+
+ก่อนรัน schedule ให้ตั้งค่า database setting สำหรับ service role key:
+
+```sql
+alter database postgres set app.supabase_service_role_key = '<your service role key>';
+```
+
+จากนั้นเปิด Supabase SQL Editor แล้ว paste/run SQL จาก:
+
+```text
+supabase/cron/sync-football-data.sql
+```
+
+Cron จะเรียก Edge Function:
+
+```text
+https://fzjbnxomflqopwhzxfog.functions.supabase.co/sync-football-data
+```
+
+รอบเวลาไทย:
+
+- 00:05
+- 06:00
+- 12:00
+- 18:00
+
+Edge Function จะ sync เฉพาะวันนี้และพรุ่งนี้ และบันทึกผลลง `sync_logs` ทุกครั้ง

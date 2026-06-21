@@ -1,4 +1,4 @@
-import { getSupabaseDebugInfo, isSupabaseConfigured, requireSupabase } from '../lib/supabaseClient'
+import { isSupabaseConfigured, requireSupabase } from '../lib/supabaseClient'
 import { getTopMatches } from '../utils/analysisEngine'
 
 const matchSelect = `
@@ -124,11 +124,8 @@ export async function resetTodayData() {
 }
 
 export function getConnectionState() {
-  const debug = getSupabaseDebugInfo()
-
   return {
     configured: isSupabaseConfigured,
-    debug,
     message: isSupabaseConfigured
       ? 'เชื่อมต่อ Supabase พร้อมใช้งาน'
       : 'ยังไม่ได้ตั้งค่า ENV สำหรับ Supabase',
@@ -156,6 +153,7 @@ export function normalizeMatch(row) {
     analysis: activeAnalysis,
     homeForm: activeAnalysis?.raw?.homeForm ?? raw.homeForm ?? null,
     awayForm: activeAnalysis?.raw?.awayForm ?? raw.awayForm ?? null,
+    standings: activeAnalysis?.raw?.standings ?? raw.standings ?? [],
     raw,
     updatedAt: activeAnalysis?.updated_at ?? row.updated_at ?? row.created_at,
   }
@@ -190,13 +188,14 @@ function createFallbackAnalysis(row) {
     market_context_score: 50,
     risk_score: 60,
     confidence_score: 60,
-    recommendation: 'น่าติดตาม',
+    recommendation: 'LEAN',
     risk_level: 'medium',
     thai_reason: 'มีข้อมูลการแข่งขันจาก football_matches แล้ว แต่ยังไม่มีผลวิเคราะห์เชิงลึกจาก match_analysis ระบบจึงแสดงรายการจริงจากฐานข้อมูลก่อน',
     raw: {
       fallback: true,
       homeForm: null,
       awayForm: null,
+      standings: [],
     },
     updated_at: row.updated_at ?? row.created_at,
   }

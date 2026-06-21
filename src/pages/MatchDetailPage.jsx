@@ -72,6 +72,8 @@ export default function MatchDetailPage({ match, onBack, onGoToday }) {
         </div>
       </section>
 
+      <StandingsBox match={match} />
+
       <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
         <h3 className="text-lg font-bold text-white">เหตุผลภาษาไทย</h3>
         <p className="mt-2 text-sm leading-6 text-slate-300">
@@ -85,7 +87,7 @@ export default function MatchDetailPage({ match, onBack, onGoToday }) {
           ข้อควรระวัง
         </h3>
         <p className="mt-2 text-sm leading-6 text-slate-200">
-          ตรวจรายชื่อผู้เล่น สภาพอากาศ และการเปลี่ยนแปลงราคาใกล้เวลาแข่งก่อนตัดสินใจติดตามคู่ใด ๆ
+          ตรวจรายชื่อผู้เล่น สภาพอากาศ และการเปลี่ยนแปลงราคาก่อนแข่งทุกครั้ง โดยเฉพาะคู่ที่มี risk_level เป็น high
         </p>
       </section>
     </main>
@@ -122,4 +124,44 @@ function FormBox({ label, form }) {
       </p>
     </div>
   )
+}
+
+function StandingsBox({ match }) {
+  const rows = getRelevantStandings(match)
+
+  return (
+    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
+      <h3 className="text-lg font-bold text-white">ตารางคะแนน</h3>
+      {rows.length ? (
+        <div className="mt-3 space-y-2">
+          {rows.map((row) => (
+            <div key={row.teamId} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-lg bg-white/[0.05] p-3 text-sm">
+              <p className="min-w-0 truncate font-bold text-white">{row.name}</p>
+              <p className="text-slate-300">#{row.position}</p>
+              <p className="text-slate-300">{row.points} แต้ม</p>
+              <p className="text-slate-300">GD {row.goalDifference}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-sm leading-6 text-slate-300">ยังไม่มีข้อมูลตารางคะแนนจาก provider สำหรับคู่นี้</p>
+      )}
+    </section>
+  )
+}
+
+function getRelevantStandings(match) {
+  const table = (match.standings ?? match.analysis?.raw?.standings ?? [])
+    .find((standing) => standing.type === 'TOTAL')?.table ?? []
+  const teamIds = new Set([match.homeTeam?.api_team_id, match.awayTeam?.api_team_id].filter(Boolean).map(Number))
+
+  return table
+    .filter((row) => teamIds.has(Number(row.team?.id)))
+    .map((row) => ({
+      teamId: row.team?.id,
+      name: row.team?.name ?? 'ไม่ระบุทีม',
+      position: row.position ?? '-',
+      points: row.points ?? 0,
+      goalDifference: row.goalDifference ?? 0,
+    }))
 }

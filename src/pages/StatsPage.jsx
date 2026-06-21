@@ -5,9 +5,9 @@ export default function StatsPage({ matches }) {
   const cards = [
     ['จำนวนคู่ทั้งหมด', stats.total],
     ['จบการแข่งขันแล้ว', stats.settled],
-    ['น่าสนใจมาก', stats.strongCount],
-    ['น่าติดตาม', stats.watchCount],
-    ['ข้าม', stats.skippedCount],
+    ['BET', stats.strongCount],
+    ['LEAN', stats.watchCount],
+    ['NO BET', stats.skippedCount],
     ['เสี่ยงต่ำ', stats.lowRiskCount],
     ['เสี่ยงกลาง', stats.mediumRiskCount],
     ['เสี่ยงสูง', stats.highRiskCount],

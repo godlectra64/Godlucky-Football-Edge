@@ -332,7 +332,7 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: 
       riskScore * 0.1,
   )
   const riskLevel = riskScore >= 72 ? 'low' : riskScore >= 48 ? 'medium' : 'high'
-  const recommendation = confidence >= 78 && riskLevel !== 'high' ? 'น่าสนใจมาก' : confidence >= 62 ? 'น่าติดตาม' : 'ข้าม'
+  const recommendation = getRiskAdjustedRecommendation(confidence, riskLevel)
 
   return {
     provider: 'football-data.org',
@@ -348,11 +348,23 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: 
     recommendation,
     risk_level: riskLevel,
     thai_reason: buildThaiReason(homeForm, awayForm, confidence, riskLevel),
+    data_completeness: dataReady,
     homeForm,
     awayForm,
     standings,
     raw_match: match,
   }
+}
+
+function getRiskAdjustedRecommendation(confidence: number, riskLevel: string) {
+  let recommendation = confidence >= 78 && riskLevel !== 'high' ? 'BET' : confidence >= 62 ? 'LEAN' : 'NO BET'
+
+  if (riskLevel === 'high') {
+    if (recommendation === 'BET') recommendation = 'LEAN'
+    else if (recommendation === 'LEAN') recommendation = 'NO BET'
+  }
+
+  return recommendation
 }
 
 function summarizeRecentForm(matches: Array<any>, teamId: number) {

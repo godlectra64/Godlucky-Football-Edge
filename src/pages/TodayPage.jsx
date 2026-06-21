@@ -5,9 +5,9 @@ import { recommendationLabels } from '../utils/analysisEngine'
 import { formatThaiDate } from '../utils/formatters'
 
 const allFilter = 'ทั้งหมด'
-const filters = [allFilter, recommendationLabels.strong, recommendationLabels.watch, recommendationLabels.skip]
+const filters = [allFilter, recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.noBet]
 
-export default function TodayPage({ matches, loading, error, notice, debug, onRefresh, onOpenMatch }) {
+export default function TodayPage({ matches, loading, error, notice, onRefresh, onOpenMatch }) {
   const [filter, setFilter] = useState(allFilter)
   const visibleMatches = useMemo(() => {
     if (filter === allFilter) return matches
@@ -18,9 +18,9 @@ export default function TodayPage({ matches, loading, error, notice, debug, onRe
     <main className="mx-auto max-w-[430px] px-4 py-4">
       <section className="rounded-lg border border-emerald-400/20 bg-gradient-to-br from-pitch-800 to-pitch-900 p-4">
         <p className="text-sm text-emerald-200">{formatThaiDate()}</p>
-        <h2 className="mt-1 text-2xl font-black text-white">รายการคู่จริงวันนี้และพรุ่งนี้</h2>
+        <h2 className="mt-1 text-2xl font-black text-white">Top 10 คู่เด่นวันนี้และพรุ่งนี้</h2>
         <div className="mt-4 grid grid-cols-2 gap-2">
-          <MiniStat label="จำนวนคู่" value={`${matches.length} คู่`} />
+          <MiniStat label="จำนวนคู่เด่น" value={`${matches.length} คู่`} />
           <MiniStat label="สถานะข้อมูล" value={notice || 'กำลังตรวจสอบ'} />
         </div>
         <button
@@ -50,8 +50,6 @@ export default function TodayPage({ matches, loading, error, notice, debug, onRe
         ))}
       </div>
 
-      <DebugPanel debug={debug} />
-
       {loading ? <StateBox title="กำลังโหลดข้อมูลจริง" message="กำลังอ่านข้อมูลจาก Supabase" /> : null}
       {error && !loading ? <StateBox title="โหลดข้อมูลไม่สำเร็จ" message={`${error} · ข้อมูลล่าสุดที่บันทึกไว้`} tone="error" /> : null}
       {!loading && !error && !visibleMatches.length ? (
@@ -73,32 +71,6 @@ function MiniStat({ label, value }) {
       <p className="text-xs text-slate-400">{label}</p>
       <p className="mt-1 text-sm font-bold text-white">{value}</p>
     </div>
-  )
-}
-
-function DebugPanel({ debug }) {
-  if (!debug) return null
-
-  const rows = [
-    ['Supabase URL', debug.supabaseUrl],
-    ['Project ref', debug.projectRef],
-    ['Rows fetched', debug.rowsFetched],
-    ['First match id', debug.firstMatchId],
-    ['First match date', debug.firstMatchDate],
-  ]
-
-  return (
-    <section className="mt-4 rounded-lg border border-amber-300/30 bg-amber-300/10 p-3">
-      <p className="text-sm font-bold text-amber-100">Temporary debug</p>
-      <dl className="mt-2 space-y-1 text-xs">
-        {rows.map(([label, value]) => (
-          <div key={label} className="flex gap-2">
-            <dt className="w-28 shrink-0 text-slate-400">{label}</dt>
-            <dd className="min-w-0 break-all font-semibold text-white">{String(value ?? '-')}</dd>
-          </div>
-        ))}
-      </dl>
-    </section>
   )
 }
 

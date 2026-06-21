@@ -1,31 +1,30 @@
 export const recommendationLabels = {
-  strong: 'น่าสนใจมาก',
-  watch: 'น่าติดตาม',
-  skip: 'ข้าม',
+  bet: 'BET',
+  lean: 'LEAN',
+  noBet: 'NO BET',
 }
 
 export const riskLabels = {
-  low: 'ต่ำ',
-  medium: 'กลาง',
-  high: 'สูง',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
 }
 
 export const analysisModuleLabels = {
   team_strength_score: 'ความแข็งแรงทีม',
   form_score: 'ฟอร์มล่าสุด',
-  goal_quality_score: 'คุณภาพเกมรุก',
+  goal_quality_score: 'คุณภาพโอกาสทำประตู',
   tactical_score: 'ภาพรวมแท็กติก',
   home_away_score: 'เหย้า / เยือน',
   motivation_score: 'แรงจูงใจ',
   market_context_score: 'บริบทตลาด',
-  risk_score: 'การควบคุมความเสี่ยง',
+  risk_score: 'ความเสี่ยง',
 }
 
 const scoreKeys = [
   'team_strength_score',
   'form_score',
   'goal_quality_score',
-  'tactical_score',
   'home_away_score',
   'motivation_score',
   'market_context_score',
@@ -49,7 +48,7 @@ export function calculateAnalysisScore(match) {
 
 export function getRiskLevel(match) {
   const analysis = match.analysis ?? match.match_analysis ?? match
-  const risk = analysis.risk_level
+  const risk = String(analysis.risk_level ?? '').toLowerCase()
   if (['low', 'medium', 'high'].includes(risk)) return risk
 
   const score = numberValue(analysis.risk_score)
@@ -60,16 +59,25 @@ export function getRiskLevel(match) {
 
 export function getRecommendation(match) {
   const analysis = match.analysis ?? match.match_analysis ?? match
-  if (Object.values(recommendationLabels).includes(analysis.recommendation)) {
-    return analysis.recommendation
+  const stored = normalizeRecommendation(analysis.recommendation)
+  if (stored) return stored
+
+  return getRiskAdjustedRecommendation(getConfidence(match), getRiskLevel(match))
+}
+
+export function getRiskAdjustedRecommendation(confidence, riskLevel) {
+  let recommendation = confidence >= 78 && riskLevel !== 'high'
+    ? recommendationLabels.bet
+    : confidence >= 62
+      ? recommendationLabels.lean
+      : recommendationLabels.noBet
+
+  if (riskLevel === 'high') {
+    if (recommendation === recommendationLabels.bet) recommendation = recommendationLabels.lean
+    else if (recommendation === recommendationLabels.lean) recommendation = recommendationLabels.noBet
   }
 
-  const confidence = getConfidence(match)
-  const riskLevel = getRiskLevel(match)
-
-  if (confidence >= 78 && riskLevel !== 'high') return recommendationLabels.strong
-  if (confidence >= 62) return recommendationLabels.watch
-  return recommendationLabels.skip
+  return recommendation
 }
 
 export function getConfidence(match) {
@@ -88,10 +96,26 @@ export function getModuleScores(match) {
   }))
 }
 
+export function getDataCompleteness(match) {
+  const checks = [
+    Boolean(match.id),
+    Boolean(match.kickoffAt ?? match.kickoff_at),
+    Boolean(match.league?.name),
+    Boolean(match.homeTeam?.name),
+    Boolean(match.awayTeam?.name),
+    Boolean(match.analysis),
+    Boolean(match.homeForm),
+    Boolean(match.awayForm),
+    getConfidence(match) > 0,
+    getModuleScores(match).some((module) => module.score > 0),
+  ]
+
+  return Math.round((checks.filter(Boolean).length / checks.length) * 100)
+}
+
 export function getTopMatches(matches, limit = 10) {
   return [...matches]
     .map((match) => enrichMatch(match))
-    .filter((match) => match.recommendation !== recommendationLabels.skip)
     .sort(compareForTopMatches)
     .slice(0, limit)
 }
@@ -103,31 +127,27 @@ export function enrichMatch(match) {
     recommendation: getRecommendation(match),
     riskLevel: getRiskLevel(match),
     totalAnalysisScore: calculateAnalysisScore(match),
+    dataCompleteness: getDataCompleteness(match),
   }
 }
 
 export function compareForTopMatches(a, b) {
-  const leaguePriorityA = numberValue(a.league?.priority ?? a.leaguePriority ?? 50)
-  const leaguePriorityB = numberValue(b.league?.priority ?? b.leaguePriority ?? 50)
-  const riskA = riskRank(getRiskLevel(a))
-  const riskB = riskRank(getRiskLevel(b))
+  const confidenceDiff = getConfidence(b) - getConfidence(a)
+  const riskDiff = riskRank(getRiskLevel(a)) - riskRank(getRiskLevel(b))
+  const leagueDiff = leaguePriorityRank(a) - leaguePriorityRank(b)
+  const dataDiff = getDataCompleteness(b) - getDataCompleteness(a)
   const kickoffA = new Date(a.kickoffAt ?? a.kickoff_at ?? 0).getTime()
   const kickoffB = new Date(b.kickoffAt ?? b.kickoff_at ?? 0).getTime()
 
-  return (
-    leaguePriorityA - leaguePriorityB ||
-    riskA - riskB ||
-    getConfidence(b) - getConfidence(a) ||
-    kickoffA - kickoffB
-  )
+  return confidenceDiff || riskDiff || leagueDiff || dataDiff || kickoffA - kickoffB
 }
 
 export function calculateStats(matches) {
   const enriched = matches.map((match) => enrichMatch(match))
-  const settled = enriched.filter((match) => ['FT', 'AET', 'PEN'].includes(match.status))
-  const strong = enriched.filter((match) => match.recommendation === recommendationLabels.strong)
-  const watch = enriched.filter((match) => match.recommendation === recommendationLabels.watch)
-  const skipped = enriched.filter((match) => match.recommendation === recommendationLabels.skip)
+  const settled = enriched.filter((match) => ['FT', 'AET', 'PEN', 'FINISHED'].includes(match.status))
+  const bet = enriched.filter((match) => match.recommendation === recommendationLabels.bet)
+  const lean = enriched.filter((match) => match.recommendation === recommendationLabels.lean)
+  const noBet = enriched.filter((match) => match.recommendation === recommendationLabels.noBet)
   const lowRisk = enriched.filter((match) => getRiskLevel(match) === 'low')
   const mediumRisk = enriched.filter((match) => getRiskLevel(match) === 'medium')
   const highRisk = enriched.filter((match) => getRiskLevel(match) === 'high')
@@ -138,9 +158,9 @@ export function calculateStats(matches) {
   return {
     total: enriched.length,
     settled: settled.length,
-    strongCount: strong.length,
-    watchCount: watch.length,
-    skippedCount: skipped.length,
+    strongCount: bet.length,
+    watchCount: lean.length,
+    skippedCount: noBet.length,
     lowRiskCount: lowRisk.length,
     mediumRiskCount: mediumRisk.length,
     highRiskCount: highRisk.length,
@@ -149,10 +169,22 @@ export function calculateStats(matches) {
   }
 }
 
+function normalizeRecommendation(value) {
+  const normalized = String(value ?? '').toUpperCase()
+  if (normalized === recommendationLabels.bet) return recommendationLabels.bet
+  if (normalized === recommendationLabels.lean) return recommendationLabels.lean
+  if (normalized === recommendationLabels.noBet) return recommendationLabels.noBet
+  return ''
+}
+
 function riskRank(level) {
   if (level === 'low') return 1
   if (level === 'medium') return 2
   return 3
+}
+
+function leaguePriorityRank(match) {
+  return numberValue(match.league?.priority ?? match.leaguePriority ?? 50)
 }
 
 function numberValue(value) {
