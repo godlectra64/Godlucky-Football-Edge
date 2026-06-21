@@ -37,7 +37,7 @@ Deno.serve(async (request) => {
     assertRuntimeConfig()
 
     const body = await safeJson(request)
-    const date = body.date ?? todayBangkok()
+    const { dateFrom, dateTo } = getSyncDateRange(body)
     const syncType = body.mode ?? 'manual-football-data'
 
     const log = await supabase
@@ -45,9 +45,9 @@ Deno.serve(async (request) => {
       .insert({
         sync_type: syncType,
         status: 'running',
-        message: `football-data.org sync ${date}`,
+        message: `football-data.org sync ${dateFrom} to ${dateTo}`,
         started_at: startedAt,
-        raw: { provider: 'football-data.org', date },
+        raw: { provider: 'football-data.org', dateFrom, dateTo },
       })
       .select('id')
       .single()
@@ -56,13 +56,13 @@ Deno.serve(async (request) => {
     logId = log.data.id
 
     if (body.resetToday) {
-      await resetMatchesForDate(date)
+      await resetMatchesForRange(dateFrom, dateTo)
     }
 
     const competitions = await fetchCompetitions()
     await upsertCompetitions(competitions)
 
-    const matches = await fetchFixturesByDate(date)
+    const matches = await fetchFixturesByRange(dateFrom, dateTo)
     let processed = 0
     const failures: Array<{ matchId?: number; message: string }> = []
 
@@ -78,21 +78,25 @@ Deno.serve(async (request) => {
       }
     }
 
+    const total = matches.length
     const status = failures.length ? 'partial_success' : 'success'
-    const message = failures.length
+    const message = total === 0
+      ? 'ไม่พบคู่แข่งขันวันนี้และพรุ่งนี้'
+      : failures.length
       ? `บันทึกข้อมูล ${processed} คู่ และมีข้อผิดพลาด ${failures.length} คู่`
       : `บันทึกข้อมูล ${processed} คู่`
 
     await finishLog(logId, status, message, {
       provider: 'football-data.org',
-      date,
+      dateFrom,
+      dateTo,
       competitions: competitions.length,
-      total: matches.length,
+      total,
       processed,
       failures,
     })
 
-    return json({ ok: true, provider: 'football-data.org', date, processed, total: matches.length, failures })
+    return json({ ok: true, provider: 'football-data.org', dateFrom, dateTo, processed, total, failures })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'sync failed'
     await finishLog(logId, 'failed', message, { provider: 'football-data.org', error: serializeError(error) })
@@ -199,8 +203,8 @@ async function apiGet(path: string, params: Record<string, string | number | und
   return data
 }
 
-async function fetchFixturesByDate(date: string) {
-  const data = await apiGet('/matches', { dateFrom: date, dateTo: date })
+async function fetchFixturesByRange(dateFrom: string, dateTo: string) {
+  const data = await apiGet('/matches', { dateFrom, dateTo })
   return data.matches ?? []
 }
 
@@ -386,8 +390,8 @@ function findStanding(standings: Array<any>, teamId: number) {
   return totalTable.find((row: any) => row.team?.id === teamId)
 }
 
-async function resetMatchesForDate(date: string) {
-  const range = dayRangeBangkok(date)
+async function resetMatchesForRange(dateFrom: string, dateTo: string) {
+  const range = dateRangeBangkok(dateFrom, dateTo)
   const resetResult = await supabase.from('football_matches').delete().gte('kickoff_at', range.start).lt('kickoff_at', range.end)
   if (resetResult.error) throw resetResult.error
 }
@@ -433,10 +437,29 @@ function todayBangkok() {
   }).format(new Date())
 }
 
-function dayRangeBangkok(date: string) {
-  const start = new Date(`${date}T00:00:00+07:00`)
-  const end = new Date(start)
-  end.setDate(start.getDate() + 1)
+function tomorrowBangkok(date = todayBangkok()) {
+  const tomorrow = new Date(`${date}T00:00:00+07:00`)
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(tomorrow)
+}
+
+function getSyncDateRange(body: Record<string, unknown>) {
+  const today = todayBangkok()
+  const dateFrom = typeof body.dateFrom === 'string' && body.dateFrom ? body.dateFrom : today
+  const dateTo = typeof body.dateTo === 'string' && body.dateTo ? body.dateTo : tomorrowBangkok(today)
+
+  return { dateFrom, dateTo }
+}
+
+function dateRangeBangkok(dateFrom: string, dateTo: string) {
+  const start = new Date(`${dateFrom}T00:00:00+07:00`)
+  const end = new Date(`${dateTo}T00:00:00+07:00`)
+  end.setDate(end.getDate() + 1)
 
   return {
     start: start.toISOString(),
