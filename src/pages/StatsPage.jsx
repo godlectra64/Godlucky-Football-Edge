@@ -4,26 +4,24 @@ export default function StatsPage({ matches }) {
   const stats = calculateStats(matches)
   const cards = [
     ['จำนวนคู่ทั้งหมด', stats.total],
-    ['จำนวน BET', stats.betCount],
-    ['จำนวน LEAN', stats.leanCount],
-    ['Winrate รวม', `${stats.winrateOverall}%`],
-    ['Winrate BET', `${stats.winrateBet}%`],
-    ['Winrate LEAN', `${stats.winrateLean}%`],
-    ['AH Winrate', `${stats.ahWinrate}%`],
-    ['OU Winrate', `${stats.ouWinrate}%`],
-    ['Win', stats.win],
-    ['Lose', stats.lose],
-    ['Push', stats.push],
-    ['Pending', stats.pending],
+    ['จบการแข่งขันแล้ว', stats.settled],
+    ['น่าสนใจมาก', stats.strongCount],
+    ['น่าติดตาม', stats.watchCount],
+    ['ข้าม', stats.skippedCount],
+    ['เสี่ยงต่ำ', stats.lowRiskCount],
+    ['เสี่ยงกลาง', stats.mediumRiskCount],
+    ['เสี่ยงสูง', stats.highRiskCount],
+    ['ความมั่นใจเฉลี่ย', `${stats.averageConfidence}%`],
+    ['มีผลวิเคราะห์', stats.updatedCount],
   ]
 
   return (
     <main className="mx-auto max-w-[430px] px-4 py-4">
       <section className="rounded-lg border border-emerald-400/20 bg-pitch-800 p-4">
-        <p className="text-sm font-semibold text-emerald-200">ROI แบบง่าย</p>
+        <p className="text-sm font-semibold text-emerald-200">ภาพรวมข้อมูลจริง</p>
         <div className="mt-2 flex items-end justify-between">
-          <h2 className="text-4xl font-black text-white">{stats.roiPercent}%</h2>
-          <p className="pb-1 text-sm text-slate-400">{stats.roiUnits > 0 ? '+' : ''}{stats.roiUnits} units</p>
+          <h2 className="text-4xl font-black text-white">{stats.averageConfidence}%</h2>
+          <p className="pb-1 text-sm text-slate-400">confidence เฉลี่ย</p>
         </div>
       </section>
 

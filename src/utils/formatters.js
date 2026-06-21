@@ -8,10 +8,34 @@ export function formatThaiDate(dateString = new Date().toISOString()) {
 }
 
 export function formatShortDate(dateString) {
+  if (!dateString) return '-'
   return new Intl.DateTimeFormat('th-TH', {
     day: '2-digit',
     month: 'short',
   }).format(new Date(dateString))
+}
+
+export function formatKickoffTime(dateString) {
+  if (!dateString) return '-'
+  return new Intl.DateTimeFormat('th-TH', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(dateString))
+}
+
+export function formatUpdatedAt(dateString) {
+  if (!dateString) return 'รอ sync'
+  return new Intl.DateTimeFormat('th-TH', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: 'short',
+  }).format(new Date(dateString))
+}
+
+export function formatScore(homeGoals, awayGoals) {
+  if (homeGoals === null || homeGoals === undefined || awayGoals === null || awayGoals === undefined) return 'ยังไม่จบ'
+  return `${homeGoals}-${awayGoals}`
 }
 
 export function nowTime() {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import BottomNav from './components/BottomNav'
 import MobileHeader from './components/MobileHeader'
 import AdminPage from './pages/AdminPage'
@@ -6,77 +6,124 @@ import MatchDetailPage from './pages/MatchDetailPage'
 import ResultTrackerPage from './pages/ResultTrackerPage'
 import StatsPage from './pages/StatsPage'
 import TodayPage from './pages/TodayPage'
+import { getConnectionState, getTodayMatches, getTodayTopMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
 import { getTopMatches } from './utils/analysisEngine'
-import { loadMatches, resetMatches, saveMatches } from './utils/storage'
+import { loadDevFallbackMatches } from './utils/storage'
 
 function App() {
-  const [matches, setMatches] = useState(loadMatches)
+  const connection = getConnectionState()
+  const [matches, setMatches] = useState([])
   const [activePage, setActivePage] = useState('today')
-  const topMatches = useMemo(() => getTopMatches(matches, 10), [matches])
-  const [selectedMatchId, setSelectedMatchId] = useState(topMatches[0]?.id ?? matches[0]?.id)
+  const [selectedMatchId, setSelectedMatchId] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [syncing, setSyncing] = useState(false)
+  const [notice, setNotice] = useState('')
+
+  const loadToday = useCallback(async () => {
+    setLoading(true)
+    setError('')
+
+    try {
+      const data = connection.configured ? await getTodayMatches() : await loadDevFallbackMatches()
+      setMatches(data)
+      setNotice(connection.configured ? 'ข้อมูลล่าสุดจาก Supabase' : 'ข้อมูล dev fallback เท่านั้น')
+      setSelectedMatchId((current) => current || data[0]?.id || '')
+    } catch (err) {
+      setError(err.message || 'โหลดข้อมูลไม่สำเร็จ')
+      setNotice('ข้อมูลล่าสุดที่บันทึกไว้')
+    } finally {
+      setLoading(false)
+    }
+  }, [connection.configured])
 
   useEffect(() => {
-    saveMatches(matches)
-  }, [matches])
+    const timer = window.setTimeout(() => {
+      loadToday()
+    }, 0)
 
+    return () => window.clearTimeout(timer)
+  }, [loadToday])
+
+  const topMatches = useMemo(() => getTopMatches(matches, 10), [matches])
   const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? topMatches[0] ?? matches[0]
-
-  const updateMatch = (updatedMatch) => {
-    setMatches((current) => current.map((match) => (match.id === updatedMatch.id ? updatedMatch : match)))
-  }
-
-  const saveMatch = (match) => {
-    setMatches((current) => {
-      const exists = current.some((item) => item.id === match.id)
-      return exists ? current.map((item) => (item.id === match.id ? match : item)) : [match, ...current]
-    })
-    setSelectedMatchId(match.id)
-  }
-
-  const deleteMatch = (id) => {
-    setMatches((current) => {
-      const next = current.filter((match) => match.id !== id)
-      if (selectedMatchId === id) setSelectedMatchId(next[0]?.id ?? '')
-      return next
-    })
-  }
-
-  const resetDemo = () => {
-    const nextMatches = resetMatches()
-    setMatches(nextMatches)
-    setSelectedMatchId(nextMatches[0]?.id)
-  }
 
   const openMatch = (id) => {
     setSelectedMatchId(id)
     setActivePage('analysis')
   }
 
+  const runManualSync = async () => {
+    setSyncing(true)
+    setError('')
+
+    try {
+      await triggerManualSync()
+      const data = await getTodayTopMatches()
+      setMatches(data)
+      setNotice('sync สำเร็จและโหลดข้อมูลล่าสุดแล้ว')
+    } catch (err) {
+      setError(err.message || 'sync ไม่สำเร็จ')
+      setNotice('ข้อมูลล่าสุดที่บันทึกไว้')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const runResetToday = async () => {
+    setSyncing(true)
+    setError('')
+
+    try {
+      await resetTodayData()
+      const data = await getTodayTopMatches()
+      setMatches(data)
+      setNotice('รีเซ็ตและ sync ข้อมูลวันนี้สำเร็จ')
+    } catch (err) {
+      setError(err.message || 'รีเซ็ตข้อมูลวันนี้ไม่สำเร็จ')
+      setNotice('ข้อมูลล่าสุดที่บันทึกไว้')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   const titles = {
-    today: 'คู่เด็ดวันนี้',
+    today: 'Top 10 คู่เด่นวันนี้',
     analysis: 'รายละเอียดวิเคราะห์',
-    admin: 'จัดการคู่บอล',
-    results: 'บันทึกผล',
+    admin: 'ศูนย์ควบคุมข้อมูล',
+    results: 'ผลการแข่งขัน',
     stats: 'สถิติระบบ',
   }
 
   return (
     <div className="min-h-screen bg-pitch-950 text-slate-100">
-      <MobileHeader title={titles[activePage]} subtitle="PWA วิเคราะห์บอลสำหรับ Android" />
+      <MobileHeader title={titles[activePage]} subtitle="ข้อมูลจริงจาก Supabase และ Edge Function" connectionText={connection.message} />
       <div className="pb-24">
-        {activePage === 'today' ? <TodayPage matches={matches} onOpenMatch={openMatch} /> : null}
-        {activePage === 'analysis' ? (
-          <MatchDetailPage
-            match={selectedMatch}
-            onBack={() => setActivePage('today')}
-            onGoToday={() => setActivePage('today')}
-            onUpdateMatch={updateMatch}
+        {activePage === 'today' ? (
+          <TodayPage
+            matches={topMatches}
+            loading={loading}
+            error={error}
+            notice={notice}
+            onRefresh={loadToday}
+            onOpenMatch={openMatch}
           />
         ) : null}
-        {activePage === 'admin' ? (
-          <AdminPage matches={matches} onSaveMatch={saveMatch} onDeleteMatch={deleteMatch} onResetDemo={resetDemo} />
+        {activePage === 'analysis' ? (
+          <MatchDetailPage match={selectedMatch} onBack={() => setActivePage('today')} onGoToday={() => setActivePage('today')} />
         ) : null}
-        {activePage === 'results' ? <ResultTrackerPage matches={matches} onUpdateMatch={updateMatch} /> : null}
+        {activePage === 'admin' ? (
+          <AdminPage
+            connection={connection}
+            loading={loading}
+            syncing={syncing}
+            error={error}
+            onSync={runManualSync}
+            onResetToday={runResetToday}
+            onRefresh={loadToday}
+          />
+        ) : null}
+        {activePage === 'results' ? <ResultTrackerPage matches={matches} /> : null}
         {activePage === 'stats' ? <StatsPage matches={matches} /> : null}
       </div>
       <BottomNav activePage={activePage} onNavigate={setActivePage} />

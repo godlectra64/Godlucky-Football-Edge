@@ -4,7 +4,7 @@ const items = [
   { key: 'today', label: 'วันนี้', icon: CalendarDays },
   { key: 'analysis', label: 'วิเคราะห์', icon: ClipboardList },
   { key: 'admin', label: 'แอดมิน', icon: SlidersHorizontal },
-  { key: 'results', label: 'ผลลัพธ์', icon: Trophy },
+  { key: 'results', label: 'ผลแข่ง', icon: Trophy },
   { key: 'stats', label: 'สถิติ', icon: BarChart3 },
 ]
 
