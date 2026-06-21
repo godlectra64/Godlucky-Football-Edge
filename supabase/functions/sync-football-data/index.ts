@@ -78,6 +78,7 @@ Deno.serve(async (request) => {
       }
     }
 
+    const normalizedAnalysisRows = await normalizeLegacyAnalysisRows()
     const total = matches.length
     const status = failures.length ? 'partial_success' : 'success'
     const message = total === 0
@@ -93,10 +94,11 @@ Deno.serve(async (request) => {
       competitions: competitions.length,
       total,
       processed,
+      normalizedAnalysisRows,
       failures,
     })
 
-    return json({ ok: true, provider: 'football-data.org', dateFrom, dateTo, processed, total, failures })
+    return json({ ok: true, provider: 'football-data.org', dateFrom, dateTo, processed, total, normalizedAnalysisRows, failures })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'sync failed'
     await finishLog(logId, 'failed', message, { provider: 'football-data.org', error: serializeError(error) })
@@ -326,6 +328,46 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
   )
 
   if (legacyResult.error) throw nextResult.error
+}
+
+async function normalizeLegacyAnalysisRows() {
+  const result = await supabase
+    .from('match_analysis')
+    .select('id, confidence_score, recommendation, risk_level, analysis_summary, thai_reason, raw')
+    .limit(1000)
+
+  if (result.error) throw result.error
+
+  let normalized = 0
+
+  for (const row of result.data ?? []) {
+    const confidence = Math.round(clamp(Number(row.confidence_score ?? row.raw?.confidence_score ?? 0), 0, 100))
+    const recommendation = getRecommendationFromConfidence(confidence)
+    const riskLevel = ['low', 'medium', 'high'].includes(String(row.risk_level ?? '').toLowerCase())
+      ? String(row.risk_level).toLowerCase()
+      : ['low', 'medium', 'high'].includes(String(row.raw?.risk_level ?? '').toLowerCase())
+      ? String(row.raw.risk_level).toLowerCase()
+      : 'medium'
+    const analysisSummary = row.analysis_summary || row.raw?.analysis_summary || row.thai_reason || `Football Master Framework ให้คะแนน ${confidence}/100 คำแนะนำ ${recommendation}`
+
+    if (row.analysis_summary && row.recommendation === recommendation && row.risk_level === riskLevel) {
+      continue
+    }
+
+    const updateResult = await supabase
+      .from('match_analysis')
+      .update({
+        analysis_summary: analysisSummary,
+        recommendation,
+        risk_level: riskLevel,
+      })
+      .eq('id', row.id)
+
+    if (updateResult.error) throw updateResult.error
+    normalized += 1
+  }
+
+  return normalized
 }
 
 function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: any) {
