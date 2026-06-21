@@ -18,8 +18,8 @@ const priorityLeagues = new Map<string, number>([
   ['Europa League', 20],
 ])
 
-const BASE_URL = (Deno.env.get('FOOTBALL_API_BASE_URL') ?? 'https://api.football-data.org/v4').replace(/\/$/, '')
-const TOKEN = Deno.env.get('FOOTBALL_API_KEY')
+const BASE_URL = sanitizeUrl(Deno.env.get('FOOTBALL_API_BASE_URL') ?? 'https://api.football-data.org/v4')
+const TOKEN = sanitizeHeaderValue(Deno.env.get('FOOTBALL_API_KEY') ?? '')
 const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
 const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 
@@ -414,6 +414,14 @@ function assertRuntimeConfig() {
   if (!TOKEN) throw new Error('Missing FOOTBALL_API_KEY Supabase secret')
   if (!BASE_URL) throw new Error('Missing FOOTBALL_API_BASE_URL Supabase secret')
   if (!supabaseUrl || !serviceRoleKey) throw new Error('Missing Supabase service credentials')
+}
+
+function sanitizeUrl(value: string) {
+  return value.trim().replace(/^["'<]+|[>"']+$/g, '').replace(/\/$/, '')
+}
+
+function sanitizeHeaderValue(value: string) {
+  return value.trim().replace(/^["'<]+|[>"']+$/g, '').replace(/[^\x20-\x7E]/g, '')
 }
 
 function todayBangkok() {
