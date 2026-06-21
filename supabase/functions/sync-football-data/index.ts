@@ -6,25 +6,20 @@ const corsHeaders = {
 }
 
 const priorityLeagues = new Map<string, number>([
+  ['UEFA Champions League', 8],
+  ['Champions League', 8],
   ['Premier League', 10],
+  ['Primera Division', 12],
   ['La Liga', 12],
   ['Serie A', 14],
   ['Bundesliga', 16],
   ['Ligue 1', 18],
-  ['UEFA Champions League', 8],
-  ['Champions League', 8],
   ['UEFA Europa League', 20],
   ['Europa League', 20],
-  ['Thai League', 25],
-  ['J1 League', 28],
-  ['J League', 28],
-  ['K League 1', 30],
-  ['K League', 30],
 ])
 
-const apiBaseUrl = Deno.env.get('FOOTBALL_API_BASE_URL') ?? 'https://v3.football.api-sports.io'
-const apiKey = Deno.env.get('FOOTBALL_API_KEY')
-const apiHost = Deno.env.get('FOOTBALL_API_HOST') ?? 'v3.football.api-sports.io'
+const BASE_URL = (Deno.env.get('FOOTBALL_API_BASE_URL') ?? 'https://api.football-data.org/v4').replace(/\/$/, '')
+const TOKEN = Deno.env.get('FOOTBALL_API_KEY')
 const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
 const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 
@@ -39,16 +34,21 @@ Deno.serve(async (request) => {
   let logId: string | null = null
 
   try {
-    if (!apiKey) throw new Error('Missing FOOTBALL_API_KEY Supabase secret')
-    if (!supabaseUrl || !serviceRoleKey) throw new Error('Missing Supabase service credentials')
+    assertRuntimeConfig()
 
     const body = await safeJson(request)
     const date = body.date ?? todayBangkok()
-    const season = Number(body.season ?? new Date().getUTCFullYear())
+    const syncType = body.mode ?? 'manual-football-data'
 
     const log = await supabase
       .from('sync_logs')
-      .insert({ sync_type: body.mode ?? 'manual', status: 'running', message: `sync ${date}`, started_at: startedAt })
+      .insert({
+        sync_type: syncType,
+        status: 'running',
+        message: `football-data.org sync ${date}`,
+        started_at: startedAt,
+        raw: { provider: 'football-data.org', date },
+      })
       .select('id')
       .single()
 
@@ -56,151 +56,201 @@ Deno.serve(async (request) => {
     logId = log.data.id
 
     if (body.resetToday) {
-      const range = dayRangeBangkok(date)
-      const resetResult = await supabase.from('football_matches').delete().gte('kickoff_at', range.start).lt('kickoff_at', range.end)
-      if (resetResult.error) throw resetResult.error
+      await resetMatchesForDate(date)
     }
 
-    const fixtures = await fetchFixturesByDate(date)
+    const competitions = await fetchCompetitions()
+    await upsertCompetitions(competitions)
+
+    const matches = await fetchFixturesByDate(date)
     let processed = 0
+    const failures: Array<{ matchId?: number; message: string }> = []
 
-    for (const item of fixtures) {
-      const fixture = item.fixture
-      const league = await upsertLeague(item.league)
-      const homeTeam = await upsertTeam(item.teams?.home, item.league?.country)
-      const awayTeam = await upsertTeam(item.teams?.away, item.league?.country)
-
-      const match = await supabase
-        .from('football_matches')
-        .upsert(
-          {
-            api_fixture_id: fixture.id,
-            league_id: league.id,
-            home_team_id: homeTeam.id,
-            away_team_id: awayTeam.id,
-            kickoff_at: fixture.date,
-            status: item.fixture?.status?.short ?? item.fixture?.status?.long ?? 'scheduled',
-            venue: fixture.venue?.name ?? null,
-            round: item.league?.round ?? null,
-            home_goals: item.goals?.home ?? null,
-            away_goals: item.goals?.away ?? null,
-            raw: item,
-          },
-          { onConflict: 'api_fixture_id' },
-        )
-        .select('id')
-        .single()
-
-      if (match.error) throw match.error
-
-      const [homeLast, awayLast, homeStats, awayStats, standings] = await Promise.all([
-        fetchTeamLastMatches(item.teams?.home?.id, 5),
-        fetchTeamLastMatches(item.teams?.away?.id, 5),
-        fetchTeamStatistics(item.teams?.home?.id, item.league?.id, season),
-        fetchTeamStatistics(item.teams?.away?.id, item.league?.id, season),
-        fetchStandings(item.league?.id, season),
-      ])
-
-      const homeForm = summarizeRecentForm(homeLast, item.teams?.home?.id)
-      const awayForm = summarizeRecentForm(awayLast, item.teams?.away?.id)
-      await upsertRecentForm(homeTeam.id, homeForm, homeLast)
-      await upsertRecentForm(awayTeam.id, awayForm, awayLast)
-      await upsertTeamStatistics(homeTeam.id, league.id, season, homeStats)
-      await upsertTeamStatistics(awayTeam.id, league.id, season, awayStats)
-
-      const analysis = analyzeMatch({
-        item,
-        homeForm,
-        awayForm,
-        homeStats,
-        awayStats,
-        standings,
-        leaguePriority: league.priority,
-      })
-
-      const analysisResult = await supabase.from('match_analysis').upsert(
-        {
-          match_id: match.data.id,
-          team_strength_score: analysis.team_strength_score,
-          form_score: analysis.form_score,
-          goal_quality_score: analysis.goal_quality_score,
-          tactical_score: analysis.tactical_score,
-          home_away_score: analysis.home_away_score,
-          motivation_score: analysis.motivation_score,
-          market_context_score: analysis.market_context_score,
-          risk_score: analysis.risk_score,
-          confidence_score: analysis.confidence_score,
-          recommendation: analysis.recommendation,
-          risk_level: analysis.risk_level,
-          thai_reason: analysis.thai_reason,
-          raw: analysis,
-        },
-        { onConflict: 'match_id' },
-      )
-
-      if (analysisResult.error) throw analysisResult.error
-      processed += 1
+    for (const footballDataMatch of matches) {
+      try {
+        await syncMatch(footballDataMatch)
+        processed += 1
+      } catch (error) {
+        failures.push({
+          matchId: footballDataMatch?.id,
+          message: error instanceof Error ? error.message : 'match sync failed',
+        })
+      }
     }
 
-    await finishLog(logId, 'success', `บันทึกข้อมูล ${processed} คู่`, { date, processed, total: fixtures.length })
+    const status = failures.length ? 'partial_success' : 'success'
+    const message = failures.length
+      ? `บันทึกข้อมูล ${processed} คู่ และมีข้อผิดพลาด ${failures.length} คู่`
+      : `บันทึกข้อมูล ${processed} คู่`
 
-    return json({ ok: true, date, processed, total: fixtures.length })
+    await finishLog(logId, status, message, {
+      provider: 'football-data.org',
+      date,
+      competitions: competitions.length,
+      total: matches.length,
+      processed,
+      failures,
+    })
+
+    return json({ ok: true, provider: 'football-data.org', date, processed, total: matches.length, failures })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'sync failed'
-    await finishLog(logId, 'failed', message, { error })
-    return json({ ok: false, message }, 500)
+    await finishLog(logId, 'failed', message, { provider: 'football-data.org', error: serializeError(error) })
+    return json({ ok: false, provider: 'football-data.org', message }, 500)
   }
 })
 
-async function apiGet(path: string, params: Record<string, string | number | undefined>) {
-  const url = new URL(`${apiBaseUrl}${path}`)
+async function syncMatch(match: any) {
+  const league = await upsertLeague(match.competition, match.area)
+  const homeTeam = await upsertTeam(match.homeTeam, match.area?.name)
+  const awayTeam = await upsertTeam(match.awayTeam, match.area?.name)
+
+  const matchResult = await supabase
+    .from('football_matches')
+    .upsert(
+      {
+        api_fixture_id: match.id,
+        league_id: league.id,
+        home_team_id: homeTeam.id,
+        away_team_id: awayTeam.id,
+        kickoff_at: match.utcDate,
+        status: match.status,
+        venue: null,
+        round: formatRound(match),
+        home_goals: match.score?.fullTime?.home ?? null,
+        away_goals: match.score?.fullTime?.away ?? null,
+        raw: match,
+      },
+      { onConflict: 'api_fixture_id' },
+    )
+    .select('id')
+    .single()
+
+  if (matchResult.error) throw matchResult.error
+
+  const [standings, homeLast, awayLast] = await Promise.all([
+    fetchStandings(match.competition?.id),
+    fetchTeamLastMatches(match.homeTeam?.id, 5),
+    fetchTeamLastMatches(match.awayTeam?.id, 5),
+  ])
+
+  const homeForm = summarizeRecentForm(homeLast, match.homeTeam?.id)
+  const awayForm = summarizeRecentForm(awayLast, match.awayTeam?.id)
+
+  await Promise.all([
+    upsertRecentForm(homeTeam.id, homeForm, homeLast),
+    upsertRecentForm(awayTeam.id, awayForm, awayLast),
+  ])
+
+  const analysis = analyzeMatch({
+    match,
+    homeForm,
+    awayForm,
+    standings,
+    leaguePriority: league.priority,
+  })
+
+  const analysisResult = await supabase.from('match_analysis').upsert(
+    {
+      match_id: matchResult.data.id,
+      team_strength_score: analysis.team_strength_score,
+      form_score: analysis.form_score,
+      goal_quality_score: analysis.goal_quality_score,
+      tactical_score: analysis.tactical_score,
+      home_away_score: analysis.home_away_score,
+      motivation_score: analysis.motivation_score,
+      market_context_score: analysis.market_context_score,
+      risk_score: analysis.risk_score,
+      confidence_score: analysis.confidence_score,
+      recommendation: analysis.recommendation,
+      risk_level: analysis.risk_level,
+      thai_reason: analysis.thai_reason,
+      raw: analysis,
+    },
+    { onConflict: 'match_id' },
+  )
+
+  if (analysisResult.error) throw analysisResult.error
+}
+
+async function apiGet(path: string, params: Record<string, string | number | undefined> = {}) {
+  const url = new URL(`${BASE_URL}${path}`)
   Object.entries(params).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value))
+    if (value !== undefined && value !== null && value !== '') {
+      url.searchParams.set(key, String(value))
+    }
   })
 
   const response = await fetch(url, {
     headers: {
-      'x-rapidapi-key': apiKey ?? '',
-      'x-rapidapi-host': apiHost,
+      'X-Auth-Token': TOKEN ?? '',
+      Accept: 'application/json',
     },
   })
 
-  if (!response.ok) throw new Error(`football api ${response.status}: ${await response.text()}`)
-  const data = await response.json()
-  return data.response ?? []
+  const text = await response.text()
+  const data = text ? JSON.parse(text) : {}
+
+  if (!response.ok) {
+    const message = data?.message ?? data?.error ?? text ?? `football-data.org ${response.status}`
+    throw new Error(`football-data.org ${response.status}: ${message}`)
+  }
+
+  return data
 }
 
-function fetchFixturesByDate(date: string) {
-  return apiGet('/fixtures', { date, timezone: 'Asia/Bangkok' })
+async function fetchFixturesByDate(date: string) {
+  const data = await apiGet('/matches', { dateFrom: date, dateTo: date })
+  return data.matches ?? []
 }
 
-function fetchStandings(leagueId: number, season: number) {
-  if (!leagueId) return []
-  return apiGet('/standings', { league: leagueId, season })
+async function fetchCompetitions() {
+  const data = await apiGet('/competitions')
+  return data.competitions ?? []
 }
 
-function fetchTeamStatistics(teamId: number, leagueId: number, season: number) {
-  if (!teamId || !leagueId) return null
-  return apiGet('/teams/statistics', { team: teamId, league: leagueId, season }).then((rows) => rows?.[0] ?? null)
+async function fetchStandings(competitionId: number) {
+  if (!competitionId) return []
+
+  try {
+    const data = await apiGet(`/competitions/${competitionId}/standings`)
+    return data.standings ?? []
+  } catch (error) {
+    console.warn(`standings unavailable for competition ${competitionId}`, error)
+    return []
+  }
 }
 
-function fetchTeamLastMatches(teamId: number, limit: number) {
+async function fetchTeamLastMatches(teamId: number, limit: number) {
   if (!teamId) return []
-  return apiGet('/fixtures', { team: teamId, last: limit })
+
+  try {
+    const data = await apiGet(`/teams/${teamId}/matches`, { limit, status: 'FINISHED' })
+    return data.matches ?? []
+  } catch (error) {
+    console.warn(`last matches unavailable for team ${teamId}`, error)
+    return []
+  }
 }
 
-async function upsertLeague(league: any) {
-  const name = String(league?.name ?? 'Unknown League')
+async function upsertCompetitions(competitions: Array<any>) {
+  for (const competition of competitions) {
+    await upsertLeague(competition, competition.area)
+  }
+}
+
+async function upsertLeague(competition: any, area?: any) {
+  const name = String(competition?.name ?? 'Unknown Competition')
   const result = await supabase
     .from('football_leagues')
     .upsert(
       {
-        api_league_id: league?.id,
+        api_league_id: competition?.id,
         name,
-        country: league?.country ?? null,
-        logo: league?.logo ?? null,
+        country: area?.name ?? competition?.area?.name ?? null,
+        logo: competition?.emblem ?? null,
         enabled: true,
-        priority: priorityLeagues.get(name) ?? 50,
+        priority: priorityLeagues.get(name) ?? priorityLeagues.get(competition?.code) ?? 50,
       },
       { onConflict: 'api_league_id' },
     )
@@ -211,15 +261,15 @@ async function upsertLeague(league: any) {
   return result.data
 }
 
-async function upsertTeam(team: any, country: string | null) {
+async function upsertTeam(team: any, country?: string | null) {
   const result = await supabase
     .from('football_teams')
     .upsert(
       {
         api_team_id: team?.id,
-        name: team?.name ?? 'Unknown Team',
-        logo: team?.logo ?? null,
-        country,
+        name: team?.name ?? team?.shortName ?? 'Unknown Team',
+        logo: team?.crest ?? null,
+        country: country ?? null,
       },
       { onConflict: 'api_team_id' },
     )
@@ -250,50 +300,24 @@ async function upsertRecentForm(teamId: string, form: Record<string, number>, ra
   if (result.error) throw result.error
 }
 
-async function upsertTeamStatistics(teamId: string, leagueId: string, season: number, stats: any) {
-  const played = Number(stats?.fixtures?.played?.total ?? 0)
-  const goalsFor = Number(stats?.goals?.for?.total?.total ?? 0)
-  const goalsAgainst = Number(stats?.goals?.against?.total?.total ?? 0)
-
-  const result = await supabase.from('team_statistics').upsert(
-    {
-      team_id: teamId,
-      league_id: leagueId,
-      season,
-      played,
-      wins: Number(stats?.fixtures?.wins?.total ?? 0),
-      draws: Number(stats?.fixtures?.draws?.total ?? 0),
-      losses: Number(stats?.fixtures?.loses?.total ?? 0),
-      goals_for: goalsFor,
-      goals_against: goalsAgainst,
-      home_strength: ratio(Number(stats?.fixtures?.wins?.home ?? 0), Number(stats?.fixtures?.played?.home ?? 0)) * 100,
-      away_strength: ratio(Number(stats?.fixtures?.wins?.away ?? 0), Number(stats?.fixtures?.played?.away ?? 0)) * 100,
-      raw: stats,
-    },
-    { onConflict: 'team_id,league_id,season' },
-  )
-
-  if (result.error) throw result.error
-}
-
-function analyzeMatch({ item, homeForm, awayForm, homeStats, awayStats, leaguePriority }: any) {
-  const homePlayed = Number(homeStats?.fixtures?.played?.total ?? 0)
-  const awayPlayed = Number(awayStats?.fixtures?.played?.total ?? 0)
-  const dataReady = Math.min(100, ((homePlayed + awayPlayed) / 20) * 100)
+function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: any) {
+  const homeStanding = findStanding(standings, match.homeTeam?.id)
+  const awayStanding = findStanding(standings, match.awayTeam?.id)
   const homePoints = homeForm.wins * 3 + homeForm.draws
   const awayPoints = awayForm.wins * 3 + awayForm.draws
   const formGap = homePoints - awayPoints
-  const goalTotal = homeForm.goals_for + awayForm.goals_for
-  const goalAgainstTotal = homeForm.goals_against + awayForm.goals_against
+  const totalRecentGoals = homeForm.goals_for + awayForm.goals_for + homeForm.goals_against + awayForm.goals_against
+  const standingGap = Number(awayStanding?.position ?? 12) - Number(homeStanding?.position ?? 12)
+  const dataReady = clamp((homeForm.played + awayForm.played) * 10, 0, 100)
 
-  const teamStrength = clamp(50 + Number(homeStats?.fixtures?.wins?.total ?? 0) * 3 - Number(awayStats?.fixtures?.wins?.total ?? 0) * 2, 0, 100)
+  const teamStrength = clamp(55 + standingGap * 3 + (Number(homeStanding?.points ?? 0) - Number(awayStanding?.points ?? 0)) * 0.5, 0, 100)
   const formScore = clamp(55 + formGap * 5, 0, 100)
-  const goalQuality = clamp(45 + goalTotal * 4 + goalAgainstTotal * 2, 0, 100)
-  const tactical = clamp((teamStrength + goalQuality) / 2, 0, 100)
-  const homeAway = clamp(50 + ratio(Number(homeStats?.fixtures?.wins?.home ?? 0), Number(homeStats?.fixtures?.played?.home ?? 0)) * 35, 0, 100)
-  const motivation = clamp(leaguePriority <= 30 ? 75 : 58, 0, 100)
-  const marketContext = clamp(dataReady * 0.7 + (100 - leaguePriority) * 0.3, 0, 100)
-  const riskScore = clamp(100 - Math.abs(formGap) * 6 - (dataReady < 55 ? 20 : 0), 0, 100)
+  const goalQuality = clamp(42 + totalRecentGoals * 3.2, 0, 100)
+  const tactical = clamp((teamStrength + formScore + goalQuality) / 3, 0, 100)
+  const homeAway = clamp(58 + homeForm.wins * 4 - awayForm.wins * 2, 0, 100)
+  const motivation = clamp(leaguePriority <= 30 ? 76 : 60, 0, 100)
+  const marketContext = clamp(dataReady * 0.65 + (100 - leaguePriority) * 0.35, 0, 100)
+  const riskScore = clamp(92 - Math.abs(formGap) * 5 - (dataReady < 60 ? 16 : 0), 0, 100)
   const confidence = Math.round(
     teamStrength * 0.2 +
       formScore * 0.2 +
@@ -307,6 +331,7 @@ function analyzeMatch({ item, homeForm, awayForm, homeStats, awayStats, leaguePr
   const recommendation = confidence >= 78 && riskLevel !== 'high' ? 'น่าสนใจมาก' : confidence >= 62 ? 'น่าติดตาม' : 'ข้าม'
 
   return {
+    provider: 'football-data.org',
     team_strength_score: Math.round(teamStrength),
     form_score: Math.round(formScore),
     goal_quality_score: Math.round(goalQuality),
@@ -319,27 +344,56 @@ function analyzeMatch({ item, homeForm, awayForm, homeStats, awayStats, leaguePr
     recommendation,
     risk_level: riskLevel,
     thai_reason: buildThaiReason(homeForm, awayForm, confidence, riskLevel),
-    raw_fixture: item,
+    homeForm,
+    awayForm,
+    standings,
+    raw_match: match,
   }
 }
 
 function summarizeRecentForm(matches: Array<any>, teamId: number) {
   return matches.reduce(
     (total, match) => {
-      const isHome = match.teams?.home?.id === teamId
-      const goalsFor = Number(isHome ? match.goals?.home : match.goals?.away ?? 0)
-      const goalsAgainst = Number(isHome ? match.goals?.away : match.goals?.home ?? 0)
+      const isHome = match.homeTeam?.id === teamId
+      const homeGoals = match.score?.fullTime?.home
+      const awayGoals = match.score?.fullTime?.away
+      const goalsFor = Number(isHome ? homeGoals : awayGoals ?? 0)
+      const goalsAgainst = Number(isHome ? awayGoals : homeGoals ?? 0)
+
+      if (homeGoals === null || homeGoals === undefined || awayGoals === null || awayGoals === undefined) {
+        return total
+      }
+
+      total.played += 1
       total.goals_for += goalsFor
       total.goals_against += goalsAgainst
+
       if (goalsFor > goalsAgainst) total.wins += 1
       else if (goalsFor === goalsAgainst) total.draws += 1
       else total.losses += 1
+
       if (goalsAgainst === 0) total.clean_sheets += 1
       if (goalsFor === 0) total.failed_to_score += 1
+
       return total
     },
-    { wins: 0, draws: 0, losses: 0, goals_for: 0, goals_against: 0, clean_sheets: 0, failed_to_score: 0 },
+    { played: 0, wins: 0, draws: 0, losses: 0, goals_for: 0, goals_against: 0, clean_sheets: 0, failed_to_score: 0 },
   )
+}
+
+function findStanding(standings: Array<any>, teamId: number) {
+  const totalTable = standings.find((standing) => standing.type === 'TOTAL')?.table ?? standings[0]?.table ?? []
+  return totalTable.find((row: any) => row.team?.id === teamId)
+}
+
+async function resetMatchesForDate(date: string) {
+  const range = dayRangeBangkok(date)
+  const resetResult = await supabase.from('football_matches').delete().gte('kickoff_at', range.start).lt('kickoff_at', range.end)
+  if (resetResult.error) throw resetResult.error
+}
+
+function formatRound(match: any) {
+  return [match.stage, match.group, match.matchday ? `Matchday ${match.matchday}` : ''].filter(Boolean).join(' · ') || null
 }
 
 function buildThaiReason(homeForm: Record<string, number>, awayForm: Record<string, number>, confidence: number, riskLevel: string) {
@@ -349,11 +403,17 @@ function buildThaiReason(homeForm: Record<string, number>, awayForm: Record<stri
 
 async function finishLog(logId: string | null, status: string, message: string, raw: unknown) {
   if (!logId) {
-    await supabase.from('sync_logs').insert({ sync_type: 'manual', status, message, finished_at: new Date().toISOString(), raw })
+    await supabase.from('sync_logs').insert({ sync_type: 'football-data.org', status, message, finished_at: new Date().toISOString(), raw })
     return
   }
 
   await supabase.from('sync_logs').update({ status, message, finished_at: new Date().toISOString(), raw }).eq('id', logId)
+}
+
+function assertRuntimeConfig() {
+  if (!TOKEN) throw new Error('Missing FOOTBALL_API_KEY Supabase secret')
+  if (!BASE_URL) throw new Error('Missing FOOTBALL_API_BASE_URL Supabase secret')
+  if (!supabaseUrl || !serviceRoleKey) throw new Error('Missing Supabase service credentials')
 }
 
 function todayBangkok() {
@@ -376,12 +436,13 @@ function dayRangeBangkok(date: string) {
   }
 }
 
-function ratio(value: number, total: number) {
-  return total > 0 ? value / total : 0
-}
-
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min))
+}
+
+function serializeError(error: unknown) {
+  if (error instanceof Error) return { name: error.name, message: error.message, stack: error.stack }
+  return error
 }
 
 async function safeJson(request: Request) {
