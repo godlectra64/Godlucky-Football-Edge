@@ -1,4 +1,4 @@
-import { isSupabaseConfigured, requireSupabase } from '../lib/supabaseClient'
+import { getSupabaseDebugInfo, isSupabaseConfigured, requireSupabase } from '../lib/supabaseClient'
 import { getTopMatches } from '../utils/analysisEngine'
 
 const matchSelect = `
@@ -124,8 +124,11 @@ export async function resetTodayData() {
 }
 
 export function getConnectionState() {
+  const debug = getSupabaseDebugInfo()
+
   return {
     configured: isSupabaseConfigured,
+    debug,
     message: isSupabaseConfigured
       ? 'เชื่อมต่อ Supabase พร้อมใช้งาน'
       : 'ยังไม่ได้ตั้งค่า ENV สำหรับ Supabase',

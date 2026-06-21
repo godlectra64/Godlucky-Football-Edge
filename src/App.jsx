@@ -48,6 +48,17 @@ function App() {
     () => [...matches].sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt)),
     [matches],
   )
+  const todayDebug = useMemo(() => {
+    const firstMatch = visibleMatches[0]
+
+    return {
+      supabaseUrl: connection.debug.maskedUrl,
+      projectRef: connection.debug.projectRef || '-',
+      rowsFetched: visibleMatches.length,
+      firstMatchId: firstMatch?.id || '-',
+      firstMatchDate: firstMatch?.kickoffAt || '-',
+    }
+  }, [connection.debug.maskedUrl, connection.debug.projectRef, visibleMatches])
   const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? visibleMatches[0] ?? matches[0]
 
   const openMatch = (id) => {
@@ -107,6 +118,7 @@ function App() {
             loading={loading}
             error={error}
             notice={notice}
+            debug={todayDebug}
             onRefresh={loadToday}
             onOpenMatch={openMatch}
           />
