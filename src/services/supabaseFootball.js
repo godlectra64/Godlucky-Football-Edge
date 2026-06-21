@@ -178,20 +178,25 @@ function todayAndTomorrowRangeBangkok() {
 }
 
 function createFallbackAnalysis(row) {
+  const summary = 'มีข้อมูลการแข่งขันจาก football_matches แล้ว แต่ยังไม่มีผลวิเคราะห์ Football Master Framework แบบเต็ม'
+
   return {
-    team_strength_score: 50,
-    form_score: 50,
-    goal_quality_score: 50,
-    tactical_score: 50,
-    home_away_score: 50,
-    motivation_score: 50,
-    market_context_score: 50,
-    risk_score: 60,
+    team_strength_score: 8,
+    form_score: 8,
+    home_advantage_score: 5,
+    away_weakness_score: 5,
+    goal_scoring_score: 8,
+    defensive_stability_score: 8,
+    motivation_score: 5,
+    market_risk_score: 5,
     confidence_score: 60,
-    recommendation: 'LEAN',
+    recommendation: 'NO BET',
     risk_level: 'medium',
-    thai_reason: 'มีข้อมูลการแข่งขันจาก football_matches แล้ว แต่ยังไม่มีผลวิเคราะห์เชิงลึกจาก match_analysis ระบบจึงแสดงรายการจริงจากฐานข้อมูลก่อน',
+    analysis_summary: summary,
+    thai_reason: summary,
     raw: {
+      framework: 'football-master',
+      analysis_summary: summary,
       fallback: true,
       homeForm: null,
       awayForm: null,

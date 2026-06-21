@@ -1,5 +1,5 @@
 import { ChevronRight, Clock, Gauge, Goal, RefreshCcw } from 'lucide-react'
-import { getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
+import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
 import { formatKickoffTime, formatUpdatedAt } from '../utils/formatters'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
@@ -8,7 +8,7 @@ export default function MatchCard({ match, onOpen }) {
   const recommendation = match.recommendation ?? getRecommendation(match)
   const confidence = match.confidence ?? getConfidence(match)
   const riskLevel = match.riskLevel ?? getRiskLevel(match)
-  const reason = match.analysis?.thai_reason ?? 'ข้อมูลล่าสุดที่บันทึกไว้ รอการ sync รอบถัดไปเพื่อเพิ่มรายละเอียดเชิงลึก'
+  const reason = getAnalysisSummary(match)
 
   return (
     <article className="rounded-lg border border-white/10 bg-pitch-800 p-4 shadow-glow">

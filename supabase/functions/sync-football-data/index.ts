@@ -154,27 +154,7 @@ async function syncMatch(match: any) {
     leaguePriority: league.priority,
   })
 
-  const analysisResult = await supabase.from('match_analysis').upsert(
-    {
-      match_id: matchResult.data.id,
-      team_strength_score: analysis.team_strength_score,
-      form_score: analysis.form_score,
-      goal_quality_score: analysis.goal_quality_score,
-      tactical_score: analysis.tactical_score,
-      home_away_score: analysis.home_away_score,
-      motivation_score: analysis.motivation_score,
-      market_context_score: analysis.market_context_score,
-      risk_score: analysis.risk_score,
-      confidence_score: analysis.confidence_score,
-      recommendation: analysis.recommendation,
-      risk_level: analysis.risk_level,
-      thai_reason: analysis.thai_reason,
-      raw: analysis,
-    },
-    { onConflict: 'match_id' },
-  )
-
-  if (analysisResult.error) throw analysisResult.error
+  await upsertMatchAnalysis(matchResult.data.id, analysis)
 }
 
 async function apiGet(path: string, params: Record<string, string | number | undefined> = {}) {
@@ -304,51 +284,118 @@ async function upsertRecentForm(teamId: string, form: Record<string, number>, ra
   if (result.error) throw result.error
 }
 
+async function upsertMatchAnalysis(matchId: string, analysis: any) {
+  const nextPayload = {
+    match_id: matchId,
+    team_strength_score: analysis.team_strength_score,
+    form_score: analysis.form_score,
+    home_advantage_score: analysis.home_advantage_score,
+    away_weakness_score: analysis.away_weakness_score,
+    goal_scoring_score: analysis.goal_scoring_score,
+    defensive_stability_score: analysis.defensive_stability_score,
+    motivation_score: analysis.motivation_score,
+    market_risk_score: analysis.market_risk_score,
+    confidence_score: analysis.confidence_score,
+    recommendation: analysis.recommendation,
+    risk_level: analysis.risk_level,
+    analysis_summary: analysis.analysis_summary,
+    thai_reason: analysis.thai_reason,
+    raw: analysis,
+  }
+
+  const nextResult = await supabase.from('match_analysis').upsert(nextPayload, { onConflict: 'match_id' })
+  if (!nextResult.error) return
+
+  const legacyResult = await supabase.from('match_analysis').upsert(
+    {
+      match_id: matchId,
+      team_strength_score: analysis.team_strength_score,
+      form_score: analysis.form_score,
+      goal_quality_score: analysis.goal_scoring_score,
+      home_away_score: analysis.home_advantage_score,
+      motivation_score: analysis.motivation_score,
+      market_context_score: analysis.market_risk_score,
+      risk_score: analysis.market_risk_score,
+      confidence_score: analysis.confidence_score,
+      recommendation: analysis.recommendation,
+      risk_level: analysis.risk_level,
+      thai_reason: analysis.thai_reason,
+      raw: analysis,
+    },
+    { onConflict: 'match_id' },
+  )
+
+  if (legacyResult.error) throw nextResult.error
+}
+
 function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: any) {
   const homeStanding = findStanding(standings, match.homeTeam?.id)
   const awayStanding = findStanding(standings, match.awayTeam?.id)
   const homePoints = homeForm.wins * 3 + homeForm.draws
   const awayPoints = awayForm.wins * 3 + awayForm.draws
   const formGap = homePoints - awayPoints
-  const totalRecentGoals = homeForm.goals_for + awayForm.goals_for + homeForm.goals_against + awayForm.goals_against
   const standingGap = Number(awayStanding?.position ?? 12) - Number(homeStanding?.position ?? 12)
-  const dataReady = clamp((homeForm.played + awayForm.played) * 10, 0, 100)
+  const dataCompleteness = clamp((homeForm.played + awayForm.played) * 10, 0, 100)
+  const goalDiffGap = (homeForm.goals_for - homeForm.goals_against) - (awayForm.goals_for - awayForm.goals_against)
 
-  const teamStrength = clamp(55 + standingGap * 3 + (Number(homeStanding?.points ?? 0) - Number(awayStanding?.points ?? 0)) * 0.5, 0, 100)
-  const formScore = clamp(55 + formGap * 5, 0, 100)
-  const goalQuality = clamp(42 + totalRecentGoals * 3.2, 0, 100)
-  const tactical = clamp((teamStrength + formScore + goalQuality) / 3, 0, 100)
-  const homeAway = clamp(58 + homeForm.wins * 4 - awayForm.wins * 2, 0, 100)
-  const motivation = clamp(leaguePriority <= 30 ? 76 : 60, 0, 100)
-  const marketContext = clamp(dataReady * 0.65 + (100 - leaguePriority) * 0.35, 0, 100)
-  const riskScore = clamp(92 - Math.abs(formGap) * 5 - (dataReady < 60 ? 16 : 0), 0, 100)
+  const teamStrength = clamp(8 + standingGap * 0.5 + (Number(homeStanding?.points ?? 0) - Number(awayStanding?.points ?? 0)) * 0.08 + goalDiffGap * 0.25, 0, 15)
+  const recentForm = clamp(7 + formGap * 0.45, 0, 15)
+  const homeAdvantage = clamp(4 + homeForm.wins * 0.9 + Math.max(homeForm.goals_for - homeForm.goals_against, 0) * 0.25, 0, 10)
+  const awayWeakness = clamp(2 + awayForm.losses * 1.1 + awayForm.goals_against * 0.35, 0, 10)
+  const goalScoring = clamp(3 + (homeForm.goals_for + awayForm.goals_for) * 0.75, 0, 15)
+  const defensiveStability = clamp(15 - (homeForm.goals_against + awayForm.goals_against) * 0.7 + (homeForm.clean_sheets + awayForm.clean_sheets) * 0.9, 0, 15)
+  const motivation = clamp(leaguePriority <= 15 ? 10 : leaguePriority <= 30 ? 8 : leaguePriority <= 50 ? 6 : 5, 0, 10)
+  const marketRisk = clamp(4 + dataCompleteness * 0.04 + Math.min(Math.abs(formGap), 8) * 0.25, 0, 10)
   const confidence = Math.round(
-    teamStrength * 0.2 +
-      formScore * 0.2 +
-      goalQuality * 0.15 +
-      homeAway * 0.15 +
-      motivation * 0.1 +
-      marketContext * 0.1 +
-      riskScore * 0.1,
+    teamStrength +
+      recentForm +
+      homeAdvantage +
+      awayWeakness +
+      goalScoring +
+      defensiveStability +
+      motivation +
+      marketRisk,
   )
-  const riskLevel = riskScore >= 72 ? 'low' : riskScore >= 48 ? 'medium' : 'high'
-  const recommendation = getRiskAdjustedRecommendation(confidence, riskLevel)
+  const riskLevel = marketRisk >= 8 && dataCompleteness >= 70 ? 'low' : marketRisk >= 5 && dataCompleteness >= 50 ? 'medium' : 'high'
+  const recommendation = getRecommendationFromConfidence(confidence)
+  const analysisSummary = buildAnalysisSummary(match, confidence, riskLevel, {
+    teamStrength,
+    recentForm,
+    homeAdvantage,
+    awayWeakness,
+    goalScoring,
+    defensiveStability,
+    motivation,
+    marketRisk,
+  })
 
   return {
     provider: 'football-data.org',
+    framework: 'football-master',
     team_strength_score: Math.round(teamStrength),
-    form_score: Math.round(formScore),
-    goal_quality_score: Math.round(goalQuality),
-    tactical_score: Math.round(tactical),
-    home_away_score: Math.round(homeAway),
+    form_score: Math.round(recentForm),
+    home_advantage_score: Math.round(homeAdvantage),
+    away_weakness_score: Math.round(awayWeakness),
+    goal_scoring_score: Math.round(goalScoring),
+    defensive_stability_score: Math.round(defensiveStability),
     motivation_score: Math.round(motivation),
-    market_context_score: Math.round(marketContext),
-    risk_score: Math.round(riskScore),
+    market_risk_score: Math.round(marketRisk),
     confidence_score: confidence,
     recommendation,
     risk_level: riskLevel,
-    thai_reason: buildThaiReason(homeForm, awayForm, confidence, riskLevel),
-    data_completeness: dataReady,
+    analysis_summary: analysisSummary,
+    thai_reason: analysisSummary,
+    modules: {
+      teamStrength: Math.round(teamStrength),
+      recentForm: Math.round(recentForm),
+      homeAdvantage: Math.round(homeAdvantage),
+      awayWeakness: Math.round(awayWeakness),
+      goalScoring: Math.round(goalScoring),
+      defensiveStability: Math.round(defensiveStability),
+      motivation: Math.round(motivation),
+      marketRisk: Math.round(marketRisk),
+    },
+    data_completeness: dataCompleteness,
     homeForm,
     awayForm,
     standings,
@@ -356,15 +403,28 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: 
   }
 }
 
-function getRiskAdjustedRecommendation(confidence: number, riskLevel: string) {
-  let recommendation = confidence >= 78 && riskLevel !== 'high' ? 'BET' : confidence >= 62 ? 'LEAN' : 'NO BET'
+function getRecommendationFromConfidence(confidence: number) {
+  if (confidence >= 80) return 'BET'
+  if (confidence >= 65) return 'LEAN'
+  return 'NO BET'
+}
 
-  if (riskLevel === 'high') {
-    if (recommendation === 'BET') recommendation = 'LEAN'
-    else if (recommendation === 'LEAN') recommendation = 'NO BET'
+function buildAnalysisSummary(match: any, confidence: number, riskLevel: string, modules: Record<string, number>) {
+  const home = match.homeTeam?.name ?? 'ทีมเหย้า'
+  const away = match.awayTeam?.name ?? 'ทีมเยือน'
+  const topModule = Object.entries(modules).sort(([, a], [, b]) => b - a)[0]?.[0] ?? 'teamStrength'
+  const moduleText: Record<string, string> = {
+    teamStrength: 'ความแข็งแรงทีม',
+    recentForm: 'ฟอร์ม 5 นัดหลัง',
+    homeAdvantage: 'ความได้เปรียบในบ้าน',
+    awayWeakness: 'จุดอ่อนทีมเยือน',
+    goalScoring: 'ศักยภาพการทำประตู',
+    defensiveStability: 'ความมั่นคงเกมรับ',
+    motivation: 'แรงจูงใจและความสำคัญรายการ',
+    marketRisk: 'ความเสี่ยงตลาด',
   }
 
-  return recommendation
+  return `${home} พบ ${away}: Football Master Framework ให้คะแนน ${confidence}/100 คำแนะนำ ${getRecommendationFromConfidence(confidence)} จุดเด่นคือ${moduleText[topModule]} และ risk_level เป็น ${riskLevel}`
 }
 
 function summarizeRecentForm(matches: Array<any>, teamId: number) {

@@ -2,7 +2,7 @@ import { ArrowLeft, Clock3, MapPin, ShieldAlert } from 'lucide-react'
 import ModuleScoreList from '../components/ModuleScoreList'
 import RiskBadge from '../components/RiskBadge'
 import ScoreBadge from '../components/ScoreBadge'
-import { getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
+import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
 import { formatKickoffTime, formatScore, formatUpdatedAt } from '../utils/formatters'
 
 export default function MatchDetailPage({ match, onBack, onGoToday }) {
@@ -77,7 +77,7 @@ export default function MatchDetailPage({ match, onBack, onGoToday }) {
       <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
         <h3 className="text-lg font-bold text-white">เหตุผลภาษาไทย</h3>
         <p className="mt-2 text-sm leading-6 text-slate-300">
-          {match.analysis?.thai_reason || 'ข้อมูลล่าสุดที่บันทึกไว้ยังไม่มีเหตุผลเชิงลึก รอ sync รอบถัดไป'}
+          {getAnalysisSummary(match)}
         </p>
       </section>
 
