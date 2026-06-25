@@ -38,7 +38,7 @@ export function calculateFootballMasterAnalysis(match) {
     modules,
     confidence,
     riskLevel,
-    recommendation: getRecommendationFromConfidence(confidence),
+    recommendation: getRecommendationFromConfidence(confidence, riskLevel),
     analysisSummary: buildAnalysisSummary(match, modules, confidence, riskLevel),
     dataCompleteness,
   }
@@ -58,17 +58,18 @@ export function getRiskLevel(match) {
 }
 
 export function getRecommendation(match) {
-  return getRecommendationFromConfidence(getConfidence(match))
+  return getRecommendationFromConfidence(getConfidence(match), getRiskLevel(match))
 }
 
-export function getRecommendationFromConfidence(confidence) {
-  if (confidence >= 80) return recommendationLabels.bet
-  if (confidence >= 65) return recommendationLabels.lean
+export function getRecommendationFromConfidence(confidence, riskLevel = riskLabels.medium) {
+  if (String(riskLevel).toLowerCase() === riskLabels.high) return recommendationLabels.noBet
+  if (confidence >= 75) return recommendationLabels.bet
+  if (confidence >= 62) return recommendationLabels.lean
   return recommendationLabels.noBet
 }
 
-export function getRiskAdjustedRecommendation(confidence) {
-  return getRecommendationFromConfidence(confidence)
+export function getRiskAdjustedRecommendation(confidence, riskLevel = riskLabels.medium) {
+  return getRecommendationFromConfidence(confidence, riskLevel)
 }
 
 export function getConfidence(match) {

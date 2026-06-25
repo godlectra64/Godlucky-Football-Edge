@@ -342,12 +342,12 @@ async function normalizeLegacyAnalysisRows() {
 
   for (const row of result.data ?? []) {
     const confidence = Math.round(clamp(Number(row.confidence_score ?? row.raw?.confidence_score ?? 0), 0, 100))
-    const recommendation = getRecommendationFromConfidence(confidence)
     const riskLevel = ['low', 'medium', 'high'].includes(String(row.risk_level ?? '').toLowerCase())
       ? String(row.risk_level).toLowerCase()
       : ['low', 'medium', 'high'].includes(String(row.raw?.risk_level ?? '').toLowerCase())
       ? String(row.raw.risk_level).toLowerCase()
       : 'medium'
+    const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
     const analysisSummary = row.analysis_summary || row.raw?.analysis_summary || row.thai_reason || `Football Master Framework ให้คะแนน ${confidence}/100 คำแนะนำ ${recommendation}`
 
     if (row.analysis_summary && row.recommendation === recommendation && row.risk_level === riskLevel) {
@@ -399,7 +399,27 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: 
       marketRisk,
   )
   const riskLevel = marketRisk >= 8 && dataCompleteness >= 70 ? 'low' : marketRisk >= 5 && dataCompleteness >= 50 ? 'medium' : 'high'
-  const recommendation = getRecommendationFromConfidence(confidence)
+  const roundedModules = {
+    teamStrength: Math.round(teamStrength),
+    recentForm: Math.round(recentForm),
+    homeAdvantage: Math.round(homeAdvantage),
+    awayWeakness: Math.round(awayWeakness),
+    goalScoring: Math.round(goalScoring),
+    defensiveStability: Math.round(defensiveStability),
+    motivation: Math.round(motivation),
+    marketRisk: Math.round(marketRisk),
+  }
+  const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
+  logAnalysisDecision({
+    match,
+    confidence,
+    riskLevel,
+    recommendation,
+    dataCompleteness,
+    modules: roundedModules,
+    homeForm,
+    awayForm,
+  })
   const analysisSummary = buildAnalysisSummary(match, confidence, riskLevel, {
     teamStrength,
     recentForm,
@@ -427,16 +447,7 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: 
     risk_level: riskLevel,
     analysis_summary: analysisSummary,
     thai_reason: analysisSummary,
-    modules: {
-      teamStrength: Math.round(teamStrength),
-      recentForm: Math.round(recentForm),
-      homeAdvantage: Math.round(homeAdvantage),
-      awayWeakness: Math.round(awayWeakness),
-      goalScoring: Math.round(goalScoring),
-      defensiveStability: Math.round(defensiveStability),
-      motivation: Math.round(motivation),
-      marketRisk: Math.round(marketRisk),
-    },
+    modules: roundedModules,
     data_completeness: dataCompleteness,
     homeForm,
     awayForm,
@@ -445,10 +456,35 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: 
   }
 }
 
-function getRecommendationFromConfidence(confidence: number) {
-  if (confidence >= 80) return 'BET'
-  if (confidence >= 65) return 'LEAN'
+function getRecommendationFromConfidence(confidence: number, riskLevel = 'medium') {
+  if (String(riskLevel).toLowerCase() === 'high') return 'NO BET'
+  if (confidence >= 75) return 'BET'
+  if (confidence >= 62) return 'LEAN'
   return 'NO BET'
+}
+
+function logAnalysisDecision({ match, confidence, riskLevel, recommendation, dataCompleteness, modules, homeForm, awayForm }: any) {
+  console.info('football-analysis-decision', {
+    providerMatchId: match.id,
+    competitionId: match.competition?.id ?? null,
+    competitionName: match.competition?.name ?? null,
+    homeTeamId: match.homeTeam?.id ?? null,
+    awayTeamId: match.awayTeam?.id ?? null,
+    homeTeam: match.homeTeam?.name ?? null,
+    awayTeam: match.awayTeam?.name ?? null,
+    kickoffAt: match.utcDate ?? null,
+    confidence,
+    riskLevel,
+    recommendation,
+    dataCompleteness,
+    modules,
+    form: {
+      homePlayed: homeForm?.played ?? 0,
+      awayPlayed: awayForm?.played ?? 0,
+      homePoints: (homeForm?.wins ?? 0) * 3 + (homeForm?.draws ?? 0),
+      awayPoints: (awayForm?.wins ?? 0) * 3 + (awayForm?.draws ?? 0),
+    },
+  })
 }
 
 function buildAnalysisSummary(match: any, confidence: number, riskLevel: string, modules: Record<string, number>) {
@@ -466,7 +502,7 @@ function buildAnalysisSummary(match: any, confidence: number, riskLevel: string,
     marketRisk: 'ความเสี่ยงตลาด',
   }
 
-  return `${home} พบ ${away}: Football Master Framework ให้คะแนน ${confidence}/100 คำแนะนำ ${getRecommendationFromConfidence(confidence)} จุดเด่นคือ${moduleText[topModule]} และ risk_level เป็น ${riskLevel}`
+  return `${home} พบ ${away}: Football Master Framework ให้คะแนน ${confidence}/100 คำแนะนำ ${getRecommendationFromConfidence(confidence, riskLevel)} จุดเด่นคือ${moduleText[topModule]} และ risk_level เป็น ${riskLevel}`
 }
 
 function summarizeRecentForm(matches: Array<any>, teamId: number) {
