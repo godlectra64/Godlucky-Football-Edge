@@ -22,6 +22,7 @@ const BASE_URL = sanitizeUrl(Deno.env.get('FOOTBALL_API_BASE_URL') ?? 'https://a
 const TOKEN = sanitizeHeaderValue(Deno.env.get('FOOTBALL_API_KEY') ?? '')
 const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
 const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+const secretKeys = parseSupabaseSecretKeys(Deno.env.get('SUPABASE_SECRET_KEYS'))
 
 const supabase = createClient(supabaseUrl, serviceRoleKey)
 
@@ -35,6 +36,8 @@ Deno.serve(async (request) => {
 
   try {
     assertRuntimeConfig()
+    const authError = getServiceAuthError(request)
+    if (authError) return authError
 
     const body = await safeJson(request)
     const { dateFrom, dateTo } = getSyncDateRange(body)
@@ -568,6 +571,30 @@ function assertRuntimeConfig() {
   if (!TOKEN) throw new Error('Missing FOOTBALL_API_KEY Supabase secret')
   if (!BASE_URL) throw new Error('Missing FOOTBALL_API_BASE_URL Supabase secret')
   if (!supabaseUrl || !serviceRoleKey) throw new Error('Missing Supabase service credentials')
+  if (!secretKeys.length) throw new Error('Missing Supabase secret API keys')
+}
+
+function getServiceAuthError(request: Request) {
+  const apiKey = sanitizeHeaderValue(request.headers.get('apikey') ?? '')
+
+  if (apiKey && secretKeys.includes(apiKey)) return null
+
+  return new Response(JSON.stringify({ ok: false, message: 'Unauthorized sync request' }), {
+    status: 401,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+}
+
+function parseSupabaseSecretKeys(value: string | undefined | null) {
+  if (!value) return []
+
+  try {
+    const parsed = JSON.parse(value)
+    if (!parsed || typeof parsed !== 'object') return []
+    return Object.values(parsed).map((key) => sanitizeHeaderValue(String(key))).filter(Boolean)
+  } catch {
+    return []
+  }
 }
 
 function sanitizeUrl(value: string) {

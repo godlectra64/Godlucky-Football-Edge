@@ -1,0 +1,2 @@
+[functions.sync-football-data]
+verify_jwt = false

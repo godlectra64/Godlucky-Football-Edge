@@ -1,12 +1,3 @@
--- Run this in the Supabase SQL Editor for project fzjbnxomflqopwhzxfog.
--- Times below are scheduled in UTC because pg_cron runs on UTC:
--- 00:30 Thailand = 17:30 UTC
--- 12:00 Thailand = 05:00 UTC
---
--- Required before scheduling:
---   select vault.create_secret('https://fzjbnxomflqopwhzxfog.functions.supabase.co', 'project_url');
---   select vault.create_secret('<your Supabase secret key>', 'sync_football_secret_key');
-
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 create extension if not exists supabase_vault with schema vault;
