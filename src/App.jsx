@@ -6,8 +6,9 @@ import MatchDetailPage from './pages/MatchDetailPage'
 import ResultTrackerPage from './pages/ResultTrackerPage'
 import StatsPage from './pages/StatsPage'
 import TodayPage from './pages/TodayPage'
-import { getConnectionState, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
+import { getConnectionState, getLatestSyncLog, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
 import { getTopMatches } from './utils/analysisEngine'
+import { formatUpdatedAt } from './utils/formatters'
 import { loadDevFallbackMatches } from './utils/storage'
 
 function App() {
@@ -26,9 +27,11 @@ function App() {
 
     try {
       const data = connection.configured ? await getTodayMatches() : await loadDevFallbackMatches()
+      const latestSyncLog = connection.configured ? await getLatestSyncLog().catch(() => null) : null
       setMatches(data)
       setNotice(connection.configured ? 'ข้อมูลล่าสุดจาก Supabase' : 'ข้อมูล dev fallback เท่านั้น')
       setSelectedMatchId((current) => current || data[0]?.id || '')
+      if (connection.configured) setNotice(buildLatestSyncNotice(latestSyncLog))
     } catch (err) {
       setError(err.message || 'โหลดข้อมูลไม่สำเร็จ')
       setNotice('ข้อมูลล่าสุดที่บันทึกไว้')
@@ -133,6 +136,11 @@ function App() {
       <BottomNav activePage={activePage} onNavigate={setActivePage} />
     </div>
   )
+}
+
+function buildLatestSyncNotice(log) {
+  const syncedAt = log?.finished_at ?? log?.started_at
+  return syncedAt ? `ข้อมูลล่าสุดเมื่อ ${formatUpdatedAt(syncedAt)}` : 'ยังไม่พบ sync log ล่าสุด'
 }
 
 export default App

@@ -109,6 +109,21 @@ export async function getSyncLogs() {
   return data ?? []
 }
 
+export async function getLatestSyncLog() {
+  const client = requireSupabase()
+  const { data, error } = await client
+    .from('sync_logs')
+    .select('id, sync_type, status, message, started_at, finished_at, raw')
+    .in('status', ['success', 'partial_success'])
+    .order('finished_at', { ascending: false, nullsFirst: false })
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw error
+  return data ?? null
+}
+
 export async function triggerManualSync() {
   const client = requireSupabase()
   const { data, error } = await client.functions.invoke('sync-football-data', {
