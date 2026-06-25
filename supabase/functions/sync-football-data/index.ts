@@ -81,6 +81,7 @@ Deno.serve(async (request) => {
       }
     }
 
+    const recomputedStoredRows = body.recomputeStoredAnalysisRows ? await recomputeStoredAnalysisRows(Number(body.recomputeStoredLimit ?? 50)) : 0
     const normalizedAnalysisRows = await normalizeLegacyAnalysisRows()
     const total = matches.length
     const status = failures.length ? 'partial_success' : 'success'
@@ -97,11 +98,12 @@ Deno.serve(async (request) => {
       competitions: competitions.length,
       total,
       processed,
+      recomputedStoredRows,
       normalizedAnalysisRows,
       failures,
     })
 
-    return json({ ok: true, provider: 'football-data.org', dateFrom, dateTo, processed, total, normalizedAnalysisRows, failures })
+    return json({ ok: true, provider: 'football-data.org', dateFrom, dateTo, processed, total, recomputedStoredRows, normalizedAnalysisRows, failures })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'sync failed'
     await finishLog(logId, 'failed', message, { provider: 'football-data.org', error: serializeError(error) })
@@ -333,6 +335,54 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
   if (legacyResult.error) throw nextResult.error
 }
 
+async function recomputeStoredAnalysisRows(limit: number) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      raw,
+      league:football_leagues(id, api_league_id, name, priority),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(raw)
+    `)
+    .order('kickoff_at', { ascending: false })
+    .limit(Math.max(1, Math.min(limit, 100)))
+
+  if (result.error) throw result.error
+
+  let recomputed = 0
+
+  for (const row of result.data ?? []) {
+    const storedAnalysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
+    const rawAnalysis = storedAnalysis?.raw ?? {}
+    const rawMatch = row.raw ?? rawAnalysis.raw_match ?? {}
+    const match = {
+      ...rawMatch,
+      id: rawMatch.id ?? row.raw?.id,
+      utcDate: rawMatch.utcDate ?? row.raw?.utcDate,
+      competition: rawMatch.competition ?? { id: row.league?.api_league_id, name: row.league?.name },
+      homeTeam: rawMatch.homeTeam ?? { id: row.homeTeam?.api_team_id, name: row.homeTeam?.name },
+      awayTeam: rawMatch.awayTeam ?? { id: row.awayTeam?.api_team_id, name: row.awayTeam?.name },
+    }
+    const homeForm = rawAnalysis.homeForm ?? { played: 0, wins: 0, draws: 0, losses: 0, goals_for: 0, goals_against: 0, clean_sheets: 0, failed_to_score: 0 }
+    const awayForm = rawAnalysis.awayForm ?? { played: 0, wins: 0, draws: 0, losses: 0, goals_for: 0, goals_against: 0, clean_sheets: 0, failed_to_score: 0 }
+    const standings = rawAnalysis.standings ?? []
+    const analysis = analyzeMatch({
+      match,
+      homeForm,
+      awayForm,
+      standings,
+      leaguePriority: Number(row.league?.priority ?? 50),
+    })
+
+    await upsertMatchAnalysis(row.id, analysis)
+    recomputed += 1
+  }
+
+  return recomputed
+}
+
 async function normalizeLegacyAnalysisRows() {
   const result = await supabase
     .from('match_analysis')
@@ -376,87 +426,202 @@ async function normalizeLegacyAnalysisRows() {
 function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority }: any) {
   const homeStanding = findStanding(standings, match.homeTeam?.id)
   const awayStanding = findStanding(standings, match.awayTeam?.id)
-  const homePoints = homeForm.wins * 3 + homeForm.draws
-  const awayPoints = awayForm.wins * 3 + awayForm.draws
-  const formGap = homePoints - awayPoints
-  const standingGap = Number(awayStanding?.position ?? 12) - Number(homeStanding?.position ?? 12)
-  const dataCompleteness = clamp((homeForm.played + awayForm.played) * 10, 0, 100)
-  const goalDiffGap = (homeForm.goals_for - homeForm.goals_against) - (awayForm.goals_for - awayForm.goals_against)
-
-  const teamStrength = clamp(8 + standingGap * 0.5 + (Number(homeStanding?.points ?? 0) - Number(awayStanding?.points ?? 0)) * 0.08 + goalDiffGap * 0.25, 0, 15)
-  const recentForm = clamp(7 + formGap * 0.45, 0, 15)
-  const homeAdvantage = clamp(4 + homeForm.wins * 0.9 + Math.max(homeForm.goals_for - homeForm.goals_against, 0) * 0.25, 0, 10)
-  const awayWeakness = clamp(2 + awayForm.losses * 1.1 + awayForm.goals_against * 0.35, 0, 10)
-  const goalScoring = clamp(3 + (homeForm.goals_for + awayForm.goals_for) * 0.75, 0, 15)
-  const defensiveStability = clamp(15 - (homeForm.goals_against + awayForm.goals_against) * 0.7 + (homeForm.clean_sheets + awayForm.clean_sheets) * 0.9, 0, 15)
-  const motivation = clamp(leaguePriority <= 15 ? 10 : leaguePriority <= 30 ? 8 : leaguePriority <= 50 ? 6 : 5, 0, 10)
-  const marketRisk = clamp(4 + dataCompleteness * 0.04 + Math.min(Math.abs(formGap), 8) * 0.25, 0, 10)
+  const dataCompleteness = getDataCompletenessFromSource(match, homeForm, awayForm, standings)
+  const analysisBreakdown = buildModuleBreakdown(match, homeForm, awayForm, homeStanding, awayStanding, leaguePriority)
   const confidence = Math.round(
-    teamStrength +
-      recentForm +
-      homeAdvantage +
-      awayWeakness +
-      goalScoring +
-      defensiveStability +
-      motivation +
-      marketRisk,
+    analysisBreakdown.team_strength.score * 0.18 +
+      analysisBreakdown.recent_form.score * 0.17 +
+      analysisBreakdown.attack_quality.score * 0.15 +
+      analysisBreakdown.defensive_stability.score * 0.15 +
+      analysisBreakdown.home_away_advantage.score * 0.12 +
+      analysisBreakdown.motivation_context.score * 0.1 +
+      analysisBreakdown.market_odds_risk.score * 0.13,
   )
-  const riskLevel = marketRisk >= 8 && dataCompleteness >= 70 ? 'low' : marketRisk >= 5 && dataCompleteness >= 50 ? 'medium' : 'high'
+  const overallRisk = calculateOverallRisk(analysisBreakdown, confidence, dataCompleteness)
+  analysisBreakdown.overall_risk = overallRisk
+  const riskLevel = overallRisk.level
   const roundedModules = {
-    teamStrength: Math.round(teamStrength),
-    recentForm: Math.round(recentForm),
-    homeAdvantage: Math.round(homeAdvantage),
-    awayWeakness: Math.round(awayWeakness),
-    goalScoring: Math.round(goalScoring),
-    defensiveStability: Math.round(defensiveStability),
-    motivation: Math.round(motivation),
-    marketRisk: Math.round(marketRisk),
+    teamStrength: analysisBreakdown.team_strength.score,
+    recentForm: analysisBreakdown.recent_form.score,
+    attackQuality: analysisBreakdown.attack_quality.score,
+    defensiveStability: analysisBreakdown.defensive_stability.score,
+    homeAwayAdvantage: analysisBreakdown.home_away_advantage.score,
+    motivationContext: analysisBreakdown.motivation_context.score,
+    marketOddsRisk: analysisBreakdown.market_odds_risk.score,
   }
   const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
-  logAnalysisDecision({
+  logAnalysisV2Breakdown({
     match,
     confidence,
     riskLevel,
     recommendation,
-    dataCompleteness,
     modules: roundedModules,
-    homeForm,
-    awayForm,
   })
-  const analysisSummary = buildAnalysisSummary(match, confidence, riskLevel, {
-    teamStrength,
-    recentForm,
-    homeAdvantage,
-    awayWeakness,
-    goalScoring,
-    defensiveStability,
-    motivation,
-    marketRisk,
-  })
+  const analysisSummary = buildAnalysisSummary(match, confidence, riskLevel, recommendation, analysisBreakdown)
 
   return {
     provider: 'football-data.org',
-    framework: 'football-master',
-    team_strength_score: Math.round(teamStrength),
-    form_score: Math.round(recentForm),
-    home_advantage_score: Math.round(homeAdvantage),
-    away_weakness_score: Math.round(awayWeakness),
-    goal_scoring_score: Math.round(goalScoring),
-    defensive_stability_score: Math.round(defensiveStability),
-    motivation_score: Math.round(motivation),
-    market_risk_score: Math.round(marketRisk),
+    framework: 'football-master-v2',
+    team_strength_score: analysisBreakdown.team_strength.score,
+    form_score: analysisBreakdown.recent_form.score,
+    home_advantage_score: analysisBreakdown.home_away_advantage.score,
+    away_weakness_score: 0,
+    goal_scoring_score: analysisBreakdown.attack_quality.score,
+    defensive_stability_score: analysisBreakdown.defensive_stability.score,
+    motivation_score: analysisBreakdown.motivation_context.score,
+    market_risk_score: analysisBreakdown.market_odds_risk.score,
     confidence_score: confidence,
     recommendation,
     risk_level: riskLevel,
     analysis_summary: analysisSummary,
     thai_reason: analysisSummary,
     modules: roundedModules,
+    analysis_breakdown: analysisBreakdown,
     data_completeness: dataCompleteness,
     homeForm,
     awayForm,
     standings,
     raw_match: match,
   }
+}
+
+function buildModuleBreakdown(match: any, homeForm: any, awayForm: any, homeStanding: any, awayStanding: any, leaguePriority: number) {
+  return {
+    team_strength: scoreTeamStrength(match, homeForm, awayForm, homeStanding, awayStanding),
+    recent_form: scoreRecentForm(homeForm, awayForm),
+    attack_quality: scoreAttackQuality(homeForm, awayForm, homeStanding, awayStanding),
+    defensive_stability: scoreDefensiveStability(homeForm, awayForm),
+    home_away_advantage: scoreHomeAwayAdvantage(match, homeForm),
+    motivation_context: scoreMotivationContext(match, leaguePriority),
+    market_odds_risk: scoreMarketOddsRisk(match, homeForm, awayForm),
+  }
+}
+
+function scoreTeamStrength(match: any, homeForm: any, awayForm: any, homeStanding: any, awayStanding: any) {
+  if (homeStanding && awayStanding) {
+    const standingGap = Number(awayStanding.position ?? 12) - Number(homeStanding.position ?? 12)
+    const pointsGap = Number(homeStanding.points ?? 0) - Number(awayStanding.points ?? 0)
+    const goalDiffGap = Number(homeStanding.goalDifference ?? 0) - Number(awayStanding.goalDifference ?? 0)
+    const score = clamp(58 + standingGap * 2 + pointsGap * 0.7 + goalDiffGap * 0.8, 28, 90)
+    return moduleResult(score, standingGap >= 0 ? 'อันดับและแต้มโดยรวมหนุนฝั่งเจ้าบ้านมากกว่า' : 'อันดับตารางไม่ได้หนุนฝั่งเจ้าบ้านชัดเจน')
+  }
+
+  const formGap = formPoints(homeForm) - formPoints(awayForm)
+  const goalDiffGap = formGoalDiff(homeForm) - formGoalDiff(awayForm)
+  const nameSignal = (match.homeTeam?.name ? 3 : 0) + (match.awayTeam?.name ? 2 : 0)
+  const score = clamp(55 + formGap * 1.4 + goalDiffGap * 1.8 + nameSignal, 35, 78)
+  return moduleResult(score, 'ไม่มีตารางคะแนนครบ จึงใช้ฟอร์มและข้อมูลทีมที่มีเป็น proxy')
+}
+
+function scoreRecentForm(homeForm: any, awayForm: any) {
+  const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
+  if (!played) return moduleResult(56, 'ข้อมูลฟอร์มล่าสุดจำกัด จึงประเมินแบบกลางจากบริบทคู่แข่ง')
+
+  const pointsRate = ((formPoints(homeForm) + formPoints(awayForm)) / Math.max(played * 3, 1)) * 100
+  const goalBalance = clamp((formGoalDiff(homeForm) + formGoalDiff(awayForm)) * 2.5, -18, 18)
+  const score = clamp(42 + pointsRate * 0.38 + goalBalance, 25, 86)
+  return moduleResult(score, played >= 8 ? 'ฟอร์ม 5 นัดล่าสุดมีข้อมูลรองรับเพียงพอ' : 'มีข้อมูลฟอร์มบางส่วน แต่ยังไม่เต็มหน้าต่าง 5 นัด')
+}
+
+function scoreAttackQuality(homeForm: any, awayForm: any, homeStanding: any, awayStanding: any) {
+  const goalsFor = Number(homeForm?.goals_for ?? 0) + Number(awayForm?.goals_for ?? 0)
+  const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
+  const standingBoost = homeStanding || awayStanding ? clamp((Number(homeStanding?.goalsFor ?? 0) + Number(awayStanding?.goalsFor ?? 0)) * 0.25, 0, 12) : 0
+
+  if (!played && !standingBoost) return moduleResult(57, 'ยังไม่มี xG หรือสถิติเกมรุกละเอียด จึงใช้ค่ากลางแบบระมัดระวัง')
+
+  const goalsPerMatch = goalsFor / Math.max(played, 1)
+  const score = clamp(48 + goalsPerMatch * 18 + standingBoost, 30, 88)
+  return moduleResult(score, goalsPerMatch >= 1.4 ? 'เกมรุกมีแนวโน้มสร้างประตูได้ดีจากข้อมูลล่าสุด' : 'เกมรุกยังไม่ได้เด่นชัดจากข้อมูลประตูที่มี')
+}
+
+function scoreDefensiveStability(homeForm: any, awayForm: any) {
+  const goalsAgainst = Number(homeForm?.goals_against ?? 0) + Number(awayForm?.goals_against ?? 0)
+  const cleanSheets = Number(homeForm?.clean_sheets ?? 0) + Number(awayForm?.clean_sheets ?? 0)
+  const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
+  if (!played) return moduleResult(58, 'ข้อมูลเกมรับจำกัด จึงยังประเมินความมั่นคงในระดับกลาง')
+
+  const concededPerMatch = goalsAgainst / Math.max(played, 1)
+  const score = clamp(74 - concededPerMatch * 22 + cleanSheets * 4, 25, 90)
+  return moduleResult(score, concededPerMatch <= 1 ? 'เกมรับค่อนข้างมั่นคงจากอัตราเสียประตู' : 'เกมรับยังมีความเสี่ยงจากอัตราเสียประตู')
+}
+
+function scoreHomeAwayAdvantage(match: any, homeForm: any) {
+  const venueText = String(match.venue ?? match.raw?.venue ?? '').toLowerCase()
+  if (venueText.includes('neutral')) return moduleResult(52, 'สนามเป็นกลางหรือมีสัญญาณว่าเจ้าบ้านไม่ได้เปรียบเต็มที่')
+
+  const played = Number(homeForm?.played ?? 0)
+  const homeWinRate = played ? Number(homeForm?.wins ?? 0) / played : 0.4
+  const score = clamp(57 + homeWinRate * 22 + Math.max(formGoalDiff(homeForm), 0) * 1.3, 48, 78)
+  return moduleResult(score, played ? 'เจ้าบ้านมีแรงหนุนจากสภาพการแข่งขันและฟอร์มฝั่งเหย้า' : 'ไม่มีข้อมูลสนามละเอียด จึงให้น้ำหนักเจ้าบ้านแบบจำกัด')
+}
+
+function scoreMotivationContext(match: any, leaguePriority: number) {
+  const stage = String(match.stage ?? match.group ?? match.round ?? '').toLowerCase()
+  const knockoutBoost = ['final', 'semi', 'quarter', 'last_16', 'playoff'].some((item) => stage.includes(item)) ? 8 : 0
+  const priorityScore = leaguePriority <= 15 ? 65 : leaguePriority <= 30 ? 61 : leaguePriority <= 50 ? 58 : 55
+  const score = clamp(priorityScore + knockoutBoost, 52, 78)
+  return moduleResult(score, knockoutBoost ? 'รายการหรือรอบการแข่งขันเพิ่มแรงจูงใจเชิงบริบท' : 'ข้อมูลแรงจูงใจยังจำกัด จึงใช้คะแนนกลางตามความสำคัญรายการ')
+}
+
+function scoreMarketOddsRisk(match: any, homeForm: any, awayForm: any) {
+  const hasOdds = Boolean(match.odds || match.market || match.bookmakers)
+  if (!hasOdds) return moduleResult(60, 'ยังไม่มีข้อมูลราคาเพียงพอ จึงประเมินแบบกลางและไม่ยกระดับเป็น high risk อัตโนมัติ')
+
+  const formGap = Math.abs(formPoints(homeForm) - formPoints(awayForm))
+  const score = clamp(58 + Math.min(formGap, 8) * 2.2, 42, 82)
+  return moduleResult(score, 'มีข้อมูลตลาดบางส่วนและใช้ร่วมกับความต่างของฟอร์มเพื่อประเมินความเสี่ยง')
+}
+
+function calculateOverallRisk(breakdown: any, confidence: number, dataCompleteness: number) {
+  const scores = [
+    breakdown.team_strength.score,
+    breakdown.recent_form.score,
+    breakdown.attack_quality.score,
+    breakdown.defensive_stability.score,
+    breakdown.home_away_advantage.score,
+    breakdown.motivation_context.score,
+    breakdown.market_odds_risk.score,
+  ]
+  const spread = Math.max(...scores) - Math.min(...scores)
+  const weakCore = ['team_strength', 'recent_form', 'attack_quality', 'defensive_stability'].filter((key) => breakdown[key].score < 45).length
+
+  if (confidence < 48 || weakCore >= 2 || spread >= 42) {
+    return { level: 'high', reason: 'คะแนนสำคัญหลายด้านอ่อนหรือขัดแย้งกันมาก จึงจัดเป็นความเสี่ยงสูง' }
+  }
+  if (confidence >= 72 && dataCompleteness >= 70 && spread <= 28) {
+    return { level: 'low', reason: 'หลายโมดูลให้ภาพสอดคล้องกันและข้อมูลรองรับค่อนข้างครบ' }
+  }
+  return { level: 'medium', reason: 'มีข้อมูลสนับสนุนบางส่วน แต่ยังไม่ครบทุกมิติหรือคะแนนยังไม่สอดคล้องเต็มที่' }
+}
+
+function moduleResult(score: number, reason: string) {
+  return { score: Math.round(clamp(score, 0, 100)), reason }
+}
+
+function getDataCompletenessFromSource(match: any, homeForm: any, awayForm: any, standings: Array<any>) {
+  const checks = [
+    Boolean(match.id),
+    Boolean(match.utcDate),
+    Boolean(match.competition?.name),
+    Boolean(match.homeTeam?.name),
+    Boolean(match.awayTeam?.name),
+    Number(homeForm?.played ?? 0) > 0,
+    Number(awayForm?.played ?? 0) > 0,
+    Boolean(standings?.length),
+    Boolean(match.score),
+    Boolean(match.status),
+  ]
+
+  return Math.round((checks.filter(Boolean).length / checks.length) * 100)
+}
+
+function formPoints(form: any) {
+  return Number(form?.wins ?? 0) * 3 + Number(form?.draws ?? 0)
+}
+
+function formGoalDiff(form: any) {
+  return Number(form?.goals_for ?? 0) - Number(form?.goals_against ?? 0)
 }
 
 function getRecommendationFromConfidence(confidence: number, riskLevel = 'medium') {
@@ -466,31 +631,43 @@ function getRecommendationFromConfidence(confidence: number, riskLevel = 'medium
   return 'NO BET'
 }
 
-function logAnalysisDecision({ match, confidence, riskLevel, recommendation, dataCompleteness, modules, homeForm, awayForm }: any) {
-  console.info('football-analysis-decision', {
+function logAnalysisV2Breakdown({ match, confidence, riskLevel, recommendation, modules }: any) {
+  console.info('football-analysis-v2-breakdown', {
     providerMatchId: match.id,
-    competitionId: match.competition?.id ?? null,
-    competitionName: match.competition?.name ?? null,
-    homeTeamId: match.homeTeam?.id ?? null,
-    awayTeamId: match.awayTeam?.id ?? null,
     homeTeam: match.homeTeam?.name ?? null,
     awayTeam: match.awayTeam?.name ?? null,
-    kickoffAt: match.utcDate ?? null,
+    moduleScores: modules,
     confidence,
     riskLevel,
     recommendation,
-    dataCompleteness,
-    modules,
-    form: {
-      homePlayed: homeForm?.played ?? 0,
-      awayPlayed: awayForm?.played ?? 0,
-      homePoints: (homeForm?.wins ?? 0) * 3 + (homeForm?.draws ?? 0),
-      awayPoints: (awayForm?.wins ?? 0) * 3 + (awayForm?.draws ?? 0),
-    },
   })
 }
 
-function buildAnalysisSummary(match: any, confidence: number, riskLevel: string, modules: Record<string, number>) {
+function buildAnalysisSummary(match: any, confidence: number, riskLevel: string, recommendation: string, breakdown: any) {
+  const summaryHome = match.homeTeam?.name ?? 'ทีมเหย้า'
+  const summaryAway = match.awayTeam?.name ?? 'ทีมเยือน'
+  const summaryModules = [
+    { label: 'Team Strength', score: breakdown.team_strength.score },
+    { label: 'Recent Form', score: breakdown.recent_form.score },
+    { label: 'Attack Quality', score: breakdown.attack_quality.score },
+    { label: 'Defensive Stability', score: breakdown.defensive_stability.score },
+    { label: 'Home/Away Advantage', score: breakdown.home_away_advantage.score },
+    { label: 'Motivation & Context', score: breakdown.motivation_context.score },
+    { label: 'Market & Odds Risk', score: breakdown.market_odds_risk.score },
+  ]
+  const bestModule = [...summaryModules].sort((a, b) => b.score - a.score)[0]
+  const weakestModule = [...summaryModules].sort((a, b) => a.score - b.score)[0]
+  const riskReason = breakdown.overall_risk.reason
+
+  if (recommendation === 'BET') {
+    return `${summaryHome} พบ ${summaryAway}: คะแนนรวม ${confidence}/100 เข้าระดับ BET เพราะ ${bestModule.label} เด่น (${bestModule.score}/100) และ risk_level เป็น ${riskLevel}. ${riskReason}`
+  }
+  if (recommendation === 'LEAN') {
+    return `${summaryHome} พบ ${summaryAway}: คะแนนรวม ${confidence}/100 เหมาะเป็น LEAN มากกว่า BET จุดหนุนหลักคือ ${bestModule.label} (${bestModule.score}/100) แต่ ${weakestModule.label} ยังถ่วงอยู่ (${weakestModule.score}/100). ${riskReason}`
+  }
+  return `${summaryHome} พบ ${summaryAway}: คะแนนรวม ${confidence}/100 ยังเป็น NO BET แม้มีจุดเด่นที่ ${bestModule.label} (${bestModule.score}/100) แต่ ${weakestModule.label} ยังไม่สนับสนุนพอ (${weakestModule.score}/100). ${riskReason}`
+
+  const modules: Record<string, number> = {}
   const home = match.homeTeam?.name ?? 'ทีมเหย้า'
   const away = match.awayTeam?.name ?? 'ทีมเยือน'
   const topModule = Object.entries(modules).sort(([, a], [, b]) => b - a)[0]?.[0] ?? 'teamStrength'
