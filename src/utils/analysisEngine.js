@@ -1,3 +1,10 @@
+import {
+  calculateDataIntelligence,
+  calculateDataIntelligenceModifier,
+  getDataIntelligenceRankingAdjustment,
+  normalizeDataIntelligence,
+} from './dataIntelligence.js'
+
 export const recommendationLabels = {
   bet: 'BET',
   lean: 'LEAN',
@@ -37,16 +44,31 @@ export function calculateFootballMasterAnalysis(match) {
     moduleBreakdown,
     dataCompleteness,
   })
-  const intelligenceModifier = getStoredOrCalculatedModifier(storedBreakdown, footballIntelligence, baseConfidence)
+  const footballModifier = getStoredOrCalculatedModifier(storedBreakdown, footballIntelligence, baseConfidence)
+  const calculatedDataIntelligence = calculateDataIntelligence(match, {
+    baseConfidence,
+    footballModifier,
+  })
+  const dataIntelligence = normalizeDataIntelligence(storedBreakdown?.data_intelligence ?? calculatedDataIntelligence, match, {
+    baseConfidence,
+    footballModifier,
+  })
+  const dataIntelligenceModifier = storedBreakdown?.data_intelligence?.modifier ?? calculateDataIntelligenceModifier(dataIntelligence, baseConfidence, footballModifier)
+  const intelligenceModifier = getCombinedIntelligenceModifier(baseConfidence, footballModifier, dataIntelligenceModifier)
   const confidence = Math.round(clamp(baseConfidence + intelligenceModifier, 0, 100))
   const storedV3Risk = storedBreakdown?.football_intelligence ? storedBreakdown?.overall_risk : null
   const overallRisk = calculateOverallRisk(moduleBreakdown, confidence, dataCompleteness, footballIntelligence)
   const riskLevel = normalizeRiskLevel(storedV3Risk?.level ?? overallRisk.level)
   const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
-  const normalizedIntelligence = normalizeFootballIntelligence(footballIntelligence, intelligenceModifier)
+  const normalizedIntelligence = normalizeFootballIntelligence(footballIntelligence, footballModifier)
+  const normalizedDataIntelligence = {
+    ...dataIntelligence,
+    modifier: Math.round(clamp(dataIntelligenceModifier, -10, 10)),
+  }
   const analysisBreakdown = {
     ...moduleBreakdown,
     football_intelligence: normalizedIntelligence,
+    data_intelligence: normalizedDataIntelligence,
     overall_risk: {
       level: riskLevel,
       reason: storedV3Risk?.reason ?? overallRisk.reason,
@@ -59,11 +81,14 @@ export function calculateFootballMasterAnalysis(match) {
     baseConfidence,
     confidence,
     intelligenceModifier,
+    footballModifier,
+    dataIntelligenceModifier: normalizedDataIntelligence.modifier,
     riskLevel,
     recommendation,
     analysisSummary: buildAnalysisSummary(match, modules, baseConfidence, confidence, riskLevel, recommendation, analysisBreakdown),
     analysisBreakdown,
     footballIntelligence: normalizedIntelligence,
+    dataIntelligence: normalizedDataIntelligence,
     dataCompleteness,
   }
 }
@@ -261,6 +286,7 @@ function buildRankingProfile(match, precomputedMaster = null) {
   const master = precomputedMaster ?? calculateFootballMasterAnalysis(match ?? {})
   const breakdown = master.analysisBreakdown ?? match?.analysis?.raw?.analysis_breakdown ?? {}
   const intelligence = breakdown.football_intelligence ?? {}
+  const dataIntelligence = breakdown.data_intelligence ?? {}
   const confidence = numberValue(match?.confidence ?? match?.confidence_score ?? master.confidence)
   const riskLevel = normalizeRiskLevel(match?.riskLevel ?? match?.risk_level ?? master.riskLevel)
   const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
@@ -273,6 +299,7 @@ function buildRankingProfile(match, precomputedMaster = null) {
   const consistencyAdjustment = clamp((consistencyScore - 70) * 0.1, -6, 4)
   const marketAdjustment = clamp((marketScore - 60) * 0.08, -5, 4)
   const intelligenceAdjustment = getIntelligenceRankingAdjustment(intelligence)
+  const dataIntelligenceAdjustment = getDataIntelligenceRankingAdjustment(dataIntelligence)
   const importanceAdjustment = getMatchImportanceRankingAdjustment(intelligence.match_importance)
   const rankingScore = Math.round(clamp(
     confidence +
@@ -282,6 +309,7 @@ function buildRankingProfile(match, precomputedMaster = null) {
       consistencyAdjustment +
       marketAdjustment +
       intelligenceAdjustment +
+      dataIntelligenceAdjustment +
       importanceAdjustment,
     0,
     100,
@@ -294,6 +322,7 @@ function buildRankingProfile(match, precomputedMaster = null) {
     consistencyScore,
     marketScore,
     intelligence,
+    dataIntelligence,
   })
   const rankReason = generateRankReasonFromProfile({
     rankingScore,
@@ -304,6 +333,7 @@ function buildRankingProfile(match, precomputedMaster = null) {
     consistencyScore,
     marketScore,
     intelligence,
+    dataIntelligence,
     rankBadges,
   })
 
@@ -319,6 +349,7 @@ function buildRankingProfile(match, precomputedMaster = null) {
       consistencyScore,
       marketScore,
       intelligenceAdjustment,
+      dataIntelligenceAdjustment,
       importanceAdjustment,
     },
   }
@@ -369,6 +400,8 @@ function generateRankBadgesFromProfile(profile) {
   if (profile.recommendation === recommendationLabels.lean || (profile.rankingScore >= 62 && profile.riskLevel !== riskLabels.high)) badges.push('เหมาะติดตาม')
   if (profile.consistencyScore >= 78) badges.push('สัญญาณสอดคล้อง')
 
+  if (profile.dataIntelligence?.data_confidence?.level === 'high') badges.push('Data intel')
+
   return [...new Set(badges)].slice(0, 4)
 }
 
@@ -390,6 +423,10 @@ function generateRankReasonFromProfile(profile) {
   if (profile.dataCompleteness < 65) cautionParts.push('ข้อมูลยังจำกัด')
   if (profile.marketScore < 55) cautionParts.push('ตลาดยังเสี่ยง')
   if (profile.consistencyScore < 58) cautionParts.push('คะแนนโมดูลขัดแย้งกัน')
+
+  if (profile.dataIntelligence?.recent_form?.trend === 'positive') supportParts.push('ฟอร์มล่าสุดหนุน')
+  if (profile.dataIntelligence?.data_confidence?.level === 'high') supportParts.push('data intelligence ครบ')
+  if (profile.dataIntelligence?.data_confidence?.level === 'low') cautionParts.push('data intelligence ยังจำกัด')
 
   const support = supportParts.slice(0, 2).join(' และ ')
   const caution = cautionParts.length ? ` แต่${cautionParts.slice(0, 2).join(' และ')}` : ''
@@ -844,6 +881,12 @@ function getStoredOrCalculatedModifier(storedBreakdown, footballIntelligence, ba
   const stored = storedBreakdown?.football_intelligence?.modifier
   if (stored !== undefined && stored !== null) return Math.round(clamp(numberValue(stored), -6, 6))
   return calculateIntelligenceModifier(footballIntelligence, baseConfidence)
+}
+
+function getCombinedIntelligenceModifier(baseConfidence, footballModifier, dataIntelligenceModifier) {
+  const total = numberValue(footballModifier) + numberValue(dataIntelligenceModifier)
+  const positiveCap = baseConfidence && baseConfidence < 75 ? Math.max(0, 74 - baseConfidence) : 10
+  return Math.round(clamp(total, -10, positiveCap))
 }
 
 function buildFootballIntelligenceExplanation(intelligence, modifier) {

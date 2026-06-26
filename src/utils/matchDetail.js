@@ -6,6 +6,7 @@ import {
   getRecommendation,
   getRiskLevel,
 } from './analysisEngine.js'
+import { dataIntelligenceSections, normalizeDataIntelligence } from './dataIntelligence.js'
 
 const intelligenceFallback = {
   h2h: { score: 58, confidence: 'low', reason: 'ยังไม่มีข้อมูล H2H เพียงพอ', signals: ['missing_h2h'] },
@@ -59,6 +60,11 @@ export function extractFootballIntelligence(match) {
   }
 }
 
+export function extractDataIntelligence(match) {
+  const breakdown = extractAnalysisBreakdown(match)
+  return normalizeDataIntelligence(breakdown?.data_intelligence, match)
+}
+
 export function getModuleBreakdownItems(match) {
   const breakdown = extractAnalysisBreakdown(match)
   const items = footballMasterModules.map((module) => {
@@ -96,6 +102,7 @@ export function getDataQuality(match) {
   addQuality(Boolean(match?.league?.name), 'Competition', available, missing)
   addQuality(Boolean(breakdown), 'Analysis breakdown', available, missing)
   addQuality(Boolean(breakdown?.football_intelligence), 'Football intelligence', available, missing)
+  addQuality(Boolean(breakdown?.data_intelligence), 'Data intelligence', available, missing)
   addQuality(Boolean(raw.odds || raw.market || raw.bookmakers), 'Odds movement', available, missing)
   addQuality(Boolean(raw.ahLine || raw.ouLine || raw.odds), 'AH / OU line', available, missing)
   addQuality(intelligence.squad_context?.confidence !== 'low', 'Confirmed lineup / injuries', available, missing)
@@ -109,6 +116,7 @@ export function normalizeDetailPayload(match) {
   const safeMatch = match ?? {}
   const breakdown = extractAnalysisBreakdown(safeMatch)
   const intelligence = extractFootballIntelligence(safeMatch)
+  const dataIntelligence = extractDataIntelligence(safeMatch)
   const dataQuality = getDataQuality(safeMatch)
   const rankingScore = Math.round(safeMatch.rankingScore ?? safeMatch.ranking_score ?? safeMatch.analysis?.raw?.ranking_score ?? getConfidence(safeMatch))
 
@@ -124,6 +132,8 @@ export function normalizeDetailPayload(match) {
     analysisSummary: getAnalysisSummary(safeMatch),
     analysisBreakdown: breakdown,
     footballIntelligence: intelligence,
+    dataIntelligence,
+    dataIntelligenceItems: getDataIntelligenceItems(dataIntelligence),
     moduleItems: getModuleBreakdownItems(safeMatch),
     dataQuality,
   }
@@ -156,6 +166,7 @@ export function buildAiVerdict(match) {
 export function buildRiskFactors(detail) {
   const factors = []
   const intelligence = detail.footballIntelligence ?? extractFootballIntelligence(detail)
+  const dataIntelligence = detail.dataIntelligence ?? extractDataIntelligence(detail)
   const consistency = detail.analysisBreakdown?.overall_risk?.reason
 
   if (detail.riskLevel === 'high') factors.push('ความเสี่ยงรวมอยู่ระดับสูง จึงไม่ควรบังคับเล่น')
@@ -164,9 +175,49 @@ export function buildRiskFactors(detail) {
   if (intelligence.league_context?.risk_modifier > 0) factors.push('บริบทการแข่งขันมีความผันผวน')
   if (intelligence.match_importance?.risk_modifier > 0) factors.push('ความสำคัญของเกมเพิ่ม variance')
   if (detail.dataQuality?.missing?.includes('Odds movement')) factors.push('ยังไม่มีราคาบอล AH/OU จริงหรือ movement ชัดเจน')
+  if (dataIntelligence.data_confidence?.level === 'low') factors.push('Football Data Intelligence ยังมีข้อมูลจริงจำกัด')
   if (consistency) factors.push(consistency)
 
   return uniqueSentences(factors)
+}
+
+export function getDataIntelligenceItems(dataIntelligence) {
+  const labels = {
+    league_position: 'League Position',
+    recent_form: 'Recent Form',
+    home_away_form: 'Home/Away Form',
+    head_to_head: 'Head to Head',
+    strength_of_schedule: 'Strength of Schedule',
+    goal_statistics: 'Goal Statistics',
+  }
+  const items = dataIntelligenceSections.map((key) => {
+    const item = dataIntelligence?.[key] ?? {}
+    return {
+      key,
+      label: labels[key],
+      score: Math.round(clamp(Number(item.score ?? 0), 0, 100)),
+      confidence: item.confidence ?? item.level ?? 'low',
+      reason: item.reason || 'ข้อมูลจำกัด',
+      available: item.available ?? [],
+      missing: item.missing ?? [],
+      ...getScoreLabel(item.score),
+    }
+  })
+  const confidence = dataIntelligence?.data_confidence ?? {}
+
+  return [
+    ...items,
+    {
+      key: 'data_confidence',
+      label: 'Data Confidence',
+      score: Math.round(clamp(Number(confidence.score ?? 0), 0, 100)),
+      confidence: confidence.level ?? 'low',
+      reason: confidence.reason || 'ข้อมูลจำกัด',
+      available: confidence.available ?? [],
+      missing: confidence.missing ?? [],
+      ...getScoreLabel(confidence.score),
+    },
+  ]
 }
 
 export function splitSummary(summary) {

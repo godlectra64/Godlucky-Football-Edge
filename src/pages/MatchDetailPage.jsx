@@ -59,6 +59,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', on
       <AiVerdictSection detail={detail} verdict={verdict} />
       <ScoreBreakdownSection items={detail.moduleItems} />
       <FootballIntelligenceSection intelligence={detail.footballIntelligence} />
+      <FootballDataIntelligenceSection items={detail.dataIntelligenceItems} />
       <RiskAnalysisSection detail={detail} riskLabel={riskLabel} riskFactors={riskFactors} />
       <RankingSection detail={detail} />
       <DataQualitySection dataQuality={detail.dataQuality} />
@@ -146,6 +147,18 @@ function FootballIntelligenceSection({ intelligence }) {
       <div className="space-y-3">
         {cards.map((card) => (
           <IntelligenceCard key={card.title} card={card} />
+        ))}
+      </div>
+    </Section>
+  )
+}
+
+function FootballDataIntelligenceSection({ items }) {
+  return (
+    <Section title="Football Data Intelligence" icon={ListChecks}>
+      <div className="space-y-3">
+        {(items ?? []).map((item) => (
+          <DataIntelligenceCard key={item.key} item={item} />
         ))}
       </div>
     </Section>
@@ -276,6 +289,28 @@ function IntelligenceCard({ card }) {
   )
 }
 
+function DataIntelligenceCard({ item }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-pitch-900 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-bold text-white">{item.label}</p>
+          <p className="mt-1 text-xs font-semibold text-slate-400">confidence: {item.confidence ?? 'low'}</p>
+        </div>
+        <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${toneClass(item.tone)}`}>{Math.round(item.score ?? 0)}/100</span>
+      </div>
+      <ProgressBar value={item.score} tone={item.tone} />
+      <p className="mt-2 text-sm leading-6 text-slate-300">{item.reason || 'ข้อมูลจำกัด'}</p>
+      {item.key === 'data_confidence' ? (
+        <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+          <QualityInline title="Available" items={item.available} />
+          <QualityInline title="Missing" items={item.missing} muted />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function BulletList({ title, items, tone = 'default' }) {
   const safeItems = items?.length ? items : ['ข้อมูลจำกัด']
   return (
@@ -299,6 +334,16 @@ function QualityList({ title, items, muted = false }) {
           <span key={item} className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${muted ? 'border-slate-500/20 bg-slate-500/10 text-slate-300' : 'border-emerald-300/25 bg-emerald-300/10 text-emerald-100'}`}>{item}</span>
         ))}
       </div>
+    </div>
+  )
+}
+
+function QualityInline({ title, items = [], muted = false }) {
+  const safeItems = items.length ? items : ['ข้อมูลจำกัด']
+  return (
+    <div className={`rounded-lg border p-2 ${muted ? 'border-slate-500/20 bg-slate-500/10' : 'border-emerald-300/20 bg-emerald-300/10'}`}>
+      <p className="font-bold text-white">{title}</p>
+      <p className="mt-1 leading-5 text-slate-300">{safeItems.slice(0, 4).join(', ')}</p>
     </div>
   )
 }

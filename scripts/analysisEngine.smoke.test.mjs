@@ -7,8 +7,14 @@ import {
   rankTopMatches,
 } from '../src/utils/analysisEngine.js'
 import {
+  calculateDataIntelligence,
+  calculateDataIntelligenceModifier,
+} from '../src/utils/dataIntelligence.js'
+import {
+  extractDataIntelligence,
   extractFootballIntelligence,
   formatRecommendation,
+  getDataIntelligenceItems,
   getDataQuality,
   getMatchRoute,
   getRiskLabel,
@@ -60,6 +66,12 @@ assert.ok(leagueContext.risk_modifier < cupContext.risk_modifier)
 
 assert.ok(missingH2H.intelligenceModifier >= -6 && missingH2H.intelligenceModifier <= 6)
 assert.equal(getRecommendationFromConfidence(75, 'medium'), 'BET')
+assert.ok(missingH2H.analysisBreakdown.data_intelligence, 'data_intelligence should be added to analysis_breakdown')
+assert.ok(missingH2H.analysisBreakdown.data_intelligence.data_confidence.score >= 0)
+assert.ok(missingH2H.analysisBreakdown.data_intelligence.data_confidence.score <= 100)
+assert.ok(missingH2H.intelligenceModifier >= -10 && missingH2H.intelligenceModifier <= 10, 'combined modifier stays bounded')
+assert.equal(missingH2H.analysisBreakdown.data_intelligence.head_to_head.confidence, 'low')
+assert.notEqual(missingH2H.riskLevel, 'high', 'missing data_intelligence H2H alone must not force high risk')
 
 const base72Match = {
   ...baseMatch,
@@ -83,6 +95,7 @@ const base72 = calculateFootballMasterAnalysis(base72Match)
 assert.equal(base72.baseConfidence, 72)
 assert.ok(base72.intelligenceModifier <= 2, 'base 72 should not be boosted into a hardcoded BET jump')
 assert.ok(base72.confidence <= 74)
+assert.ok(base72.dataIntelligenceModifier >= -10 && base72.dataIntelligenceModifier <= 10)
 
 for (const key of ['h2h', 'league_context', 'rest_days', 'schedule_difficulty', 'squad_context', 'momentum', 'match_importance', 'ai_explanation']) {
   assert.ok(missingH2H.analysisBreakdown.football_intelligence[key], `missing football_intelligence.${key}`)
@@ -130,8 +143,11 @@ assert.equal(rankTopMatches(sixMatches, 10).length, 6, 'six matches should rende
 
 const normalizedEmptyDetail = normalizeDetailPayload({ id: 'empty-detail', analysis: { raw: null } })
 assert.equal(normalizedEmptyDetail.footballIntelligence.h2h.reason, 'ยังไม่มีข้อมูล H2H เพียงพอ')
+assert.equal(normalizedEmptyDetail.dataIntelligence.data_confidence.level, 'low')
 assert.doesNotThrow(() => normalizeDetailPayload({ id: 'missing-fi', analysis: { raw: { analysis_breakdown: {} } } }))
 assert.equal(extractFootballIntelligence({ id: 'missing-fi' }).league_context.type, 'unknown')
+assert.equal(extractDataIntelligence({ id: 'missing-di' }).data_confidence.level, 'low')
+assert.equal(getDataIntelligenceItems(extractDataIntelligence({ id: 'missing-di' })).length, 7)
 assert.equal(getScoreLabel(78).scoreLabel, 'ดี')
 assert.equal(getScoreLabel(62).scoreLabel, 'กลาง')
 assert.equal(getScoreLabel(40).scoreLabel, 'เสี่ยง')
@@ -140,5 +156,9 @@ assert.equal(formatRecommendation('LEAN'), 'LEAN')
 assert.equal(formatRecommendation('MAYBE'), 'NO BET')
 assert.ok(getDataQuality(normalizedEmptyDetail).missing.length > 0, 'data quality should expose missing fields')
 assert.equal(getMatchRoute('abc-123'), '/match/abc-123')
+
+const directDataIntelligence = calculateDataIntelligence(baseMatch, { baseConfidence: missingH2H.baseConfidence, footballModifier: missingH2H.footballModifier })
+assert.ok(directDataIntelligence.data_confidence.score >= 0 && directDataIntelligence.data_confidence.score <= 100)
+assert.ok(calculateDataIntelligenceModifier(directDataIntelligence, 72, 2) <= 0, 'data modifier must not boost base 72 + football modifier 2 into BET')
 
 console.log('analysisEngine smoke tests passed')
