@@ -30,6 +30,18 @@ import {
   getPerformanceContext,
   getResultTracking,
 } from '../src/utils/performanceIntelligence.js'
+import {
+  analyzeModelPerformance,
+  buildCalibrationTrendData,
+  buildConfidenceCalibration,
+  buildLeaguePerformance,
+  buildModuleEffectiveness,
+  buildRecommendationPerformance,
+  buildRiskPerformance,
+  exportPerformanceCsv,
+  exportPerformanceJson,
+  getPredictionReliability,
+} from '../src/utils/modelPerformanceAnalyzer.js'
 
 const baseMatch = {
   id: 'match-1',
@@ -210,6 +222,21 @@ const performanceRows = [
   { ...performanceSnapshot, id: 'snap-2', recommendation: 'LEAN', confidence_score: 70, ranking_score: 71, result: finishedResult, evaluation: { evaluation_status: 'incorrect' } },
   { ...performanceSnapshot, id: 'snap-3', recommendation: 'NO BET', confidence_score: 55, ranking_score: 56, result: pendingResult, evaluation: { evaluation_status: 'pending' } },
 ]
+const moduleBreakdown = {
+  team_strength: { score: 72 },
+  recent_form: { score: 80 },
+  attack_quality: { score: 68 },
+  defensive_stability: { score: 62 },
+  home_away_advantage: { score: 66 },
+  market_odds_risk: { score: 60 },
+  football_intelligence: { h2h: { score: 58 }, momentum: { score: 64 } },
+  data_intelligence: { recent_form: { score: 74 }, goal_statistics: { score: 70 }, data_confidence: { score: 82 } },
+}
+const calibrationRows = [
+  { ...performanceRows[0], confidence_score: 84, ranking_score: 82, risk_level: 'low', league: 'Premier League', raw_snapshot: { analysis_breakdown: moduleBreakdown } },
+  { ...performanceRows[1], confidence_score: 73, ranking_score: 71, risk_level: 'medium', league: 'Premier League', raw_snapshot: { analysis_breakdown: moduleBreakdown } },
+  { ...performanceRows[2], confidence_score: 58, ranking_score: 56, risk_level: 'high', league: 'La Liga', raw_snapshot: { analysis_breakdown: moduleBreakdown } },
+]
 const performanceMetrics = calculatePerformanceMetrics(performanceRows)
 assert.equal(performanceMetrics.totalPredictions, 3)
 assert.equal(performanceMetrics.totalBet, 1)
@@ -219,6 +246,22 @@ assert.equal(performanceMetrics.correct, 1)
 assert.equal(performanceMetrics.incorrect, 1)
 assert.equal(performanceMetrics.winRate, 50)
 assert.doesNotThrow(() => buildPerformanceGroups(performanceRows))
+const modelPerformance = analyzeModelPerformance(calibrationRows)
+assert.equal(buildConfidenceCalibration(calibrationRows).length, 6)
+assert.equal(buildLeaguePerformance(calibrationRows)[0].league, 'Premier League')
+assert.equal(buildRecommendationPerformance(calibrationRows).length, 3)
+assert.equal(buildRiskPerformance(calibrationRows).length, 3)
+assert.ok(buildModuleEffectiveness(calibrationRows)[0].effectivenessScore >= 0)
+assert.ok(modelPerformance.calibrationSuggestions.length > 0)
+assert.ok(buildCalibrationTrendData(calibrationRows).accuracyTimeline.length > 0)
+assert.ok(exportPerformanceJson(calibrationRows).includes('Premier League'))
+assert.ok(exportPerformanceCsv(calibrationRows).startsWith('id,match_id'))
+const reliability = getPredictionReliability({
+  confidence: 84,
+  league: { name: 'Premier League' },
+  analysis: { raw: { framework: 'data-intelligence-v1', analysis_breakdown: { data_intelligence: { data_confidence: { score: 82 } } } } },
+}, calibrationRows)
+assert.equal(reliability.dataConfidence, 82)
 assert.equal(getPerformanceContext(performanceRows), 'กำลังสะสมข้อมูล')
 
 console.log('analysisEngine smoke tests passed')

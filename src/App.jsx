@@ -11,6 +11,7 @@ import { getAiPerformanceData, getConnectionState, getLatestSyncLog, getMatchDet
 import { getTopMatches } from './utils/analysisEngine'
 import { formatUpdatedAt } from './utils/formatters'
 import { getMatchRoute } from './utils/matchDetail'
+import { getPredictionReliability } from './utils/modelPerformanceAnalyzer'
 import { getPerformanceContext } from './utils/performanceIntelligence'
 import { loadDevFallbackMatches } from './utils/storage'
 
@@ -111,6 +112,7 @@ function App() {
     const version = selectedMatch?.analysis?.raw?.framework ?? selectedMatch?.analysis?.raw?.analysis_version ?? ''
     return getPerformanceContext(performanceRows, version)
   }, [performanceRows, selectedMatch])
+  const predictionReliability = useMemo(() => getPredictionReliability(selectedMatch ?? {}, performanceRows), [performanceRows, selectedMatch])
 
   useEffect(() => {
     if (!selectedMatchId || matches.some((match) => match.id === selectedMatchId) || !connection.configured) {
@@ -223,7 +225,7 @@ function App() {
           />
         ) : null}
         {activePage === 'analysis' ? (
-          <MatchDetailPage match={selectedMatch} loading={detailLoading && connection.configured && !selectedMatch} error={detailError} performanceContext={performanceContext} onBack={goToday} onGoToday={goToday} />
+          <MatchDetailPage match={selectedMatch} loading={detailLoading && connection.configured && !selectedMatch} error={detailError} performanceContext={performanceContext} predictionReliability={predictionReliability} onBack={goToday} onGoToday={goToday} />
         ) : null}
         {activePage === 'admin' ? (
           <AdminPage

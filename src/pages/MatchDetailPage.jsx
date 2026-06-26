@@ -51,6 +51,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
   const verdict = buildAiVerdict(detail)
   const riskFactors = buildRiskFactors(detail)
   const riskLabel = getRiskLabel(detail.riskLevel)
+  const predictionReliability = arguments[0]?.predictionReliability ?? null
 
   return (
     <main className="mx-auto max-w-[430px] px-4 py-4">
@@ -61,6 +62,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
       <FootballIntelligenceSection intelligence={detail.footballIntelligence} />
       <FootballDataIntelligenceSection items={detail.dataIntelligenceItems} />
       <AiPerformanceContextSection performanceContext={performanceContext} />
+      <PredictionReliabilitySection reliability={predictionReliability} />
       <RiskAnalysisSection detail={detail} riskLabel={riskLabel} riskFactors={riskFactors} />
       <RankingSection detail={detail} />
       <DataQualitySection dataQuality={detail.dataQuality} />
@@ -171,6 +173,23 @@ function AiPerformanceContextSection({ performanceContext }) {
     <Section title="AI Performance Context" icon={Star}>
       <p className="rounded-lg border border-white/10 bg-pitch-900 p-3 text-sm leading-6 text-slate-200">
         {performanceContext || 'กำลังสะสมข้อมูล'}
+      </p>
+    </Section>
+  )
+}
+
+function PredictionReliabilitySection({ reliability }) {
+  const data = reliability ?? {}
+  return (
+    <Section title="Prediction Reliability" icon={Gauge}>
+      <div className="grid grid-cols-2 gap-2">
+        <Metric label="Confidence Calibration" value={`${Math.round(data.confidenceCalibration ?? 0)}%`} />
+        <Metric label="Historical Accuracy" value={`${Math.round(data.historicalAccuracy ?? 0)}%`} />
+        <Metric label="League Accuracy" value={`${Math.round(data.leagueAccuracy ?? 0)}%`} />
+        <Metric label="Data Confidence" value={`${Math.round(data.dataConfidence ?? 0)}%`} />
+      </div>
+      <p className="mt-3 rounded-lg border border-white/10 bg-pitch-900 p-3 text-sm leading-6 text-slate-200">
+        {data.label || 'กำลังสะสมข้อมูล'}
       </p>
     </Section>
   )

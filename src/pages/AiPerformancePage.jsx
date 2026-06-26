@@ -7,6 +7,7 @@ import {
   filterPerformanceRows,
   getPerformanceFilterOptions,
 } from '../utils/performanceIntelligence'
+import { analyzeModelPerformance, exportPerformanceCsv, exportPerformanceJson } from '../utils/modelPerformanceAnalyzer'
 import { formatShortDate, formatUpdatedAt } from '../utils/formatters'
 
 const allValue = ''
@@ -24,6 +25,11 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
   const metrics = useMemo(() => calculatePerformanceMetrics(filteredRows), [filteredRows])
   const groups = useMemo(() => buildPerformanceGroups(filteredRows), [filteredRows])
   const trends = useMemo(() => buildTrendDatasets(filteredRows), [filteredRows])
+  const modelAnalysis = useMemo(() => analyzeModelPerformance(filteredRows), [filteredRows])
+  const exportPreview = useMemo(() => ({
+    jsonBytes: exportPerformanceJson(filteredRows).length,
+    csvRows: exportPerformanceCsv(filteredRows).split('\n').length - 1,
+  }), [filteredRows])
   const latestRows = filteredRows.slice(0, 50)
 
   return (
@@ -53,9 +59,48 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
       </section>
 
       <FilterPanel filters={filters} setFilters={setFilters} options={options} />
+      <ModelIntelligenceSection analysis={modelAnalysis} exportPreview={exportPreview} />
       <TrendPreview trends={trends} groups={groups} />
       <LatestTable rows={latestRows} />
     </main>
+  )
+}
+
+function ModelIntelligenceSection({ analysis, exportPreview }) {
+  const topModules = analysis.moduleEffectiveness.slice(0, 4)
+  const confidenceRows = analysis.confidenceCalibration.filter((item) => item.predictions > 0).slice(-3)
+  const leagueRows = analysis.leaguePerformance.slice(0, 3)
+
+  return (
+    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
+      <h3 className="text-lg font-bold text-white">Model Intelligence</h3>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <MiniMetric label="Overall Accuracy" value={`${analysis.overall.accuracy}%`} />
+        <MiniMetric label="No Evaluation" value={analysis.overall.noEvaluation} />
+        <MiniMetric label="Export JSON" value={`${exportPreview.jsonBytes}b`} />
+        <MiniMetric label="Export CSV Rows" value={exportPreview.csvRows} />
+      </div>
+      <CompactList title="Confidence Calibration" items={confidenceRows.map((item) => `${item.range}: ${item.accuracy}% (${item.predictions})`)} />
+      <CompactList title="League Comparison" items={leagueRows.map((item) => `${item.league}: ${item.accuracy}% (${item.predictions})`)} />
+      <CompactList title="Recommendation Analysis" items={analysis.recommendationPerformance.map((item) => `${item.recommendation}: ${item.accuracy}% (${item.predictions})`)} />
+      <CompactList title="Risk Analysis" items={analysis.riskPerformance.map((item) => `${item.riskLevel}: ${item.accuracy}% (${item.predictions})`)} />
+      <CompactList title="Module Effectiveness" items={topModules.map((item) => `${item.label}: ${item.effectivenessScore}/100`)} />
+      <CompactList title="Calibration Suggestions" items={analysis.calibrationSuggestions.slice(0, 4).map((item) => item.message)} />
+    </section>
+  )
+}
+
+function CompactList({ title, items }) {
+  const safeItems = items.length ? items : ['กำลังสะสมข้อมูล']
+  return (
+    <div className="mt-4">
+      <p className="text-sm font-bold text-white">{title}</p>
+      <div className="mt-2 space-y-2">
+        {safeItems.map((item) => (
+          <p key={item} className="rounded-lg border border-white/10 bg-pitch-900 p-2 text-xs leading-5 text-slate-300">{item}</p>
+        ))}
+      </div>
+    </div>
   )
 }
 
