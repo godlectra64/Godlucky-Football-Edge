@@ -12,8 +12,18 @@ export default function MatchCard({ match, onOpen }) {
   const rankReason = match.rankReason ?? match.rank_reason ?? getAnalysisSummary(match)
   const rankBadges = match.rankBadges ?? match.rank_badges ?? []
 
+  const open = () => onOpen(match.id)
+
   return (
-    <article className="rounded-lg border border-white/10 bg-pitch-800 p-4 shadow-glow">
+    <article
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') open()
+      }}
+      className="cursor-pointer rounded-lg border border-white/10 bg-pitch-800 p-4 shadow-glow transition hover:border-emerald-300/30 focus:outline-none focus:ring-2 focus:ring-emerald-300/50"
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
@@ -62,7 +72,10 @@ export default function MatchCard({ match, onOpen }) {
 
       <button
         type="button"
-        onClick={() => onOpen(match.id)}
+        onClick={(event) => {
+          event.stopPropagation()
+          open()
+        }}
         className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-emerald-400 px-4 text-base font-bold text-pitch-950"
       >
         ดูรายละเอียด

@@ -69,6 +69,10 @@ export async function getMatchAnalysis(matchId) {
   return normalizeMatch(data)
 }
 
+export async function getMatchDetail(matchId) {
+  return getMatchAnalysis(matchId)
+}
+
 export async function getEnabledLeagues() {
   const client = requireSupabase()
   const { data, error } = await client

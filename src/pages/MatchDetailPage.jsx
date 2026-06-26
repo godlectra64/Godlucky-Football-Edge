@@ -1,96 +1,313 @@
-import { ArrowLeft, Clock3, MapPin, ShieldAlert } from 'lucide-react'
-import ModuleScoreList from '../components/ModuleScoreList'
+import { ArrowLeft, CalendarClock, ChevronLeft, Gauge, ListChecks, ShieldAlert, Sparkles, Star, TrendingUp } from 'lucide-react'
 import RiskBadge from '../components/RiskBadge'
 import ScoreBadge from '../components/ScoreBadge'
-import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
+import {
+  buildAiVerdict,
+  buildRiskFactors,
+  getRiskLabel,
+  normalizeDetailPayload,
+  splitSummary,
+} from '../utils/matchDetail'
 import { formatKickoffTime, formatScore, formatUpdatedAt } from '../utils/formatters'
 
-export default function MatchDetailPage({ match, onBack, onGoToday }) {
-  if (!match) {
+const recommendationTone = {
+  BET: 'border-emerald-300/30 bg-emerald-300/10 text-emerald-100',
+  LEAN: 'border-amber-300/30 bg-amber-300/10 text-amber-100',
+  'NO BET': 'border-slate-300/20 bg-slate-300/10 text-slate-100',
+}
+
+export default function MatchDetailPage({ match, loading = false, error = '', onBack, onGoToday }) {
+  if (loading) {
     return (
-      <main className="mx-auto max-w-[430px] px-4 py-6">
-        <div className="rounded-lg border border-white/10 bg-pitch-800 p-6 text-center">
-          <p className="text-lg font-bold text-white">ยังไม่ได้เลือกคู่สำหรับวิเคราะห์</p>
-          <button type="button" onClick={onGoToday} className="mt-4 min-h-12 rounded-lg bg-emerald-400 px-5 font-bold text-pitch-950">
-            ไปหน้า วันนี้
-          </button>
-        </div>
+      <main className="mx-auto max-w-[430px] px-4 py-4">
+        <BackButton onBack={onBack} />
+        <StatePanel title="กำลังโหลดรายละเอียด" message="กำลังอ่านข้อมูลการแข่งขันและผลวิเคราะห์ล่าสุด" />
       </main>
     )
   }
 
-  const recommendation = getRecommendation(match)
-  const confidence = getConfidence(match)
-  const riskLevel = getRiskLevel(match)
+  if (error) {
+    return (
+      <main className="mx-auto max-w-[430px] px-4 py-4">
+        <BackButton onBack={onBack} />
+        <StatePanel title="โหลดรายละเอียดไม่สำเร็จ" message={error} tone="error" />
+      </main>
+    )
+  }
+
+  if (!match) {
+    return (
+      <main className="mx-auto max-w-[430px] px-4 py-6">
+        <StatePanel title="ยังไม่ได้เลือกคู่สำหรับวิเคราะห์" message="กลับไปหน้า Today แล้วเลือกคู่ที่ต้องการดูรายละเอียด">
+          <button type="button" onClick={onGoToday} className="mt-4 min-h-12 rounded-lg bg-emerald-400 px-5 font-bold text-pitch-950">
+            ไปหน้า Today
+          </button>
+        </StatePanel>
+      </main>
+    )
+  }
+
+  const detail = normalizeDetailPayload(match)
+  const verdict = buildAiVerdict(detail)
+  const riskFactors = buildRiskFactors(detail)
+  const riskLabel = getRiskLabel(detail.riskLevel)
 
   return (
     <main className="mx-auto max-w-[430px] px-4 py-4">
-      <button type="button" onClick={onBack} className="mb-3 flex min-h-11 items-center gap-2 rounded-lg px-2 font-semibold text-slate-300">
-        <ArrowLeft size={20} />
-        กลับ
-      </button>
-
-      <section className="rounded-lg border border-white/10 bg-pitch-800 p-4 shadow-glow">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="flex items-center gap-2 text-sm text-slate-400">
-              <Clock3 size={16} />
-              {match.league?.name ?? 'ไม่ระบุลีก'} · {formatKickoffTime(match.kickoffAt)}
-            </p>
-            <TeamName team={match.homeTeam} />
-            <p className="my-2 text-sm font-semibold text-slate-400">พบกับ</p>
-            <TeamName team={match.awayTeam} />
-          </div>
-          <ScoreBadge recommendation={recommendation} />
-        </div>
-
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          <Metric label="ความมั่นใจ" value={`${confidence}%`} />
-          <Metric label="ความเสี่ยง" value={<RiskBadge level={riskLevel} />} />
-          <Metric label="ผลล่าสุด" value={formatScore(match.homeGoals, match.awayGoals)} />
-          <Metric label="อัปเดต" value={formatUpdatedAt(match.updatedAt)} />
-        </div>
-
-        <p className="mt-4 flex items-center gap-2 text-sm text-slate-400">
-          <MapPin size={16} />
-          {match.venue || 'ยังไม่มีข้อมูลสนาม'}
-        </p>
-      </section>
-
-      <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
-        <h3 className="text-lg font-bold text-white">คะแนนแต่ละโมดูล</h3>
-        <div className="mt-4">
-          <ModuleScoreList match={match} />
-        </div>
-      </section>
-
-      <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
-        <h3 className="text-lg font-bold text-white">ฟอร์ม 5 นัดหลัง</h3>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <FormBox label={match.homeTeam?.name ?? 'ทีมเหย้า'} form={match.homeForm} />
-          <FormBox label={match.awayTeam?.name ?? 'ทีมเยือน'} form={match.awayForm} />
-        </div>
-      </section>
-
-      <StandingsBox match={match} />
-
-      <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
-        <h3 className="text-lg font-bold text-white">เหตุผลภาษาไทย</h3>
-        <p className="mt-2 text-sm leading-6 text-slate-300">
-          {getAnalysisSummary(match)}
-        </p>
-      </section>
-
-      <section className="mt-4 rounded-lg border border-amber-300/25 bg-amber-300/10 p-4">
-        <h3 className="flex items-center gap-2 text-lg font-bold text-amber-100">
-          <ShieldAlert size={20} />
-          ข้อควรระวัง
-        </h3>
-        <p className="mt-2 text-sm leading-6 text-slate-200">
-          ตรวจรายชื่อผู้เล่น สภาพอากาศ และการเปลี่ยนแปลงราคาก่อนแข่งทุกครั้ง โดยเฉพาะคู่ที่มี risk_level เป็น high
-        </p>
-      </section>
+      <BackButton onBack={onBack} />
+      <HeroHeader detail={detail} />
+      <AiVerdictSection detail={detail} verdict={verdict} />
+      <ScoreBreakdownSection items={detail.moduleItems} />
+      <FootballIntelligenceSection intelligence={detail.footballIntelligence} />
+      <RiskAnalysisSection detail={detail} riskLabel={riskLabel} riskFactors={riskFactors} />
+      <RankingSection detail={detail} />
+      <DataQualitySection dataQuality={detail.dataQuality} />
+      <SummarySection detail={detail} />
     </main>
+  )
+}
+
+function BackButton({ onBack }) {
+  return (
+    <button type="button" onClick={onBack} className="sticky top-2 z-10 mb-3 flex min-h-11 items-center gap-2 rounded-lg border border-white/10 bg-pitch-900/95 px-3 font-semibold text-slate-200 backdrop-blur">
+      <ArrowLeft size={20} />
+      กลับ
+    </button>
+  )
+}
+
+function HeroHeader({ detail }) {
+  return (
+    <section className={`rounded-lg border p-4 shadow-glow ${recommendationTone[detail.recommendation] ?? recommendationTone['NO BET']}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm text-slate-300">
+            <CalendarClock size={16} />
+            {detail.league?.name ?? 'ไม่ระบุลีก'} · {formatKickoffTime(detail.kickoffAt)}
+          </p>
+          <TeamName team={detail.homeTeam} />
+          <p className="my-2 text-sm font-semibold text-slate-400">พบกับ</p>
+          <TeamName team={detail.awayTeam} />
+        </div>
+        <ScoreBadge recommendation={detail.recommendation} />
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <Metric label="Confidence" value={`${detail.confidence}%`} />
+        <Metric label="Risk" value={<RiskBadge level={detail.riskLevel} />} />
+        <Metric label="Ranking Score" value={`${detail.rankingScore}/100`} />
+        <Metric label="Status" value={detail.status ?? '-'} />
+        <Metric label="ผลล่าสุด" value={formatScore(detail.homeGoals, detail.awayGoals)} />
+        <Metric label="อัปเดต" value={formatUpdatedAt(detail.updatedAt)} />
+      </div>
+    </section>
+  )
+}
+
+function AiVerdictSection({ detail, verdict }) {
+  return (
+    <Section title="คำตัดสินของ AI" icon={Sparkles}>
+      <div className="flex items-center justify-between gap-3">
+        <ScoreBadge recommendation={verdict.verdict} />
+        <p className="text-sm font-semibold text-slate-300">{detail.confidence}% confidence</p>
+      </div>
+      <BulletList title="เหตุผลหลัก" items={verdict.reasons} />
+      <BulletList title="ข้อควรระวัง" items={verdict.cautions} tone="warning" />
+      <p className="mt-3 rounded-lg border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{verdict.playable}</p>
+    </Section>
+  )
+}
+
+function ScoreBreakdownSection({ items }) {
+  return (
+    <Section title="Score Breakdown" icon={Gauge}>
+      <div className="space-y-3">
+        {items.map((item) => (
+          <ScoreRow key={item.key} item={item} />
+        ))}
+      </div>
+    </Section>
+  )
+}
+
+function FootballIntelligenceSection({ intelligence }) {
+  const cards = [
+    { title: 'H2H', score: intelligence.h2h?.score, meta: `confidence: ${intelligence.h2h?.confidence ?? 'low'}`, reason: intelligence.h2h?.reason, signals: intelligence.h2h?.signals },
+    { title: 'League Context', score: intelligence.league_context?.score, meta: `${intelligence.league_context?.type ?? 'unknown'} · risk ${formatSigned(intelligence.league_context?.risk_modifier)}`, reason: intelligence.league_context?.reason },
+    { title: 'Rest Days', score: intelligence.rest_days?.score, meta: `${formatDays(intelligence.rest_days?.home_rest_days)} vs ${formatDays(intelligence.rest_days?.away_rest_days)} · ${intelligence.rest_days?.advantage ?? 'none'}`, reason: intelligence.rest_days?.reason },
+    { title: 'Schedule Difficulty', score: intelligence.schedule_difficulty?.score, meta: `${intelligence.schedule_difficulty?.difficulty ?? 'unknown'} · ${intelligence.schedule_difficulty?.confidence ?? 'low'}`, reason: intelligence.schedule_difficulty?.reason },
+    { title: 'Squad Context', score: intelligence.squad_context?.score, meta: `confidence: ${intelligence.squad_context?.confidence ?? 'low'}`, reason: intelligence.squad_context?.reason, signals: intelligence.squad_context?.signals },
+    { title: 'Momentum', score: intelligence.momentum?.score, meta: intelligence.momentum?.momentum ?? 'unknown', reason: intelligence.momentum?.reason, signals: intelligence.momentum?.signals },
+    { title: 'Match Importance', score: intelligence.match_importance?.score, meta: `${intelligence.match_importance?.importance ?? 'unknown'} · risk ${formatSigned(intelligence.match_importance?.risk_modifier)}`, reason: intelligence.match_importance?.reason },
+  ]
+
+  return (
+    <Section title="Football Intelligence v3" icon={TrendingUp}>
+      <div className="space-y-3">
+        {cards.map((card) => (
+          <IntelligenceCard key={card.title} card={card} />
+        ))}
+      </div>
+    </Section>
+  )
+}
+
+function RiskAnalysisSection({ detail, riskLabel, riskFactors }) {
+  return (
+    <Section title="Risk Analysis" icon={ShieldAlert}>
+      <div className="flex items-center justify-between rounded-lg border border-white/10 bg-pitch-900 p-3">
+        <p className="text-sm text-slate-400">Risk Level</p>
+        <div className="flex items-center gap-2">
+          <RiskBadge level={detail.riskLevel} />
+          <span className="text-sm font-bold text-white">{riskLabel.label}</span>
+        </div>
+      </div>
+      <BulletList title="ปัจจัยเสี่ยง" items={riskFactors} tone={detail.riskLevel === 'high' ? 'danger' : 'warning'} />
+      {detail.riskLevel === 'high' ? (
+        <p className="mt-3 rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-sm leading-6 text-red-100">
+          ระบบจัดเป็นความเสี่ยงสูง จึงควรรอข้อมูลตลาด, lineup และความพร้อมทีมก่อนตัดสินใจ
+        </p>
+      ) : null}
+    </Section>
+  )
+}
+
+function RankingSection({ detail }) {
+  return (
+    <Section title="Ranking Explanation" icon={Star}>
+      <div className="grid grid-cols-2 gap-2">
+        <Metric label="Rank" value={detail.rank ? `#${detail.rank}` : '-'} />
+        <Metric label="Ranking Score" value={`${detail.rankingScore}/100`} />
+        <Metric label="Data Quality" value={`${detail.dataQuality.score}%`} />
+        <Metric label="Badges" value={`${detail.rankBadges.length} รายการ`} />
+      </div>
+      <p className="mt-3 rounded-lg border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{detail.rankReason}</p>
+      {detail.rankBadges.length ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {detail.rankBadges.map((badge) => (
+            <span key={badge} className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1 text-xs font-semibold text-slate-200">{badge}</span>
+          ))}
+        </div>
+      ) : null}
+    </Section>
+  )
+}
+
+function DataQualitySection({ dataQuality }) {
+  return (
+    <Section title="คุณภาพข้อมูล" icon={ListChecks}>
+      <div className="rounded-lg border border-white/10 bg-pitch-900 p-3">
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-slate-400">ความครบถ้วน</span>
+          <span className="font-bold text-white">{dataQuality.score}%</span>
+        </div>
+        <ProgressBar value={dataQuality.score} tone={dataQuality.score >= 70 ? 'good' : dataQuality.score >= 45 ? 'medium' : 'risk'} />
+      </div>
+      <QualityList title="ข้อมูลที่มี" items={dataQuality.available} />
+      <QualityList title="ข้อมูลที่ยังไม่มี" items={dataQuality.missing} muted />
+    </Section>
+  )
+}
+
+function SummarySection({ detail }) {
+  const paragraphs = [
+    ...splitSummary(detail.analysisSummary),
+    detail.footballIntelligence?.ai_explanation?.summary,
+  ].filter(Boolean)
+
+  return (
+    <Section title="AI Summary Full" icon={ChevronLeft}>
+      <div className="space-y-3">
+        {paragraphs.map((paragraph, index) => (
+          <p key={`${paragraph}-${index}`} className="text-sm leading-6 text-slate-300">{paragraph}</p>
+        ))}
+      </div>
+    </Section>
+  )
+}
+
+function Section({ title, icon: Icon, children }) {
+  return (
+    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
+      <h3 className="flex items-center gap-2 text-lg font-bold text-white">
+        <Icon size={20} />
+        {title}
+      </h3>
+      <div className="mt-4">{children}</div>
+    </section>
+  )
+}
+
+function ScoreRow({ item }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-pitch-900 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-bold text-white">{item.label}</p>
+          <p className="mt-1 text-sm leading-6 text-slate-300">{item.reason || 'ข้อมูลจำกัด'}</p>
+        </div>
+        <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${toneClass(item.tone)}`}>{item.score}/100</span>
+      </div>
+      <ProgressBar value={item.score} tone={item.tone} />
+      <p className="mt-2 text-xs font-semibold text-slate-400">ระดับ: {item.scoreLabel}</p>
+    </div>
+  )
+}
+
+function IntelligenceCard({ card }) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-pitch-900 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-bold text-white">{card.title}</p>
+          <p className="mt-1 text-xs font-semibold text-slate-400">{card.meta || 'ข้อมูลจำกัด'}</p>
+        </div>
+        <span className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1 text-xs font-bold text-white">{Math.round(card.score ?? 0)}/100</span>
+      </div>
+      <p className="mt-2 text-sm leading-6 text-slate-300">{card.reason || 'ข้อมูลจำกัด'}</p>
+      {card.signals?.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {card.signals.slice(0, 4).map((signal) => (
+            <span key={signal} className="rounded-full bg-white/[0.05] px-2 py-1 text-[11px] font-semibold text-slate-300">{signal}</span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function BulletList({ title, items, tone = 'default' }) {
+  const safeItems = items?.length ? items : ['ข้อมูลจำกัด']
+  return (
+    <div className="mt-3">
+      <p className="text-sm font-bold text-white">{title}</p>
+      <ul className="mt-2 space-y-2">
+        {safeItems.map((item) => (
+          <li key={item} className={`rounded-lg border px-3 py-2 text-sm leading-6 ${bulletTone(tone)}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function QualityList({ title, items, muted = false }) {
+  return (
+    <div className="mt-3">
+      <p className="text-sm font-bold text-white">{title}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {(items.length ? items : ['ไม่มี']).map((item) => (
+          <span key={item} className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${muted ? 'border-slate-500/20 bg-slate-500/10 text-slate-300' : 'border-emerald-300/25 bg-emerald-300/10 text-emerald-100'}`}>{item}</span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ProgressBar({ value, tone }) {
+  return (
+    <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
+      <div className={`h-full rounded-full ${barTone(tone)}`} style={{ width: `${Math.max(4, Math.min(100, value ?? 0))}%` }} />
+    </div>
   )
 }
 
@@ -112,56 +329,39 @@ function Metric({ label, value }) {
   )
 }
 
-function FormBox({ label, form }) {
+function StatePanel({ title, message, tone = 'default', children }) {
   return (
-    <div className="rounded-lg bg-white/[0.05] p-3">
-      <p className="truncate text-xs text-slate-400">{label}</p>
-      <p className="mt-2 text-2xl font-black text-white">
-        {form ? `${form.wins ?? 0}-${form.draws ?? 0}-${form.losses ?? 0}` : '-'}
-      </p>
-      <p className="mt-1 text-xs text-slate-400">
-        ยิง {form?.goals_for ?? 0} / เสีย {form?.goals_against ?? 0}
-      </p>
+    <div className={`rounded-lg border p-6 text-center ${tone === 'error' ? 'border-red-400/30 bg-red-400/10' : 'border-white/10 bg-pitch-800'}`}>
+      <p className="text-lg font-bold text-white">{title}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-300">{message}</p>
+      {children}
     </div>
   )
 }
 
-function StandingsBox({ match }) {
-  const rows = getRelevantStandings(match)
-
-  return (
-    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
-      <h3 className="text-lg font-bold text-white">ตารางคะแนน</h3>
-      {rows.length ? (
-        <div className="mt-3 space-y-2">
-          {rows.map((row) => (
-            <div key={row.teamId} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-lg bg-white/[0.05] p-3 text-sm">
-              <p className="min-w-0 truncate font-bold text-white">{row.name}</p>
-              <p className="text-slate-300">#{row.position}</p>
-              <p className="text-slate-300">{row.points} แต้ม</p>
-              <p className="text-slate-300">GD {row.goalDifference}</p>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="mt-2 text-sm leading-6 text-slate-300">ยังไม่มีข้อมูลตารางคะแนนจาก provider สำหรับคู่นี้</p>
-      )}
-    </section>
-  )
+function toneClass(tone) {
+  if (tone === 'good') return 'bg-emerald-300/15 text-emerald-100'
+  if (tone === 'risk') return 'bg-red-300/15 text-red-100'
+  return 'bg-amber-300/15 text-amber-100'
 }
 
-function getRelevantStandings(match) {
-  const table = (match.standings ?? match.analysis?.raw?.standings ?? [])
-    .find((standing) => standing.type === 'TOTAL')?.table ?? []
-  const teamIds = new Set([match.homeTeam?.api_team_id, match.awayTeam?.api_team_id].filter(Boolean).map(Number))
+function barTone(tone) {
+  if (tone === 'good') return 'bg-emerald-400'
+  if (tone === 'risk') return 'bg-red-400'
+  return 'bg-amber-300'
+}
 
-  return table
-    .filter((row) => teamIds.has(Number(row.team?.id)))
-    .map((row) => ({
-      teamId: row.team?.id,
-      name: row.team?.name ?? 'ไม่ระบุทีม',
-      position: row.position ?? '-',
-      points: row.points ?? 0,
-      goalDifference: row.goalDifference ?? 0,
-    }))
+function bulletTone(tone) {
+  if (tone === 'danger') return 'border-red-400/25 bg-red-400/10 text-red-100'
+  if (tone === 'warning') return 'border-amber-300/25 bg-amber-300/10 text-amber-100'
+  return 'border-white/10 bg-white/[0.04] text-slate-200'
+}
+
+function formatDays(value) {
+  return value === null || value === undefined ? 'ไม่ทราบ' : `${value} วัน`
+}
+
+function formatSigned(value) {
+  const numeric = Number(value ?? 0)
+  return `${numeric >= 0 ? '+' : ''}${numeric}`
 }

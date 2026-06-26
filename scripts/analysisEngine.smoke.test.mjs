@@ -6,6 +6,15 @@ import {
   getRecommendationFromConfidence,
   rankTopMatches,
 } from '../src/utils/analysisEngine.js'
+import {
+  extractFootballIntelligence,
+  formatRecommendation,
+  getDataQuality,
+  getMatchRoute,
+  getRiskLabel,
+  getScoreLabel,
+  normalizeDetailPayload,
+} from '../src/utils/matchDetail.js'
 
 const baseMatch = {
   id: 'match-1',
@@ -118,5 +127,18 @@ const sixMatches = Array.from({ length: 6 }, (_, index) => ({
   riskLevel: 'medium',
 }))
 assert.equal(rankTopMatches(sixMatches, 10).length, 6, 'six matches should render six, not fake ten')
+
+const normalizedEmptyDetail = normalizeDetailPayload({ id: 'empty-detail', analysis: { raw: null } })
+assert.equal(normalizedEmptyDetail.footballIntelligence.h2h.reason, 'ยังไม่มีข้อมูล H2H เพียงพอ')
+assert.doesNotThrow(() => normalizeDetailPayload({ id: 'missing-fi', analysis: { raw: { analysis_breakdown: {} } } }))
+assert.equal(extractFootballIntelligence({ id: 'missing-fi' }).league_context.type, 'unknown')
+assert.equal(getScoreLabel(78).scoreLabel, 'ดี')
+assert.equal(getScoreLabel(62).scoreLabel, 'กลาง')
+assert.equal(getScoreLabel(40).scoreLabel, 'เสี่ยง')
+assert.equal(getRiskLabel('high').label, 'สูง')
+assert.equal(formatRecommendation('LEAN'), 'LEAN')
+assert.equal(formatRecommendation('MAYBE'), 'NO BET')
+assert.ok(getDataQuality(normalizedEmptyDetail).missing.length > 0, 'data quality should expose missing fields')
+assert.equal(getMatchRoute('abc-123'), '/match/abc-123')
 
 console.log('analysisEngine smoke tests passed')

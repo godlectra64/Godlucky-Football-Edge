@@ -6,16 +6,25 @@ import MatchDetailPage from './pages/MatchDetailPage'
 import ResultTrackerPage from './pages/ResultTrackerPage'
 import StatsPage from './pages/StatsPage'
 import TodayPage from './pages/TodayPage'
-import { getConnectionState, getLatestSyncLog, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
+import { getConnectionState, getLatestSyncLog, getMatchDetail, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
 import { getTopMatches } from './utils/analysisEngine'
 import { formatUpdatedAt } from './utils/formatters'
+import { getMatchRoute } from './utils/matchDetail'
 import { loadDevFallbackMatches } from './utils/storage'
+
+function getRouteMatchId() {
+  const match = window.location.pathname.match(/^\/match\/([^/]+)$/)
+  return match ? decodeURIComponent(match[1]) : ''
+}
 
 function App() {
   const connection = getConnectionState()
   const [matches, setMatches] = useState([])
-  const [activePage, setActivePage] = useState('today')
-  const [selectedMatchId, setSelectedMatchId] = useState('')
+  const [activePage, setActivePage] = useState(() => (getRouteMatchId() ? 'analysis' : 'today'))
+  const [selectedMatchId, setSelectedMatchId] = useState(() => getRouteMatchId())
+  const [detailMatch, setDetailMatch] = useState(null)
+  const [detailLoading, setDetailLoading] = useState(() => Boolean(getRouteMatchId()))
+  const [detailError, setDetailError] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [syncing, setSyncing] = useState(false)
@@ -48,16 +57,76 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [loadToday])
 
+  useEffect(() => {
+    const onPopState = () => {
+      const routeMatchId = getRouteMatchId()
+      setSelectedMatchId(routeMatchId)
+      setDetailMatch(null)
+      setDetailError('')
+      setDetailLoading(Boolean(routeMatchId))
+      setActivePage(routeMatchId ? 'analysis' : 'today')
+    }
+
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
   const visibleMatches = useMemo(
     () => [...matches].sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt)),
     [matches],
   )
   const topMatches = useMemo(() => getTopMatches(visibleMatches, 10), [visibleMatches])
-  const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? topMatches[0] ?? visibleMatches[0] ?? matches[0]
+  const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? detailMatch ?? null
+
+  useEffect(() => {
+    if (!selectedMatchId || matches.some((match) => match.id === selectedMatchId) || !connection.configured) {
+      return
+    }
+
+    let active = true
+    getMatchDetail(selectedMatchId)
+      .then((match) => {
+        if (active) setDetailMatch(match)
+      })
+      .catch((err) => {
+        if (active) setDetailError(err.message || 'โหลดรายละเอียดคู่แข่งขันไม่สำเร็จ')
+      })
+      .finally(() => {
+        if (active) setDetailLoading(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [connection.configured, matches, selectedMatchId])
 
   const openMatch = (id) => {
     setSelectedMatchId(id)
+    setDetailMatch(null)
+    setDetailError('')
+    setDetailLoading(connection.configured && !matches.some((match) => match.id === id))
     setActivePage('analysis')
+    window.history.pushState({}, '', getMatchRoute(id))
+  }
+
+  const goToday = () => {
+    setActivePage('today')
+    setSelectedMatchId('')
+    setDetailMatch(null)
+    setDetailError('')
+    setDetailLoading(false)
+    window.history.pushState({}, '', '/')
+  }
+
+  const navigatePage = (page) => {
+    setActivePage(page)
+    if (page !== 'analysis') {
+      setSelectedMatchId('')
+      setDetailMatch(null)
+      setDetailError('')
+      setDetailLoading(false)
+      window.history.pushState({}, '', '/')
+    }
   }
 
   const runManualSync = async () => {
@@ -118,7 +187,7 @@ function App() {
           />
         ) : null}
         {activePage === 'analysis' ? (
-          <MatchDetailPage match={selectedMatch} onBack={() => setActivePage('today')} onGoToday={() => setActivePage('today')} />
+          <MatchDetailPage match={selectedMatch} loading={detailLoading && connection.configured && !selectedMatch} error={detailError} onBack={goToday} onGoToday={goToday} />
         ) : null}
         {activePage === 'admin' ? (
           <AdminPage
@@ -134,7 +203,7 @@ function App() {
         {activePage === 'results' ? <ResultTrackerPage matches={matches} /> : null}
         {activePage === 'stats' ? <StatsPage matches={matches} /> : null}
       </div>
-      <BottomNav activePage={activePage} onNavigate={setActivePage} />
+      <BottomNav activePage={activePage} onNavigate={navigatePage} />
     </div>
   )
 }
