@@ -164,6 +164,13 @@ async function syncMatch(match: any) {
   })
 
   await upsertMatchAnalysis(matchResult.data.id, analysis)
+  await recordAiPerformance(matchResult.data.id, {
+    match,
+    league,
+    homeTeam,
+    awayTeam,
+    analysis,
+  })
 }
 
 async function apiGet(path: string, params: Record<string, string | number | undefined> = {}) {
@@ -337,6 +344,160 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
   if (legacyResult.error) throw nextResult.error
 }
 
+async function recordAiPerformance(matchId: string, payload: any) {
+  const snapshot = buildPredictionSnapshot(matchId, payload)
+  let snapshotRows = await findPerformanceSnapshots(matchId)
+  const alreadyExists = snapshotRows.some((row: any) => row.analysis_version === snapshot.analysis_version)
+
+  if (!alreadyExists) {
+    const insertResult = await supabase
+      .from('ai_prediction_snapshots')
+      .insert(snapshot)
+      .select('id, recommendation, predicted_outcome, analysis_version, raw')
+      .single()
+
+    if (insertResult.error) throw insertResult.error
+    snapshotRows = [...snapshotRows, insertResult.data]
+  }
+
+  await updatePerformanceResults(matchId, snapshotRows, payload.match)
+}
+
+async function findPerformanceSnapshots(matchId: string) {
+  const result = await supabase
+    .from('ai_prediction_snapshots')
+    .select('id, recommendation, predicted_outcome, analysis_version, raw')
+    .eq('match_id', matchId)
+
+  if (result.error) throw result.error
+  return result.data ?? []
+}
+
+function buildPredictionSnapshot(matchId: string, { match, league, homeTeam, awayTeam, analysis }: any) {
+  const analysisBreakdown = analysis.analysis_breakdown ?? {}
+  const analysisVersion = analysis.framework ?? analysis.raw?.framework ?? 'unknown'
+
+  return {
+    match_id: matchId,
+    fixture_id: String(match.id ?? ''),
+    home_team: match.homeTeam?.name ?? homeTeam?.name ?? null,
+    away_team: match.awayTeam?.name ?? awayTeam?.name ?? null,
+    league: match.competition?.name ?? league?.name ?? null,
+    kickoff: match.utcDate ?? null,
+    recommendation: analysis.recommendation ?? 'NO BET',
+    confidence_score: Number(analysis.confidence_score ?? 0),
+    ranking_score: Number(analysis.ranking_score ?? analysis.confidence_score ?? 0),
+    risk_level: analysis.risk_level ?? 'medium',
+    analysis_version: analysisVersion,
+    predicted_outcome: inferPerformancePredictedOutcome(analysisBreakdown),
+    raw: {
+      analysis_version: analysisVersion,
+      analysis_breakdown: analysisBreakdown,
+      confidence_score: analysis.confidence_score,
+      recommendation: analysis.recommendation,
+      risk_level: analysis.risk_level,
+    },
+  }
+}
+
+async function updatePerformanceResults(matchId: string, snapshots: Array<any>, match: any) {
+  const resultTracking = getPerformanceResultTracking(match)
+
+  for (const snapshot of snapshots) {
+    const resultPayload = {
+      snapshot_id: snapshot.id,
+      match_id: matchId,
+      status: resultTracking.status,
+      home_goals: resultTracking.home_goals,
+      away_goals: resultTracking.away_goals,
+      result: resultTracking.result,
+      finished_at: resultTracking.finished_at,
+    }
+    const result = await supabase.from('ai_prediction_results').upsert(resultPayload, { onConflict: 'snapshot_id' }).select('id').single()
+    if (result.error) throw result.error
+
+    const evaluation = evaluatePerformancePrediction(snapshot, resultTracking)
+    const evaluationResult = await supabase.from('ai_prediction_evaluations').upsert(
+      {
+        snapshot_id: snapshot.id,
+        match_id: matchId,
+        evaluation_status: evaluation.evaluation_status,
+        evaluation_reason: evaluation.evaluation_reason,
+        evaluated_at: evaluation.evaluated_at,
+        raw: {
+          result: resultTracking,
+          predicted_outcome: snapshot.predicted_outcome,
+          analysis_version: snapshot.analysis_version,
+        },
+      },
+      { onConflict: 'snapshot_id' },
+    )
+    if (evaluationResult.error) throw evaluationResult.error
+  }
+}
+
+function getPerformanceResultTracking(match: any) {
+  const homeGoals = nullableNumber(match.score?.fullTime?.home ?? match.home_goals)
+  const awayGoals = nullableNumber(match.score?.fullTime?.away ?? match.away_goals)
+  const finished = ['FINISHED', 'FT', 'AET', 'PEN'].includes(String(match.status ?? '').toUpperCase()) && homeGoals !== null && awayGoals !== null
+
+  return {
+    status: finished ? 'finished' : 'pending',
+    home_goals: homeGoals,
+    away_goals: awayGoals,
+    result: finished ? getPerformanceResult(homeGoals, awayGoals) : null,
+    finished_at: finished ? new Date().toISOString() : null,
+  }
+}
+
+function evaluatePerformancePrediction(snapshot: any, resultTracking: any) {
+  if (resultTracking.status !== 'finished' || !resultTracking.result) {
+    return { evaluation_status: 'pending', evaluation_reason: 'Result is not finished yet', evaluated_at: null }
+  }
+
+  const recommendation = String(snapshot.recommendation ?? '').toUpperCase()
+  if (!['BET', 'LEAN'].includes(recommendation)) {
+    return { evaluation_status: 'no_evaluation', evaluation_reason: 'NO BET is tracked but not evaluated as a prediction', evaluated_at: new Date().toISOString() }
+  }
+
+  const predicted = snapshot.predicted_outcome ?? inferPerformancePredictedOutcome(snapshot.raw?.analysis_breakdown)
+  if (!['home', 'draw', 'away'].includes(predicted)) {
+    return { evaluation_status: 'no_evaluation', evaluation_reason: 'No explicit predicted outcome was available', evaluated_at: new Date().toISOString() }
+  }
+
+  return {
+    evaluation_status: predicted === resultTracking.result ? 'correct' : 'incorrect',
+    evaluation_reason: predicted === resultTracking.result ? 'Predicted outcome matched final result' : 'Predicted outcome did not match final result',
+    evaluated_at: new Date().toISOString(),
+  }
+}
+
+function inferPerformancePredictedOutcome(analysisBreakdown: any = {}) {
+  const data = analysisBreakdown?.data_intelligence ?? {}
+  const leagueEdge = data.league_position?.edge
+  const venueEdge = data.home_away_form?.advantage
+  const h2hScore = Number(data.head_to_head?.score ?? 0)
+  const moduleHomeAdvantage = Number(analysisBreakdown?.home_away_advantage?.score ?? 0)
+
+  if (leagueEdge === 'home' || venueEdge === 'home') return 'home'
+  if (leagueEdge === 'away' || venueEdge === 'away') return 'away'
+  if (h2hScore >= 64 || moduleHomeAdvantage >= 65) return 'home'
+  if (h2hScore > 0 && h2hScore <= 50) return 'away'
+  return 'unknown'
+}
+
+function getPerformanceResult(homeGoals: number, awayGoals: number) {
+  if (homeGoals > awayGoals) return 'home'
+  if (homeGoals < awayGoals) return 'away'
+  return 'draw'
+}
+
+function nullableNumber(value: any) {
+  if (value === null || value === undefined) return null
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
+}
+
 async function recomputeStoredAnalysisRows(limit: number) {
   const result = await supabase
     .from('football_matches')
@@ -381,6 +542,13 @@ async function recomputeStoredAnalysisRows(limit: number) {
     })
 
     await upsertMatchAnalysis(row.id, analysis)
+    await recordAiPerformance(row.id, {
+      match,
+      league: row.league,
+      homeTeam: row.homeTeam,
+      awayTeam: row.awayTeam,
+      analysis,
+    })
     recomputed += 1
   }
 

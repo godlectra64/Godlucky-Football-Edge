@@ -16,7 +16,7 @@ const recommendationTone = {
   'NO BET': 'border-slate-300/20 bg-slate-300/10 text-slate-100',
 }
 
-export default function MatchDetailPage({ match, loading = false, error = '', onBack, onGoToday }) {
+export default function MatchDetailPage({ match, loading = false, error = '', performanceContext = 'กำลังสะสมข้อมูล', onBack, onGoToday }) {
   if (loading) {
     return (
       <main className="mx-auto max-w-[430px] px-4 py-4">
@@ -60,6 +60,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', on
       <ScoreBreakdownSection items={detail.moduleItems} />
       <FootballIntelligenceSection intelligence={detail.footballIntelligence} />
       <FootballDataIntelligenceSection items={detail.dataIntelligenceItems} />
+      <AiPerformanceContextSection performanceContext={performanceContext} />
       <RiskAnalysisSection detail={detail} riskLabel={riskLabel} riskFactors={riskFactors} />
       <RankingSection detail={detail} />
       <DataQualitySection dataQuality={detail.dataQuality} />
@@ -161,6 +162,16 @@ function FootballDataIntelligenceSection({ items }) {
           <DataIntelligenceCard key={item.key} item={item} />
         ))}
       </div>
+    </Section>
+  )
+}
+
+function AiPerformanceContextSection({ performanceContext }) {
+  return (
+    <Section title="AI Performance Context" icon={Star}>
+      <p className="rounded-lg border border-white/10 bg-pitch-900 p-3 text-sm leading-6 text-slate-200">
+        {performanceContext || 'กำลังสะสมข้อมูล'}
+      </p>
     </Section>
   )
 }

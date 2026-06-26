@@ -21,6 +21,15 @@ import {
   getScoreLabel,
   normalizeDetailPayload,
 } from '../src/utils/matchDetail.js'
+import {
+  addImmutableSnapshot,
+  buildPerformanceGroups,
+  calculatePerformanceMetrics,
+  createPredictionSnapshot,
+  evaluatePrediction,
+  getPerformanceContext,
+  getResultTracking,
+} from '../src/utils/performanceIntelligence.js'
 
 const baseMatch = {
   id: 'match-1',
@@ -160,5 +169,56 @@ assert.equal(getMatchRoute('abc-123'), '/match/abc-123')
 const directDataIntelligence = calculateDataIntelligence(baseMatch, { baseConfidence: missingH2H.baseConfidence, footballModifier: missingH2H.footballModifier })
 assert.ok(directDataIntelligence.data_confidence.score >= 0 && directDataIntelligence.data_confidence.score <= 100)
 assert.ok(calculateDataIntelligenceModifier(directDataIntelligence, 72, 2) <= 0, 'data modifier must not boost base 72 + football modifier 2 into BET')
+
+const performanceSnapshot = createPredictionSnapshot({
+  id: 'match-1',
+  fixtureId: 'fixture-1',
+  homeTeam: { name: 'Home FC' },
+  awayTeam: { name: 'Away FC' },
+  league: { name: 'Premier League' },
+  kickoffAt: '2026-06-26T12:00:00Z',
+  analysis: {
+    recommendation: 'BET',
+    confidence_score: 82,
+    risk_level: 'medium',
+    raw: {
+      framework: 'data-intelligence-v1',
+      analysis_breakdown: {
+        data_intelligence: {
+          league_position: { edge: 'home' },
+        },
+      },
+    },
+  },
+})
+const immutableSnapshots = addImmutableSnapshot([performanceSnapshot], { ...performanceSnapshot, confidence_score: 10 })
+assert.equal(immutableSnapshots[0].confidence_score, 82, 'snapshot must not be overwritten')
+
+const pendingResult = getResultTracking({ status: 'SCHEDULED' })
+assert.equal(pendingResult.status, 'pending')
+const finishedResult = getResultTracking({ status: 'FINISHED', homeGoals: 2, awayGoals: 1, updatedAt: '2026-06-26T14:00:00Z' })
+assert.equal(finishedResult.status, 'finished')
+assert.equal(finishedResult.result, 'home')
+
+const correctEvaluation = evaluatePrediction(performanceSnapshot, finishedResult)
+assert.equal(correctEvaluation.evaluation_status, 'correct')
+const noBetEvaluation = evaluatePrediction({ ...performanceSnapshot, recommendation: 'NO BET' }, finishedResult)
+assert.equal(noBetEvaluation.evaluation_status, 'no_evaluation')
+
+const performanceRows = [
+  { ...performanceSnapshot, id: 'snap-1', result: finishedResult, evaluation: correctEvaluation },
+  { ...performanceSnapshot, id: 'snap-2', recommendation: 'LEAN', confidence_score: 70, ranking_score: 71, result: finishedResult, evaluation: { evaluation_status: 'incorrect' } },
+  { ...performanceSnapshot, id: 'snap-3', recommendation: 'NO BET', confidence_score: 55, ranking_score: 56, result: pendingResult, evaluation: { evaluation_status: 'pending' } },
+]
+const performanceMetrics = calculatePerformanceMetrics(performanceRows)
+assert.equal(performanceMetrics.totalPredictions, 3)
+assert.equal(performanceMetrics.totalBet, 1)
+assert.equal(performanceMetrics.totalLean, 1)
+assert.equal(performanceMetrics.totalNoBet, 1)
+assert.equal(performanceMetrics.correct, 1)
+assert.equal(performanceMetrics.incorrect, 1)
+assert.equal(performanceMetrics.winRate, 50)
+assert.doesNotThrow(() => buildPerformanceGroups(performanceRows))
+assert.equal(getPerformanceContext(performanceRows), 'กำลังสะสมข้อมูล')
 
 console.log('analysisEngine smoke tests passed')

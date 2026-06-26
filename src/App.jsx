@@ -2,14 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import BottomNav from './components/BottomNav'
 import MobileHeader from './components/MobileHeader'
 import AdminPage from './pages/AdminPage'
+import AiPerformancePage from './pages/AiPerformancePage'
 import MatchDetailPage from './pages/MatchDetailPage'
 import ResultTrackerPage from './pages/ResultTrackerPage'
 import StatsPage from './pages/StatsPage'
 import TodayPage from './pages/TodayPage'
-import { getConnectionState, getLatestSyncLog, getMatchDetail, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
+import { getAiPerformanceData, getConnectionState, getLatestSyncLog, getMatchDetail, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
 import { getTopMatches } from './utils/analysisEngine'
 import { formatUpdatedAt } from './utils/formatters'
 import { getMatchRoute } from './utils/matchDetail'
+import { getPerformanceContext } from './utils/performanceIntelligence'
 import { loadDevFallbackMatches } from './utils/storage'
 
 function getRouteMatchId() {
@@ -29,6 +31,9 @@ function App() {
   const [error, setError] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [notice, setNotice] = useState('')
+  const [performanceRows, setPerformanceRows] = useState([])
+  const [performanceLoading, setPerformanceLoading] = useState(false)
+  const [performanceError, setPerformanceError] = useState('')
 
   const loadToday = useCallback(async () => {
     setLoading(true)
@@ -57,6 +62,31 @@ function App() {
     return () => window.clearTimeout(timer)
   }, [loadToday])
 
+  const loadPerformance = useCallback(async () => {
+    if (!connection.configured) {
+      setPerformanceRows([])
+      return
+    }
+
+    setPerformanceLoading(true)
+    setPerformanceError('')
+    try {
+      setPerformanceRows(await getAiPerformanceData())
+    } catch (err) {
+      setPerformanceError(err.message || 'โหลดข้อมูล AI Performance ไม่สำเร็จ')
+    } finally {
+      setPerformanceLoading(false)
+    }
+  }, [connection.configured])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      loadPerformance()
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [loadPerformance])
+
   useEffect(() => {
     const onPopState = () => {
       const routeMatchId = getRouteMatchId()
@@ -77,6 +107,10 @@ function App() {
   )
   const topMatches = useMemo(() => getTopMatches(visibleMatches, 10), [visibleMatches])
   const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? detailMatch ?? null
+  const performanceContext = useMemo(() => {
+    const version = selectedMatch?.analysis?.raw?.framework ?? selectedMatch?.analysis?.raw?.analysis_version ?? ''
+    return getPerformanceContext(performanceRows, version)
+  }, [performanceRows, selectedMatch])
 
   useEffect(() => {
     if (!selectedMatchId || matches.some((match) => match.id === selectedMatchId) || !connection.configured) {
@@ -171,6 +205,8 @@ function App() {
     stats: 'สถิติระบบ',
   }
 
+  titles.performance = 'AI Performance'
+
   return (
     <div className="min-h-screen bg-pitch-950 text-slate-100">
       <MobileHeader title={titles[activePage]} subtitle="ข้อมูลจริงจาก Supabase และ Edge Function" connectionText={connection.message} />
@@ -187,7 +223,7 @@ function App() {
           />
         ) : null}
         {activePage === 'analysis' ? (
-          <MatchDetailPage match={selectedMatch} loading={detailLoading && connection.configured && !selectedMatch} error={detailError} onBack={goToday} onGoToday={goToday} />
+          <MatchDetailPage match={selectedMatch} loading={detailLoading && connection.configured && !selectedMatch} error={detailError} performanceContext={performanceContext} onBack={goToday} onGoToday={goToday} />
         ) : null}
         {activePage === 'admin' ? (
           <AdminPage
@@ -202,6 +238,7 @@ function App() {
         ) : null}
         {activePage === 'results' ? <ResultTrackerPage matches={matches} /> : null}
         {activePage === 'stats' ? <StatsPage matches={matches} /> : null}
+        {activePage === 'performance' ? <AiPerformancePage rows={performanceRows} loading={performanceLoading} error={performanceError} onRefresh={loadPerformance} /> : null}
       </div>
       <BottomNav activePage={activePage} onNavigate={navigatePage} />
     </div>

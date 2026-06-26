@@ -1,5 +1,6 @@
 import { isSupabaseConfigured, requireSupabase } from '../lib/supabaseClient'
 import { getTopMatches } from '../utils/analysisEngine'
+import { normalizePerformanceRows } from '../utils/performanceIntelligence'
 
 const matchSelect = `
   id,
@@ -124,6 +125,34 @@ export async function getLatestSyncLog() {
 
   if (error) throw error
   return data ?? null
+}
+
+export async function getAiPerformanceData(limit = 500) {
+  const client = requireSupabase()
+  const { data: snapshots, error } = await client
+    .from('ai_prediction_snapshots')
+    .select('id, match_id, fixture_id, home_team, away_team, league, kickoff, recommendation, confidence_score, ranking_score, risk_level, analysis_version, predicted_outcome, raw, created_at')
+    .order('created_at', { ascending: false })
+    .limit(Math.max(1, Math.min(limit, 1000)))
+
+  if (error) throw error
+  const ids = (snapshots ?? []).map((item) => item.id)
+  if (!ids.length) return []
+
+  const [{ data: results, error: resultsError }, { data: evaluations, error: evaluationsError }] = await Promise.all([
+    client
+      .from('ai_prediction_results')
+      .select('id, snapshot_id, match_id, status, home_goals, away_goals, result, finished_at, updated_at')
+      .in('snapshot_id', ids),
+    client
+      .from('ai_prediction_evaluations')
+      .select('id, snapshot_id, match_id, evaluation_status, evaluation_reason, evaluated_at, updated_at')
+      .in('snapshot_id', ids),
+  ])
+
+  if (resultsError) throw resultsError
+  if (evaluationsError) throw evaluationsError
+  return normalizePerformanceRows(snapshots ?? [], results ?? [], evaluations ?? [])
 }
 
 export async function triggerManualSync() {
