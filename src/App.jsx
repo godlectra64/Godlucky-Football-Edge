@@ -108,7 +108,8 @@ function App() {
       <div className="pb-24">
         {activePage === 'today' ? (
           <TodayPage
-            matches={visibleMatches}
+            matches={topMatches}
+            totalMatchCount={visibleMatches.length}
             loading={loading}
             error={error}
             notice={notice}

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import {
+  calculateRankingScore,
   calculateFootballMasterAnalysis,
   calculateLeagueContext,
   getRecommendationFromConfidence,
+  rankTopMatches,
 } from '../src/utils/analysisEngine.js'
 
 const baseMatch = {
@@ -76,5 +78,45 @@ assert.ok(base72.confidence <= 74)
 for (const key of ['h2h', 'league_context', 'rest_days', 'schedule_difficulty', 'squad_context', 'momentum', 'match_importance', 'ai_explanation']) {
   assert.ok(missingH2H.analysisBreakdown.football_intelligence[key], `missing football_intelligence.${key}`)
 }
+
+const betCandidate = {
+  ...baseMatch,
+  id: 'bet-candidate',
+  confidence: 82,
+  recommendation: 'BET',
+  riskLevel: 'medium',
+}
+const noBetCandidate = {
+  ...baseMatch,
+  id: 'no-bet-candidate',
+  confidence: 58,
+  recommendation: 'NO BET',
+  riskLevel: 'medium',
+}
+assert.ok(calculateRankingScore(betCandidate) > calculateRankingScore(noBetCandidate), 'BET high confidence should rank above NO BET')
+
+const mediumRiskScore = calculateRankingScore({ ...betCandidate, id: 'medium-risk', riskLevel: 'medium' })
+const highRiskScore = calculateRankingScore({ ...betCandidate, id: 'high-risk', riskLevel: 'high' })
+assert.ok(highRiskScore < mediumRiskScore, 'high risk should reduce ranking score')
+
+const missingRawScore = calculateRankingScore({ id: 'missing-raw' })
+assert.ok(missingRawScore >= 0 && missingRawScore <= 100, 'missing raw ranking score stays bounded')
+
+const ranked = rankTopMatches([
+  noBetCandidate,
+  { ...betCandidate, id: 'rank-1', confidence: 85 },
+  { ...betCandidate, id: 'rank-2', confidence: 75 },
+])
+assert.deepEqual(ranked.map((match) => match.id), ['rank-1', 'rank-2', 'no-bet-candidate'])
+assert.ok(ranked.every((match) => match.rankingScore >= 0 && match.rankingScore <= 100), 'ranked scores are bounded')
+
+const sixMatches = Array.from({ length: 6 }, (_, index) => ({
+  ...baseMatch,
+  id: `six-${index}`,
+  confidence: 70 + index,
+  recommendation: index % 2 ? 'LEAN' : 'NO BET',
+  riskLevel: 'medium',
+}))
+assert.equal(rankTopMatches(sixMatches, 10).length, 6, 'six matches should render six, not fake ten')
 
 console.log('analysisEngine smoke tests passed')

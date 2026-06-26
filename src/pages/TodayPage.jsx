@@ -7,21 +7,23 @@ import { formatThaiDate } from '../utils/formatters'
 const allFilter = 'ทั้งหมด'
 const filters = [allFilter, recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.noBet]
 
-export default function TodayPage({ matches, loading, error, notice, onRefresh, onOpenMatch }) {
+export default function TodayPage({ matches, totalMatchCount = matches.length, loading, error, notice, onRefresh, onOpenMatch }) {
   const [filter, setFilter] = useState(allFilter)
   const visibleMatches = useMemo(() => {
     if (filter === allFilter) return matches
     return matches.filter((match) => match.recommendation === filter)
   }, [filter, matches])
+  const selectionText = matches.length ? `คัดมา ${matches.length} คู่จากข้อมูลวันนี้` : 'รอข้อมูลคู่แข่งขัน'
 
   return (
     <main className="mx-auto max-w-[430px] px-4 py-4">
       <section className="rounded-lg border border-emerald-400/20 bg-gradient-to-br from-pitch-800 to-pitch-900 p-4">
         <p className="text-sm text-emerald-200">{formatThaiDate()}</p>
-        <h2 className="mt-1 text-2xl font-black text-white">Top 10 คู่เด่นวันนี้และพรุ่งนี้</h2>
+        <h2 className="mt-1 text-2xl font-black text-white">{matches.length ? 'Top 10 คู่เด่นวันนี้' : 'รายการวันนี้และพรุ่งนี้'}</h2>
         <div className="mt-4 grid grid-cols-2 gap-2">
-          <MiniStat label="จำนวนคู่เด่น" value={`${matches.length} คู่`} />
-          <MiniStat label="สถานะข้อมูล" value={notice || 'กำลังตรวจสอบ'} />
+          <MiniStat label="คู่ที่คัดแล้ว" value={selectionText} />
+          <MiniStat label="ข้อมูลทั้งหมด" value={`${totalMatchCount} คู่`} />
+          <MiniStat label="สถานะข้อมูล" value={notice || 'กำลังตรวจสอบ'} wide />
         </div>
         <button
           type="button"
@@ -65,11 +67,11 @@ export default function TodayPage({ matches, loading, error, notice, onRefresh, 
   )
 }
 
-function MiniStat({ label, value }) {
+function MiniStat({ label, value, wide = false }) {
   return (
-    <div className="rounded-lg bg-white/[0.06] p-3">
+    <div className={`rounded-lg bg-white/[0.06] p-3 ${wide ? 'col-span-2' : ''}`}>
       <p className="text-xs text-slate-400">{label}</p>
-      <p className="mt-1 text-sm font-bold text-white">{value}</p>
+      <p className="mt-1 text-sm font-bold leading-5 text-white">{value}</p>
     </div>
   )
 }

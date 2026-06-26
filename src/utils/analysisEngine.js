@@ -140,14 +140,12 @@ export function getDataCompleteness(match) {
 }
 
 export function getTopMatches(matches, limit = 10) {
-  return [...matches]
-    .map((match) => enrichMatch(match))
-    .sort(compareForTopMatches)
-    .slice(0, limit)
+  return rankTopMatches(matches, limit)
 }
 
 export function enrichMatch(match) {
   const master = calculateFootballMasterAnalysis(match)
+  const ranking = buildRankingProfile(match, master)
 
   return {
     ...match,
@@ -160,15 +158,24 @@ export function enrichMatch(match) {
     dataCompleteness: master.dataCompleteness,
     analysisSummary: master.analysisSummary,
     analysisBreakdown: master.analysisBreakdown,
+    rankingScore: ranking.rankingScore,
+    ranking_score: ranking.rankingScore,
+    rankReason: ranking.rankReason,
+    rank_reason: ranking.rankReason,
+    rankBadges: ranking.rankBadges,
+    rank_badges: ranking.rankBadges,
   }
 }
 
 export function compareForTopMatches(a, b) {
+  const scoreA = a.rankingScore ?? a.ranking_score ?? calculateRankingScore(a)
+  const scoreB = b.rankingScore ?? b.ranking_score ?? calculateRankingScore(b)
+  const rankingDiff = scoreB - scoreA
   const confidenceDiff = getConfidence(b) - getConfidence(a)
   const kickoffA = new Date(a.kickoffAt ?? a.kickoff_at ?? 0).getTime()
   const kickoffB = new Date(b.kickoffAt ?? b.kickoff_at ?? 0).getTime()
 
-  return confidenceDiff || kickoffA - kickoffB
+  return rankingDiff || confidenceDiff || kickoffA - kickoffB
 }
 
 export function calculateStats(matches) {
@@ -196,6 +203,204 @@ export function calculateStats(matches) {
     averageConfidence,
     updatedCount: enriched.filter((match) => match.analysis?.updated_at).length,
   }
+}
+
+export function rankTopMatches(matchesWithAnalysis, limit = 10) {
+  return [...(matchesWithAnalysis ?? [])]
+    .map((match) => enrichMatch(match))
+    .sort(compareForTopMatches)
+    .slice(0, Math.max(0, limit))
+    .map((match, index) => ({
+      ...match,
+      rank: index + 1,
+    }))
+}
+
+export function calculateRankingScore(match) {
+  return buildRankingProfile(match).rankingScore
+}
+
+export function getRiskPenalty(riskLevel = riskLabels.medium) {
+  const normalized = normalizeRiskLevel(riskLevel)
+  if (normalized === riskLabels.high) return 16
+  if (normalized === riskLabels.medium) return 4
+  return 0
+}
+
+export function getRecommendationBonus(recommendation = recommendationLabels.noBet) {
+  if (recommendation === recommendationLabels.bet) return 7
+  if (recommendation === recommendationLabels.lean) return 3
+  return 0
+}
+
+export function getDataCompletenessScore(match) {
+  const stored = numberValue(match?.dataCompleteness ?? match?.data_completeness ?? match?.analysis?.raw?.data_completeness)
+  return Math.round(clamp(stored || getDataCompleteness(match ?? {}), 0, 100))
+}
+
+export function getModuleConsistencyScore(analysisBreakdown = {}) {
+  const scores = getBreakdownScores(analysisBreakdown)
+  if (!scores.length) return 58
+
+  const spread = Math.max(...scores) - Math.min(...scores)
+  const average = scores.reduce((total, score) => total + score, 0) / scores.length
+  const weakCount = scores.filter((score) => score < 45).length
+
+  return Math.round(clamp(100 - spread * 1.35 - weakCount * 7 + (average >= 68 ? 4 : 0), 30, 100))
+}
+
+export function generateRankReason(match) {
+  return buildRankingProfile(match).rankReason
+}
+
+export function generateRankBadges(match) {
+  return buildRankingProfile(match).rankBadges
+}
+
+function buildRankingProfile(match, precomputedMaster = null) {
+  const master = precomputedMaster ?? calculateFootballMasterAnalysis(match ?? {})
+  const breakdown = master.analysisBreakdown ?? match?.analysis?.raw?.analysis_breakdown ?? {}
+  const intelligence = breakdown.football_intelligence ?? {}
+  const confidence = numberValue(match?.confidence ?? match?.confidence_score ?? match?.analysis?.confidence_score ?? master.confidence)
+  const recommendation = match?.recommendation ?? match?.analysis?.recommendation ?? master.recommendation
+  const riskLevel = normalizeRiskLevel(match?.riskLevel ?? match?.risk_level ?? match?.analysis?.risk_level ?? master.riskLevel)
+  const dataCompleteness = getDataCompletenessScore({ ...(match ?? {}), dataCompleteness: master.dataCompleteness })
+  const consistencyScore = getModuleConsistencyScore(breakdown)
+  const marketScore = numberValue(breakdown.market_odds_risk?.score ?? match?.analysis?.market_risk_score ?? 60)
+  const recommendationBonus = getRecommendationBonus(recommendation)
+  const riskPenalty = getRiskPenalty(riskLevel)
+  const dataAdjustment = clamp((dataCompleteness - 55) * 0.1, -5, 5)
+  const consistencyAdjustment = clamp((consistencyScore - 70) * 0.1, -6, 4)
+  const marketAdjustment = clamp((marketScore - 60) * 0.08, -5, 4)
+  const intelligenceAdjustment = getIntelligenceRankingAdjustment(intelligence)
+  const importanceAdjustment = getMatchImportanceRankingAdjustment(intelligence.match_importance)
+  const rankingScore = Math.round(clamp(
+    confidence +
+      recommendationBonus -
+      riskPenalty +
+      dataAdjustment +
+      consistencyAdjustment +
+      marketAdjustment +
+      intelligenceAdjustment +
+      importanceAdjustment,
+    0,
+    100,
+  ))
+  const rankBadges = generateRankBadgesFromProfile({
+    rankingScore,
+    recommendation,
+    riskLevel,
+    dataCompleteness,
+    consistencyScore,
+    marketScore,
+    intelligence,
+  })
+  const rankReason = generateRankReasonFromProfile({
+    rankingScore,
+    confidence,
+    recommendation,
+    riskLevel,
+    dataCompleteness,
+    consistencyScore,
+    marketScore,
+    intelligence,
+    rankBadges,
+  })
+
+  return {
+    rankingScore,
+    rankReason,
+    rankBadges,
+    rankingInputs: {
+      confidence,
+      recommendationBonus,
+      riskPenalty,
+      dataCompleteness,
+      consistencyScore,
+      marketScore,
+      intelligenceAdjustment,
+      importanceAdjustment,
+    },
+  }
+}
+
+function getIntelligenceRankingAdjustment(intelligence = {}) {
+  const momentum = intelligence.momentum?.momentum
+  const dataConfidence = intelligence.ai_explanation?.data_confidence
+  const leagueType = intelligence.league_context?.type
+  const h2hConfidence = intelligence.h2h?.confidence
+  const squadConfidence = intelligence.squad_context?.confidence
+  const signals = intelligence.signals ?? intelligence.ai_explanation?.signals ?? []
+  let adjustment = 0
+
+  if (momentum === 'positive') adjustment += 2
+  if (momentum === 'negative') adjustment -= 2
+  if (dataConfidence === 'high') adjustment += 2
+  else if (dataConfidence === 'medium') adjustment += 1
+  else if (dataConfidence === 'low') adjustment -= 1
+  if (leagueType === 'league') adjustment += 1
+  if (leagueType === 'friendly') adjustment -= 3
+  if (['medium', 'high'].includes(h2hConfidence)) adjustment += 1
+  if (squadConfidence === 'low') adjustment -= 1
+  if (signals.includes('clean_sheet_support')) adjustment += 1
+  if (signals.includes('conceding_trend_risky')) adjustment -= 1
+
+  return clamp(adjustment, -6, 6)
+}
+
+function getMatchImportanceRankingAdjustment(matchImportance = {}) {
+  const importance = matchImportance.importance
+  const riskModifier = numberValue(matchImportance.risk_modifier)
+
+  if (importance === 'high') return clamp(2 - riskModifier, -2, 2)
+  if (importance === 'low') return -2
+  if (importance === 'medium') return 1
+  return 0
+}
+
+function generateRankBadgesFromProfile(profile) {
+  const badges = []
+
+  if (profile.rankingScore >= 78 || profile.recommendation === recommendationLabels.bet) badges.push('คู่เด่น')
+  if (profile.riskLevel === riskLabels.low) badges.push('ความเสี่ยงต่ำ')
+  if (profile.intelligence?.momentum?.momentum === 'positive') badges.push('โมเมนตัมดี')
+  if (profile.dataCompleteness < 65 || profile.intelligence?.ai_explanation?.data_confidence === 'low') badges.push('ข้อมูลจำกัด')
+  if (profile.riskLevel === riskLabels.high || profile.marketScore < 52) badges.push('ตลาดเสี่ยง')
+  if (profile.recommendation === recommendationLabels.lean || (profile.rankingScore >= 62 && profile.riskLevel !== riskLabels.high)) badges.push('เหมาะติดตาม')
+  if (profile.consistencyScore >= 78) badges.push('สัญญาณสอดคล้อง')
+
+  return [...new Set(badges)].slice(0, 4)
+}
+
+function generateRankReasonFromProfile(profile) {
+  const supportParts = []
+  const cautionParts = []
+
+  if (profile.confidence >= 75) supportParts.push('คะแนนความมั่นใจสูง')
+  else if (profile.confidence >= 62) supportParts.push('คะแนนความมั่นใจอยู่ในโซนติดตาม')
+  else supportParts.push('คะแนนยังไม่ถึงโซนเล่นจริง')
+
+  if (profile.intelligence?.momentum?.momentum === 'positive') supportParts.push('โมเมนตัมสนับสนุน')
+  if (profile.consistencyScore >= 78) supportParts.push('โมดูลหลักไปทางเดียวกัน')
+  if (profile.dataCompleteness >= 75) supportParts.push('ข้อมูลค่อนข้างครบ')
+  if (profile.riskLevel === riskLabels.low) supportParts.push('ความเสี่ยงต่ำ')
+
+  if (profile.riskLevel === riskLabels.medium) cautionParts.push('ยังมีความเสี่ยงระดับกลาง')
+  if (profile.riskLevel === riskLabels.high) cautionParts.push('ถูกลดอันดับเพราะความเสี่ยงสูง')
+  if (profile.dataCompleteness < 65) cautionParts.push('ข้อมูลยังจำกัด')
+  if (profile.marketScore < 55) cautionParts.push('ตลาดยังเสี่ยง')
+  if (profile.consistencyScore < 58) cautionParts.push('คะแนนโมดูลขัดแย้งกัน')
+
+  const support = supportParts.slice(0, 2).join(' และ ')
+  const caution = cautionParts.length ? ` แต่${cautionParts.slice(0, 2).join(' และ')}` : ''
+
+  return `ติดอันดับเพราะ${support}${caution} จึงเหมาะเป็น ${profile.recommendation}`
+}
+
+function getBreakdownScores(analysisBreakdown) {
+  return footballMasterModules
+    .map((module) => numberValue(analysisBreakdown?.[module.breakdownKey]?.score))
+    .filter((score) => score > 0)
 }
 
 export function calculateFootballIntelligence(match, context = {}) {
