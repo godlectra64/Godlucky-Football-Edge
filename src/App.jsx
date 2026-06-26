@@ -210,7 +210,10 @@ function App() {
 
 function buildLatestSyncNotice(log) {
   const syncedAt = log?.finished_at ?? log?.started_at
-  return syncedAt ? `ข้อมูลล่าสุดเมื่อ ${formatUpdatedAt(syncedAt)}` : 'ยังไม่พบ sync log ล่าสุด'
+  if (!syncedAt) return 'ยังไม่พบ sync log ล่าสุด'
+  if (log?.status === 'failed') return `sync ล่าสุดล้มเหลวเมื่อ ${formatUpdatedAt(syncedAt)}`
+  if (log?.status === 'partial_success') return `sync ล่าสุดสำเร็จบางส่วนเมื่อ ${formatUpdatedAt(syncedAt)}`
+  return `ข้อมูลล่าสุดเมื่อ ${formatUpdatedAt(syncedAt)}`
 }
 
 export default App

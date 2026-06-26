@@ -46,3 +46,10 @@ select option {
   background: #07110d;
   color: white;
 }
+
+.text-clamp-3 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}

@@ -114,7 +114,7 @@ export function normalizeDetailPayload(match) {
 
   return {
     ...safeMatch,
-    recommendation: formatRecommendation(safeMatch.recommendation ?? safeMatch.analysis?.recommendation ?? getRecommendation(safeMatch)),
+    recommendation: formatRecommendation(getRecommendation(safeMatch)),
     confidence: getConfidence(safeMatch),
     riskLevel: getRiskLevel(safeMatch),
     rankingScore,

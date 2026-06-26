@@ -118,8 +118,6 @@ export async function getLatestSyncLog() {
   const { data, error } = await client
     .from('sync_logs')
     .select('id, sync_type, status, message, started_at, finished_at, raw')
-    .in('status', ['success', 'partial_success'])
-    .order('finished_at', { ascending: false, nullsFirst: false })
     .order('started_at', { ascending: false })
     .limit(1)
     .maybeSingle()

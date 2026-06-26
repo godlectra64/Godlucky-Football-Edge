@@ -67,7 +67,7 @@ export default function MatchCard({ match, onOpen }) {
       ) : null}
 
       <div className="mt-4 rounded-lg bg-white/[0.04] p-3">
-        <p className="text-sm leading-6 text-slate-200">{rankReason}</p>
+        <p className="text-clamp-3 text-sm leading-6 text-slate-200">{rankReason}</p>
       </div>
 
       <button
