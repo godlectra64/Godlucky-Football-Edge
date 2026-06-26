@@ -5,6 +5,7 @@ import {
   buildTrendDatasets,
   calculatePerformanceMetrics,
   filterPerformanceRows,
+  getPerformanceReadiness,
   getPerformanceFilterOptions,
 } from '../utils/performanceIntelligence'
 import { analyzeModelPerformance, exportPerformanceCsv, exportPerformanceJson } from '../utils/modelPerformanceAnalyzer'
@@ -24,6 +25,7 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
   const options = useMemo(() => getPerformanceFilterOptions(rows), [rows])
   const filteredRows = useMemo(() => filterPerformanceRows(rows, filters), [rows, filters])
   const metrics = useMemo(() => calculatePerformanceMetrics(filteredRows), [filteredRows])
+  const readiness = useMemo(() => getPerformanceReadiness(filteredRows), [filteredRows])
   const groups = useMemo(() => buildPerformanceGroups(filteredRows), [filteredRows])
   const trends = useMemo(() => buildTrendDatasets(filteredRows), [filteredRows])
   const modelAnalysis = useMemo(() => analyzeModelPerformance(filteredRows), [filteredRows])
@@ -52,19 +54,29 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
       </section>
 
       <section className="mt-4 grid grid-cols-2 gap-3">
-        <SummaryCard icon={Trophy} label="Win Rate" value={`${metrics.winRate}%`} />
-        <SummaryCard icon={Target} label="Accuracy" value={`${metrics.accuracy}%`} />
+        <SummaryCard icon={Trophy} label="Win Rate" value={readiness.hasEnoughData ? `${metrics.winRate}%` : 'ยังไม่มีข้อมูลเพียงพอ'} />
+        <SummaryCard icon={Target} label="Accuracy" value={readiness.hasEnoughData ? `${metrics.accuracy}%` : 'กำลังสะสมข้อมูล'} />
         <SummaryCard icon={Activity} label="Total Matches" value={metrics.totalPredictions} />
         <SummaryCard icon={Filter} label="Pending" value={metrics.pending} />
-        <SummaryCard label="Avg Confidence" value={`${metrics.averageConfidence}%`} />
+        <SummaryCard label="Avg Confidence" value={filteredRows.length ? `${metrics.averageConfidence}%` : 'กำลังสะสมข้อมูล'} />
         <SummaryCard label="Last Update" value={metrics.lastUpdate ? formatUpdatedAt(metrics.lastUpdate) : '-'} />
       </section>
 
       <FilterPanel filters={filters} setFilters={setFilters} options={options} />
-      <ModelIntelligenceSection analysis={modelAnalysis} exportPreview={exportPreview} dataCoverage={dataCoverage} />
-      <TrendPreview trends={trends} groups={groups} />
+      {!loading && !error && !readiness.hasEnoughData ? <PerformanceState readiness={readiness} /> : null}
+      {readiness.hasEnoughData ? <ModelIntelligenceSection analysis={modelAnalysis} exportPreview={exportPreview} dataCoverage={dataCoverage} /> : null}
+      {readiness.hasEnoughData ? <TrendPreview trends={trends} groups={groups} /> : null}
       <LatestTable rows={latestRows} />
     </main>
+  )
+}
+
+function PerformanceState({ readiness }) {
+  return (
+    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-5 text-center">
+      <p className="text-lg font-bold text-white">{readiness.title}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-300">{readiness.message}</p>
+    </section>
   )
 }
 
@@ -130,7 +142,7 @@ function SummaryCard({ icon: Icon, label, value }) {
         <p className="text-xs text-slate-400">{label}</p>
         {Icon ? <Icon size={16} className="text-emerald-200" /> : null}
       </div>
-      <p className="mt-2 break-words text-2xl font-black text-white">{value}</p>
+      <p className="mt-2 break-words text-xl font-black leading-7 text-white">{value}</p>
     </div>
   )
 }

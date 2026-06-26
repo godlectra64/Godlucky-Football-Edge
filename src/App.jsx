@@ -1,11 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import BottomNav from './components/BottomNav'
 import MobileHeader from './components/MobileHeader'
-import AdminPage from './pages/AdminPage'
-import AiPerformancePage from './pages/AiPerformancePage'
-import MatchDetailPage from './pages/MatchDetailPage'
-import ResultTrackerPage from './pages/ResultTrackerPage'
-import StatsPage from './pages/StatsPage'
 import TodayPage from './pages/TodayPage'
 import { getAiPerformanceData, getConnectionState, getLatestSyncLog, getMatchDetail, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
 import { getTopMatches } from './utils/analysisEngine'
@@ -13,20 +8,23 @@ import { formatUpdatedAt } from './utils/formatters'
 import { getMatchRoute } from './utils/matchDetail'
 import { getPredictionReliability } from './utils/modelPerformanceAnalyzer'
 import { getPerformanceContext } from './utils/performanceIntelligence'
+import { getPagePath, getRouteState } from './utils/routes'
 import { loadDevFallbackMatches } from './utils/storage'
 
-function getRouteMatchId() {
-  const match = window.location.pathname.match(/^\/match\/([^/]+)$/)
-  return match ? decodeURIComponent(match[1]) : ''
-}
+const AdminPage = lazy(() => import('./pages/AdminPage'))
+const AiPerformancePage = lazy(() => import('./pages/AiPerformancePage'))
+const MatchDetailPage = lazy(() => import('./pages/MatchDetailPage'))
+const ResultTrackerPage = lazy(() => import('./pages/ResultTrackerPage'))
+const StatsPage = lazy(() => import('./pages/StatsPage'))
 
 function App() {
   const connection = getConnectionState()
+  const initialRoute = getRouteState(window.location.pathname)
   const [matches, setMatches] = useState([])
-  const [activePage, setActivePage] = useState(() => (getRouteMatchId() ? 'analysis' : 'today'))
-  const [selectedMatchId, setSelectedMatchId] = useState(() => getRouteMatchId())
+  const [activePage, setActivePage] = useState(() => initialRoute.activePage)
+  const [selectedMatchId, setSelectedMatchId] = useState(() => initialRoute.selectedMatchId)
   const [detailMatch, setDetailMatch] = useState(null)
-  const [detailLoading, setDetailLoading] = useState(() => Boolean(getRouteMatchId()))
+  const [detailLoading, setDetailLoading] = useState(() => Boolean(initialRoute.selectedMatchId))
   const [detailError, setDetailError] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -48,8 +46,10 @@ function App() {
       setSelectedMatchId((current) => current || data[0]?.id || '')
       if (connection.configured) setNotice(buildLatestSyncNotice(latestSyncLog))
     } catch (err) {
+      const fallbackData = await loadDevFallbackMatches().catch(() => [])
+      setMatches(fallbackData)
       setError(err.message || 'โหลดข้อมูลไม่สำเร็จ')
-      setNotice('ข้อมูลล่าสุดที่บันทึกไว้')
+      setNotice(fallbackData.length ? 'ใช้ข้อมูล fallback ล่าสุดหลัง Supabase query fail' : 'Supabase query fail และยังไม่มี fallback data')
     } finally {
       setLoading(false)
     }
@@ -90,12 +90,12 @@ function App() {
 
   useEffect(() => {
     const onPopState = () => {
-      const routeMatchId = getRouteMatchId()
-      setSelectedMatchId(routeMatchId)
+      const route = getRouteState(window.location.pathname)
+      setSelectedMatchId(route.selectedMatchId)
       setDetailMatch(null)
       setDetailError('')
-      setDetailLoading(Boolean(routeMatchId))
-      setActivePage(routeMatchId ? 'analysis' : 'today')
+      setDetailLoading(Boolean(route.selectedMatchId))
+      setActivePage(route.activePage)
     }
 
     window.addEventListener('popstate', onPopState)
@@ -161,8 +161,8 @@ function App() {
       setDetailMatch(null)
       setDetailError('')
       setDetailLoading(false)
-      window.history.pushState({}, '', '/')
     }
+    window.history.pushState({}, '', getPagePath(page))
   }
 
   const runManualSync = async () => {
@@ -205,6 +205,7 @@ function App() {
     admin: 'ศูนย์ควบคุมข้อมูล',
     results: 'ผลการแข่งขัน',
     stats: 'สถิติระบบ',
+    notFound: 'ไม่พบหน้า',
   }
 
   titles.performance = 'AI Performance'
@@ -212,7 +213,7 @@ function App() {
   return (
     <div className="min-h-screen bg-pitch-950 text-slate-100">
       <MobileHeader title={titles[activePage]} subtitle="ข้อมูลจริงจาก Supabase และ Edge Function" connectionText={connection.message} />
-      <div className="pb-24">
+      <div className="pb-32">
         {activePage === 'today' ? (
           <TodayPage
             matches={topMatches}
@@ -224,26 +225,54 @@ function App() {
             onOpenMatch={openMatch}
           />
         ) : null}
-        {activePage === 'analysis' ? (
-          <MatchDetailPage match={selectedMatch} loading={detailLoading && connection.configured && !selectedMatch} error={detailError} performanceContext={performanceContext} predictionReliability={predictionReliability} onBack={goToday} onGoToday={goToday} />
-        ) : null}
-        {activePage === 'admin' ? (
-          <AdminPage
-            connection={connection}
-            loading={loading}
-            syncing={syncing}
-            error={error}
-            onSync={runManualSync}
-            onResetToday={runResetToday}
-            onRefresh={loadToday}
-          />
-        ) : null}
-        {activePage === 'results' ? <ResultTrackerPage matches={matches} /> : null}
-        {activePage === 'stats' ? <StatsPage matches={matches} /> : null}
-        {activePage === 'performance' ? <AiPerformancePage rows={performanceRows} loading={performanceLoading} error={performanceError} onRefresh={loadPerformance} /> : null}
+        <Suspense fallback={<PageFallback />}>
+          {activePage === 'analysis' ? (
+            <MatchDetailPage match={selectedMatch} loading={detailLoading && connection.configured && !selectedMatch} error={detailError} performanceContext={performanceContext} predictionReliability={predictionReliability} onBack={goToday} onGoToday={goToday} />
+          ) : null}
+          {activePage === 'admin' ? (
+            <AdminPage
+              connection={connection}
+              loading={loading}
+              syncing={syncing}
+              error={error}
+              onSync={runManualSync}
+              onResetToday={runResetToday}
+              onRefresh={loadToday}
+            />
+          ) : null}
+          {activePage === 'results' ? <ResultTrackerPage matches={matches} /> : null}
+          {activePage === 'stats' ? <StatsPage matches={matches} /> : null}
+          {activePage === 'performance' ? <AiPerformancePage rows={performanceRows} loading={performanceLoading} error={performanceError} onRefresh={loadPerformance} /> : null}
+        </Suspense>
+        {activePage === 'notFound' ? <NotFoundPage onGoToday={goToday} /> : null}
       </div>
       <BottomNav activePage={activePage} onNavigate={navigatePage} />
     </div>
+  )
+}
+
+function PageFallback() {
+  return (
+    <main className="mx-auto max-w-[430px] px-4 py-4">
+      <div className="rounded-lg border border-white/10 bg-pitch-800 p-5 text-center">
+        <p className="font-bold text-white">กำลังโหลดหน้า</p>
+        <p className="mt-1 text-sm leading-6 text-slate-300">กำลังเตรียมข้อมูลและหน้าจอให้พร้อมใช้งาน</p>
+      </div>
+    </main>
+  )
+}
+
+function NotFoundPage({ onGoToday }) {
+  return (
+    <main className="mx-auto max-w-[430px] px-4 py-6">
+      <section className="rounded-lg border border-white/10 bg-pitch-800 p-6 text-center">
+        <p className="text-lg font-bold text-white">ไม่พบหน้าที่ต้องการ</p>
+        <p className="mt-2 text-sm leading-6 text-slate-300">ลิงก์นี้ไม่มีอยู่ หรืออาจถูกย้ายแล้ว ระบบยังทำงานได้ตามปกติ</p>
+        <button type="button" onClick={onGoToday} className="mt-4 min-h-12 rounded-lg bg-emerald-400 px-5 font-bold text-pitch-950">
+          กลับหน้าวันนี้
+        </button>
+      </section>
+    </main>
   )
 }
 

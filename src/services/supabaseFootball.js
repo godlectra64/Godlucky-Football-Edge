@@ -1,10 +1,11 @@
-import { isSupabaseConfigured } from '../lib/supabaseClient'
 import { fetchEnabledLeagues, updateLeagueSettingsById } from '../repositories/analysisRepository'
 import { fetchMatchById, fetchMatchesByKickoffRange } from '../repositories/matchesRepository'
 import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../repositories/performanceRepository'
 import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../repositories/syncRepository'
 import { getTopMatches } from '../utils/analysisEngine'
 import { normalizePerformanceRows } from '../utils/performanceIntelligence'
+
+const isSupabaseConfigured = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY)
 
 export async function getTodayMatches() {
   const { start, end } = todayAndTomorrowRangeBangkok()
@@ -98,30 +99,31 @@ export function getConnectionState() {
   }
 }
 
-export function normalizeMatch(row) {
-  const analysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
-  const fallbackAnalysis = createFallbackAnalysis(row)
+export function normalizeMatch(row = {}) {
+  const source = row ?? {}
+  const analysis = Array.isArray(source.analysis) ? source.analysis[0] : source.analysis
+  const fallbackAnalysis = createFallbackAnalysis(source)
   const activeAnalysis = analysis ?? fallbackAnalysis
-  const raw = row.raw ?? {}
+  const raw = source.raw ?? {}
 
   return {
-    id: row.id,
-    apiFixtureId: row.api_fixture_id,
-    kickoffAt: row.kickoff_at,
-    status: row.status,
-    venue: row.venue,
-    round: row.round,
-    homeGoals: row.home_goals,
-    awayGoals: row.away_goals,
-    league: row.league,
-    homeTeam: row.homeTeam,
-    awayTeam: row.awayTeam,
+    id: source.id,
+    apiFixtureId: source.api_fixture_id,
+    kickoffAt: source.kickoff_at,
+    status: source.status,
+    venue: source.venue,
+    round: source.round,
+    homeGoals: source.home_goals,
+    awayGoals: source.away_goals,
+    league: source.league,
+    homeTeam: source.homeTeam,
+    awayTeam: source.awayTeam,
     analysis: activeAnalysis,
     homeForm: activeAnalysis?.raw?.homeForm ?? raw.homeForm ?? null,
     awayForm: activeAnalysis?.raw?.awayForm ?? raw.awayForm ?? null,
     standings: activeAnalysis?.raw?.standings ?? raw.standings ?? [],
     raw,
-    updatedAt: activeAnalysis?.updated_at ?? row.updated_at ?? row.created_at,
+    updatedAt: activeAnalysis?.updated_at ?? source.updated_at ?? source.created_at,
   }
 }
 

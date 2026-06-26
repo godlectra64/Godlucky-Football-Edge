@@ -28,6 +28,7 @@ import {
   createPredictionSnapshot,
   evaluatePrediction,
   getPerformanceContext,
+  getPerformanceReadiness,
   getResultTracking,
 } from '../src/utils/performanceIntelligence.js'
 import {
@@ -49,6 +50,7 @@ import {
 } from '../src/utils/dataPlatform.js'
 import { buildExplainableAi } from '../src/utils/explainableAi.js'
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
+import { getPagePath, getRouteState } from '../src/utils/routes.js'
 import { fetchEnabledLeagues, updateLeagueSettingsById } from '../src/repositories/analysisRepository.js'
 import { fetchMatchById, fetchMatchesByKickoffRange } from '../src/repositories/matchesRepository.js'
 import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../src/repositories/performanceRepository.js'
@@ -188,6 +190,9 @@ assert.equal(formatRecommendation('LEAN'), 'LEAN')
 assert.equal(formatRecommendation('MAYBE'), 'NO BET')
 assert.ok(getDataQuality(normalizedEmptyDetail).missing.length > 0, 'data quality should expose missing fields')
 assert.equal(getMatchRoute('abc-123'), '/match/abc-123')
+assert.doesNotThrow(() => normalizeDetailPayload({ id: 'raw-null-detail', analysis: null, raw: null }))
+assert.doesNotThrow(() => normalizeDetailPayload({ id: 'no-analysis-detail' }))
+assert.equal(normalizeDetailPayload({ id: 'no-analysis-detail' }).dataIntelligence.data_confidence.level, 'low')
 
 const directDataIntelligence = calculateDataIntelligence(baseMatch, { baseConfidence: missingH2H.baseConfidence, footballModifier: missingH2H.footballModifier })
 assert.ok(directDataIntelligence.data_confidence.score >= 0 && directDataIntelligence.data_confidence.score <= 100)
@@ -257,6 +262,12 @@ assert.equal(performanceMetrics.correct, 1)
 assert.equal(performanceMetrics.incorrect, 1)
 assert.equal(performanceMetrics.winRate, 50)
 assert.doesNotThrow(() => buildPerformanceGroups(performanceRows))
+const noPerformanceData = getPerformanceReadiness([])
+assert.equal(noPerformanceData.hasEnoughData, false)
+assert.equal(noPerformanceData.title, 'กำลังสะสมข้อมูล')
+const lowPerformanceData = getPerformanceReadiness(performanceRows, 10)
+assert.equal(lowPerformanceData.hasEnoughData, false)
+assert.equal(lowPerformanceData.title, 'ยังไม่มีข้อมูลเพียงพอ')
 const modelPerformance = analyzeModelPerformance(calibrationRows)
 assert.equal(buildConfidenceCalibration(calibrationRows).length, 6)
 assert.equal(buildLeaguePerformance(calibrationRows)[0].league, 'Premier League')
@@ -306,6 +317,7 @@ assert.ok(boundedExplainable.contributions.every((item) => item.value >= -10 && 
 
 const coverageEmpty = calculateDataCoverage({})
 assert.ok(coverageEmpty.score >= 0 && coverageEmpty.score <= 100)
+assert.ok(coverageEmpty.missing.includes('fixture'))
 const coverageFullish = calculateDataCoverage({
   match: { id: 'coverage-1', api_fixture_id: 'fixture-1', raw: { odds: { home: 2.1 }, lineup: [], injuries: [] } },
   analysis: { raw: { analysis_breakdown: moduleBreakdown } },
@@ -319,9 +331,18 @@ assert.ok(['low', 'medium', 'high'].includes(coverageFullish.level))
 const marketFallback = normalizeMarketIntelligence({})
 assert.equal(marketFallback.hasMarketData, false)
 assert.equal(marketFallback.reason, 'ยังไม่มีข้อมูลตลาด')
+assert.ok(marketFallback.missing.includes('asian_handicap'))
 const marketPartial = normalizeMarketIntelligence({ raw: { market: { asian_handicap: '-0.25' } } })
 assert.equal(marketPartial.asian_handicap, '-0.25')
 assert.equal(marketPartial.hasMarketData, true)
+
+const unknownRoute = getRouteState('/does-not-exist')
+assert.equal(unknownRoute.activePage, 'notFound')
+assert.equal(unknownRoute.notFound, true)
+assert.equal(getRouteState('/today').activePage, 'today')
+assert.equal(getRouteState('/performance').activePage, 'performance')
+assert.equal(getRouteState('/match/abc%20123').selectedMatchId, 'abc 123')
+assert.equal(getPagePath('performance'), '/performance')
 
 assert.doesNotThrow(() => normalizeDetailPayload({
   id: 'detail-helper',
@@ -336,6 +357,12 @@ assert.doesNotThrow(() => normalizeDetailPayload({
 assert.doesNotThrow(() => analyzeModelPerformance([]))
 const modelExplainability = buildModelExplainability(modelPerformance)
 assert.ok(modelExplainability.message.length > 0)
+
+const noBetRanking = rankTopMatches([{ ...baseMatch, id: 'no-bet-ranking', league: { name: 'Club Friendly' }, homeForm: null, awayForm: null, standings: [] }], 1)[0]
+assert.equal(noBetRanking.recommendation, 'NO BET')
+assert.ok(!noBetRanking.rankBadges.includes('คู่เด่น'), 'NO BET should not receive BET-like featured badge')
+assert.ok(!noBetRanking.rankReason.includes('เหมาะเป็น'), 'NO BET rank reason should not read like a BET recommendation')
+assert.ok(noBetRanking.rankReason.includes('ควรข้าม'), 'NO BET rank reason should clearly recommend skipping')
 
 for (const repositoryFn of [
   fetchEnabledLeagues,

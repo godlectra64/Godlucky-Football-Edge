@@ -133,6 +133,35 @@ export function calculatePerformanceMetrics(rows = []) {
   }
 }
 
+export function getPerformanceReadiness(rows = [], minEvaluated = 10) {
+  const metrics = calculatePerformanceMetrics(rows)
+
+  if (!rows.length) {
+    return {
+      hasEnoughData: false,
+      metrics,
+      title: 'กำลังสะสมข้อมูล',
+      message: 'ยังไม่มีข้อมูลเพียงพอสำหรับสรุป AI Performance',
+    }
+  }
+
+  if (metrics.evaluated < minEvaluated) {
+    return {
+      hasEnoughData: false,
+      metrics,
+      title: 'ยังไม่มีข้อมูลเพียงพอ',
+      message: `มีข้อมูลประเมินแล้ว ${metrics.evaluated}/${minEvaluated} คู่ ระบบจึงยังไม่สรุป Win Rate หรือ Accuracy เป็นสถิติจริง`,
+    }
+  }
+
+  return {
+    hasEnoughData: true,
+    metrics,
+    title: 'พร้อมสรุปผล',
+    message: `สรุปจากข้อมูลที่ประเมินแล้ว ${metrics.evaluated} คู่`,
+  }
+}
+
 export function buildPerformanceGroups(rows = []) {
   return {
     byLeague: groupMetrics(rows, (row) => row.league ?? 'Unknown'),

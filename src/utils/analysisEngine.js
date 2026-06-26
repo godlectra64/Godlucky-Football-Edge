@@ -392,7 +392,7 @@ function getMatchImportanceRankingAdjustment(matchImportance = {}) {
 function generateRankBadgesFromProfile(profile) {
   const badges = []
 
-  if (profile.rankingScore >= 78 || profile.recommendation === recommendationLabels.bet) badges.push('คู่เด่น')
+  if (profile.recommendation === recommendationLabels.bet) badges.push('คู่เด่น')
   if (profile.riskLevel === riskLabels.low) badges.push('ความเสี่ยงต่ำ')
   if (profile.intelligence?.momentum?.momentum === 'positive') badges.push('โมเมนตัมดี')
   if (profile.dataCompleteness < 65 || profile.intelligence?.ai_explanation?.data_confidence === 'low') badges.push('ข้อมูลจำกัด')
@@ -431,7 +431,13 @@ function generateRankReasonFromProfile(profile) {
   const support = supportParts.slice(0, 2).join(' และ ')
   const caution = cautionParts.length ? ` แต่${cautionParts.slice(0, 2).join(' และ')}` : ''
 
-  return `ติดอันดับเพราะ${support}${caution} จึงเหมาะเป็น ${profile.recommendation}`
+  if (profile.recommendation === recommendationLabels.bet) {
+    return `ติดอันดับเพราะ${support}${caution} จึงเหมาะเป็นคู่ BET`
+  }
+  if (profile.recommendation === recommendationLabels.lean) {
+    return `ติดอันดับเพราะ${support}${caution} จึงเหมาะติดตามต่อ`
+  }
+  return `ติดอันดับเพราะ${support}${caution} แต่ยังควรข้ามก่อน`
 }
 
 function getBreakdownScores(analysisBreakdown) {
