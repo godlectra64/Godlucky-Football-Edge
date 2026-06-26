@@ -27,14 +27,18 @@ export function analyzeModelPerformance(rows = []) {
   const moduleEffectiveness = buildModuleEffectiveness(normalizedRows)
   const trends = buildCalibrationTrendData(normalizedRows)
   const overall = calculateAnalyzerMetrics(normalizedRows)
-
-  return {
+  const analysis = {
     overall,
     confidenceCalibration,
     leaguePerformance,
     recommendationPerformance,
     riskPerformance,
     moduleEffectiveness,
+    trends,
+  }
+
+  return {
+    ...analysis,
     calibrationSuggestions: buildCalibrationSuggestions({
       overall,
       confidenceCalibration,
@@ -43,7 +47,7 @@ export function analyzeModelPerformance(rows = []) {
       riskPerformance,
       moduleEffectiveness,
     }),
-    trends,
+    modelExplainability: buildModelExplainability(analysis),
   }
 }
 
@@ -186,6 +190,68 @@ export function buildCalibrationSuggestions(analysis = {}) {
     title: 'Keep collecting data',
     message: 'ยังไม่มีสัญญาณ calibration ที่ชัดพอ ระบบจึงแนะนำให้สะสมผลจริงต่อไปก่อนปรับโมเดล',
   }]
+}
+
+export function buildModelExplainability(analysis = {}, options = {}) {
+  const minSamples = options.minSamples ?? 3
+  const overall = analysis.overall ?? {}
+  const evaluated = overall.evaluated ?? 0
+  const moduleEffectiveness = analysis.moduleEffectiveness ?? []
+  const confidenceCalibration = analysis.confidenceCalibration ?? []
+  const riskPerformance = analysis.riskPerformance ?? []
+
+  const positiveModules = moduleEffectiveness
+    .filter((module) => module.samples >= minSamples && module.effectivenessScore >= 60)
+    .slice(0, 5)
+    .map((module) => ({
+      key: module.key,
+      label: module.label,
+      samples: module.samples,
+      effectivenessScore: module.effectivenessScore,
+      reason: `${module.label}: ${module.effectivenessScore}/100 จาก ${module.samples} samples`,
+    }))
+
+  const negativeModules = moduleEffectiveness
+    .filter((module) => module.samples >= minSamples && module.effectivenessScore <= 45)
+    .slice(0, 5)
+    .map((module) => ({
+      key: module.key,
+      label: module.label,
+      samples: module.samples,
+      effectivenessScore: module.effectivenessScore,
+      reason: `${module.label}: ${module.effectivenessScore}/100 จาก ${module.samples} samples`,
+    }))
+
+  const overconfidentBins = confidenceCalibration
+    .filter((bin) => bin.predictions >= minSamples && bin.accuracy > 0 && bin.max - bin.accuracy >= 10)
+    .map((bin) => ({
+      range: bin.range,
+      predictions: bin.predictions,
+      accuracy: bin.accuracy,
+      confidenceCeiling: bin.max,
+      gap: roundOne(bin.max - bin.accuracy),
+    }))
+
+  const riskyRiskGroups = riskPerformance
+    .filter((risk) => risk.predictions >= minSamples && risk.accuracy > 0 && risk.accuracy < (overall.accuracy ?? 0))
+    .map((risk) => ({
+      riskLevel: risk.riskLevel,
+      predictions: risk.predictions,
+      accuracy: risk.accuracy,
+      overallAccuracy: overall.accuracy ?? 0,
+      gap: roundOne((overall.accuracy ?? 0) - risk.accuracy),
+    }))
+
+  const hasEnoughData = evaluated >= minSamples || positiveModules.length || negativeModules.length || overconfidentBins.length || riskyRiskGroups.length
+
+  return {
+    hasEnoughData,
+    message: hasEnoughData ? 'Model explainability พร้อมใช้จากผลย้อนหลังจริง' : 'กำลังสะสมข้อมูล',
+    positiveModules,
+    negativeModules,
+    overconfidentBins,
+    riskyRiskGroups,
+  }
 }
 
 export function buildCalibrationTrendData(rows = []) {

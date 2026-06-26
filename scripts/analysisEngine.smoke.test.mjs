@@ -35,6 +35,7 @@ import {
   buildCalibrationTrendData,
   buildConfidenceCalibration,
   buildLeaguePerformance,
+  buildModelExplainability,
   buildModuleEffectiveness,
   buildRecommendationPerformance,
   buildRiskPerformance,
@@ -42,6 +43,16 @@ import {
   exportPerformanceJson,
   getPredictionReliability,
 } from '../src/utils/modelPerformanceAnalyzer.js'
+import {
+  calculateDataCoverage,
+  normalizeDataPlatform,
+} from '../src/utils/dataPlatform.js'
+import { buildExplainableAi } from '../src/utils/explainableAi.js'
+import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
+import { fetchEnabledLeagues, updateLeagueSettingsById } from '../src/repositories/analysisRepository.js'
+import { fetchMatchById, fetchMatchesByKickoffRange } from '../src/repositories/matchesRepository.js'
+import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../src/repositories/performanceRepository.js'
+import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../src/repositories/syncRepository.js'
 
 const baseMatch = {
   id: 'match-1',
@@ -263,5 +274,82 @@ const reliability = getPredictionReliability({
 }, calibrationRows)
 assert.equal(reliability.dataConfidence, 82)
 assert.equal(getPerformanceContext(performanceRows), 'กำลังสะสมข้อมูล')
+
+const emptyPlatform = normalizeDataPlatform({})
+assert.equal(emptyPlatform.analysis.recommendation, 'NO BET')
+assert.doesNotThrow(() => normalizeDataPlatform({ match: { id: 'missing-raw' }, analysis: { raw: null } }))
+
+const explainableNoData = buildExplainableAi({})
+assert.ok(explainableNoData.contributions.length > 0)
+assert.ok(explainableNoData.summary.length > 0)
+const boundedExplainable = buildExplainableAi({
+  match: {
+    id: 'explainable-1',
+    homeTeam: { name: 'Home FC' },
+    awayTeam: { name: 'Away FC' },
+    league: { name: 'Premier League' },
+    analysis: {
+      confidence_score: 92,
+      recommendation: 'BET',
+      risk_level: 'high',
+      raw: {
+        analysis_breakdown: {
+          ...moduleBreakdown,
+          team_strength: { score: 100, reason: 'strong' },
+          data_intelligence: { ...moduleBreakdown.data_intelligence, data_confidence: { score: 15 } },
+        },
+      },
+    },
+  },
+})
+assert.ok(boundedExplainable.contributions.every((item) => item.value >= -10 && item.value <= 10), 'explainability contributions stay bounded')
+
+const coverageEmpty = calculateDataCoverage({})
+assert.ok(coverageEmpty.score >= 0 && coverageEmpty.score <= 100)
+const coverageFullish = calculateDataCoverage({
+  match: { id: 'coverage-1', api_fixture_id: 'fixture-1', raw: { odds: { home: 2.1 }, lineup: [], injuries: [] } },
+  analysis: { raw: { analysis_breakdown: moduleBreakdown } },
+  prediction: performanceSnapshot,
+  result: finishedResult,
+  evaluation: correctEvaluation,
+})
+assert.ok(coverageFullish.score >= coverageEmpty.score)
+assert.ok(['low', 'medium', 'high'].includes(coverageFullish.level))
+
+const marketFallback = normalizeMarketIntelligence({})
+assert.equal(marketFallback.hasMarketData, false)
+assert.equal(marketFallback.reason, 'ยังไม่มีข้อมูลตลาด')
+const marketPartial = normalizeMarketIntelligence({ raw: { market: { asian_handicap: '-0.25' } } })
+assert.equal(marketPartial.asian_handicap, '-0.25')
+assert.equal(marketPartial.hasMarketData, true)
+
+assert.doesNotThrow(() => normalizeDetailPayload({
+  id: 'detail-helper',
+  analysis: {
+    confidence_score: 72,
+    recommendation: 'LEAN',
+    risk_level: 'medium',
+    analysis_summary: 'stored summary',
+    raw: { framework: 'football-intelligence-v3', analysis_breakdown: moduleBreakdown },
+  },
+}))
+assert.doesNotThrow(() => analyzeModelPerformance([]))
+const modelExplainability = buildModelExplainability(modelPerformance)
+assert.ok(modelExplainability.message.length > 0)
+
+for (const repositoryFn of [
+  fetchEnabledLeagues,
+  updateLeagueSettingsById,
+  fetchMatchById,
+  fetchMatchesByKickoffRange,
+  fetchPredictionSnapshots,
+  fetchPredictionResults,
+  fetchPredictionEvaluations,
+  fetchSyncLogs,
+  fetchLatestSyncLog,
+  invokeSyncFootballData,
+]) {
+  assert.equal(typeof repositoryFn, 'function')
+}
 
 console.log('analysisEngine smoke tests passed')

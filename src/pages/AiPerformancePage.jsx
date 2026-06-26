@@ -9,6 +9,7 @@ import {
 } from '../utils/performanceIntelligence'
 import { analyzeModelPerformance, exportPerformanceCsv, exportPerformanceJson } from '../utils/modelPerformanceAnalyzer'
 import { formatShortDate, formatUpdatedAt } from '../utils/formatters'
+import { calculateDataCoverage } from '../utils/dataPlatform'
 
 const allValue = ''
 
@@ -26,6 +27,7 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
   const groups = useMemo(() => buildPerformanceGroups(filteredRows), [filteredRows])
   const trends = useMemo(() => buildTrendDatasets(filteredRows), [filteredRows])
   const modelAnalysis = useMemo(() => analyzeModelPerformance(filteredRows), [filteredRows])
+  const dataCoverage = useMemo(() => summarizeDataCoverage(filteredRows), [filteredRows])
   const exportPreview = useMemo(() => ({
     jsonBytes: exportPerformanceJson(filteredRows).length,
     csvRows: exportPerformanceCsv(filteredRows).split('\n').length - 1,
@@ -59,17 +61,18 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
       </section>
 
       <FilterPanel filters={filters} setFilters={setFilters} options={options} />
-      <ModelIntelligenceSection analysis={modelAnalysis} exportPreview={exportPreview} />
+      <ModelIntelligenceSection analysis={modelAnalysis} exportPreview={exportPreview} dataCoverage={dataCoverage} />
       <TrendPreview trends={trends} groups={groups} />
       <LatestTable rows={latestRows} />
     </main>
   )
 }
 
-function ModelIntelligenceSection({ analysis, exportPreview }) {
+function ModelIntelligenceSection({ analysis, exportPreview, dataCoverage }) {
   const topModules = analysis.moduleEffectiveness.slice(0, 4)
   const confidenceRows = analysis.confidenceCalibration.filter((item) => item.predictions > 0).slice(-3)
   const leagueRows = analysis.leaguePerformance.slice(0, 3)
+  const explainability = analysis.modelExplainability ?? {}
 
   return (
     <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
@@ -79,7 +82,10 @@ function ModelIntelligenceSection({ analysis, exportPreview }) {
         <MiniMetric label="No Evaluation" value={analysis.overall.noEvaluation} />
         <MiniMetric label="Export JSON" value={`${exportPreview.jsonBytes}b`} />
         <MiniMetric label="Export CSV Rows" value={exportPreview.csvRows} />
+        <MiniMetric label="Data Coverage" value={`${dataCoverage.score}%`} />
+        <MiniMetric label="Coverage Level" value={dataCoverage.level} />
       </div>
+      <ModelExplainabilityPanel explainability={explainability} />
       <CompactList title="Confidence Calibration" items={confidenceRows.map((item) => `${item.range}: ${item.accuracy}% (${item.predictions})`)} />
       <CompactList title="League Comparison" items={leagueRows.map((item) => `${item.league}: ${item.accuracy}% (${item.predictions})`)} />
       <CompactList title="Recommendation Analysis" items={analysis.recommendationPerformance.map((item) => `${item.recommendation}: ${item.accuracy}% (${item.predictions})`)} />
@@ -87,6 +93,19 @@ function ModelIntelligenceSection({ analysis, exportPreview }) {
       <CompactList title="Module Effectiveness" items={topModules.map((item) => `${item.label}: ${item.effectivenessScore}/100`)} />
       <CompactList title="Calibration Suggestions" items={analysis.calibrationSuggestions.slice(0, 4).map((item) => item.message)} />
     </section>
+  )
+}
+
+function ModelExplainabilityPanel({ explainability }) {
+  return (
+    <div className="mt-4 rounded-lg border border-white/10 bg-pitch-900 p-3">
+      <p className="text-sm font-bold text-white">Model Explainability</p>
+      <p className="mt-2 text-xs leading-5 text-slate-300">{explainability.message || 'กำลังสะสมข้อมูล'}</p>
+      <CompactList title="Frequent Positive Modules" items={(explainability.positiveModules ?? []).map((item) => item.reason)} />
+      <CompactList title="Frequent Negative Modules" items={(explainability.negativeModules ?? []).map((item) => item.reason)} />
+      <CompactList title="Overconfident Bins" items={(explainability.overconfidentBins ?? []).map((item) => `${item.range}: accuracy ${item.accuracy}% gap ${item.gap}% (${item.predictions})`)} />
+      <CompactList title="Risky Risk Groups" items={(explainability.riskyRiskGroups ?? []).map((item) => `${item.riskLevel}: accuracy ${item.accuracy}% gap ${item.gap}% (${item.predictions})`)} />
+    </div>
   )
 }
 
@@ -214,6 +233,26 @@ function Cell({ label, value }) {
       <p className="mt-1 truncate font-bold text-white">{value}</p>
     </div>
   )
+}
+
+function summarizeDataCoverage(rows = []) {
+  if (!rows.length) return { score: 0, level: 'low', reason: 'Data coverage 0% (0/0)' }
+  const coverages = rows.map((row) => calculateDataCoverage({
+    match: {
+      id: row.match_id,
+      api_fixture_id: row.fixture_id,
+      raw: row.raw ?? row.raw_snapshot ?? {},
+    },
+    prediction: row,
+    result: row.result ?? { status: row.result_status ?? 'pending' },
+    evaluation: row.evaluation ?? { evaluation_status: row.evaluation_status ?? 'pending' },
+  }))
+  const score = Math.round(coverages.reduce((total, item) => total + item.score, 0) / coverages.length)
+  return {
+    score,
+    level: score >= 75 ? 'high' : score >= 45 ? 'medium' : 'low',
+    reason: `Average coverage ${score}% from ${rows.length} rows`,
+  }
 }
 
 function formatScore(result) {

@@ -1,57 +1,14 @@
-import { isSupabaseConfigured, requireSupabase } from '../lib/supabaseClient'
+import { isSupabaseConfigured } from '../lib/supabaseClient'
+import { fetchEnabledLeagues, updateLeagueSettingsById } from '../repositories/analysisRepository'
+import { fetchMatchById, fetchMatchesByKickoffRange } from '../repositories/matchesRepository'
+import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../repositories/performanceRepository'
+import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../repositories/syncRepository'
 import { getTopMatches } from '../utils/analysisEngine'
 import { normalizePerformanceRows } from '../utils/performanceIntelligence'
 
-const matchSelect = `
-  id,
-  api_fixture_id,
-  kickoff_at,
-  status,
-  venue,
-  round,
-  home_goals,
-  away_goals,
-  raw,
-  created_at,
-  updated_at,
-  league:football_leagues(id, api_league_id, name, country, logo, enabled, priority),
-  homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name, logo, country),
-  awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name, logo, country),
-  analysis:match_analysis(
-    id,
-    team_strength_score,
-    form_score,
-    home_advantage_score,
-    away_weakness_score,
-    goal_scoring_score,
-    defensive_stability_score,
-    goal_quality_score,
-    tactical_score,
-    home_away_score,
-    motivation_score,
-    market_context_score,
-    market_risk_score,
-    risk_score,
-    confidence_score,
-    recommendation,
-    risk_level,
-    analysis_summary,
-    thai_reason,
-    raw,
-    updated_at
-  )
-`
-
 export async function getTodayMatches() {
-  const client = requireSupabase()
   const { start, end } = todayAndTomorrowRangeBangkok()
-
-  const { data, error } = await client
-    .from('football_matches')
-    .select(matchSelect)
-    .gte('kickoff_at', start)
-    .lt('kickoff_at', end)
-    .order('kickoff_at', { ascending: true })
+  const { data, error } = await fetchMatchesByKickoffRange(start, end)
 
   if (error) throw error
   return (data ?? []).map(normalizeMatch)
@@ -63,8 +20,7 @@ export async function getTodayTopMatches() {
 }
 
 export async function getMatchAnalysis(matchId) {
-  const client = requireSupabase()
-  const { data, error } = await client.from('football_matches').select(matchSelect).eq('id', matchId).single()
+  const { data, error } = await fetchMatchById(matchId)
 
   if (error) throw error
   return normalizeMatch(data)
@@ -75,79 +31,43 @@ export async function getMatchDetail(matchId) {
 }
 
 export async function getEnabledLeagues() {
-  const client = requireSupabase()
-  const { data, error } = await client
-    .from('football_leagues')
-    .select('id, api_league_id, name, country, logo, enabled, priority, updated_at')
-    .order('priority', { ascending: true })
-    .order('name', { ascending: true })
+  const { data, error } = await fetchEnabledLeagues()
 
   if (error) throw error
   return data ?? []
 }
 
 export async function updateLeagueSettings(leagueId, patch) {
-  const client = requireSupabase()
-  const { data, error } = await client
-    .from('football_leagues')
-    .update({
-      enabled: patch.enabled,
-      priority: Number(patch.priority),
-    })
-    .eq('id', leagueId)
-    .select('id, api_league_id, name, country, logo, enabled, priority, updated_at')
-    .single()
+  const { data, error } = await updateLeagueSettingsById(leagueId, patch)
 
   if (error) throw error
   return data
 }
 
 export async function getSyncLogs() {
-  const client = requireSupabase()
-  const { data, error } = await client
-    .from('sync_logs')
-    .select('id, sync_type, status, message, started_at, finished_at, raw')
-    .order('started_at', { ascending: false })
-    .limit(20)
+  const { data, error } = await fetchSyncLogs(20)
 
   if (error) throw error
   return data ?? []
 }
 
 export async function getLatestSyncLog() {
-  const client = requireSupabase()
-  const { data, error } = await client
-    .from('sync_logs')
-    .select('id, sync_type, status, message, started_at, finished_at, raw')
-    .order('started_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  const { data, error } = await fetchLatestSyncLog()
 
   if (error) throw error
   return data ?? null
 }
 
 export async function getAiPerformanceData(limit = 500) {
-  const client = requireSupabase()
-  const { data: snapshots, error } = await client
-    .from('ai_prediction_snapshots')
-    .select('id, match_id, fixture_id, home_team, away_team, league, kickoff, recommendation, confidence_score, ranking_score, risk_level, analysis_version, predicted_outcome, raw, created_at')
-    .order('created_at', { ascending: false })
-    .limit(Math.max(1, Math.min(limit, 1000)))
+  const { data: snapshots, error } = await fetchPredictionSnapshots(limit)
 
   if (error) throw error
   const ids = (snapshots ?? []).map((item) => item.id)
   if (!ids.length) return []
 
   const [{ data: results, error: resultsError }, { data: evaluations, error: evaluationsError }] = await Promise.all([
-    client
-      .from('ai_prediction_results')
-      .select('id, snapshot_id, match_id, status, home_goals, away_goals, result, finished_at, updated_at')
-      .in('snapshot_id', ids),
-    client
-      .from('ai_prediction_evaluations')
-      .select('id, snapshot_id, match_id, evaluation_status, evaluation_reason, evaluated_at, updated_at')
-      .in('snapshot_id', ids),
+    fetchPredictionResults(ids),
+    fetchPredictionEvaluations(ids),
   ])
 
   if (resultsError) throw resultsError
@@ -156,20 +76,14 @@ export async function getAiPerformanceData(limit = 500) {
 }
 
 export async function triggerManualSync() {
-  const client = requireSupabase()
-  const { data, error } = await client.functions.invoke('sync-football-data', {
-    body: { mode: 'manual' },
-  })
+  const { data, error } = await invokeSyncFootballData({ mode: 'manual' })
 
   if (error) throw error
   return data
 }
 
 export async function resetTodayData() {
-  const client = requireSupabase()
-  const { data, error } = await client.functions.invoke('sync-football-data', {
-    body: { mode: 'manual-reset-today', resetToday: true },
-  })
+  const { data, error } = await invokeSyncFootballData({ mode: 'manual-reset-today', resetToday: true })
 
   if (error) throw error
   return data

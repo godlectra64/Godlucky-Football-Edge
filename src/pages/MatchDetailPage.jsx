@@ -9,6 +9,9 @@ import {
   splitSummary,
 } from '../utils/matchDetail'
 import { formatKickoffTime, formatScore, formatUpdatedAt } from '../utils/formatters'
+import { calculateDataCoverage, normalizeDataPlatform } from '../utils/dataPlatform'
+import { buildExplainableAi } from '../utils/explainableAi'
+import { normalizeMarketIntelligence } from '../utils/marketIntelligence'
 
 const recommendationTone = {
   BET: 'border-emerald-300/30 bg-emerald-300/10 text-emerald-100',
@@ -52,6 +55,10 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
   const riskFactors = buildRiskFactors(detail)
   const riskLabel = getRiskLabel(detail.riskLevel)
   const predictionReliability = arguments[0]?.predictionReliability ?? null
+  const platform = normalizeDataPlatform({ match: detail, analysis: detail.analysis })
+  const explainability = buildExplainableAi(platform)
+  const dataCoverage = calculateDataCoverage(platform)
+  const marketIntelligence = normalizeMarketIntelligence(detail)
 
   return (
     <main className="mx-auto max-w-[430px] px-4 py-4">
@@ -59,6 +66,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
       <HeroHeader detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <ScoreBreakdownSection items={detail.moduleItems} />
+      <ExplainableAiSection explanation={explainability} />
       <FootballIntelligenceSection intelligence={detail.footballIntelligence} />
       <FootballDataIntelligenceSection items={detail.dataIntelligenceItems} />
       <AiPerformanceContextSection performanceContext={performanceContext} />
@@ -66,6 +74,8 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
       <RiskAnalysisSection detail={detail} riskLabel={riskLabel} riskFactors={riskFactors} />
       <RankingSection detail={detail} />
       <DataQualitySection dataQuality={detail.dataQuality} />
+      <DataPlatformCoverageSection coverage={dataCoverage} />
+      <MarketIntelligenceSection market={marketIntelligence} />
       <SummarySection detail={detail} />
     </main>
   )
@@ -130,6 +140,23 @@ function ScoreBreakdownSection({ items }) {
           <ScoreRow key={item.key} item={item} />
         ))}
       </div>
+    </Section>
+  )
+}
+
+function ExplainableAiSection({ explanation }) {
+  return (
+    <Section title="AI คิดคะแนนอย่างไร" icon={Sparkles}>
+      <div className="grid grid-cols-2 gap-2">
+        <Metric label="Base Confidence" value={`${explanation.baseConfidence}%`} />
+        <Metric label="Final Confidence" value={`${explanation.finalConfidence}%`} />
+        <Metric label="Risk Impact" value={formatContribution(explanation.riskImpact?.value)} />
+        <Metric label="Data Confidence" value={formatContribution(explanation.dataConfidenceImpact?.value)} />
+      </div>
+      <p className="mt-3 rounded-lg border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{explanation.summary}</p>
+      <ContributionList title="Positive Factors" items={explanation.positive} tone="positive" />
+      <ContributionList title="Negative Factors" items={explanation.negative} tone="negative" />
+      <ContributionList title="Neutral Factors" items={explanation.neutral} />
     </Section>
   )
 }
@@ -252,6 +279,37 @@ function DataQualitySection({ dataQuality }) {
   )
 }
 
+function DataPlatformCoverageSection({ coverage }) {
+  return (
+    <Section title="Data Coverage" icon={ListChecks}>
+      <div className="rounded-lg border border-white/10 bg-pitch-900 p-3">
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-slate-400">Coverage Level</span>
+          <span className="font-bold text-white">{coverage.level} · {coverage.score}%</span>
+        </div>
+        <ProgressBar value={coverage.score} tone={coverage.score >= 75 ? 'good' : coverage.score >= 45 ? 'medium' : 'risk'} />
+      </div>
+      <p className="mt-3 rounded-lg border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{coverage.reason}</p>
+      <QualityList title="Available" items={coverage.available} />
+      <QualityList title="Missing" items={coverage.missing} muted />
+    </Section>
+  )
+}
+
+function MarketIntelligenceSection({ market }) {
+  return (
+    <Section title="Market Intelligence" icon={TrendingUp}>
+      <p className="rounded-lg border border-white/10 bg-pitch-900 p-3 text-sm leading-6 text-slate-200">{market.reason}</p>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <Metric label="Asian Handicap" value={formatMarketValue(market.asian_handicap)} />
+        <Metric label="Over/Under" value={formatMarketValue(market.over_under)} />
+        <Metric label="1X2" value={formatMarketValue(market.one_x_two)} />
+        <Metric label="Value Rating" value={formatMarketValue(market.value_rating)} />
+      </div>
+    </Section>
+  )
+}
+
 function SummarySection({ detail }) {
   const paragraphs = [
     ...splitSummary(detail.analysisSummary),
@@ -355,6 +413,26 @@ function BulletList({ title, items, tone = 'default' }) {
   )
 }
 
+function ContributionList({ title, items, tone = 'neutral' }) {
+  const safeItems = items?.length ? items : [{ key: `${title}-empty`, label: 'ข้อมูลจำกัด', value: 0, reason: 'กำลังสะสมข้อมูล' }]
+  return (
+    <div className="mt-3">
+      <p className="text-sm font-bold text-white">{title}</p>
+      <div className="mt-2 space-y-2">
+        {safeItems.map((item) => (
+          <div key={item.key} className={`rounded-lg border px-3 py-2 text-sm leading-6 ${contributionTone(tone === 'neutral' ? item.type : tone)}`}>
+            <div className="flex items-start justify-between gap-3">
+              <span className="font-bold">{item.label}</span>
+              <span className="shrink-0 font-black">{formatContribution(item.value)}</span>
+            </div>
+            <p className="mt-1 text-xs leading-5 opacity-90">{item.reason}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function QualityList({ title, items, muted = false }) {
   return (
     <div className="mt-3">
@@ -432,6 +510,12 @@ function bulletTone(tone) {
   return 'border-white/10 bg-white/[0.04] text-slate-200'
 }
 
+function contributionTone(tone) {
+  if (tone === 'positive') return 'border-emerald-300/25 bg-emerald-300/10 text-emerald-100'
+  if (tone === 'negative') return 'border-red-400/25 bg-red-400/10 text-red-100'
+  return 'border-white/10 bg-white/[0.04] text-slate-200'
+}
+
 function formatDays(value) {
   return value === null || value === undefined ? 'ไม่ทราบ' : `${value} วัน`
 }
@@ -439,4 +523,15 @@ function formatDays(value) {
 function formatSigned(value) {
   const numeric = Number(value ?? 0)
   return `${numeric >= 0 ? '+' : ''}${numeric}`
+}
+
+function formatContribution(value) {
+  const numeric = Number(value ?? 0)
+  return `${numeric >= 0 ? '+' : ''}${Math.round(numeric * 10) / 10}`
+}
+
+function formatMarketValue(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
 }
