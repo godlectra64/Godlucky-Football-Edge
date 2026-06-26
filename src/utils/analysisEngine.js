@@ -31,27 +31,39 @@ export function calculateFootballMasterAnalysis(match) {
     score: moduleBreakdown[module.breakdownKey].score,
     reason: moduleBreakdown[module.breakdownKey].reason,
   }))
-  const confidence = Math.round(clamp(modules.reduce((total, module) => total + module.score * module.weight, 0), 0, 100))
+  const baseConfidence = Math.round(clamp(modules.reduce((total, module) => total + module.score * module.weight, 0), 0, 100))
   const dataCompleteness = getDataCompleteness(match)
-  const overallRisk = storedBreakdown?.overall_risk ?? calculateOverallRisk(moduleBreakdown, confidence, dataCompleteness)
-  const riskLevel = normalizeRiskLevel(overallRisk.level)
+  const footballIntelligence = storedBreakdown?.football_intelligence ?? calculateFootballIntelligence(match, {
+    moduleBreakdown,
+    dataCompleteness,
+  })
+  const intelligenceModifier = getStoredOrCalculatedModifier(storedBreakdown, footballIntelligence, baseConfidence)
+  const confidence = Math.round(clamp(baseConfidence + intelligenceModifier, 0, 100))
+  const storedV3Risk = storedBreakdown?.football_intelligence ? storedBreakdown?.overall_risk : null
+  const overallRisk = calculateOverallRisk(moduleBreakdown, confidence, dataCompleteness, footballIntelligence)
+  const riskLevel = normalizeRiskLevel(storedV3Risk?.level ?? overallRisk.level)
   const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
+  const normalizedIntelligence = normalizeFootballIntelligence(footballIntelligence, intelligenceModifier)
   const analysisBreakdown = {
     ...moduleBreakdown,
+    football_intelligence: normalizedIntelligence,
     overall_risk: {
       level: riskLevel,
-      reason: overallRisk.reason,
+      reason: storedV3Risk?.reason ?? overallRisk.reason,
     },
   }
 
   return {
-    framework: 'football-master-v2',
+    framework: 'football-intelligence-v3',
     modules,
+    baseConfidence,
     confidence,
+    intelligenceModifier,
     riskLevel,
     recommendation,
-    analysisSummary: buildAnalysisSummary(match, modules, confidence, riskLevel, recommendation, analysisBreakdown),
+    analysisSummary: buildAnalysisSummary(match, modules, baseConfidence, confidence, riskLevel, recommendation, analysisBreakdown),
     analysisBreakdown,
+    footballIntelligence: normalizedIntelligence,
     dataCompleteness,
   }
 }
@@ -64,7 +76,7 @@ export function getRiskLevel(match) {
   const analysis = match.analysis ?? match.match_analysis ?? match
   const stored = String(analysis.risk_level ?? analysis.raw?.analysis_breakdown?.overall_risk?.level ?? '').toLowerCase()
 
-  if (analysis.raw?.framework === 'football-master-v2' && ['low', 'medium', 'high'].includes(stored)) return stored
+  if (['football-master-v2', 'football-intelligence-v3'].includes(analysis.raw?.framework) && ['low', 'medium', 'high'].includes(stored)) return stored
   return calculateFootballMasterAnalysis(match).riskLevel
 }
 
@@ -87,7 +99,7 @@ export function getConfidence(match) {
   const analysis = match.analysis ?? match.match_analysis ?? match
   const storedConfidence = numberValue(analysis.confidence_score)
 
-  if (analysis.raw?.framework === 'football-master-v2' && storedConfidence > 0) {
+  if (['football-master-v2', 'football-intelligence-v3'].includes(analysis.raw?.framework) && storedConfidence > 0) {
     return Math.round(clamp(storedConfidence, 0, 100))
   }
 
@@ -114,7 +126,7 @@ export function getDataCompleteness(match) {
   const checks = [
     Boolean(match.id),
     Boolean(match.kickoffAt ?? match.kickoff_at),
-    Boolean(match.league?.name),
+    Boolean(match.league?.name ?? match.competition?.name),
     Boolean(match.homeTeam?.name),
     Boolean(match.awayTeam?.name),
     Boolean(match.homeForm ?? analysis.raw?.homeForm),
@@ -140,6 +152,8 @@ export function enrichMatch(match) {
   return {
     ...match,
     confidence: master.confidence,
+    baseConfidence: master.baseConfidence,
+    intelligenceModifier: master.intelligenceModifier,
     recommendation: master.recommendation,
     riskLevel: master.riskLevel,
     totalAnalysisScore: master.confidence,
@@ -181,6 +195,250 @@ export function calculateStats(matches) {
     highRiskCount: highRisk.length,
     averageConfidence,
     updatedCount: enriched.filter((match) => match.analysis?.updated_at).length,
+  }
+}
+
+export function calculateFootballIntelligence(match, context = {}) {
+  const h2h = calculateH2HIntelligence(match, context)
+  const leagueContext = calculateLeagueContext(match)
+  const restDays = calculateRestDays(match, getContextValue(match, context, 'recentMatches'))
+  const scheduleDifficulty = calculateScheduleDifficulty(match, getContextValue(match, context, 'recentOpponents'))
+  const squadContext = calculateSquadContext(match, getContextValue(match, context, 'squadData'))
+  const momentum = calculateMomentum(match, getContextValue(match, context, 'formData'))
+  const matchImportance = calculateMatchImportance(match)
+  const intelligence = {
+    h2h,
+    league_context: leagueContext,
+    rest_days: restDays,
+    schedule_difficulty: scheduleDifficulty,
+    squad_context: squadContext,
+    momentum,
+    match_importance: matchImportance,
+  }
+  const modifier = calculateIntelligenceModifier(intelligence, context.baseConfidence)
+  const signals = collectIntelligenceSignals(intelligence)
+
+  return {
+    ...intelligence,
+    ai_explanation: {
+      summary: buildFootballIntelligenceExplanation(intelligence, modifier),
+      signals,
+      data_confidence: getIntelligenceDataConfidence(intelligence),
+    },
+    modifier,
+    signals,
+  }
+}
+
+export function calculateH2HIntelligence(match, context = {}) {
+  const h2hMatches = getH2HMatches(match, context)
+  if (!h2hMatches.length) {
+    return {
+      score: 58,
+      confidence: 'low',
+      reason: 'ยังไม่มีข้อมูล H2H เพียงพอ',
+      signals: ['missing_h2h'],
+    }
+  }
+
+  const latest10 = h2hMatches.slice(0, 10)
+  const latest5 = latest10.slice(0, 5)
+  const homeId = getTeamId(match.homeTeam)
+  const awayId = getTeamId(match.awayTeam)
+  const samples = summarizeH2H(latest10, homeId, awayId)
+  const homeAwaySamples = latest10.filter((item) => getTeamId(item.homeTeam) === homeId && getTeamId(item.awayTeam) === awayId)
+  const goalsAverage = samples.played ? (samples.goals / samples.played).toFixed(2) : null
+  const score = clamp(56 + (samples.homeWins - samples.awayWins) * 3 + Math.min(latest5.length, 5), 45, 76)
+  const confidence = latest10.length >= 8 ? 'high' : latest10.length >= 4 ? 'medium' : 'low'
+  const signals = [
+    `h2h_${latest5.length}_of_5_available`,
+    `h2h_${latest10.length}_of_10_available`,
+    homeAwaySamples.length ? `home_away_history_${homeAwaySamples.length}` : 'home_away_history_limited',
+  ]
+  if (goalsAverage) signals.push(`h2h_goals_avg_${goalsAverage}`)
+
+  return {
+    score: Math.round(score),
+    confidence,
+    reason: `H2H มีข้อมูลจริง ${latest10.length} นัดล่าสุด เจ้าบ้านชนะ ${samples.homeWins} เสมอ ${samples.draws} ทีมเยือนชนะ ${samples.awayWins}${goalsAverage ? ` ค่าเฉลี่ยประตู ${goalsAverage}` : ''}`,
+    signals,
+  }
+}
+
+export function calculateLeagueContext(match) {
+  const name = getCompetitionText(match)
+  const type = classifyCompetition(name)
+  const byType = {
+    league: { score: 62, risk_modifier: -1, reason: 'รายการลีกมีบริบทต่อเนื่องและประเมินเสถียรกว่า' },
+    cup: { score: 58, risk_modifier: 2, reason: 'รายการถ้วยมีแรงจูงใจสูง แต่ความผันผวนมากขึ้น' },
+    friendly: { score: 52, risk_modifier: 3, reason: 'เกมกระชับมิตรมีความเสี่ยงจากการทดลองทีมและแรงจูงใจต่ำกว่า' },
+    international: { score: 57, risk_modifier: 1, reason: 'เกมทีมชาติมีบริบทเฉพาะและข้อมูลสโมสรใช้ได้จำกัด' },
+    youth: { score: 53, risk_modifier: 2, reason: 'รายการเยาวชนมีความนิ่งของข้อมูลต่ำกว่ารายการหลัก' },
+    women: { score: 54, risk_modifier: 2, reason: 'รายการหญิงอาจมี coverage ข้อมูลน้อยกว่ารายการหลัก' },
+    unknown: { score: 58, risk_modifier: 0, reason: 'ยังจำแนกประเภทการแข่งขันไม่ได้ชัด จึงให้ค่ากลาง' },
+  }
+
+  return {
+    type,
+    ...byType[type],
+  }
+}
+
+export function calculateRestDays(match, recentMatches) {
+  const homeRecent = getTeamRecentMatches(recentMatches, 'home')
+  const awayRecent = getTeamRecentMatches(recentMatches, 'away')
+  const homeRestDays = getRestDays(match, homeRecent)
+  const awayRestDays = getRestDays(match, awayRecent)
+
+  if (homeRestDays === null && awayRestDays === null) {
+    return {
+      home_rest_days: null,
+      away_rest_days: null,
+      score: 58,
+      advantage: 'none',
+      reason: 'ยังไม่มีข้อมูลวันพักทีมล่าสุด',
+    }
+  }
+
+  const homeScore = scoreRestDays(homeRestDays)
+  const awayScore = scoreRestDays(awayRestDays)
+  const diff = (homeRestDays ?? 0) - (awayRestDays ?? 0)
+  const advantage = Math.abs(diff) >= 2 ? (diff > 0 ? 'home' : 'away') : 'none'
+  const score = Math.round(clamp(58 + homeScore - awayScore, 45, 72))
+
+  return {
+    home_rest_days: homeRestDays,
+    away_rest_days: awayRestDays,
+    score,
+    advantage,
+    reason: `วันพักล่าสุด เจ้าบ้าน ${formatRestDays(homeRestDays)} ทีมเยือน ${formatRestDays(awayRestDays)} ภาพรวมได้เปรียบ: ${advantage}`,
+  }
+}
+
+export function calculateScheduleDifficulty(match, recentOpponents) {
+  const opponents = flattenRecentOpponents(recentOpponents)
+  const rated = opponents.map(getOpponentDifficulty).filter((value) => value !== null)
+
+  if (!rated.length) {
+    return {
+      score: 58,
+      difficulty: 'unknown',
+      reason: 'ยังไม่มีข้อมูลคุณภาพคู่แข่ง 3-5 นัดล่าสุดเพียงพอ',
+      confidence: 'low',
+    }
+  }
+
+  const average = rated.reduce((total, value) => total + value, 0) / rated.length
+  const difficulty = average >= 68 ? 'hard' : average <= 42 ? 'easy' : 'medium'
+  const score = difficulty === 'hard' ? 54 : difficulty === 'easy' ? 62 : 58
+  const confidence = rated.length >= 6 ? 'high' : rated.length >= 3 ? 'medium' : 'low'
+
+  return {
+    score,
+    difficulty,
+    reason: `ประเมินความยากคู่แข่งล่าสุดจากข้อมูลจริง ${rated.length} รายการ ระดับ ${difficulty}`,
+    confidence,
+  }
+}
+
+export function calculateSquadContext(match, squadData) {
+  const data = squadData ?? match.raw?.squadData ?? match.analysis?.raw?.squadData
+  if (!data || (Array.isArray(data) && !data.length)) {
+    return {
+      score: 58,
+      confidence: 'low',
+      reason: 'ยังไม่มีข้อมูลตัวผู้เล่น/อาการบาดเจ็บเพียงพอ',
+      signals: ['missing_squad_data'],
+    }
+  }
+
+  const injuries = countItems(data.injuries ?? data.injury)
+  const suspensions = countItems(data.suspensions ?? data.suspension)
+  const missingKeyPlayers = countItems(data.missing_key_players ?? data.missingKeyPlayers)
+  const rotationRisk = Boolean(data.rotation || data.rotation_risk)
+  const penalty = injuries * 1.5 + suspensions * 2 + missingKeyPlayers * 3 + (rotationRisk ? 3 : 0)
+  const signals = []
+  if (injuries) signals.push(`injuries_${injuries}`)
+  if (suspensions) signals.push(`suspensions_${suspensions}`)
+  if (missingKeyPlayers) signals.push(`missing_key_players_${missingKeyPlayers}`)
+  if (rotationRisk) signals.push('rotation_risk')
+
+  return {
+    score: Math.round(clamp(62 - penalty, 35, 68)),
+    confidence: signals.length ? 'medium' : 'low',
+    reason: signals.length ? 'มีข้อมูล squad จริงบางส่วนและนำมาหักความเสี่ยงตามผลกระทบ' : 'มีข้อมูล squad แต่ยังไม่พบสัญญาณผู้เล่นสำคัญชัดเจน',
+    signals,
+  }
+}
+
+export function calculateMomentum(match, formData) {
+  const homeForm = formData?.home ?? match.homeForm ?? match.analysis?.raw?.homeForm
+  const awayForm = formData?.away ?? match.awayForm ?? match.analysis?.raw?.awayForm
+  const played = numberValue(homeForm?.played) + numberValue(awayForm?.played)
+
+  if (!played) {
+    return {
+      score: 56,
+      momentum: 'unknown',
+      signals: ['missing_detailed_form'],
+      reason: 'ยังไม่มีข้อมูลโมเมนตัมละเอียด จึงไม่เดาเพิ่มจากข้อมูลที่ไม่มี',
+    }
+  }
+
+  const pointsRate = ((formPoints(homeForm) + formPoints(awayForm)) / Math.max(played * 3, 1)) * 100
+  const goalsPerMatch = (numberValue(homeForm?.goals_for) + numberValue(awayForm?.goals_for)) / Math.max(played, 1)
+  const concededPerMatch = (numberValue(homeForm?.goals_against) + numberValue(awayForm?.goals_against)) / Math.max(played, 1)
+  const cleanSheets = numberValue(homeForm?.clean_sheets) + numberValue(awayForm?.clean_sheets)
+  const signals = []
+  if (goalsPerMatch >= 1.5) signals.push('scoring_trend_positive')
+  if (concededPerMatch >= 1.7) signals.push('conceding_trend_risky')
+  if (cleanSheets >= 3) signals.push('clean_sheet_support')
+  const score = Math.round(clamp(44 + pointsRate * 0.35 + goalsPerMatch * 6 - concededPerMatch * 4 + cleanSheets * 1.5, 35, 78))
+  const momentum = score >= 63 ? 'positive' : score <= 49 ? 'negative' : 'neutral'
+
+  return {
+    score,
+    momentum,
+    signals: signals.length ? signals : ['form_proxy_used'],
+    reason: 'ใช้ข้อมูล goals/form จาก v2 เป็น proxy โดยไม่เดาสถิติที่ยังไม่มี',
+  }
+}
+
+export function calculateMatchImportance(match) {
+  const text = `${getCompetitionText(match)} ${match.round ?? ''} ${match.raw?.stage ?? ''} ${match.raw?.group ?? ''}`.toLowerCase()
+  const leagueContext = calculateLeagueContext(match)
+  const knockout = ['final', 'semi', 'quarter', 'last 16', 'last_16', 'playoff', 'knockout'].some((item) => text.includes(item))
+
+  if (leagueContext.type === 'friendly') {
+    return {
+      score: 50,
+      importance: 'low',
+      risk_modifier: 2,
+      reason: 'Friendly มีความสำคัญเชิงผลการแข่งขันต่ำกว่า',
+    }
+  }
+  if (knockout) {
+    return {
+      score: 64,
+      importance: 'high',
+      risk_modifier: 2,
+      reason: 'รอบน็อกเอาต์/รอบลึกมีความสำคัญสูง แต่ variance สูงขึ้น',
+    }
+  }
+  if (leagueContext.type === 'league') {
+    return {
+      score: 59,
+      importance: 'medium',
+      risk_modifier: -1,
+      reason: 'เกมลีกปกติมีแรงจูงใจและรูปแบบค่อนข้างเสถียร',
+    }
+  }
+
+  return {
+    score: 58,
+    importance: leagueContext.type === 'unknown' ? 'unknown' : 'medium',
+    risk_modifier: leagueContext.risk_modifier > 0 ? 1 : 0,
+    reason: 'ยังไม่มี league table context เพียงพอ จึงไม่สรุป must-win เอง',
   }
 }
 
@@ -231,7 +489,7 @@ function scoreTeamStrength(match, homeForm, awayForm, homeStanding, awayStanding
 
 function scoreRecentForm(homeForm, awayForm) {
   const played = numberValue(homeForm?.played) + numberValue(awayForm?.played)
-  if (!played) return moduleResult(56, 'ข้อมูลฟอร์มล่าสุดจำกัด จึงประเมินแบบกลางจากบริบทคู่แข่ง')
+  if (!played) return moduleResult(56, 'ข้อมูลฟอร์มล่าสุดจำกัด จึงประเมินแบบกลาง')
 
   const pointsRate = ((formPoints(homeForm) + formPoints(awayForm)) / Math.max(played * 3, 1)) * 100
   const goalBalance = clamp((formGoalDiff(homeForm) + formGoalDiff(awayForm)) * 2.5, -18, 18)
@@ -255,7 +513,7 @@ function scoreDefensiveStability(homeForm, awayForm) {
   const goalsAgainst = numberValue(homeForm?.goals_against) + numberValue(awayForm?.goals_against)
   const cleanSheets = numberValue(homeForm?.clean_sheets) + numberValue(awayForm?.clean_sheets)
   const played = numberValue(homeForm?.played) + numberValue(awayForm?.played)
-  if (!played) return moduleResult(58, 'ข้อมูลเกมรับจำกัด จึงยังประเมินความมั่นคงในระดับกลาง')
+  if (!played) return moduleResult(58, 'ข้อมูลเกมรับจำกัด จึงประเมินระดับกลาง')
 
   const concededPerMatch = goalsAgainst / Math.max(played, 1)
   const score = clamp(74 - concededPerMatch * 22 + cleanSheets * 4, 25, 90)
@@ -292,34 +550,253 @@ function scoreMarketOddsRisk(match, homeForm, awayForm) {
   return moduleResult(score, 'มีข้อมูลตลาดบางส่วนและใช้ร่วมกับความต่างของฟอร์มเพื่อประเมินความเสี่ยง')
 }
 
-function calculateOverallRisk(breakdown, confidence, dataCompleteness) {
+function calculateOverallRisk(breakdown, confidence, dataCompleteness, intelligence) {
   const scores = footballMasterModules.map((module) => breakdown[module.breakdownKey].score)
   const spread = Math.max(...scores) - Math.min(...scores)
   const weakCore = ['team_strength', 'recent_form', 'attack_quality', 'defensive_stability'].filter((key) => breakdown[key].score < 45).length
+  const marketRiskWeak = breakdown.market_odds_risk.score < 45
+  const leagueType = intelligence?.league_context?.type
+  const dataConfidence = intelligence?.ai_explanation?.data_confidence ?? getIntelligenceDataConfidence(intelligence)
+  const totalRiskModifier = numberValue(intelligence?.league_context?.risk_modifier) + numberValue(intelligence?.match_importance?.risk_modifier)
+  const lowConfidenceSignals = [intelligence?.h2h, intelligence?.schedule_difficulty, intelligence?.squad_context].filter((item) => item?.confidence === 'low').length
 
-  if (confidence < 48 || weakCore >= 2 || spread >= 42) {
-    return { level: riskLabels.high, reason: 'คะแนนสำคัญหลายด้านอ่อนหรือขัดแย้งกันมาก จึงจัดเป็นความเสี่ยงสูง' }
+  if (
+    confidence < 48 ||
+    weakCore >= 2 ||
+    spread >= 42 ||
+    marketRiskWeak ||
+    (leagueType === 'friendly' && dataConfidence === 'low') ||
+    (totalRiskModifier >= 4 && confidence < 68)
+  ) {
+    return { level: riskLabels.high, reason: 'คะแนนสำคัญอ่อน/ขัดแย้ง หรือบริบทการแข่งขันมี variance สูง จึงจัดเป็นความเสี่ยงสูง' }
   }
-  if (confidence >= 72 && dataCompleteness >= 70 && spread <= 28) {
-    return { level: riskLabels.low, reason: 'หลายโมดูลให้ภาพสอดคล้องกันและข้อมูลรองรับค่อนข้างครบ' }
+  if (confidence >= 72 && dataCompleteness >= 70 && spread <= 28 && totalRiskModifier <= 1 && lowConfidenceSignals <= 1) {
+    return { level: riskLabels.low, reason: 'หลายโมดูลให้ภาพสอดคล้องกัน ข้อมูลรองรับค่อนข้างครบ และ risk modifier ต่ำ' }
   }
-  return { level: riskLabels.medium, reason: 'มีข้อมูลสนับสนุนบางส่วน แต่ยังไม่ครบทุกมิติหรือคะแนนยังไม่สอดคล้องเต็มที่' }
+  return { level: riskLabels.medium, reason: 'ข้อมูลยังไม่ครบทุกมิติ แต่ไม่มีสัญญาณอันตรายชัด จึงคงความเสี่ยงระดับกลาง' }
 }
 
-function buildAnalysisSummary(match, modules, confidence, riskLevel, recommendation, breakdown) {
+function buildAnalysisSummary(match, modules, baseConfidence, confidence, riskLevel, recommendation, breakdown) {
   const home = match.homeTeam?.name ?? 'ทีมเหย้า'
   const away = match.awayTeam?.name ?? 'ทีมเยือน'
   const bestModule = [...modules].sort((a, b) => b.score - a.score)[0]
   const weakestModule = [...modules].sort((a, b) => a.score - b.score)[0]
+  const intelligence = breakdown.football_intelligence
+  const contextText = buildContextSummary(intelligence)
   const riskReason = breakdown.overall_risk.reason
+  const modifierText = `base ${baseConfidence}/100, v3 ${formatSigned(intelligence.modifier)}, final ${confidence}/100`
 
   if (recommendation === recommendationLabels.bet) {
-    return `${home} พบ ${away}: คะแนนรวม ${confidence}/100 เข้าระดับ BET เพราะ ${bestModule.label} เด่น (${bestModule.score}/100) และ risk_level เป็น ${riskLevel}. ${riskReason}`
+    return `${home} พบ ${away}: ระบบให้เป็น BET เพราะคะแนนสุดท้าย ${confidence}/100 (${modifierText}) และความเสี่ยงอยู่ระดับ ${riskLevel}. จุดหนุนหลักคือ ${bestModule.label} (${bestModule.score}/100) ร่วมกับ ${contextText}. ${riskReason}`
   }
   if (recommendation === recommendationLabels.lean) {
-    return `${home} พบ ${away}: คะแนนรวม ${confidence}/100 เหมาะเป็น LEAN มากกว่า BET จุดหนุนหลักคือ ${bestModule.label} (${bestModule.score}/100) แต่ ${weakestModule.label} ยังถ่วงอยู่ (${weakestModule.score}/100). ${riskReason}`
+    return `${home} พบ ${away}: ระบบให้เป็น LEAN เพราะภาพรวมยังสนับสนุนบางด้าน โดยเฉพาะ ${bestModule.label} (${bestModule.score}/100) และ ${contextText} แต่ ${weakestModule.label} ยังถ่วงอยู่ (${weakestModule.score}/100) จึงยังไม่ถึงระดับ BET. ${riskReason}`
   }
-  return `${home} พบ ${away}: คะแนนรวม ${confidence}/100 ยังเป็น NO BET แม้มีจุดเด่นที่ ${bestModule.label} (${bestModule.score}/100) แต่ ${weakestModule.label} ยังไม่สนับสนุนพอ (${weakestModule.score}/100). ${riskReason}`
+  return `${home} พบ ${away}: คู่นี้เป็น NO BET เพราะคะแนนสุดท้าย ${confidence}/100 (${modifierText}) ยังไม่พอ หรือความเสี่ยงอยู่ระดับ ${riskLevel}. แม้มีจุดเด่นที่ ${bestModule.label} (${bestModule.score}/100) แต่ ${contextText} และ ${weakestModule.label} (${weakestModule.score}/100) ยังจำกัดความมั่นใจ. ${riskReason}`
+}
+
+function normalizeFootballIntelligence(intelligence, fallbackModifier) {
+  const normalized = intelligence ?? calculateFootballIntelligence({})
+  return {
+    h2h: normalized.h2h ?? calculateH2HIntelligence({}),
+    league_context: normalized.league_context ?? calculateLeagueContext({}),
+    rest_days: normalized.rest_days ?? calculateRestDays({}, null),
+    schedule_difficulty: normalized.schedule_difficulty ?? calculateScheduleDifficulty({}, null),
+    squad_context: normalized.squad_context ?? calculateSquadContext({}, null),
+    momentum: normalized.momentum ?? calculateMomentum({}, null),
+    match_importance: normalized.match_importance ?? calculateMatchImportance({}),
+    ai_explanation: normalized.ai_explanation ?? {
+      summary: 'Football intelligence v3 ใช้ข้อมูลที่มีแบบระมัดระวัง',
+      signals: normalized.signals ?? [],
+      data_confidence: getIntelligenceDataConfidence(normalized),
+    },
+    modifier: Math.round(clamp(numberValue(normalized.modifier ?? fallbackModifier), -6, 6)),
+    signals: normalized.signals ?? normalized.ai_explanation?.signals ?? collectIntelligenceSignals(normalized),
+  }
+}
+
+function calculateIntelligenceModifier(intelligence, baseConfidence = 0) {
+  const scores = [
+    intelligence.h2h.score,
+    intelligence.league_context.score,
+    intelligence.rest_days.score,
+    intelligence.schedule_difficulty.score,
+    intelligence.squad_context.score,
+    intelligence.momentum.score,
+    intelligence.match_importance.score,
+  ]
+  const averageScore = scores.reduce((total, score) => total + numberValue(score), 0) / scores.length
+  const riskModifier = numberValue(intelligence.league_context.risk_modifier) + numberValue(intelligence.match_importance.risk_modifier)
+  const lowConfidencePenalty = [intelligence.h2h, intelligence.schedule_difficulty, intelligence.squad_context].filter((item) => item.confidence === 'low').length * 0.4
+  const rawModifier = (averageScore - 58) * 0.22 - riskModifier * 0.8 - lowConfidencePenalty
+  const highConfidenceSupport = [intelligence.h2h, intelligence.schedule_difficulty, intelligence.squad_context].filter((item) => ['medium', 'high'].includes(item.confidence)).length
+  const positiveCap = baseConfidence && baseConfidence < 73 ? 2 : highConfidenceSupport >= 2 ? 6 : 4
+
+  return Math.round(clamp(rawModifier, -6, positiveCap))
+}
+
+function getStoredOrCalculatedModifier(storedBreakdown, footballIntelligence, baseConfidence) {
+  const stored = storedBreakdown?.football_intelligence?.modifier
+  if (stored !== undefined && stored !== null) return Math.round(clamp(numberValue(stored), -6, 6))
+  return calculateIntelligenceModifier(footballIntelligence, baseConfidence)
+}
+
+function buildFootballIntelligenceExplanation(intelligence, modifier) {
+  const league = intelligence.league_context.type
+  const momentum = intelligence.momentum.momentum
+  const h2hConfidence = intelligence.h2h.confidence
+  const squadConfidence = intelligence.squad_context.confidence
+
+  return `v3 ประเมินบริบทเป็น ${league}, momentum ${momentum}, H2H confidence ${h2hConfidence}, squad confidence ${squadConfidence}; modifier ${formatSigned(modifier)}`
+}
+
+function buildContextSummary(intelligence) {
+  const parts = []
+  parts.push(`บริบทการแข่งขันเป็น ${intelligence.league_context.type}`)
+  parts.push(`โมเมนตัม ${intelligence.momentum.momentum}`)
+  if (intelligence.h2h.confidence === 'low') parts.push('ข้อมูล H2H ยังจำกัด')
+  if (intelligence.squad_context.confidence === 'low') parts.push('ข้อมูลตัวผู้เล่นยังจำกัด')
+  if (intelligence.match_importance.risk_modifier > 0) parts.push('รายการมีความผันผวนเพิ่มขึ้น')
+  return parts.join(', ')
+}
+
+function collectIntelligenceSignals(intelligence) {
+  return [
+    ...(intelligence?.h2h?.signals ?? []),
+    ...(intelligence?.squad_context?.signals ?? []),
+    ...(intelligence?.momentum?.signals ?? []),
+    `league_${intelligence?.league_context?.type ?? 'unknown'}`,
+    `importance_${intelligence?.match_importance?.importance ?? 'unknown'}`,
+    `schedule_${intelligence?.schedule_difficulty?.difficulty ?? 'unknown'}`,
+    `rest_advantage_${intelligence?.rest_days?.advantage ?? 'none'}`,
+  ]
+}
+
+function getIntelligenceDataConfidence(intelligence) {
+  if (!intelligence) return 'low'
+  const confidenceValues = [intelligence.h2h, intelligence.schedule_difficulty, intelligence.squad_context]
+    .map((item) => item?.confidence)
+    .filter(Boolean)
+  const highOrMedium = confidenceValues.filter((value) => ['medium', 'high'].includes(value)).length
+  if (highOrMedium >= 3) return 'high'
+  if (highOrMedium >= 2) return 'medium'
+  return 'low'
+}
+
+function getContextValue(match, context, key) {
+  return context[key] ?? match.raw?.[key] ?? match.analysis?.raw?.[key] ?? match.analysis?.raw?.analysis_breakdown?.football_intelligence?.[key]
+}
+
+function getH2HMatches(match, context) {
+  const candidates = [
+    context.h2hMatches,
+    context.h2h?.matches,
+    context.h2h,
+    match.raw?.h2h?.matches,
+    match.raw?.head_to_head,
+    match.analysis?.raw?.h2h?.matches,
+  ]
+  return candidates.find((candidate) => Array.isArray(candidate) && candidate.length) ?? []
+}
+
+function summarizeH2H(matches, homeId, awayId) {
+  return matches.reduce(
+    (total, item) => {
+      const homeGoals = item.score?.fullTime?.home ?? item.home_goals ?? item.homeGoals
+      const awayGoals = item.score?.fullTime?.away ?? item.away_goals ?? item.awayGoals
+      if (homeGoals === null || homeGoals === undefined || awayGoals === null || awayGoals === undefined) return total
+      const itemHomeId = getTeamId(item.homeTeam)
+      const itemAwayId = getTeamId(item.awayTeam)
+      const homeSideGoals = itemHomeId === homeId ? homeGoals : itemAwayId === homeId ? awayGoals : null
+      const awaySideGoals = itemAwayId === awayId ? awayGoals : itemHomeId === awayId ? homeGoals : null
+      if (homeSideGoals === null || awaySideGoals === null) return total
+      total.played += 1
+      total.goals += numberValue(homeGoals) + numberValue(awayGoals)
+      if (homeSideGoals > awaySideGoals) total.homeWins += 1
+      else if (homeSideGoals < awaySideGoals) total.awayWins += 1
+      else total.draws += 1
+      return total
+    },
+    { played: 0, goals: 0, homeWins: 0, awayWins: 0, draws: 0 },
+  )
+}
+
+function classifyCompetition(name) {
+  const text = String(name ?? '').toLowerCase()
+  if (!text) return 'unknown'
+  if (['women', 'womens', 'feminine'].some((item) => text.includes(item))) return 'women'
+  if (['u17', 'u18', 'u19', 'u20', 'u21', 'u23', 'youth'].some((item) => text.includes(item))) return 'youth'
+  if (['friendly', 'friendlies'].some((item) => text.includes(item))) return 'friendly'
+  if (['world cup', 'euro', 'nations league', 'afcon', 'copa america', 'international'].some((item) => text.includes(item))) return 'international'
+  if (['cup', 'trophy', 'knockout', 'playoff', 'play-off'].some((item) => text.includes(item))) return 'cup'
+  if (['league', 'division', 'serie', 'liga', 'bundesliga', 'premier', 'championship'].some((item) => text.includes(item))) return 'league'
+  return 'unknown'
+}
+
+function getCompetitionText(match) {
+  return [
+    match.league?.name,
+    match.competition?.name,
+    match.raw?.competition?.name,
+    match.raw?.league?.name,
+    match.name,
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+function getTeamRecentMatches(recentMatches, side) {
+  if (!recentMatches) return []
+  if (Array.isArray(recentMatches)) return recentMatches
+  return recentMatches[side] ?? recentMatches[`${side}Matches`] ?? []
+}
+
+function getRestDays(match, recentMatches) {
+  if (!Array.isArray(recentMatches) || !recentMatches.length) return null
+  const matchTime = new Date(match.kickoffAt ?? match.kickoff_at ?? match.utcDate ?? match.raw?.utcDate ?? Date.now()).getTime()
+  const previous = recentMatches
+    .map((item) => new Date(item.utcDate ?? item.kickoff_at ?? item.kickoffAt ?? item.date ?? 0).getTime())
+    .filter((time) => Number.isFinite(time) && time > 0 && time < matchTime)
+    .sort((a, b) => b - a)[0]
+  if (!previous) return null
+  return Math.max(0, Math.floor((matchTime - previous) / 86400000))
+}
+
+function scoreRestDays(days) {
+  if (days === null) return 0
+  if (days <= 2) return -5
+  if (days <= 5) return 0
+  if (days <= 9) return 4
+  if (days > 14) return -2
+  return 1
+}
+
+function formatRestDays(days) {
+  return days === null ? 'ไม่ทราบ' : `${days} วัน`
+}
+
+function flattenRecentOpponents(recentOpponents) {
+  if (!recentOpponents) return []
+  if (Array.isArray(recentOpponents)) return recentOpponents
+  return [...(recentOpponents.home ?? []), ...(recentOpponents.away ?? [])]
+}
+
+function getOpponentDifficulty(item) {
+  const opponent = item.opponent ?? item.awayTeam ?? item.homeTeam ?? item.team
+  const position = numberValue(opponent?.position ?? item.position)
+  const points = numberValue(opponent?.points ?? item.points)
+  const rating = numberValue(opponent?.rating ?? item.rating ?? item.strength)
+  if (rating) return clamp(rating, 0, 100)
+  if (position) return clamp(82 - position * 3, 20, 85)
+  if (points) return clamp(points, 20, 85)
+  return null
+}
+
+function countItems(value) {
+  if (Array.isArray(value)) return value.length
+  if (typeof value === 'number') return value
+  if (value && typeof value === 'object') return Object.keys(value).length
+  return value ? 1 : 0
 }
 
 function moduleResult(score, reason) {
@@ -329,6 +806,10 @@ function moduleResult(score, reason) {
 function findStanding(standings, teamId) {
   const totalTable = standings.find((standing) => standing.type === 'TOTAL')?.table ?? standings[0]?.table ?? []
   return totalTable.find((row) => Number(row.team?.id) === Number(teamId))
+}
+
+function getTeamId(team) {
+  return Number(team?.api_team_id ?? team?.id ?? team?.apiTeamId ?? 0)
 }
 
 function hasRecentForm(form) {
@@ -353,6 +834,10 @@ function numberValue(value) {
   return Number.isFinite(numeric) ? numeric : 0
 }
 
+function formatSigned(value) {
+  return `${value >= 0 ? '+' : ''}${value}`
+}
+
 function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value))
+  return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min))
 }

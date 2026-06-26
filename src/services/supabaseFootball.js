@@ -199,7 +199,23 @@ function todayAndTomorrowRangeBangkok() {
 }
 
 function createFallbackAnalysis(row) {
-  const summary = 'มีข้อมูลการแข่งขันจาก football_matches แล้ว แต่ยังไม่มีผลวิเคราะห์ Football Master Framework แบบเต็ม'
+  const footballIntelligence = {
+    h2h: { score: 58, confidence: 'low', reason: 'ยังไม่มีข้อมูล H2H เพียงพอ', signals: ['missing_h2h'] },
+    league_context: { type: 'unknown', score: 58, risk_modifier: 0, reason: 'ยังจำแนกประเภทการแข่งขันไม่ได้ชัด จึงให้ค่ากลาง' },
+    rest_days: { home_rest_days: null, away_rest_days: null, score: 58, advantage: 'none', reason: 'ยังไม่มีข้อมูลวันพักทีมล่าสุด' },
+    schedule_difficulty: { score: 58, difficulty: 'unknown', reason: 'ยังไม่มีข้อมูลคุณภาพคู่แข่ง 3-5 นัดล่าสุดเพียงพอ', confidence: 'low' },
+    squad_context: { score: 58, confidence: 'low', reason: 'ยังไม่มีข้อมูลตัวผู้เล่น/อาการบาดเจ็บเพียงพอ', signals: ['missing_squad_data'] },
+    momentum: { score: 56, momentum: 'unknown', signals: ['missing_detailed_form'], reason: 'ยังไม่มีข้อมูลโมเมนตัมละเอียด จึงไม่เดาเพิ่มจากข้อมูลที่ไม่มี' },
+    match_importance: { score: 58, importance: 'unknown', risk_modifier: 0, reason: 'ยังไม่มี league table context เพียงพอ จึงไม่สรุป must-win เอง' },
+    ai_explanation: {
+      summary: 'Football intelligence v3 ใช้ข้อมูลที่มีแบบระมัดระวัง',
+      signals: ['missing_h2h', 'missing_squad_data', 'missing_detailed_form', 'league_unknown'],
+      data_confidence: 'low',
+    },
+    modifier: -1,
+    signals: ['missing_h2h', 'missing_squad_data', 'missing_detailed_form', 'league_unknown'],
+  }
+  const summary = 'มีข้อมูลการแข่งขันจาก football_matches แล้ว แต่ยังไม่มีผลวิเคราะห์เต็ม ระบบจึงให้เป็น NO BET เพราะข้อมูล H2H/ตัวผู้เล่น/โมเมนตัมยังจำกัด และใช้ Football Intelligence v3 แบบระมัดระวัง'
 
   return {
     team_strength_score: 56,
@@ -210,23 +226,27 @@ function createFallbackAnalysis(row) {
     defensive_stability_score: 58,
     motivation_score: 56,
     market_risk_score: 60,
-    confidence_score: 60,
+    confidence_score: 59,
     recommendation: 'NO BET',
     risk_level: 'medium',
     analysis_summary: summary,
     thai_reason: summary,
     raw: {
-      framework: 'football-master-v2',
+      framework: 'football-intelligence-v3',
+      base_confidence_score: 60,
+      intelligence_modifier: -1,
+      final_confidence_score: 59,
       analysis_summary: summary,
       analysis_breakdown: {
         team_strength: { score: 56, reason: 'ยังไม่มีผลวิเคราะห์เต็ม จึงใช้ข้อมูลคู่แข่งที่มีแบบจำกัด' },
         recent_form: { score: 56, reason: 'ข้อมูลฟอร์มล่าสุดยังไม่ครบ' },
         attack_quality: { score: 57, reason: 'ยังไม่มี xG หรือข้อมูลเกมรุกละเอียด' },
         defensive_stability: { score: 58, reason: 'ข้อมูลเกมรับยังจำกัด' },
-        home_away_advantage: { score: 58, reason: 'ให้ค่าน้ำหนักเจ้าบ้านแบบระมัดระวัง' },
+        home_away_advantage: { score: 58, reason: 'ให้น้ำหนักเจ้าบ้านแบบระมัดระวัง' },
         motivation_context: { score: 56, reason: 'ข้อมูลบริบทและแรงจูงใจยังจำกัด' },
         market_odds_risk: { score: 60, reason: 'ไม่มีข้อมูลราคา จึงใช้ค่ากลางโดยไม่ยกระดับเป็น high risk' },
-        overall_risk: { level: 'medium', reason: 'ข้อมูลยังไม่ครบ แต่พอประเมินแบบกลางได้' },
+        football_intelligence: footballIntelligence,
+        overall_risk: { level: 'medium', reason: 'ข้อมูลยังไม่ครบทุกมิติ แต่ไม่มีสัญญาณอันตรายชัด จึงคงความเสี่ยงระดับกลาง' },
       },
       fallback: true,
       homeForm: null,
