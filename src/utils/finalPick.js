@@ -2,6 +2,32 @@ import { getConfidence, getRecommendation, getRiskLevel } from './analysisEngine
 import { getAiPickDisplay } from './pickSide.js'
 
 const valueStatuses = ['YES', 'NO', 'WAITING_DATA', 'NOT_APPLICABLE']
+const oneBestPickCopy = {
+  FINAL_PICK: {
+    title: 'AI FINAL PICK',
+    subtitle: 'คู่ที่ AI มั่นใจที่สุดของวันนี้',
+    badgeLabel: 'FINAL PICK',
+    note: 'คู่ที่ AI มั่นใจที่สุดของวันนี้',
+  },
+  BEST_AVAILABLE: {
+    title: 'BEST AVAILABLE PICK',
+    subtitle: 'คู่ที่ดีที่สุดของวันนี้ แม้ยังไม่ถึงระดับ BET',
+    badgeLabel: 'BEST AVAILABLE',
+    note: 'คู่ที่ดีที่สุดของวันนี้ แม้ยังไม่ถึงระดับ BET',
+  },
+  WATCHLIST: {
+    title: 'WATCHLIST',
+    subtitle: 'มีทรงน่าสนใจ แต่ควรรอข้อมูลเพิ่ม',
+    badgeLabel: 'WATCHLIST',
+    note: 'มีทรงน่าสนใจ แต่ควรรอข้อมูลเพิ่ม',
+  },
+  NO_CLEAR_PICK: {
+    title: 'NO CLEAR PICK',
+    subtitle: 'วันนี้ AI ยังไม่พบคู่ที่มีคุณภาพเพียงพอ',
+    badgeLabel: '',
+    note: 'วันนี้ AI ยังไม่พบคู่ที่มีคุณภาพพอให้เลือกเป็นตัวหลัก',
+  },
+}
 
 export function buildAiFinalPick(match = {}) {
   const analysis = match.analysis ?? match.match_analysis ?? match
@@ -83,6 +109,27 @@ export function buildAiFinalPick(match = {}) {
   }
 }
 
+export function getOneBestPickOfDay(matches = []) {
+  const enriched = (matches ?? []).map((match) => ({
+    match,
+    finalPick: buildAiFinalPick(match),
+    storedPick: getStoredPick(match),
+    combinedModuleScore: getCombinedModuleScore(match),
+  }))
+  const reliableRecommendations = enriched.filter((item) => isReliablePick(item.finalPick))
+  const finalPick = sortOneBestCandidates(reliableRecommendations.filter((item) => item.finalPick.recommendation === 'BET'))[0]
+
+  if (finalPick) return buildOneBestResult(finalPick.match, 'FINAL_PICK')
+
+  const bestAvailable = sortOneBestCandidates(reliableRecommendations.filter((item) => item.finalPick.recommendation === 'LEAN'))[0]
+  if (bestAvailable) return buildOneBestResult(bestAvailable.match, 'BEST_AVAILABLE')
+
+  const watchlist = sortOneBestCandidates(enriched.filter((item) => item.finalPick.riskLevel !== 'HIGH' && isStoredPickValid(item.storedPick)))[0]
+  if (watchlist) return buildOneBestResult(watchlist.match, 'WATCHLIST')
+
+  return buildOneBestResult(null, 'NO_CLEAR_PICK')
+}
+
 function getProbability(analysis, raw, pickSide, confidence) {
   const direct = pickSide === 'HOME'
     ? firstNumber(analysis.home_win_probability, analysis.raw?.home_win_probability, raw.home_win_probability)
@@ -109,11 +156,7 @@ function normalizeValueStatus(value, context) {
 
   const normalized = String(value ?? '').toUpperCase()
   if (valueStatuses.includes(normalized)) return normalized
-
-  const market = parseLineNumber(context.marketLine)
-  const fair = parseLineNumber(context.fairLine)
-  if (market === null || fair === null) return 'NO'
-  return market > fair ? 'YES' : 'NO'
+  return 'NO'
 }
 
 function getValueLabel(status) {
@@ -150,12 +193,69 @@ function firstNumber(...values) {
   return null
 }
 
-function parseLineNumber(value) {
-  if (value === null || value === undefined) return null
-  const match = String(value).replace(',', '.').match(/-?\d+(?:\.\d+)?/)
-  if (!match) return null
-  const numeric = Number(match[0])
-  return Number.isFinite(numeric) ? numeric : null
+function buildOneBestResult(match, heroType) {
+  const copy = oneBestPickCopy[heroType] ?? oneBestPickCopy.NO_CLEAR_PICK
+  return {
+    match,
+    heroType,
+    title: copy.title,
+    subtitle: copy.subtitle,
+    badgeLabel: copy.badgeLabel,
+    note: copy.note,
+  }
+}
+
+function isReliablePick(finalPick) {
+  return (
+    ['HOME', 'AWAY', 'DRAW'].includes(finalPick.pickSide) &&
+    Boolean(finalPick.pickTeam) &&
+    finalPick.riskLevel !== 'HIGH'
+  )
+}
+
+function isStoredPickValid(pick) {
+  return ['HOME', 'AWAY', 'DRAW'].includes(pick.pickSide) && Boolean(pick.pickTeam)
+}
+
+function getStoredPick(match) {
+  const analysis = match.analysis ?? match.match_analysis ?? match
+  const pickSide = normalizePickSide(analysis.pick_side ?? match.pickSide ?? match.pick_side)
+  const pickTeam = firstText(analysis.pick_team, match.pickTeam, match.pick_team)
+  return { pickSide, pickTeam }
+}
+
+function sortOneBestCandidates(items) {
+  return [...items].sort((a, b) => {
+    const confidenceDiff = b.finalPick.confidence - a.finalPick.confidence
+    const riskDiff = riskPriority(a.finalPick.riskLevel) - riskPriority(b.finalPick.riskLevel)
+    const moduleDiff = b.combinedModuleScore - a.combinedModuleScore
+    const kickoffA = new Date(a.match.kickoffAt ?? a.match.kickoff_at ?? 0).getTime()
+    const kickoffB = new Date(b.match.kickoffAt ?? b.match.kickoff_at ?? 0).getTime()
+    return confidenceDiff || riskDiff || moduleDiff || kickoffA - kickoffB
+  })
+}
+
+function riskPriority(riskLevel) {
+  if (riskLevel === 'LOW') return 0
+  if (riskLevel === 'MEDIUM') return 1
+  return 2
+}
+
+function getCombinedModuleScore(match) {
+  const analysis = match.analysis ?? match.match_analysis ?? match
+  const breakdown = analysis.raw?.analysis_breakdown ?? analysis.analysis_breakdown ?? {}
+  const scores = [
+    analysis.home_advantage_score ?? breakdown.home_away_advantage?.score ?? analysis.home_away_score,
+    analysis.away_weakness_score ?? breakdown.away_weakness?.score,
+    analysis.goal_scoring_score ?? breakdown.attack_quality?.score ?? analysis.goal_quality_score,
+    analysis.defensive_stability_score ?? breakdown.defensive_stability?.score,
+    analysis.market_risk_score ?? breakdown.market_odds_risk?.score ?? analysis.risk_score,
+  ]
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value))
+
+  if (!scores.length) return 0
+  return Math.round(scores.reduce((total, score) => total + clamp(score, 0, 100), 0) / scores.length)
 }
 
 function normalizeRecommendation(value) {
@@ -166,6 +266,11 @@ function normalizeRecommendation(value) {
 function normalizeRiskLevel(value) {
   const normalized = String(value ?? '').toUpperCase()
   return ['LOW', 'MEDIUM', 'HIGH'].includes(normalized) ? normalized : 'MEDIUM'
+}
+
+function normalizePickSide(value) {
+  const normalized = String(value ?? '').toUpperCase()
+  return ['HOME', 'AWAY', 'DRAW', 'NONE'].includes(normalized) ? normalized : 'NONE'
 }
 
 function clamp(value, min, max) {

@@ -5,7 +5,7 @@ import { formatKickoffTime } from '../utils/formatters'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
 
-export default function MatchCard({ match, onOpen }) {
+export default function MatchCard({ match, oneBestPick = null, onOpen }) {
   const recommendation = match.recommendation ?? getRecommendation(match)
   const confidence = Math.round(match.confidence ?? getConfidence(match))
   const riskLevel = match.riskLevel ?? getRiskLevel(match)
@@ -13,7 +13,8 @@ export default function MatchCard({ match, onOpen }) {
   const aiPickLabel = match.aiPickLabel ?? match.ai_pick_label ?? (match.rank ? `AI PICK #${match.rank}` : '')
   const finalPick = buildAiFinalPick(match)
   const analysisSummary = buildCardSummary(match, recommendation, confidence)
-  const rankBadges = buildDisplayBadges(match, recommendation, riskLevel, confidence)
+  const oneBestBadge = getOneBestCardBadge(match, oneBestPick)
+  const rankBadges = buildDisplayBadges(match, recommendation, riskLevel, confidence, oneBestBadge)
   const cardClass = buildCardClass(match.rank, recommendation, riskLevel)
   const confidenceTone = String(riskLevel).toUpperCase() === 'HIGH' ? 'bg-gradient-to-r from-red-400 to-rose-200' : confidence >= 72 ? 'bg-gradient-to-r from-emerald-400 to-cyan-200' : confidence >= 58 ? 'bg-gradient-to-r from-amber-300 to-blue-300' : 'bg-gradient-to-r from-red-400 to-rose-200'
   const open = () => onOpen?.(match.id)
@@ -134,9 +135,9 @@ function buildCardClass(rank, recommendation, riskLevel) {
   return `${base} ${first} border-white/10 hover:border-white/20`
 }
 
-function buildDisplayBadges(match, recommendation, riskLevel, confidence) {
+function buildDisplayBadges(match, recommendation, riskLevel, confidence, oneBestBadge = '') {
   const rawBadges = match.rankBadges ?? match.rank_badges ?? []
-  const badges = [...rawBadges]
+  const badges = oneBestBadge ? [oneBestBadge, ...rawBadges] : [...rawBadges]
   const limitedData = isLimitedData(match)
 
   if (String(riskLevel).toUpperCase() === 'HIGH' || recommendation === 'NO BET') badges.push('NO BET')
@@ -146,7 +147,13 @@ function buildDisplayBadges(match, recommendation, riskLevel, confidence) {
   if (recommendation === 'LEAN') badges.push('WATCHLIST')
   if (limitedData) badges.push('LIMITED DATA')
 
-  return [...new Set(badges)].slice(0, 5)
+  return [...new Set(badges)].slice(0, 6)
+}
+
+function getOneBestCardBadge(match, oneBestPick) {
+  if (!oneBestPick?.match || oneBestPick.heroType === 'NO_CLEAR_PICK') return ''
+  if (String(oneBestPick.match.id) !== String(match.id)) return ''
+  return oneBestPick.badgeLabel
 }
 
 function isLimitedData(match) {
@@ -158,6 +165,8 @@ function isLimitedData(match) {
 }
 
 function badgeClass(badge) {
+  if (badge === 'FINAL PICK') return 'border-emerald-300/35 bg-emerald-300/12 text-emerald-50'
+  if (badge === 'BEST AVAILABLE') return 'border-amber-300/35 bg-amber-300/12 text-amber-50'
   if (badge === 'BEST VALUE' || badge === 'HIGH CONFIDENCE') return 'border-emerald-300/30 bg-emerald-300/10 text-emerald-100'
   if (badge === 'SAFE PICK') return 'border-cyan-300/30 bg-cyan-300/10 text-cyan-100'
   if (badge === 'WATCHLIST') return 'border-amber-300/30 bg-amber-300/10 text-amber-100'

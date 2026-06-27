@@ -25,7 +25,7 @@ const moduleSubtitles = {
   'Overall Risk': 'Total volatility',
 }
 
-export default function MatchDetailPage({ match, loading = false, error = '', performanceContext = 'Collecting data', predictionReliability = null, onBack, onGoToday }) {
+export default function MatchDetailPage({ match, oneBestPick = null, loading = false, error = '', performanceContext = 'Collecting data', predictionReliability = null, onBack, onGoToday }) {
   if (loading) {
     return (
       <main className="app-page theme-analysis">
@@ -57,6 +57,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
   }
 
   const detail = normalizeDetailPayload(match)
+  const heroSelection = oneBestPick?.match && String(oneBestPick.match.id) === String(detail.id) && oneBestPick.heroType !== 'NO_CLEAR_PICK' ? oneBestPick : null
   const verdict = buildAiVerdict(detail)
   const riskFactors = buildRiskFactors(detail)
   const riskLabel = getRiskLabel(detail.riskLevel)
@@ -69,7 +70,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
     <main className="app-page theme-analysis">
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
-      <FinalDecisionSection detail={detail} />
+      <FinalDecisionSection detail={detail} heroSelection={heroSelection} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <ScoreBreakdownSection items={detail.moduleItems} />
       <ExplainableAiSection explanation={explainability} />
@@ -169,12 +170,18 @@ function AiVerdictSection({ detail, verdict }) {
   )
 }
 
-function FinalDecisionSection({ detail }) {
+function FinalDecisionSection({ detail, heroSelection }) {
   const finalPick = detail.finalPick
 
   return (
     <Section title="AI FINAL DECISION" icon={Sparkles} accent>
       <div className={`rounded-2xl border p-3 ${finalDecisionClass(finalPick)}`}>
+        {heroSelection ? (
+          <div className="mb-3 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-2.5">
+            <span className="semantic-badge border-amber-300/35 bg-amber-300/12 text-amber-50">ตัวเลือกหลักของวันนี้</span>
+            <p className="mt-2 text-sm font-bold leading-6 text-amber-50">{heroSelection.subtitle}</p>
+          </div>
+        ) : null}
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-[10px] font-black uppercase text-slate-400">AI เลือก</p>

@@ -4,6 +4,7 @@ import MobileHeader from './components/MobileHeader'
 import TodayPage from './pages/TodayPage'
 import { getAiPerformanceData, getConnectionState, getLatestSyncLog, getMatchDetail, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
 import { getTopMatches } from './utils/analysisEngine'
+import { getOneBestPickOfDay } from './utils/finalPick'
 import { formatUpdatedAt } from './utils/formatters'
 import { getMatchRoute } from './utils/matchDetail'
 import { getPredictionReliability } from './utils/modelPerformanceAnalyzer'
@@ -107,6 +108,7 @@ function App() {
     [matches],
   )
   const topMatches = useMemo(() => getTopMatches(visibleMatches, 10), [visibleMatches])
+  const oneBestPick = useMemo(() => getOneBestPickOfDay(topMatches), [topMatches])
   const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? detailMatch ?? null
   const performanceContext = useMemo(() => {
     const version = selectedMatch?.analysis?.raw?.framework ?? selectedMatch?.analysis?.raw?.analysis_version ?? ''
@@ -225,6 +227,7 @@ function App() {
         {activePage === 'today' ? (
           <TodayPage
             matches={topMatches}
+            oneBestPick={oneBestPick}
             totalMatchCount={visibleMatches.length}
             loading={loading}
             error={error}
@@ -235,7 +238,7 @@ function App() {
         ) : null}
         <Suspense fallback={<PageFallback />}>
           {activePage === 'analysis' ? (
-            <MatchDetailPage match={selectedMatch} loading={detailLoading && connection.configured && !selectedMatch} error={detailError} performanceContext={performanceContext} predictionReliability={predictionReliability} onBack={goToday} onGoToday={goToday} />
+            <MatchDetailPage match={selectedMatch} oneBestPick={oneBestPick} loading={detailLoading && connection.configured && !selectedMatch} error={detailError} performanceContext={performanceContext} predictionReliability={predictionReliability} onBack={goToday} onGoToday={goToday} />
           ) : null}
           {activePage === 'admin' ? (
             <AdminPage

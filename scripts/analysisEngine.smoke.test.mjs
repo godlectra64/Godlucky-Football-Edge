@@ -51,6 +51,7 @@ import {
 import { buildExplainableAi } from '../src/utils/explainableAi.js'
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
+import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getPagePath, getRouteState } from '../src/utils/routes.js'
 import { fetchEnabledLeagues, updateLeagueSettingsById } from '../src/repositories/analysisRepository.js'
 import { fetchMatchById, fetchMatchesByKickoffRange } from '../src/repositories/matchesRepository.js'
@@ -256,6 +257,56 @@ const noBetPick = deriveAiPickSide({
 assert.equal(noBetPick.pickSide, 'NONE')
 assert.equal(noBetPick.pickTeam, null)
 assert.equal(getAiPickDisplay({ ...baseMatch, analysis: noBetPick }).canHighlight, false)
+
+function oneBestCandidate(id, recommendation, confidence, riskLevel = 'MEDIUM', pickSide = 'HOME', moduleScore = 65) {
+  return {
+    ...baseMatch,
+    id,
+    analysis: {
+      recommendation,
+      confidence_score: confidence,
+      risk_level: riskLevel,
+      pick_side: pickSide,
+      pick_team: pickSide === 'HOME' ? 'Home FC' : pickSide === 'AWAY' ? 'Away FC' : pickSide === 'DRAW' ? 'เสมอ' : null,
+      pick_reason: 'คะแนนฝั่งที่เลือกชัดกว่าและความเสี่ยงไม่สูง',
+      home_advantage_score: moduleScore,
+      away_weakness_score: moduleScore,
+      goal_scoring_score: moduleScore,
+      defensive_stability_score: moduleScore,
+      market_risk_score: moduleScore,
+      raw: { framework: 'football-intelligence-v3' },
+    },
+  }
+}
+
+const oneBestWithBet = getOneBestPickOfDay([
+  oneBestCandidate('lean-option', 'LEAN', 80, 'LOW'),
+  oneBestCandidate('bet-option', 'BET', 74, 'MEDIUM'),
+])
+assert.equal(oneBestWithBet.heroType, 'FINAL_PICK')
+assert.equal(oneBestWithBet.match.id, 'bet-option')
+
+const oneBestWithLeanOnly = getOneBestPickOfDay([
+  oneBestCandidate('lean-medium', 'LEAN', 70, 'MEDIUM', 'HOME', 80),
+  oneBestCandidate('lean-low', 'LEAN', 70, 'LOW', 'AWAY', 62),
+])
+assert.equal(oneBestWithLeanOnly.heroType, 'BEST_AVAILABLE')
+assert.equal(oneBestWithLeanOnly.match.id, 'lean-low')
+assert.equal(oneBestWithLeanOnly.match.analysis.recommendation, 'LEAN', 'BEST_AVAILABLE must not change recommendation to BET')
+
+const oneBestWatchlist = getOneBestPickOfDay([
+  oneBestCandidate('watch-no-bet', 'NO BET', 57, 'LOW'),
+])
+assert.equal(oneBestWatchlist.heroType, 'WATCHLIST')
+assert.equal(oneBestWatchlist.match.id, 'watch-no-bet')
+
+const noSideLean = oneBestCandidate('no-side-lean', 'LEAN', 70, 'LOW', 'NONE', 50)
+const oneBestNoClear = getOneBestPickOfDay([
+  oneBestCandidate('high-risk-bet', 'BET', 91, 'HIGH'),
+  { ...noSideLean, analysis: { ...noSideLean.analysis, pick_side: 'NONE', pick_team: null } },
+])
+assert.equal(oneBestNoClear.heroType, 'NO_CLEAR_PICK')
+assert.equal(oneBestNoClear.match, null)
 
 const normalizedEmptyDetail = normalizeDetailPayload({ id: 'empty-detail', analysis: { raw: null } })
 assert.equal(normalizedEmptyDetail.footballIntelligence.h2h.reason, 'ยังไม่มีข้อมูล H2H เพียงพอ')
