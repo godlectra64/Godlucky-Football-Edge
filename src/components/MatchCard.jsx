@@ -9,6 +9,7 @@ export default function MatchCard({ match, onOpen }) {
   const confidence = Math.round(match.confidence ?? getConfidence(match))
   const riskLevel = match.riskLevel ?? getRiskLevel(match)
   const rankingScore = Math.round(match.rankingScore ?? match.ranking_score ?? confidence)
+  const aiPickLabel = match.aiPickLabel ?? match.ai_pick_label ?? (match.rank ? `AI PICK #${match.rank}` : '')
   const analysisSummary = buildCardSummary(match, recommendation, confidence)
   const rankBadges = match.rankBadges ?? match.rank_badges ?? []
   const open = () => onOpen?.(match.id)
@@ -38,6 +39,7 @@ export default function MatchCard({ match, onOpen }) {
             <span className="shrink-0">{formatKickoffTime(match.kickoffAt)}</span>
             <span className="truncate">{match.league?.name ?? 'Unknown league'}</span>
           </div>
+          {aiPickLabel ? <p className="mt-1 text-[10px] font-black uppercase tracking-normal text-[var(--page-accent)]">{aiPickLabel}</p> : null}
           <TeamRow team={match.homeTeam} strong />
           <TeamRow team={match.awayTeam} />
         </div>

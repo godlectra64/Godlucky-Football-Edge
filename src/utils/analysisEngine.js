@@ -167,21 +167,24 @@ export function getDataCompleteness(match) {
 }
 
 export function getTopMatches(matches, limit = 10) {
-  return rankTopMatches(matches, limit)
+  return rankTopAiPicks(matches, limit)
 }
 
 export function enrichMatch(match) {
   const master = calculateFootballMasterAnalysis(match)
   const ranking = buildRankingProfile(match, master)
+  const confidence = getPickConfidence({ ...match, confidence: match.confidence ?? match.analysis?.confidence_score ?? master.confidence })
+  const riskLevel = normalizeRiskLevel(match.riskLevel ?? match.risk_level ?? match.analysis?.risk_level ?? master.riskLevel)
+  const recommendation = match.recommendation ?? match.analysis?.recommendation ?? getRecommendationFromConfidence(confidence, riskLevel)
 
   return {
     ...match,
-    confidence: master.confidence,
+    confidence,
     baseConfidence: master.baseConfidence,
     intelligenceModifier: master.intelligenceModifier,
-    recommendation: master.recommendation,
-    riskLevel: master.riskLevel,
-    totalAnalysisScore: master.confidence,
+    recommendation,
+    riskLevel,
+    totalAnalysisScore: confidence,
     dataCompleteness: master.dataCompleteness,
     analysisSummary: master.analysisSummary,
     analysisBreakdown: master.analysisBreakdown,
@@ -195,14 +198,15 @@ export function enrichMatch(match) {
 }
 
 export function compareForTopMatches(a, b) {
-  const scoreA = a.rankingScore ?? a.ranking_score ?? calculateRankingScore(a)
-  const scoreB = b.rankingScore ?? b.ranking_score ?? calculateRankingScore(b)
+  const recommendationDiff = getRecommendationPriority(a.recommendation) - getRecommendationPriority(b.recommendation)
+  const confidenceDiff = getPickConfidence(b) - getPickConfidence(a)
+  const scoreA = a.rankingScore ?? a.ranking_score ?? getPickConfidence(a)
+  const scoreB = b.rankingScore ?? b.ranking_score ?? getPickConfidence(b)
   const rankingDiff = scoreB - scoreA
-  const confidenceDiff = getConfidence(b) - getConfidence(a)
   const kickoffA = new Date(a.kickoffAt ?? a.kickoff_at ?? 0).getTime()
   const kickoffB = new Date(b.kickoffAt ?? b.kickoff_at ?? 0).getTime()
 
-  return rankingDiff || confidenceDiff || kickoffA - kickoffB
+  return recommendationDiff || confidenceDiff || rankingDiff || kickoffA - kickoffB
 }
 
 export function calculateStats(matches) {
@@ -233,6 +237,34 @@ export function calculateStats(matches) {
 }
 
 export function rankTopMatches(matchesWithAnalysis, limit = 10) {
+  return rankTopAiPicks(matchesWithAnalysis, limit)
+}
+
+export function rankTopAiPicks(matchesWithAnalysis, limit = 10) {
+  const maxItems = Math.max(0, limit)
+  const enriched = [...(matchesWithAnalysis ?? [])].map((match) => enrichMatch(match))
+  const normalRisk = enriched.filter((match) => normalizeRiskLevel(match.riskLevel) !== riskLabels.high).sort(compareForTopMatches)
+  const highRisk = enriched.filter((match) => normalizeRiskLevel(match.riskLevel) === riskLabels.high).sort(compareForTopMatches)
+  const selected = normalRisk.length >= maxItems ? normalRisk.slice(0, maxItems) : [...normalRisk, ...highRisk].slice(0, maxItems)
+
+  return selected.map((match, index) => {
+    const aiPickRank = index + 1
+    const aiPickBadges = generateAiPickBadges({ ...match, aiPickRank })
+
+    return {
+      ...match,
+      rank: aiPickRank,
+      aiPickRank,
+      ai_pick_rank: aiPickRank,
+      aiPickLabel: `AI PICK #${aiPickRank}`,
+      ai_pick_label: `AI PICK #${aiPickRank}`,
+      rankBadges: aiPickBadges,
+      rank_badges: aiPickBadges,
+    }
+  })
+}
+
+export function rankTopMatchesLegacy(matchesWithAnalysis, limit = 10) {
   return [...(matchesWithAnalysis ?? [])]
     .map((match) => enrichMatch(match))
     .sort(compareForTopMatches)
@@ -258,6 +290,12 @@ export function getRecommendationBonus(recommendation = recommendationLabels.noB
   if (recommendation === recommendationLabels.bet) return 7
   if (recommendation === recommendationLabels.lean) return 3
   return 0
+}
+
+function getRecommendationPriority(recommendation = recommendationLabels.noBet) {
+  if (recommendation === recommendationLabels.bet) return 0
+  if (recommendation === recommendationLabels.lean) return 1
+  return 2
 }
 
 export function getDataCompletenessScore(match) {
@@ -440,6 +478,25 @@ function generateRankReasonFromProfile(profile) {
     return `ติดอันดับเพราะ${support}${caution} จึงเหมาะติดตามต่อ`
   }
   return `ติดอันดับเพราะ${support}${caution} แต่ยังควรข้ามก่อน`
+}
+
+export function generateAiPickBadges(match) {
+  const confidence = getPickConfidence(match)
+  const recommendation = match.recommendation ?? getRecommendation(match)
+  const riskLevel = normalizeRiskLevel(match.riskLevel ?? match.risk_level ?? getRiskLevel(match))
+  const badges = []
+
+  if (recommendation === recommendationLabels.noBet || riskLevel === riskLabels.high) badges.push('NO BET')
+  if (recommendation === recommendationLabels.bet && riskLevel !== riskLabels.high && confidence >= 72) badges.push('BEST VALUE')
+  if (confidence >= 78) badges.push('HIGH CONFIDENCE')
+  if (riskLevel === riskLabels.low && recommendation !== recommendationLabels.noBet) badges.push('SAFE PICK')
+  if (recommendation === recommendationLabels.lean || (recommendation === recommendationLabels.bet && confidence < 78)) badges.push('WATCHLIST')
+
+  return [...new Set(badges)].slice(0, 4)
+}
+
+function getPickConfidence(match) {
+  return Math.round(clamp(numberValue(match?.confidence ?? match?.confidence_score ?? match?.analysis?.confidence_score ?? getConfidence(match)), 0, 100))
 }
 
 function getBreakdownScores(analysisBreakdown) {

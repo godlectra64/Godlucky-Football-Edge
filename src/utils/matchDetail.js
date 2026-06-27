@@ -127,6 +127,8 @@ export function normalizeDetailPayload(match) {
     riskLevel: getRiskLevel(safeMatch),
     rankingScore,
     rank: safeMatch.rank ?? null,
+    aiPickRank: safeMatch.aiPickRank ?? safeMatch.ai_pick_rank ?? safeMatch.rank ?? null,
+    aiPickLabel: safeMatch.aiPickLabel ?? safeMatch.ai_pick_label ?? (safeMatch.rank ? `AI PICK #${safeMatch.rank}` : ''),
     rankReason: safeMatch.rankReason ?? safeMatch.rank_reason ?? 'ข้อมูลอันดับยังจำกัด',
     rankBadges: safeMatch.rankBadges ?? safeMatch.rank_badges ?? [],
     analysisSummary: getAnalysisSummary(safeMatch),

@@ -26,7 +26,7 @@ export default function TodayPage({ matches, totalMatchCount = matches.length, l
                 <Sparkles size={14} />
                 Today's Edge Board
               </p>
-              <h2 className="mt-1 text-[1.7rem] font-black leading-8 text-white">Intelligence Board</h2>
+              <h2 className="mt-1 text-[1.7rem] font-black leading-8 text-white">Top 10 AI Picks</h2>
               <p className="mt-1 text-xs font-bold text-slate-400">{formatThaiDate()}</p>
             </div>
             <button type="button" onClick={onRefresh} className="premium-button premium-focus flex shrink-0 items-center justify-center gap-1.5 px-3 text-xs" aria-label="Refresh matches">
@@ -36,7 +36,7 @@ export default function TodayPage({ matches, totalMatchCount = matches.length, l
           </div>
 
           <div className="mt-3 grid grid-cols-[1fr_1fr_auto] gap-2">
-            <HeroMetric label="Selected" value={matches.length || 0} suffix="matches" />
+            <HeroMetric label="AI Picks" value={matches.length || 0} suffix="/ 10" />
             <HeroMetric label="Total" value={totalMatchCount || 0} suffix="live" />
             <div className="metric-display is-emphasis min-w-[82px] text-right">
               <p className="text-[10px] font-black uppercase text-slate-400">Avg</p>
@@ -60,6 +60,11 @@ export default function TodayPage({ matches, totalMatchCount = matches.length, l
             </span>
           </div>
           {notice ? <p className="mt-2 text-clamp-1 text-[11px] font-semibold text-slate-500">{notice}</p> : null}
+          {!loading && matches.length < 10 ? (
+            <p className="mt-1 text-clamp-1 text-[11px] font-semibold text-slate-500">
+              วันนี้มี AI Picks {matches.length} คู่จากข้อมูลที่พร้อมใช้งาน
+            </p>
+          ) : null}
         </div>
       </section>
 

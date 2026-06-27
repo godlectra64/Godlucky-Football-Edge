@@ -96,7 +96,7 @@ function BackButton({ onBack }) {
 }
 
 function HeroHeader({ detail }) {
-  const rankContext = detail.rank ? `AI Rank #${detail.rank}` : detail.rankingScore ? 'Top board match' : 'Analysis board'
+  const rankContext = detail.aiPickLabel ?? (detail.rank ? `AI PICK #${detail.rank}` : detail.rankingScore ? 'Top board match' : 'Analysis board')
   const venue = getVenueText(detail)
 
   return (

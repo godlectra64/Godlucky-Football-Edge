@@ -182,6 +182,32 @@ const sixMatches = Array.from({ length: 6 }, (_, index) => ({
 }))
 assert.equal(rankTopMatches(sixMatches, 10).length, 6, 'six matches should render six, not fake ten')
 
+const phase2Candidates = [
+  { ...baseMatch, id: 'high-risk-99', confidence: 99, recommendation: 'BET', riskLevel: 'HIGH' },
+  ...Array.from({ length: 10 }, (_, index) => ({
+    ...baseMatch,
+    id: `safe-bet-${index}`,
+    confidence: 80 - index,
+    recommendation: index < 5 ? 'BET' : 'LEAN',
+    riskLevel: index === 0 ? 'LOW' : 'MEDIUM',
+  })),
+  { ...baseMatch, id: 'no-bet-low', confidence: 90, recommendation: 'NO BET', riskLevel: 'LOW' },
+]
+const phase2Ranked = rankTopMatches(phase2Candidates, 10)
+assert.equal(phase2Ranked.length, 10)
+assert.equal(phase2Ranked[0].aiPickLabel, 'AI PICK #1')
+assert.ok(!phase2Ranked.some((match) => match.id === 'high-risk-99'), 'HIGH risk should be excluded while enough alternatives exist')
+assert.ok(phase2Ranked[0].rankBadges.includes('BEST VALUE'))
+assert.ok(phase2Ranked[0].rankBadges.includes('HIGH CONFIDENCE'))
+assert.ok(phase2Ranked[0].rankBadges.includes('SAFE PICK'))
+
+const highRiskFallback = rankTopMatches([
+  { ...baseMatch, id: 'only-high-1', confidence: 89, recommendation: 'BET', riskLevel: 'HIGH' },
+  { ...baseMatch, id: 'only-high-2', confidence: 70, recommendation: 'LEAN', riskLevel: 'HIGH' },
+], 10)
+assert.deepEqual(highRiskFallback.map((match) => match.id), ['only-high-1', 'only-high-2'])
+assert.ok(highRiskFallback[0].rankBadges.includes('NO BET'), 'HIGH risk fallback should be clearly badged as NO BET')
+
 const normalizedEmptyDetail = normalizeDetailPayload({ id: 'empty-detail', analysis: { raw: null } })
 assert.equal(normalizedEmptyDetail.footballIntelligence.h2h.reason, 'ยังไม่มีข้อมูล H2H เพียงพอ')
 assert.equal(normalizedEmptyDetail.dataIntelligence.data_confidence.level, 'low')
