@@ -17,17 +17,18 @@ export default function TodayPage({ matches, totalMatchCount = matches.length, l
   const playableCount = matches.filter((match) => match.recommendation === recommendationLabels.bet || match.recommendation === recommendationLabels.lean).length
 
   return (
-    <main className="app-page theme-today">
+    <main className="app-page theme-today !pb-[calc(var(--safe-bottom)+132px)]">
       <section className="premium-hero p-3.5">
         <div className="relative z-10">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="eyebrow flex items-center gap-1.5">
                 <Sparkles size={14} />
-                Today's Edge Board
+                Premium Daily Board
               </p>
-              <h2 className="mt-1 text-[1.7rem] font-black leading-8 text-white">Top 10 AI Picks</h2>
-              <p className="mt-1 text-xs font-bold text-slate-400">{formatThaiDate()}</p>
+              <h2 className="mt-1 text-[1.65rem] font-black leading-8 text-white">Top 10 AI Picks วันนี้</h2>
+              <p className="mt-1 max-w-[260px] text-xs font-bold leading-5 text-slate-300">คัดเฉพาะคู่ที่ AI ประเมินว่าคุ้มค่าที่สุดของวัน</p>
+              <p className="mt-1 text-[11px] font-bold text-slate-500">{formatThaiDate()} · ทั้งหมด {totalMatchCount || 0} คู่</p>
             </div>
             <button type="button" onClick={onRefresh} className="premium-button premium-focus flex shrink-0 items-center justify-center gap-1.5 px-3 text-xs" aria-label="Refresh matches">
               <RefreshCcw size={15} />
@@ -61,9 +62,9 @@ export default function TodayPage({ matches, totalMatchCount = matches.length, l
           </div>
           {notice ? <p className="mt-2 text-clamp-1 text-[11px] font-semibold text-slate-500">{notice}</p> : null}
           {!loading && matches.length < 10 ? (
-            <p className="mt-1 text-clamp-1 text-[11px] font-semibold text-slate-500">
-              วันนี้มี AI Picks {matches.length} คู่จากข้อมูลที่พร้อมใช้งาน
-            </p>
+              <p className="mt-1 text-clamp-1 text-[11px] font-semibold text-slate-500">
+                วันนี้มี AI Picks {matches.length} คู่จากข้อมูลที่พร้อมใช้งาน
+              </p>
           ) : null}
         </div>
       </section>
@@ -83,10 +84,13 @@ export default function TodayPage({ matches, totalMatchCount = matches.length, l
         ))}
       </div>
 
-      {loading ? <StateBox title="Loading live fixtures" message="Reading current match intelligence." /> : null}
-      {error && !loading ? <StateBox title="Data load failed" message={`${error} · showing the latest available data`} tone="error" /> : null}
+      {loading ? <StateBox title="กำลังโหลด Top 10 AI Picks" message="ระบบกำลังอ่านข้อมูลการแข่งขันและผลวิเคราะห์ล่าสุด" /> : null}
+      {error && !loading ? <StateBox title="โหลดข้อมูลไม่สำเร็จ" message={`${error} · กำลังแสดงข้อมูลล่าสุดที่มีอยู่`} tone="error" /> : null}
       {!loading && !error && !visibleMatches.length ? (
-        <StateBox title="No matches in this filter" message="Try another recommendation filter or sync from Admin." />
+        <StateBox
+          title={matches.length ? 'ไม่มีคู่ในตัวกรองนี้' : 'ยังไม่มี Top 10 AI Picks วันนี้'}
+          message={matches.length ? 'ลองเปลี่ยนตัวกรองคำแนะนำ หรือกด Sync เพื่อโหลดข้อมูลใหม่' : 'อาจยังไม่ได้ซิงก์คู่แข่งขันของวันนี้ กด Sync หรือไปที่ Admin เพื่ออัปเดตข้อมูล'}
+        />
       ) : null}
 
       <div className="mt-3 grid gap-2.5">
