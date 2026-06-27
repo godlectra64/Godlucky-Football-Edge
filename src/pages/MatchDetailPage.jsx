@@ -8,15 +8,26 @@ import {
   normalizeDetailPayload,
   splitSummary,
 } from '../utils/matchDetail'
-import { formatKickoffTime, formatScore, formatUpdatedAt } from '../utils/formatters'
+import { formatKickoffTime, formatScore } from '../utils/formatters'
 import { calculateDataCoverage, normalizeDataPlatform } from '../utils/dataPlatform'
 import { buildExplainableAi } from '../utils/explainableAi'
 import { normalizeMarketIntelligence } from '../utils/marketIntelligence'
 
 const recommendationTone = {
-  BET: 'border-emerald-300/30 bg-emerald-300/10 text-emerald-100',
-  LEAN: 'border-amber-300/30 bg-amber-300/10 text-amber-100',
-  'NO BET': 'border-slate-300/20 bg-slate-300/10 text-slate-100',
+  BET: 'border-emerald-300/35 bg-gradient-to-br from-emerald-300/10 via-pitch-800 to-pitch-900 text-emerald-100',
+  LEAN: 'border-amber-300/35 bg-gradient-to-br from-amber-300/10 via-pitch-800 to-pitch-900 text-amber-100',
+  'NO BET': 'border-slate-400/25 bg-gradient-to-br from-slate-400/10 via-pitch-800 to-pitch-900 text-slate-100',
+}
+
+const moduleSubtitles = {
+  'Team Strength': 'ความแข็งแกร่งทีม',
+  'Recent Form': 'ฟอร์มล่าสุด',
+  'Attack Quality': 'เกมรุก',
+  'Defensive Stability': 'เกมรับ',
+  'Home/Away Advantage': 'เหย้า/เยือน',
+  'Motivation & Context': 'แรงจูงใจ',
+  'Market & Odds Risk': 'ตลาด/ราคา',
+  'Overall Risk': 'ความเสี่ยงรวม',
 }
 
 export default function MatchDetailPage({ match, loading = false, error = '', performanceContext = 'กำลังสะสมข้อมูล', onBack, onGoToday }) {
@@ -91,28 +102,43 @@ function BackButton({ onBack }) {
 }
 
 function HeroHeader({ detail }) {
+  const rankContext = detail.rank ? `AI Rank #${detail.rank}` : detail.rankingScore ? 'ติด Top 10 วันนี้' : ''
+  const venue = getVenueText(detail)
+
   return (
-    <section className={`rounded-lg border p-4 shadow-glow ${recommendationTone[detail.recommendation] ?? recommendationTone['NO BET']}`}>
+    <section className={`rounded-lg border p-4 shadow-[0_20px_58px_rgba(0,0,0,0.32),0_0_34px_rgba(79,70,229,0.09)] ${recommendationTone[detail.recommendation] ?? recommendationTone['NO BET']}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="flex items-center gap-2 text-sm text-slate-300">
-            <CalendarClock size={16} />
-            {detail.league?.name ?? 'ไม่ระบุลีก'} · {formatKickoffTime(detail.kickoffAt)}
+          <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
+            {rankContext ? (
+              <span className="rounded-full border border-amber-300/40 bg-amber-300/10 px-2.5 py-1 text-xs font-black text-amber-100">
+                {rankContext}
+              </span>
+            ) : null}
+            <span className="flex min-w-0 items-center gap-2">
+              <CalendarClock size={16} />
+              {detail.league?.name ?? 'ไม่ระบุลีก'} · {formatKickoffTime(detail.kickoffAt)}
+            </span>
+          </div>
+          <p className="mt-2 text-xs font-semibold text-slate-500">
+            {venue || 'ยังไม่มีข้อมูลสนาม'}
           </p>
           <TeamName team={detail.homeTeam} />
-          <p className="my-2 text-sm font-semibold text-slate-400">พบกับ</p>
+          <p className="my-2 text-sm font-semibold text-slate-500">พบกับ</p>
           <TeamName team={detail.awayTeam} />
         </div>
         <ScoreBadge recommendation={detail.recommendation} />
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <Metric label="Confidence" value={`${detail.confidence}%`} />
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        <Metric label="Confidence" value={`${detail.confidence}%`} tone="primary" />
         <Metric label="Risk" value={<RiskBadge level={detail.riskLevel} />} />
-        <Metric label="Ranking Score" value={`${detail.rankingScore}/100`} />
-        <Metric label="Status" value={detail.status ?? '-'} />
-        <Metric label="ผลล่าสุด" value={formatScore(detail.homeGoals, detail.awayGoals)} />
-        <Metric label="อัปเดต" value={formatUpdatedAt(detail.updatedAt)} />
+        <Metric label="Edge Score" value={detail.rankingScore ? `${detail.rankingScore}` : '-'} tone="gold" />
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <Metric label="Status" value={detail.status ?? '-'} compact />
+        <Metric label="ผลล่าสุด" value={formatScore(detail.homeGoals, detail.awayGoals)} compact />
       </div>
     </section>
   )
@@ -340,17 +366,19 @@ function Section({ title, icon: Icon, children }) {
 }
 
 function ScoreRow({ item }) {
+  const subtitle = moduleSubtitles[item.label] ?? ''
+
   return (
-    <div className="rounded-lg border border-white/10 bg-pitch-900 p-3">
+    <div className="rounded-lg border border-white/10 bg-pitch-900/90 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-bold text-white">{item.label}</p>
-          <p className="mt-1 text-sm leading-6 text-slate-300">{item.reason || 'ข้อมูลจำกัด'}</p>
+          <p className="font-bold leading-5 text-white">{item.label}</p>
+          {subtitle ? <p className="mt-0.5 text-xs font-semibold text-emerald-100/75">{subtitle}</p> : null}
         </div>
-        <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold ${toneClass(item.tone)}`}>{item.score}/100</span>
+        <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-black ${toneClass(item.tone)}`}>{item.score}/100</span>
       </div>
       <ProgressBar value={item.score} tone={item.tone} />
-      <p className="mt-2 text-xs font-semibold text-slate-400">ระดับ: {item.scoreLabel}</p>
+      <p className="text-clamp-1 mt-2 text-sm leading-5 text-slate-300">{item.reason || 'ข้อมูลจำกัด'}</p>
     </div>
   )
 }
@@ -459,7 +487,7 @@ function QualityInline({ title, items = [], muted = false }) {
 function ProgressBar({ value, tone }) {
   return (
     <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
-      <div className={`h-full rounded-full ${barTone(tone)}`} style={{ width: `${Math.max(4, Math.min(100, value ?? 0))}%` }} />
+      <div className={`h-full rounded-full transition-all duration-500 ${barTone(tone)}`} style={{ width: `${Math.max(4, Math.min(100, value ?? 0))}%` }} />
     </div>
   )
 }
@@ -467,17 +495,17 @@ function ProgressBar({ value, tone }) {
 function TeamName({ team }) {
   return (
     <div className="mt-2 flex min-w-0 items-center gap-3">
-      {team?.logo ? <img src={team.logo} alt="" className="h-10 w-10 rounded-full bg-white/10 object-contain p-1" /> : <div className="h-10 w-10 rounded-full bg-white/10" />}
-      <h2 className="truncate text-xl font-black text-white">{team?.name ?? 'ไม่ระบุทีม'}</h2>
+      {team?.logo ? <img src={team.logo} alt="" className="h-11 w-11 rounded-full bg-white/10 object-contain p-1" /> : <div className="h-11 w-11 rounded-full bg-white/10" />}
+      <h2 className="truncate text-2xl font-black leading-8 text-white">{team?.name ?? 'ไม่ระบุทีม'}</h2>
     </div>
   )
 }
 
-function Metric({ label, value }) {
+function Metric({ label, value, tone = 'default', compact = false }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-pitch-900 p-3">
-      <p className="text-xs text-slate-400">{label}</p>
-      <div className="mt-1 text-sm font-bold text-white">{value || '-'}</div>
+    <div className={`rounded-lg border p-2.5 ${tone === 'gold' ? 'border-amber-300/25 bg-amber-300/10' : 'border-white/10 bg-pitch-900/80'}`}>
+      <p className="text-[11px] font-semibold text-slate-400">{label}</p>
+      <div className={`${compact ? 'text-sm' : 'text-base'} mt-1 font-black leading-6 ${tone === 'primary' ? 'text-emerald-100' : tone === 'gold' ? 'text-amber-100' : 'text-white'}`}>{value || '-'}</div>
     </div>
   )
 }
@@ -492,6 +520,13 @@ function StatePanel({ title, message, tone = 'default', children }) {
   )
 }
 
+function getVenueText(detail) {
+  const venue = detail.venue ?? detail.raw?.venue ?? detail.raw?.fixture?.venue?.name ?? ''
+  if (!venue) return ''
+  if (typeof venue === 'string') return venue.trim()
+  return [venue.name, venue.city].filter(Boolean).join(', ')
+}
+
 function toneClass(tone) {
   if (tone === 'good') return 'bg-emerald-300/15 text-emerald-100'
   if (tone === 'risk') return 'bg-red-300/15 text-red-100'
@@ -499,9 +534,9 @@ function toneClass(tone) {
 }
 
 function barTone(tone) {
-  if (tone === 'good') return 'bg-emerald-400'
+  if (tone === 'good') return 'bg-gradient-to-r from-emerald-400 to-emerald-200'
   if (tone === 'risk') return 'bg-red-400'
-  return 'bg-amber-300'
+  return 'bg-gradient-to-r from-amber-300 to-indigo-300'
 }
 
 function bulletTone(tone) {

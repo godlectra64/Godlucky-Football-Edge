@@ -14,7 +14,7 @@ import { calculateDataCoverage } from '../utils/dataPlatform'
 
 const allValue = ''
 
-export default function AiPerformancePage({ rows = [], loading = false, error = '', onRefresh }) {
+export default function AiPerformancePage({ rows = [], loading = false, error = '', onRefresh, onOpenMatch }) {
   const [filters, setFilters] = useState({
     league: allValue,
     recommendation: allValue,
@@ -37,8 +37,8 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
   const latestRows = filteredRows.slice(0, 50)
 
   return (
-    <main className="mx-auto max-w-[430px] px-4 py-4">
-      <section className="rounded-lg border border-emerald-400/20 bg-pitch-800 p-4">
+    <main className="mx-auto max-w-[430px] px-4 py-4 lg:max-w-[1180px]">
+      <section className="rounded-lg border border-emerald-400/20 bg-gradient-to-br from-pitch-800 via-pitch-850 to-pitch-900 p-4 shadow-[0_20px_58px_rgba(0,0,0,0.26),0_0_34px_rgba(79,70,229,0.08)]">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-sm font-semibold text-emerald-200">AI Performance</p>
@@ -53,7 +53,7 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
         {loading ? <p className="mt-3 text-sm text-slate-300">Loading performance data...</p> : null}
       </section>
 
-      <section className="mt-4 grid grid-cols-2 gap-3">
+      <section className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-6">
         <SummaryCard icon={Trophy} label="Win Rate" value={readiness.hasEnoughData ? `${metrics.winRate}%` : 'ยังไม่มีข้อมูลเพียงพอ'} />
         <SummaryCard icon={Target} label="Accuracy" value={readiness.hasEnoughData ? `${metrics.accuracy}%` : 'กำลังสะสมข้อมูล'} />
         <SummaryCard icon={Activity} label="Total Matches" value={metrics.totalPredictions} />
@@ -66,7 +66,7 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
       {!loading && !error && !readiness.hasEnoughData ? <PerformanceState readiness={readiness} /> : null}
       {readiness.hasEnoughData ? <ModelIntelligenceSection analysis={modelAnalysis} exportPreview={exportPreview} dataCoverage={dataCoverage} /> : null}
       {readiness.hasEnoughData ? <TrendPreview trends={trends} groups={groups} /> : null}
-      <LatestTable rows={latestRows} />
+      <LatestTable rows={latestRows} onOpenMatch={onOpenMatch} />
     </main>
   )
 }
@@ -137,12 +137,12 @@ function CompactList({ title, items }) {
 
 function SummaryCard({ icon: Icon, label, value }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-pitch-800 p-4">
+    <div className="rounded-lg border border-white/10 bg-pitch-800 p-4 shadow-[0_12px_32px_rgba(0,0,0,0.18)]">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-slate-400">{label}</p>
+        <p className="text-xs font-semibold text-slate-400">{label}</p>
         {Icon ? <Icon size={16} className="text-emerald-200" /> : null}
       </div>
-      <p className="mt-2 break-words text-xl font-black leading-7 text-white">{value}</p>
+      <p className="mt-2 break-words text-xl font-black leading-7 text-white lg:text-2xl">{value}</p>
     </div>
   )
 }
@@ -211,40 +211,87 @@ function MiniMetric({ label, value }) {
   )
 }
 
-function LatestTable({ rows }) {
+function LatestTable({ rows, onOpenMatch }) {
   return (
     <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
       <h3 className="text-lg font-bold text-white">Latest 50</h3>
       <div className="mt-3 space-y-3">
-        {!rows.length ? <p className="rounded-lg bg-white/[0.04] p-4 text-center text-sm text-slate-300">กำลังสะสมข้อมูล</p> : null}
-        {rows.map((row) => (
-          <article key={row.id} className="rounded-lg border border-white/10 bg-pitch-900 p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs text-slate-400">{formatShortDate(row.kickoff)} · {row.league ?? '-'}</p>
-                <p className="mt-1 truncate font-bold text-white">{row.home_team} vs {row.away_team}</p>
+        {!rows.length ? <p className="rounded-lg border border-white/10 bg-white/[0.04] p-4 text-center text-sm text-slate-300">กำลังสะสมข้อมูลเพื่อประเมินผลงาน AI</p> : null}
+        {rows.map((row) => {
+          const matchId = row.match_id ?? row.matchId
+          const clickable = Boolean(matchId && onOpenMatch)
+          const content = (
+            <>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-slate-400">{formatShortDate(row.kickoff)} · {row.league ?? '-'}</p>
+                  <p className="mt-1 truncate font-bold text-white">{row.home_team} vs {row.away_team}</p>
+                </div>
+                <span className="shrink-0 rounded-full border border-white/10 bg-white/10 px-2.5 py-1 text-xs font-bold text-slate-100">{row.recommendation}</span>
               </div>
-              <span className="shrink-0 rounded-full bg-white/10 px-2.5 py-1 text-xs font-bold text-slate-100">{row.recommendation}</span>
-            </div>
-            <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-              <Cell label="Eval" value={row.evaluation?.evaluation_status ?? 'pending'} />
-              <Cell label="Score" value={formatScore(row.result)} />
-              <Cell label="Model" value={row.analysis_version ?? 'unknown'} />
-            </div>
-          </article>
-        ))}
+              <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                <Cell label="สถานะ" value={formatEvaluation(row.evaluation?.evaluation_status)} badge={isPending(row.evaluation?.evaluation_status)} />
+                <Cell label="ผลแข่ง" value={formatScore(row.result)} badge={formatScore(row.result) === 'รอผล'} />
+                <Cell label="โมเดล" value={formatModel(row.analysis_version)} />
+              </div>
+            </>
+          )
+
+          if (clickable) {
+            return (
+              <button
+                key={row.id}
+                type="button"
+                onClick={() => onOpenMatch(matchId)}
+                className="block min-h-11 w-full rounded-lg border border-white/10 bg-pitch-900 p-3 text-left transition hover:border-emerald-300/35 hover:bg-pitch-850 focus:outline-none focus:ring-2 focus:ring-emerald-300/50"
+                aria-label={`เปิดรายละเอียด ${row.home_team} vs ${row.away_team}`}
+              >
+                {content}
+              </button>
+            )
+          }
+
+          return (
+            <article key={row.id} className="rounded-lg border border-white/10 bg-pitch-900 p-3">
+              {content}
+            </article>
+          )
+        })}
       </div>
     </section>
   )
 }
 
-function Cell({ label, value }) {
+function Cell({ label, value, badge = false }) {
   return (
     <div className="rounded-lg bg-white/[0.04] p-2">
       <p className="text-slate-400">{label}</p>
-      <p className="mt-1 truncate font-bold text-white">{value}</p>
+      {badge ? (
+        <span className="mt-1 inline-flex rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 font-bold text-amber-100">{value}</span>
+      ) : (
+        <p className="mt-1 truncate font-bold text-white">{value}</p>
+      )}
     </div>
   )
+}
+
+function formatEvaluation(status) {
+  const normalized = String(status ?? 'pending')
+  if (normalized === 'pending') return 'รอผล'
+  if (normalized === 'correct') return 'ถูกต้อง'
+  if (normalized === 'incorrect') return 'ไม่ถูกต้อง'
+  if (normalized === 'no_evaluation') return 'ไม่ประเมิน'
+  return normalized
+}
+
+function isPending(status) {
+  return !status || status === 'pending'
+}
+
+function formatModel(version) {
+  if (!version || version === 'unknown') return 'Football Intelligence'
+  if (String(version).startsWith('football-intelligence')) return 'Football Intelligence'
+  return version
 }
 
 function summarizeDataCoverage(rows = []) {
@@ -268,6 +315,6 @@ function summarizeDataCoverage(rows = []) {
 }
 
 function formatScore(result) {
-  if (!result || result.home_goals === null || result.home_goals === undefined) return 'pending'
+  if (!result || result.home_goals === null || result.home_goals === undefined) return 'รอผล'
   return `${result.home_goals}-${result.away_goals}`
 }

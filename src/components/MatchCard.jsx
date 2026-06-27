@@ -1,6 +1,6 @@
-import { ChevronRight, Clock, Gauge, Goal, Medal, RefreshCcw, Star } from 'lucide-react'
+import { Clock, Gauge, Medal, Star } from 'lucide-react'
 import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
-import { formatKickoffTime, formatUpdatedAt } from '../utils/formatters'
+import { formatKickoffTime } from '../utils/formatters'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
 
@@ -9,8 +9,12 @@ export default function MatchCard({ match, onOpen }) {
   const confidence = match.confidence ?? getConfidence(match)
   const riskLevel = match.riskLevel ?? getRiskLevel(match)
   const rankingScore = Math.round(match.rankingScore ?? match.ranking_score ?? confidence)
-  const rankReason = match.rankReason ?? match.rank_reason ?? getAnalysisSummary(match)
+  const rankReason = buildCardReason(match, recommendation, rankingScore)
   const rankBadges = match.rankBadges ?? match.rank_badges ?? []
+  const meaningfulForms = [
+    formatMeaningfulForm('ฟอร์มเหย้า', match.homeForm),
+    formatMeaningfulForm('ฟอร์มเยือน', match.awayForm),
+  ].filter(Boolean)
 
   const open = () => onOpen(match.id)
 
@@ -20,67 +24,58 @@ export default function MatchCard({ match, onOpen }) {
       tabIndex={0}
       onClick={open}
       onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') open()
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          open()
+        }
       }}
-      className="cursor-pointer rounded-lg border border-white/10 bg-pitch-800 p-4 shadow-glow transition hover:border-emerald-300/30 focus:outline-none focus:ring-2 focus:ring-emerald-300/50"
+      aria-label={`${match.homeTeam?.name ?? 'home team'} vs ${match.awayTeam?.name ?? 'away team'}`}
+      className="cursor-pointer rounded-lg border border-emerald-300/10 bg-gradient-to-br from-pitch-800 via-pitch-800 to-pitch-900 p-3.5 shadow-[0_18px_40px_rgba(0,0,0,0.28)] transition duration-200 hover:-translate-y-0.5 hover:border-emerald-300/35 hover:shadow-[0_22px_52px_rgba(0,0,0,0.36),0_0_28px_rgba(79,70,229,0.08)] active:translate-y-0 focus:outline-none focus:ring-2 focus:ring-emerald-300/50"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
             {match.rank ? (
-              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300/30 bg-emerald-300/10 px-2 py-1 font-bold text-emerald-100">
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/40 bg-amber-300/10 px-2 py-0.5 font-black text-amber-100">
                 <Medal size={13} />
-                #{match.rank}
+                #{match.rank} วันนี้
               </span>
             ) : null}
-            <span className="inline-flex items-center gap-1">
+            <span className="inline-flex min-w-0 items-center gap-1 font-semibold text-slate-300">
               <Clock size={14} />
               {formatKickoffTime(match.kickoffAt)}
             </span>
-            <span className="truncate">{match.league?.name ?? 'ไม่ระบุลีก'}</span>
+            <span className="min-w-0 truncate">{match.league?.name ?? 'ไม่ระบุลีก'}</span>
           </div>
           <TeamLine team={match.homeTeam} strong />
           <TeamLine team={match.awayTeam} />
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-2">
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
           <ScoreBadge recommendation={recommendation} />
           <RiskBadge level={riskLevel} />
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <InfoTile icon={Star} label="Ranking" value={`${rankingScore}/100`} />
-        <InfoTile icon={Gauge} label="มั่นใจ" value={`${confidence}%`} />
-        <InfoTile icon={Goal} label="ฟอร์มเหย้า" value={formatForm(match.homeForm)} />
-        <InfoTile icon={Goal} label="ฟอร์มเยือน" value={formatForm(match.awayForm)} />
-        <InfoTile icon={RefreshCcw} label="อัปเดต" value={formatUpdatedAt(match.updatedAt)} wide />
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <InfoTile icon={Gauge} label="Confidence" value={`${confidence}%`} highlight />
+        <InfoTile icon={Star} label="Edge Score" value={rankingScore ? `${rankingScore}` : '-'} accent />
       </div>
 
       {rankBadges.length ? (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {rankBadges.map((badge) => (
-            <span key={badge} className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1 text-xs font-semibold text-slate-200">
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {rankBadges.slice(0, 3).map((badge) => (
+            <span key={badge} className="rounded-full border border-white/10 bg-white/[0.045] px-2 py-0.5 text-[11px] font-semibold text-slate-300">
               {badge}
             </span>
           ))}
         </div>
       ) : null}
 
-      <div className="mt-4 rounded-lg bg-white/[0.04] p-3">
-        <p className="text-clamp-3 text-sm leading-6 text-slate-200">{rankReason}</p>
-      </div>
+      <p className="text-clamp-2 mt-3 rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2 text-sm leading-5 text-slate-200">
+        {rankReason}
+      </p>
 
-      <button
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation()
-          open()
-        }}
-        className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-emerald-400 px-4 text-base font-bold text-pitch-950"
-      >
-        ดูรายละเอียด
-        <ChevronRight size={20} />
-      </button>
+      {meaningfulForms.length ? <p className="mt-2 text-[11px] font-semibold text-slate-500">{meaningfulForms.join(' · ')}</p> : null}
     </article>
   )
 }
@@ -88,27 +83,38 @@ export default function MatchCard({ match, onOpen }) {
 function TeamLine({ team, strong = false }) {
   return (
     <div className="mt-2 flex min-w-0 items-center gap-2">
-      {team?.logo ? <img src={team.logo} alt="" className="h-8 w-8 rounded-full bg-white/10 object-contain p-1" /> : <div className="h-8 w-8 rounded-full bg-white/10" />}
-      <p className={`${strong ? 'text-xl font-black text-white' : 'text-sm font-semibold text-slate-300'} truncate`}>
+      {team?.logo ? <img src={team.logo} alt="" className="h-7 w-7 rounded-full bg-white/10 object-contain p-1" /> : <div className="h-7 w-7 rounded-full bg-white/10" />}
+      <p className={`${strong ? 'text-lg font-black text-white' : 'text-base font-bold text-slate-200'} truncate leading-tight`}>
         {team?.name ?? 'ไม่ระบุทีม'}
       </p>
     </div>
   )
 }
 
-function InfoTile({ icon: Icon, label, value, wide = false }) {
+function InfoTile({ icon: Icon, label, value, highlight = false, accent = false }) {
   return (
-    <div className={`rounded-lg border border-white/10 bg-pitch-900 p-3 ${wide ? 'col-span-2' : ''}`}>
-      <p className="flex items-center gap-1.5 text-xs text-slate-400">
+    <div className={`rounded-lg border p-2.5 ${accent ? 'border-amber-300/25 bg-amber-300/10' : 'border-white/10 bg-pitch-900/80'}`}>
+      <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400">
         <Icon size={14} />
         {label}
       </p>
-      <p className="mt-1 text-sm font-bold text-white">{value || '-'}</p>
+      <p className={`mt-1 text-lg font-black leading-6 ${highlight ? 'text-emerald-100' : accent ? 'text-amber-100' : 'text-white'}`}>{value || '-'}</p>
     </div>
   )
 }
 
-function formatForm(form) {
-  if (!form) return 'รอข้อมูล'
-  return `${form.wins ?? 0}-${form.draws ?? 0}-${form.losses ?? 0}`
+function formatMeaningfulForm(label, form) {
+  if (!form) return ''
+  const wins = Number(form.wins ?? 0)
+  const draws = Number(form.draws ?? 0)
+  const losses = Number(form.losses ?? 0)
+  if (wins + draws + losses <= 0) return ''
+  return `${label} ${wins}-${draws}-${losses}`
+}
+
+function buildCardReason(match, recommendation, rankingScore) {
+  if (recommendation === 'NO BET' && rankingScore >= 62) {
+    return 'น่าสนใจเชิงข้อมูล แต่ยังไม่ผ่านเกณฑ์เล่น'
+  }
+  return match.rankReason ?? match.rank_reason ?? getAnalysisSummary(match)
 }

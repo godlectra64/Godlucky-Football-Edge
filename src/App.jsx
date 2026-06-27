@@ -242,7 +242,7 @@ function App() {
           ) : null}
           {activePage === 'results' ? <ResultTrackerPage matches={matches} /> : null}
           {activePage === 'stats' ? <StatsPage matches={matches} /> : null}
-          {activePage === 'performance' ? <AiPerformancePage rows={performanceRows} loading={performanceLoading} error={performanceError} onRefresh={loadPerformance} /> : null}
+          {activePage === 'performance' ? <AiPerformancePage rows={performanceRows} loading={performanceLoading} error={performanceError} onRefresh={loadPerformance} onOpenMatch={openMatch} /> : null}
         </Suspense>
         {activePage === 'notFound' ? <NotFoundPage onGoToday={goToday} /> : null}
       </div>
@@ -279,9 +279,9 @@ function NotFoundPage({ onGoToday }) {
 function buildLatestSyncNotice(log) {
   const syncedAt = log?.finished_at ?? log?.started_at
   if (!syncedAt) return 'ยังไม่พบ sync log ล่าสุด'
-  if (log?.status === 'failed') return `sync ล่าสุดล้มเหลวเมื่อ ${formatUpdatedAt(syncedAt)}`
-  if (log?.status === 'partial_success') return `sync ล่าสุดสำเร็จบางส่วนเมื่อ ${formatUpdatedAt(syncedAt)}`
-  return `ข้อมูลล่าสุดเมื่อ ${formatUpdatedAt(syncedAt)}`
+  if (log?.status === 'failed') return `sync ล่าสุดล้มเหลว ${formatUpdatedAt(syncedAt)}`
+  if (log?.status === 'partial_success') return `sync ล่าสุดสำเร็จบางส่วน ${formatUpdatedAt(syncedAt)}`
+  return `อัปเดตล่าสุด ${formatUpdatedAt(syncedAt)}`
 }
 
 export default App
