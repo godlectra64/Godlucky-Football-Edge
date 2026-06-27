@@ -41,7 +41,7 @@ export function getRiskLabel(risk) {
 }
 
 export function formatRecommendation(recommendation) {
-  return ['BET', 'LEAN', 'NO BET'].includes(recommendation) ? recommendation : 'NO BET'
+  return ['BET', 'LEAN', 'WATCH', 'NO BET'].includes(recommendation) ? recommendation : 'NO BET'
 }
 
 export function extractAnalysisBreakdown(match) {

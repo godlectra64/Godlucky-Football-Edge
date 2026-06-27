@@ -71,6 +71,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
       <FinalDecisionSection detail={detail} heroSelection={heroSelection} />
+      <AiSelectionBreakdownSection detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <ScoreBreakdownSection items={detail.moduleItems} />
       <ExplainableAiSection explanation={explainability} />
@@ -227,6 +228,47 @@ function finalDecisionClass(finalPick) {
     return 'border-emerald-300/25 bg-emerald-300/10'
   }
   return 'border-amber-300/25 bg-amber-300/10'
+}
+
+function AiSelectionBreakdownSection({ detail }) {
+  const analysis = detail.analysis ?? {}
+  const items = [
+    ['League Quality', analysis.league_quality_score],
+    ['Match Quality', analysis.match_quality_score],
+    ['Team Strength', analysis.team_strength_score],
+    ['Form', analysis.form_score],
+    ['Goal Scoring', analysis.goal_scoring_score],
+    ['Defensive Stability', analysis.defensive_stability_score],
+    ['Tactical Matchup', analysis.tactical_matchup_score],
+    ['Motivation', analysis.motivation_score],
+    ['Market Reading', analysis.market_reading_score],
+    ['Home/Away', analysis.home_away_score ?? analysis.home_advantage_score],
+    ['Edge Score', analysis.edge_score],
+    ['Risk Score', analysis.risk_score],
+    ['AI Score', analysis.ai_score],
+    ['Confidence', analysis.confidence_score ?? detail.confidence],
+    ['Ranking Score', analysis.ranking_score ?? detail.rankingScore],
+    ['Final Rank', analysis.final_rank ?? detail.finalRank ?? detail.rank],
+  ]
+
+  return (
+    <Section title="Selection Engine v2" icon={ListChecks}>
+      <div className="grid grid-cols-2 gap-2">
+        {items.map(([label, value]) => (
+          <Metric key={label} label={label} value={formatSelectionValue(value)} />
+        ))}
+      </div>
+      <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">
+        {analysis.final_pick_note || analysis.analysis_summary || detail.analysisSummary || 'Selection Engine กำลังรอข้อมูลวิเคราะห์เพิ่มเติม'}
+      </p>
+    </Section>
+  )
+}
+
+function formatSelectionValue(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? `${Math.round(numeric * 10) / 10}` : String(value)
 }
 
 function ScoreBreakdownSection({ items }) {

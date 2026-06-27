@@ -6,7 +6,7 @@ import { buildAiFinalPick, getOneBestPickOfDay } from '../utils/finalPick'
 import { formatThaiDate } from '../utils/formatters'
 
 const allFilter = 'ALL'
-const filters = [allFilter, recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.noBet]
+const filters = [allFilter, recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.watch, recommendationLabels.noBet]
 
 export default function TodayPage({ matches, oneBestPick: providedOneBestPick = null, totalMatchCount = matches.length, loading, error, notice, onRefresh, onOpenMatch }) {
   const [filter, setFilter] = useState(allFilter)
@@ -15,7 +15,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
     return matches.filter((match) => match.recommendation === filter)
   }, [filter, matches])
   const avgConfidence = matches.length ? Math.round(matches.reduce((total, match) => total + getConfidence(match), 0) / matches.length) : 0
-  const playableCount = matches.filter((match) => match.recommendation === recommendationLabels.bet || match.recommendation === recommendationLabels.lean).length
+  const playableCount = matches.filter((match) => [recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.watch].includes(match.recommendation)).length
   const oneBestPick = useMemo(() => providedOneBestPick ?? getOneBestPickOfDay(matches), [providedOneBestPick, matches])
 
   return (
@@ -65,6 +65,11 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             </span>
           </div>
           {notice ? <p className="mt-2 text-clamp-1 text-[11px] font-semibold text-slate-500">{notice}</p> : null}
+          {!loading && matches.length && !matches.some((match) => match.recommendation === recommendationLabels.bet) ? (
+            <p className="mt-2 rounded-xl border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-[11px] font-bold leading-5 text-amber-100">
+              วันนี้ไม่มีคู่ที่ถึงระดับ BET แต่ AI ยังจัดอันดับคู่ที่น่าติดตามที่สุดให้ครบตามข้อมูลที่มี
+            </p>
+          ) : null}
           {!loading && matches.length < 10 ? (
               <p className="mt-1 text-clamp-1 text-[11px] font-semibold text-slate-500">
                 วันนี้มี AI Picks {matches.length} คู่จากข้อมูลที่พร้อมใช้งาน
@@ -199,6 +204,7 @@ function formatKickoffShort(value) {
 function filterActiveClass(item) {
   if (item === recommendationLabels.bet) return 'border-emerald-300/45 bg-emerald-300/15 text-emerald-50 shadow-[0_0_18px_rgba(52,211,153,0.16)]'
   if (item === recommendationLabels.lean) return 'border-amber-300/45 bg-amber-300/15 text-amber-50 shadow-[0_0_18px_rgba(245,158,11,0.14)]'
+  if (item === recommendationLabels.watch) return 'border-cyan-300/45 bg-cyan-300/15 text-cyan-50 shadow-[0_0_18px_rgba(34,211,238,0.12)]'
   if (item === recommendationLabels.noBet) return 'border-red-300/40 bg-red-400/15 text-red-50 shadow-[0_0_18px_rgba(251,113,133,0.12)]'
   return 'border-emerald-300/45 bg-emerald-300/15 text-emerald-50 shadow-[0_0_18px_rgba(52,211,153,0.16)]'
 }

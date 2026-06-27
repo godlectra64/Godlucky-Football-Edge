@@ -10,12 +10,14 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
   const confidence = Math.round(match.confidence ?? getConfidence(match))
   const riskLevel = match.riskLevel ?? getRiskLevel(match)
   const rankingScore = Math.round(match.rankingScore ?? match.ranking_score ?? confidence)
-  const aiPickLabel = match.aiPickLabel ?? match.ai_pick_label ?? (match.rank ? `AI PICK #${match.rank}` : '')
+  const finalRank = match.finalRank ?? match.final_rank ?? match.analysis?.final_rank ?? match.rank
+  const recommendationTier = match.recommendationTier ?? match.recommendation_tier ?? match.analysis?.recommendation_tier ?? ''
+  const aiPickLabel = match.aiPickLabel ?? match.ai_pick_label ?? (finalRank ? `AI PICK #${finalRank}` : '')
   const finalPick = buildAiFinalPick(match)
   const analysisSummary = buildCardSummary(match, recommendation, confidence)
   const oneBestBadge = getOneBestCardBadge(match, oneBestPick)
   const rankBadges = buildDisplayBadges(match, recommendation, riskLevel, confidence, oneBestBadge)
-  const cardClass = buildCardClass(match.rank, recommendation, riskLevel)
+  const cardClass = buildCardClass(finalRank ?? match.rank, recommendation, riskLevel)
   const confidenceTone = String(riskLevel).toUpperCase() === 'HIGH' ? 'bg-gradient-to-r from-red-400 to-rose-200' : confidence >= 72 ? 'bg-gradient-to-r from-emerald-400 to-cyan-200' : confidence >= 58 ? 'bg-gradient-to-r from-amber-300 to-blue-300' : 'bg-gradient-to-r from-red-400 to-rose-200'
   const open = () => onOpen?.(match.id)
 
@@ -34,8 +36,8 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
       className={`premium-focus cursor-pointer p-3 transition duration-200 hover:-translate-y-0.5 active:translate-y-0 ${cardClass}`}
     >
       <div className="grid grid-cols-[42px_minmax(0,1fr)_auto] items-start gap-2.5">
-        <div className={`flex shrink-0 items-center justify-center rounded-2xl border bg-black/25 font-black text-[var(--page-accent)] ${match.rank === 1 ? 'h-12 w-12 border-amber-300/40 text-base shadow-[0_0_22px_rgba(246,196,69,0.16)]' : 'h-10 w-10 border-white/10 text-sm'}`}>
-          {match.rank ? `#${match.rank}` : <Medal size={18} />}
+        <div className={`flex shrink-0 items-center justify-center rounded-2xl border bg-black/25 font-black text-[var(--page-accent)] ${finalRank === 1 ? 'h-12 w-12 border-amber-300/40 text-base shadow-[0_0_22px_rgba(246,196,69,0.16)]' : 'h-10 w-10 border-white/10 text-sm'}`}>
+          {finalRank ? `#${finalRank}` : <Medal size={18} />}
         </div>
 
         <div className="min-w-0">
@@ -58,6 +60,7 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
         <div className="flex min-w-[74px] shrink-0 flex-col items-end gap-1.5">
           <ScoreBadge recommendation={recommendation} />
           <RiskBadge level={riskLevel} />
+          {recommendationTier ? <span className="semantic-badge border-white/10 bg-white/[0.05] text-[10px] text-white">{recommendationTier}</span> : null}
         </div>
       </div>
 
@@ -75,7 +78,7 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
           </div>
         </div>
         <div className="text-right">
-          <p className="text-[10px] font-black uppercase text-slate-500">Edge</p>
+          <p className="text-[10px] font-black uppercase text-slate-500">Ranking</p>
           <p className="text-xl font-black leading-5 text-white">{rankingScore || '-'}</p>
         </div>
       </div>
@@ -87,7 +90,7 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
         <MiniInfo label="Value" value={finalPick.valueLabel} muted={finalPick.valueStatus !== 'YES'} />
       </div>
 
-      <p className="text-clamp-2 mt-2 min-w-0 text-xs font-bold leading-5 text-slate-200">{finalPick.pickReason}</p>
+      <p className="text-clamp-2 mt-2 min-w-0 text-xs font-bold leading-5 text-slate-200">{recommendation === 'NO BET' ? 'ไม่แนะนำเดิมพัน' : finalPick.pickReason}</p>
       <p className="text-clamp-2 mt-1 min-w-0 text-[11px] font-semibold leading-5 text-slate-400">{analysisSummary}</p>
 
       <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
@@ -132,6 +135,9 @@ function buildCardClass(rank, recommendation, riskLevel) {
   if (recommendation === 'LEAN') {
     return `${base} ${first} border-amber-300/30 bg-[linear-gradient(90deg,rgba(245,158,11,0.11),rgba(255,255,255,0.04))] hover:border-amber-300/45`
   }
+  if (recommendation === 'WATCH') {
+    return `${base} ${first} border-cyan-300/25 bg-[linear-gradient(90deg,rgba(34,211,238,0.1),rgba(255,255,255,0.04))] hover:border-cyan-300/40`
+  }
   return `${base} ${first} border-white/10 hover:border-white/20`
 }
 
@@ -144,7 +150,7 @@ function buildDisplayBadges(match, recommendation, riskLevel, confidence, oneBes
   if (recommendation === 'BET' && String(riskLevel).toUpperCase() !== 'HIGH' && confidence >= 72) badges.push('BEST VALUE')
   if (confidence >= 78) badges.push('HIGH CONFIDENCE')
   if (String(riskLevel).toUpperCase() === 'LOW' && recommendation !== 'NO BET') badges.push('SAFE PICK')
-  if (recommendation === 'LEAN') badges.push('WATCHLIST')
+  if (recommendation === 'LEAN' || recommendation === 'WATCH') badges.push('WATCHLIST')
   if (limitedData) badges.push('LIMITED DATA')
 
   return [...new Set(badges)].slice(0, 6)

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   calculateRankingScore,
   calculateFootballMasterAnalysis,
@@ -52,6 +53,7 @@ import { buildExplainableAi } from '../src/utils/explainableAi.js'
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
+import { runAiSelectionEngine } from '../src/utils/aiSelectionEngine.js'
 import { getPagePath, getRouteState } from '../src/utils/routes.js'
 import { fetchEnabledLeagues, updateLeagueSettingsById } from '../src/repositories/analysisRepository.js'
 import { fetchMatchById, fetchMatchesByKickoffRange } from '../src/repositories/matchesRepository.js'
@@ -218,6 +220,71 @@ const mixedTop10 = rankTopMatches(mixedRecommendationPool, 10)
 assert.equal(mixedTop10.filter((match) => match.recommendation === 'BET').length, 2)
 assert.equal(mixedTop10.filter((match) => match.recommendation === 'LEAN').length, 5)
 assert.equal(mixedTop10.filter((match) => match.recommendation === 'NO BET').length, 3)
+
+function v2Match(id, moduleScore, riskScore, recommendationHint = 'NO BET') {
+  return {
+    ...baseMatch,
+    id,
+    kickoffAt: `2026-06-26T${String(8 + Number(id.match(/\d+$/)?.[0] ?? 0)).padStart(2, '0')}:00:00Z`,
+    league: { name: 'Premier League' },
+    analysis: {
+      recommendation: recommendationHint,
+      confidence_score: moduleScore,
+      risk_score: riskScore,
+      team_strength_score: moduleScore,
+      form_score: moduleScore,
+      goal_scoring_score: moduleScore,
+      defensive_stability_score: moduleScore,
+      tactical_matchup_score: moduleScore,
+      motivation_score: moduleScore,
+      market_reading_score: moduleScore,
+      home_away_score: moduleScore,
+      market_line: '0',
+      fair_line: '0.25',
+      analysis_summary: 'stored analysis',
+    },
+  }
+}
+
+const v2Mixed = [
+  ...Array.from({ length: 2 }, (_, index) => v2Match(`v2-bet-${index}`, 91 - index, 30, 'BET')),
+  ...Array.from({ length: 5 }, (_, index) => v2Match(`v2-lean-${index}`, 76 - index, 50, 'LEAN')),
+  ...Array.from({ length: 10 }, (_, index) => v2Match(`v2-no-bet-${index}`, 35 - index, 90, 'NO BET')),
+]
+const v2MixedRows = runAiSelectionEngine(v2Mixed)
+const v2Top10 = v2MixedRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
+assert.equal(v2Top10.length, 10, 'AI Selection Engine v2 should fill Top 10 from all usable recommendations')
+assert.equal(v2Top10.filter((row) => row.recommendation === 'BET').length, 2)
+assert.equal(v2Top10.filter((row) => row.recommendation === 'LEAN').length, 5)
+assert.equal(v2Top10.filter((row) => row.recommendation === 'NO BET').length, 3)
+assert.deepEqual(v2Top10.map((row) => row.final_rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+assert.equal(v2MixedRows.filter((row) => row.is_final_pick).length, 1, 'only one v2 row may be final pick')
+assert.equal(v2Top10[0].recommendation, 'BET')
+assert.equal(v2Top10[0].recommendation_tier, '*****')
+
+const v2LeanOnlyRows = runAiSelectionEngine([
+  v2Match('v2-lean-only-1', 75, 50, 'LEAN'),
+  v2Match('v2-lean-only-2', 72, 52, 'LEAN'),
+])
+const v2LeanTop = v2LeanOnlyRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
+assert.equal(v2LeanTop.length, 2, 'v2 should still rank picks when no BET exists')
+assert.equal(v2LeanTop[0].recommendation, 'LEAN')
+assert.ok(v2LeanTop[0].final_pick_note.includes('BET'), 'LEAN final pick note must say it is not BET level')
+
+const v2NoBetOnlyRows = runAiSelectionEngine([
+  v2Match('v2-no-bet-only-1', 35, 90, 'NO BET'),
+  v2Match('v2-no-bet-only-2', 32, 92, 'NO BET'),
+])
+const v2NoBetTop = v2NoBetOnlyRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
+assert.equal(v2NoBetTop.length, 2, 'v2 should show NO BET watchlist rows when they are the only analysis available')
+assert.equal(v2NoBetTop[0].recommendation, 'NO BET')
+assert.ok(v2NoBetTop[0].final_pick_note.length > 0)
+
+const v2InvalidRows = runAiSelectionEngine([{ id: 'missing-critical-data' }])
+assert.equal(v2InvalidRows.filter((row) => row.is_top_pick).length, 0, 'invalid rows should not become Top 10 picks')
+
+const aiSelectionSource = readFileSync(new URL('../src/utils/aiSelectionEngine.js', import.meta.url), 'utf8')
+assert.equal(aiSelectionSource.includes('Math.random'), false, 'AI Selection Engine v2 must be deterministic')
 
 const homePick = deriveAiPickSide({
   ...baseMatch,

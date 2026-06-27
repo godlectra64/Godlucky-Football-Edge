@@ -119,7 +119,7 @@ export function getOneBestPickOfDay(matches = []) {
       combinedModuleScore: getCombinedModuleScore(match),
     }))
 
-  const topPick = sortOneBestCandidates(validMatches)[0]
+  const topPick = pickStoredFinal(validMatches) ?? pickStoredRankOne(validMatches) ?? sortOneBestCandidates(validMatches)[0]
   if (!topPick) return null
 
   if (topPick.finalPick.recommendation === 'BET') return buildOneBestResult(topPick.match, 'FINAL_PICK')
@@ -192,14 +192,30 @@ function firstNumber(...values) {
 
 function buildOneBestResult(match, heroType) {
   const copy = oneBestPickCopy[heroType] ?? oneBestPickCopy.NO_CLEAR_PICK
+  const note = match?.analysis?.final_pick_note ?? match?.finalPickNote ?? match?.final_pick_note ?? getNoteForRecommendation(getStoredRecommendation(match ?? {}), copy.note)
   return {
     match,
     heroType,
     title: copy.title,
     subtitle: copy.subtitle,
     badgeLabel: copy.badgeLabel,
-    note: copy.note,
+    note,
   }
+}
+
+function pickStoredFinal(items) {
+  return sortOneBestCandidates(items.filter((item) => Boolean(item.match?.isFinalPick ?? item.match?.is_final_pick ?? item.match?.analysis?.is_final_pick)))[0] ?? null
+}
+
+function pickStoredRankOne(items) {
+  return items.find((item) => Number(item.match?.finalRank ?? item.match?.final_rank ?? item.match?.analysis?.final_rank) === 1) ?? null
+}
+
+function getNoteForRecommendation(recommendation, fallback) {
+  if (recommendation === 'LEAN') return 'อันดับ 1 วันนี้ยังไม่ถึงระดับ BET แต่เป็นคู่ที่ AI ประเมินดีที่สุด'
+  if (recommendation === 'NO BET') return 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ไม่แนะนำให้เดิมพัน แต่เป็นคู่ที่น่าติดตามที่สุดของวัน'
+  if (recommendation === 'WATCH') return 'มีทรงน่าสนใจ แต่ควรรอข้อมูลเพิ่ม'
+  return fallback
 }
 
 function getStoredRecommendation(match) {
@@ -214,20 +230,25 @@ function hasRecommendationData(match) {
 
 function sortOneBestCandidates(items) {
   return [...items].sort((a, b) => {
+    const rankA = Number(a.match?.finalRank ?? a.match?.final_rank ?? a.match?.analysis?.final_rank ?? 999)
+    const rankB = Number(b.match?.finalRank ?? b.match?.final_rank ?? b.match?.analysis?.final_rank ?? 999)
+    const rankDiff = rankA - rankB
     const recommendationDiff = recommendationPriority(getStoredRecommendation(a.match)) - recommendationPriority(getStoredRecommendation(b.match))
+    const rankingDiff = Number(b.match?.rankingScore ?? b.match?.ranking_score ?? b.match?.analysis?.ranking_score ?? 0) - Number(a.match?.rankingScore ?? a.match?.ranking_score ?? a.match?.analysis?.ranking_score ?? 0)
     const confidenceDiff = b.finalPick.confidence - a.finalPick.confidence
     const riskDiff = riskPriority(a.finalPick.riskLevel) - riskPriority(b.finalPick.riskLevel)
     const moduleDiff = b.combinedModuleScore - a.combinedModuleScore
     const kickoffA = new Date(a.match.kickoffAt ?? a.match.kickoff_at ?? 0).getTime()
     const kickoffB = new Date(b.match.kickoffAt ?? b.match.kickoff_at ?? 0).getTime()
-    return recommendationDiff || confidenceDiff || riskDiff || moduleDiff || kickoffA - kickoffB
+    return rankDiff || recommendationDiff || rankingDiff || confidenceDiff || riskDiff || moduleDiff || kickoffA - kickoffB
   })
 }
 
 function recommendationPriority(recommendation) {
   if (recommendation === 'BET') return 1
   if (recommendation === 'LEAN') return 2
-  if (recommendation === 'NO BET') return 3
+  if (recommendation === 'WATCH') return 3
+  if (recommendation === 'NO BET') return 4
   return 4
 }
 
@@ -255,8 +276,8 @@ function getCombinedModuleScore(match) {
 }
 
 function normalizeRecommendation(value) {
-  const normalized = String(value ?? '').toUpperCase()
-  return ['BET', 'LEAN', 'NO BET'].includes(normalized) ? normalized : 'NO BET'
+  const normalized = String(value ?? '').toUpperCase().replace('_', ' ')
+  return ['BET', 'LEAN', 'WATCH', 'NO BET'].includes(normalized) ? normalized : 'NO BET'
 }
 
 function normalizeRiskLevel(value) {

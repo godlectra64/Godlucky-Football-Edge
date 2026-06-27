@@ -35,6 +35,24 @@ ${analysisCoreSelect},
     value_reason
 `
 
+const analysisSelectionV2Select = `
+${analysisFinalPickSelect},
+    data_validation_status,
+    data_validation_notes,
+    league_quality_score,
+    match_quality_score,
+    tactical_matchup_score,
+    market_reading_score,
+    edge_score,
+    ai_score,
+    ranking_score,
+    final_rank,
+    recommendation_tier,
+    final_pick_note,
+    is_top_pick,
+    is_final_pick
+`
+
 export const matchSelect = `
   id,
   api_fixture_id,
@@ -50,7 +68,7 @@ export const matchSelect = `
   league:football_leagues(id, api_league_id, name, country, logo, enabled, priority),
   homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name, logo, country),
   awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name, logo, country),
-  analysis:match_analysis(${analysisFinalPickSelect})
+  analysis:match_analysis(${analysisSelectionV2Select})
 `
 
 const legacyMatchSelect = `
@@ -88,6 +106,37 @@ export async function fetchMatchesByKickoffRange(start, end) {
     .gte('kickoff_at', start)
     .lt('kickoff_at', end)
     .order('kickoff_at', { ascending: true })
+}
+
+export async function getTodayAiPicks(start, end) {
+  const result = await fetchMatchesByKickoffRange(start, end)
+  if (result.error) return result
+  return {
+    ...result,
+    data: (result.data ?? [])
+      .filter((row) => {
+        const analysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
+        return Boolean(analysis?.is_top_pick)
+      })
+      .sort((a, b) => {
+        const analysisA = Array.isArray(a.analysis) ? a.analysis[0] : a.analysis
+        const analysisB = Array.isArray(b.analysis) ? b.analysis[0] : b.analysis
+        return Number(analysisA?.final_rank ?? 999) - Number(analysisB?.final_rank ?? 999)
+      }),
+  }
+}
+
+export async function getTodayAnalyzedMatches(start, end) {
+  const result = await fetchMatchesByKickoffRange(start, end)
+  if (result.error) return result
+  return {
+    ...result,
+    data: (result.data ?? []).filter((row) => {
+      const analysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
+      const status = String(analysis?.data_validation_status ?? 'VALID').toUpperCase()
+      return ['VALID', 'PARTIAL'].includes(status)
+    }),
+  }
 }
 
 export async function fetchMatchById(matchId) {

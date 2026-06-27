@@ -28,6 +28,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey)
 const legacyAnalysisSelect = 'id, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, motivation_score, market_risk_score, confidence_score, recommendation, risk_level, analysis_summary, thai_reason, raw'
 const pickAnalysisSelect = `${legacyAnalysisSelect}, pick_side, pick_team, pick_reason`
 const finalPickAnalysisSelect = `${pickAnalysisSelect}, market_type, market_line, fair_line, model_probability, value_status, value_reason`
+const selectionV2AnalysisSelect = `${finalPickAnalysisSelect}, data_validation_status, data_validation_notes, league_quality_score, match_quality_score, tactical_matchup_score, market_reading_score, home_away_score, risk_score, edge_score, ai_score, ranking_score, final_rank, recommendation_tier, final_pick_note, is_top_pick, is_final_pick`
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
@@ -89,6 +90,7 @@ Deno.serve(async (request) => {
     const recomputeResult = await recomputeProcessedAnalysisRows(processedMatchIds)
     const recomputedStoredRows = body.recomputeStoredAnalysisRows ? await recomputeStoredAnalysisRows(Number(body.recomputeStoredLimit ?? 50)) : 0
     const normalizedAnalysisRows = await normalizeLegacyAnalysisRows()
+    const rankedSelectionRows = await updateDailySelectionRanks(dateFrom, dateTo)
     const updatedAnalysisCount = recomputeResult.updated + recomputedStoredRows
     const invalidRowsFixed = normalizedAnalysisRows.fixed
     const allFailures = [...failures, ...recomputeResult.failures]
@@ -111,6 +113,7 @@ Deno.serve(async (request) => {
       invalidRowsFixed,
       recomputedStoredRows,
       normalizedAnalysisRows: normalizedAnalysisRows.checked,
+      rankedSelectionRows,
       failures: allFailures,
     })
 
@@ -125,6 +128,7 @@ Deno.serve(async (request) => {
       invalidRowsFixed,
       recomputedStoredRows,
       normalizedAnalysisRows: normalizedAnalysisRows.checked,
+      rankedSelectionRows,
       failures: allFailures,
     })
   } catch (error) {
@@ -349,6 +353,22 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
     model_probability: safeAnalysis.model_probability,
     value_status: safeAnalysis.value_status,
     value_reason: safeAnalysis.value_reason,
+    data_validation_status: safeAnalysis.data_validation_status,
+    data_validation_notes: safeAnalysis.data_validation_notes,
+    league_quality_score: safeAnalysis.league_quality_score,
+    match_quality_score: safeAnalysis.match_quality_score,
+    tactical_matchup_score: safeAnalysis.tactical_matchup_score,
+    market_reading_score: safeAnalysis.market_reading_score,
+    home_away_score: safeAnalysis.home_away_score,
+    risk_score: safeAnalysis.risk_score,
+    edge_score: safeAnalysis.edge_score,
+    ai_score: safeAnalysis.ai_score,
+    ranking_score: safeAnalysis.ranking_score,
+    final_rank: safeAnalysis.final_rank,
+    recommendation_tier: safeAnalysis.recommendation_tier,
+    final_pick_note: safeAnalysis.final_pick_note,
+    is_top_pick: safeAnalysis.is_top_pick,
+    is_final_pick: safeAnalysis.is_final_pick,
     analysis_summary: safeAnalysis.analysis_summary,
     thai_reason: safeAnalysis.thai_reason,
     raw: safeAnalysis,
@@ -380,11 +400,21 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
 }
 
 function normalizeAnalysisPayload(analysis: any) {
-  const confidence = normalizeScore(analysis?.confidence_score ?? analysis?.final_confidence_score ?? 0)
-  const riskLevel = normalizeRiskLevel(analysis?.risk_level)
-  const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
+  let confidence = normalizeScore(analysis?.confidence_score ?? analysis?.final_confidence_score ?? 0)
+  let riskLevel = normalizeRiskLevel(analysis?.risk_level)
+  let recommendation = getRecommendationFromConfidence(confidence, riskLevel)
+  const selectionV2 = buildSelectionV2Analysis(analysis?.raw_match ?? analysis?.raw ?? analysis ?? {}, {
+    ...(analysis ?? {}),
+    confidence_score: confidence,
+    recommendation,
+    risk_level: riskLevel,
+  })
+  confidence = normalizeScore(selectionV2.confidence_score)
+  recommendation = selectionV2.recommendation
+  riskLevel = getRiskLevelFromRiskScore(selectionV2.risk_score)
   const summary = String(
-    analysis?.analysis_summary ||
+    selectionV2.analysis_summary ||
+      analysis?.analysis_summary ||
       analysis?.thai_reason ||
       `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskLevel}. ข้อมูลบางส่วนยังจำกัด ควรตรวจราคาก่อนตัดสินใจ`,
   ).trim()
@@ -427,6 +457,7 @@ function normalizeAnalysisPayload(analysis: any) {
     model_probability: finalPick.model_probability,
     value_status: finalPick.value_status,
     value_reason: finalPick.value_reason,
+    ...selectionV2,
     analysis_summary: summary,
     thai_reason: summary,
   }
@@ -812,7 +843,7 @@ async function normalizeLegacyAnalysisRows() {
 async function fetchAnalysisRowsForNormalization() {
   const result = await supabase
     .from('match_analysis')
-    .select(finalPickAnalysisSelect)
+    .select(selectionV2AnalysisSelect)
     .limit(1000)
 
   if (!result.error) {
@@ -865,6 +896,73 @@ async function updateMatchAnalysisRow(id: string, payload: Record<string, unknow
     .from('match_analysis')
     .update(legacyPayload)
     .eq('id', id)
+}
+
+async function updateDailySelectionRanks(dateFrom: string, dateTo: string) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      kickoff_at,
+      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, risk_score, data_validation_status)
+    `)
+    .gte('kickoff_at', `${dateFrom}T00:00:00Z`)
+    .lte('kickoff_at', `${dateTo}T23:59:59Z`)
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return 0
+    throw result.error
+  }
+
+  const rows = (result.data ?? [])
+    .map((match: any) => {
+      const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
+      return analysis ? { matchId: match.id, analysis } : null
+    })
+    .filter(Boolean)
+
+  const resetResult = await supabase
+    .from('match_analysis')
+    .update({ is_top_pick: false, is_final_pick: false, final_rank: null, final_pick_note: null })
+    .in('match_id', rows.map((row: any) => row.matchId))
+
+  if (resetResult.error) {
+    if (isMissingColumnError(resetResult.error)) return 0
+    throw resetResult.error
+  }
+
+  const ranked = rows
+    .filter((row: any) => String(row.analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID')
+    .sort((a: any, b: any) => {
+      const recommendationDiff = recommendationPriority(a.analysis.recommendation) - recommendationPriority(b.analysis.recommendation)
+      const rankingDiff = Number(b.analysis.ranking_score ?? 0) - Number(a.analysis.ranking_score ?? 0)
+      const confidenceDiff = Number(b.analysis.confidence_score ?? 0) - Number(a.analysis.confidence_score ?? 0)
+      const riskDiff = Number(a.analysis.risk_score ?? 100) - Number(b.analysis.risk_score ?? 100)
+      return recommendationDiff || rankingDiff || confidenceDiff || riskDiff
+    })
+    .slice(0, 10)
+
+  let updated = 0
+  for (const [index, row] of ranked.entries()) {
+    const recommendation = String(row.analysis.recommendation ?? 'NO BET').toUpperCase()
+    const updateResult = await supabase
+      .from('match_analysis')
+      .update({
+        is_top_pick: true,
+        is_final_pick: index === 0,
+        final_rank: index + 1,
+        final_pick_note: index === 0 ? buildFinalPickNoteV2(recommendation) : null,
+      })
+      .eq('match_id', row.matchId)
+
+    if (updateResult.error) {
+      if (isMissingColumnError(updateResult.error)) return updated
+      throw updateResult.error
+    }
+    updated += 1
+  }
+
+  return updated
 }
 
 function isMissingColumnError(error: any) {
@@ -1191,6 +1289,188 @@ function hasMarketData(match: any) {
       match?.raw?.market ||
       match?.raw?.bookmakers,
   )
+}
+
+function buildSelectionV2Analysis(match: any, analysis: any) {
+  const leagueQualityScore = getLeagueQualityScore(match?.competition?.name ?? match?.league?.name)
+  const matchQualityScore = getMatchQualityScoreV2(match, analysis)
+  const validation = getDataValidationStatusV2(match, analysis)
+  const base = normalizeScore(60 + (leagueQualityScore - 65) * 0.1 + recommendationBoost(analysis?.recommendation) + (Number(analysis?.confidence_score ?? 0) - 60) * 0.08)
+  const teamStrengthScore = normalizeScore(analysis?.team_strength_score ?? analysis?.modules?.teamStrength ?? base)
+  const formScore = normalizeScore(analysis?.form_score ?? analysis?.modules?.recentForm ?? base)
+  const goalScoringScore = normalizeScore(analysis?.goal_scoring_score ?? analysis?.modules?.attackQuality ?? base)
+  const defensiveStabilityScore = normalizeScore(analysis?.defensive_stability_score ?? analysis?.modules?.defensiveStability ?? base)
+  const tacticalMatchupScore = normalizeScore(analysis?.tactical_matchup_score ?? analysis?.tactical_score ?? base)
+  const motivationScore = normalizeScore(analysis?.motivation_score ?? analysis?.modules?.motivationContext ?? base)
+  const marketReadingScore = normalizeScore(analysis?.market_reading_score ?? analysis?.market_context_score ?? analysis?.market_risk_score ?? analysis?.modules?.marketOddsRisk ?? base)
+  const homeAwayScore = normalizeScore(analysis?.home_away_score ?? analysis?.home_advantage_score ?? analysis?.modules?.homeAwayAdvantage ?? base + 2)
+  const aiScore = roundScore(
+    teamStrengthScore * 0.2 +
+      formScore * 0.15 +
+      goalScoringScore * 0.15 +
+      defensiveStabilityScore * 0.1 +
+      tacticalMatchupScore * 0.1 +
+      motivationScore * 0.1 +
+      marketReadingScore * 0.1 +
+      homeAwayScore * 0.1,
+  )
+  const edgeScore = getEdgeScoreV2(match, analysis, marketReadingScore)
+  const riskScore = getRiskScoreV2(matchQualityScore, analysis)
+  const confidenceScore = validation.status === 'INVALID'
+    ? 0
+    : roundScore(aiScore * 0.45 + edgeScore * 0.2 + leagueQualityScore * 0.15 + matchQualityScore * 0.15 - riskScore * 0.05)
+  const recommendation = validation.status === 'INVALID' ? 'NO BET' : getRecommendationV2(confidenceScore, riskScore)
+  const rankingScore = validation.status === 'INVALID'
+    ? 0
+    : roundScore(confidenceScore * 0.5 + aiScore * 0.25 + edgeScore * 0.15 + leagueQualityScore * 0.1 - riskScore * 0.1)
+
+  return {
+    data_validation_status: validation.status,
+    data_validation_notes: validation.notes.join(', '),
+    league_quality_score: leagueQualityScore,
+    match_quality_score: matchQualityScore,
+    team_strength_score: teamStrengthScore,
+    form_score: formScore,
+    goal_scoring_score: goalScoringScore,
+    defensive_stability_score: defensiveStabilityScore,
+    tactical_matchup_score: tacticalMatchupScore,
+    motivation_score: motivationScore,
+    market_reading_score: marketReadingScore,
+    home_away_score: homeAwayScore,
+    risk_score: riskScore,
+    edge_score: edgeScore,
+    ai_score: aiScore,
+    confidence_score: confidenceScore,
+    ranking_score: rankingScore,
+    final_rank: analysis?.final_rank ?? null,
+    recommendation,
+    recommendation_tier: getRecommendationTierV2(recommendation, confidenceScore, riskScore),
+    final_pick_note: analysis?.final_pick_note ?? null,
+    is_top_pick: Boolean(analysis?.is_top_pick ?? false),
+    is_final_pick: Boolean(analysis?.is_final_pick ?? false),
+    analysis_summary: buildSelectionSummaryV2(recommendation, confidenceScore, riskScore, leagueQualityScore, matchQualityScore, edgeScore),
+  }
+}
+
+function getDataValidationStatusV2(match: any, analysis: any) {
+  const notes: Array<string> = []
+  if (!(match?.id ?? analysis?.raw_match?.id)) notes.push('missing match_id')
+  if (!(match?.homeTeam?.name ?? match?.home_team?.name)) notes.push('missing home_team')
+  if (!(match?.awayTeam?.name ?? match?.away_team?.name)) notes.push('missing away_team')
+  if (!(match?.competition?.name ?? match?.league?.name)) notes.push('missing league')
+  if (!(match?.utcDate ?? match?.kickoff_at)) notes.push('missing kickoff_time')
+
+  const criticalMissing = notes.some((note) => ['missing match_id', 'missing home_team', 'missing away_team', 'missing league', 'missing kickoff_time'].includes(note))
+  if (criticalMissing) return { status: 'INVALID', notes }
+  if (!(analysis?.confidence_score ?? analysis?.recommendation ?? analysis?.analysis_summary)) notes.push('limited analysis data')
+  return { status: notes.length ? 'PARTIAL' : 'VALID', notes: notes.length ? notes : ['ready'] }
+}
+
+function getLeagueQualityScore(leagueName: unknown) {
+  const league = String(leagueName ?? '').toLowerCase()
+  if (league.includes('champions league') || league.includes('premier league')) return 100
+  if (league.includes('la liga') || league.includes('primera division')) return 98
+  if (league.includes('serie a')) return 96
+  if (league.includes('bundesliga') || league.includes('europa league')) return 95
+  if (league.includes('ligue 1')) return 93
+  if (league.includes('brazil') || league.includes('brasileir')) return 90
+  if (league.includes('eredivisie')) return 88
+  if (league.includes('primeira') || league.includes('j league')) return 87
+  if (league.includes('argentina')) return 86
+  if (league.includes('k league') || league.includes('mls')) return 84
+  if (league.includes('thai league')) return 72
+  return 65
+}
+
+function getMatchQualityScoreV2(match: any, analysis: any) {
+  const checks = [
+    Boolean(match?.homeTeam?.name ?? match?.home_team?.name),
+    Boolean(match?.awayTeam?.name ?? match?.away_team?.name),
+    Boolean(match?.competition?.name ?? match?.league?.name),
+    Boolean(match?.utcDate ?? match?.kickoff_at),
+    Boolean(analysis?.recommendation ?? analysis?.confidence_score ?? analysis?.analysis_summary),
+    Boolean(analysis?.market_line ?? match?.market_line ?? match?.odds),
+    Boolean(analysis?.team_strength_score ?? analysis?.form_score ?? analysis?.modules),
+  ]
+  return normalizeScore(35 + checks.filter(Boolean).length * 9)
+}
+
+function getEdgeScoreV2(match: any, analysis: any, marketReadingScore: number) {
+  const fairLine = parseLineNumber(firstText(analysis?.fair_line, match?.fair_line))
+  const marketLine = parseLineNumber(firstText(analysis?.market_line, match?.market_line, match?.odds?.line))
+  if (fairLine !== null && marketLine !== null) {
+    const edge = Math.abs(fairLine - marketLine)
+    if (edge >= 0.5) return 95
+    if (edge >= 0.35) return 88
+    if (edge >= 0.25) return 80
+    if (edge >= 0.15) return 70
+    if (edge >= 0.05) return 60
+    return 50
+  }
+  return normalizeScore(marketReadingScore * 0.65 + Number(analysis?.confidence_score ?? 58) * 0.35)
+}
+
+function getRiskScoreV2(matchQualityScore: number, analysis: any) {
+  if (analysis?.risk_score !== undefined && analysis?.risk_score !== null) return normalizeScore(analysis.risk_score)
+  const marketReading = Number(analysis?.market_risk_score ?? analysis?.market_reading_score ?? 0)
+  if (marketReading) return normalizeScore(100 - marketReading)
+  return normalizeScore(100 - matchQualityScore)
+}
+
+function getRecommendationV2(confidence: number, risk: number) {
+  if (confidence >= 85 && risk <= 45) return 'BET'
+  if (confidence >= 80 && risk <= 55) return 'BET'
+  if (confidence >= 70) return 'LEAN'
+  if (confidence >= 60) return 'WATCH'
+  return 'NO BET'
+}
+
+function getRecommendationTierV2(recommendation: string, confidence: number, risk: number) {
+  if (recommendation === 'BET' && confidence >= 85 && risk <= 45) return '*****'
+  if (recommendation === 'BET') return '****'
+  if (recommendation === 'LEAN') return '***'
+  if (recommendation === 'WATCH') return '**'
+  return '*'
+}
+
+function recommendationBoost(recommendation: unknown) {
+  const value = String(recommendation ?? '').toUpperCase()
+  if (value === 'BET') return 8
+  if (value === 'LEAN') return 4
+  if (value === 'WATCH') return 1
+  return -2
+}
+
+function buildSelectionSummaryV2(recommendation: string, confidence: number, risk: number, league: number, quality: number, edge: number) {
+  if (recommendation === 'BET') return `คู่นี้ผ่านการคัดเลือกด้วยคะแนนรวม ${confidence} จากคุณภาพลีก ${league}, คุณภาพข้อมูล ${quality} และ Edge Score ${edge} โดยมีความเสี่ยง ${risk} จึงอยู่ในระดับ BET`
+  if (recommendation === 'LEAN') return `คู่นี้มีแนวโน้มดีแต่ยังไม่ชัดพอสำหรับ BET จึงจัดเป็น LEAN ด้วยความมั่นใจ ${confidence} และความเสี่ยง ${risk}`
+  if (recommendation === 'WATCH') return `คู่นี้น่าติดตาม แต่ยังมีปัจจัยเสี่ยงหรือข้อมูลไม่ชัดพอ จึงจัดเป็น WATCH ด้วยความมั่นใจ ${confidence}`
+  return `คู่นี้ยังไม่เหมาะสำหรับการเดิมพัน เนื่องจากคะแนนความมั่นใจ ${confidence} หรือความเสี่ยง ${risk} ยังไม่ผ่านเกณฑ์`
+}
+
+function getRiskLevelFromRiskScore(riskScore: number) {
+  if (riskScore >= 70) return 'HIGH'
+  if (riskScore >= 36) return 'MEDIUM'
+  return 'LOW'
+}
+
+function buildFinalPickNoteV2(recommendation: string) {
+  if (recommendation === 'LEAN') return 'อันดับ 1 วันนี้ยังไม่ถึงระดับ BET แต่เป็นคู่ที่ AI ประเมินดีที่สุด'
+  if (recommendation === 'WATCH' || recommendation === 'NO BET') return 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ไม่แนะนำให้เดิมพัน แต่เป็นคู่ที่น่าติดตามที่สุดของวัน'
+  return 'วันนี้ AI เลือกคู่นี้เป็นอันดับ 1 ของวัน'
+}
+
+function recommendationPriority(recommendation: unknown) {
+  const value = String(recommendation ?? '').toUpperCase().replace('_', ' ')
+  if (value === 'BET') return 1
+  if (value === 'LEAN') return 2
+  if (value === 'WATCH') return 3
+  if (value === 'NO BET') return 4
+  return 5
+}
+
+function roundScore(value: number) {
+  return Math.round(clamp(value, 0, 100) * 10) / 10
 }
 
 function normalizeFinalPickFields(source: any, analysis: any) {

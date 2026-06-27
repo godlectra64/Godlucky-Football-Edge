@@ -8,6 +8,7 @@ import {
 export const recommendationLabels = {
   bet: 'BET',
   lean: 'LEAN',
+  watch: 'WATCH',
   noBet: 'NO BET',
 }
 
@@ -167,7 +168,38 @@ export function getDataCompleteness(match) {
 }
 
 export function getTopMatches(matches, limit = 10) {
+  const storedTopPicks = [...(matches ?? [])]
+    .filter((match) => Boolean(match.isTopPick ?? match.is_top_pick ?? match.analysis?.is_top_pick))
+    .sort((a, b) => {
+      const rankA = Number(a.finalRank ?? a.final_rank ?? a.analysis?.final_rank ?? 999)
+      const rankB = Number(b.finalRank ?? b.final_rank ?? b.analysis?.final_rank ?? 999)
+      return rankA - rankB
+    })
+
+  if (storedTopPicks.length) {
+    return storedTopPicks.slice(0, Math.max(0, limit)).map((match, index) => enrichStoredTopPick(match, index))
+  }
+
   return rankTopAiPicks(matches, limit)
+}
+
+function enrichStoredTopPick(match, index) {
+  const analysis = match.analysis ?? match.match_analysis ?? {}
+  const rank = Number(match.finalRank ?? match.final_rank ?? analysis.final_rank ?? index + 1)
+  return {
+    ...enrichMatch(match),
+    rank,
+    finalRank: rank,
+    final_rank: rank,
+    aiPickRank: rank,
+    ai_pick_rank: rank,
+    aiPickLabel: `AI PICK #${rank}`,
+    ai_pick_label: `AI PICK #${rank}`,
+    isTopPick: true,
+    is_top_pick: true,
+    isFinalPick: Boolean(match.isFinalPick ?? match.is_final_pick ?? analysis.is_final_pick),
+    is_final_pick: Boolean(match.isFinalPick ?? match.is_final_pick ?? analysis.is_final_pick),
+  }
 }
 
 export function enrichMatch(match) {
@@ -293,7 +325,8 @@ export function getRecommendationPriority(recommendation = recommendationLabels.
   const normalized = String(recommendation || '').toUpperCase().replace('_', ' ')
   if (normalized === recommendationLabels.bet) return 1
   if (normalized === recommendationLabels.lean) return 2
-  if (normalized === recommendationLabels.noBet) return 3
+  if (normalized === recommendationLabels.watch) return 3
+  if (normalized === recommendationLabels.noBet) return 4
   return 4
 }
 
@@ -523,7 +556,7 @@ export function generateAiPickBadges(match) {
   if (recommendation === recommendationLabels.bet && riskLevel !== riskLabels.high && confidence >= 72) badges.push('BEST VALUE')
   if (confidence >= 78) badges.push('HIGH CONFIDENCE')
   if (riskLevel === riskLabels.low && recommendation !== recommendationLabels.noBet) badges.push('SAFE PICK')
-  if (recommendation === recommendationLabels.lean || (recommendation === recommendationLabels.bet && confidence < 78)) badges.push('WATCHLIST')
+  if (recommendation === recommendationLabels.watch || recommendation === recommendationLabels.lean || (recommendation === recommendationLabels.bet && confidence < 78)) badges.push('WATCHLIST')
 
   return [...new Set(badges)].slice(0, 4)
 }
