@@ -7,6 +7,7 @@ import {
   getRiskLevel,
 } from './analysisEngine.js'
 import { dataIntelligenceSections, normalizeDataIntelligence } from './dataIntelligence.js'
+import { deriveAiPickSide, getAiPickDisplay } from './pickSide.js'
 
 const intelligenceFallback = {
   h2h: { score: 58, confidence: 'low', reason: 'ยังไม่มีข้อมูล H2H เพียงพอ', signals: ['missing_h2h'] },
@@ -119,6 +120,8 @@ export function normalizeDetailPayload(match) {
   const dataIntelligence = extractDataIntelligence(safeMatch)
   const dataQuality = getDataQuality(safeMatch)
   const rankingScore = Math.round(safeMatch.rankingScore ?? safeMatch.ranking_score ?? safeMatch.analysis?.raw?.ranking_score ?? getConfidence(safeMatch))
+  const aiPick = deriveAiPickSide(safeMatch)
+  const aiPickDisplay = getAiPickDisplay(safeMatch)
 
   return {
     ...safeMatch,
@@ -129,6 +132,10 @@ export function normalizeDetailPayload(match) {
     rank: safeMatch.rank ?? null,
     aiPickRank: safeMatch.aiPickRank ?? safeMatch.ai_pick_rank ?? safeMatch.rank ?? null,
     aiPickLabel: safeMatch.aiPickLabel ?? safeMatch.ai_pick_label ?? (safeMatch.rank ? `AI PICK #${safeMatch.rank}` : ''),
+    pickSide: aiPick.pickSide,
+    pickTeam: aiPick.pickTeam,
+    pickReason: aiPick.pickReason,
+    aiPickDisplay,
     rankReason: safeMatch.rankReason ?? safeMatch.rank_reason ?? 'ข้อมูลอันดับยังจำกัด',
     rankBadges: safeMatch.rankBadges ?? safeMatch.rank_badges ?? [],
     analysisSummary: getAnalysisSummary(safeMatch),

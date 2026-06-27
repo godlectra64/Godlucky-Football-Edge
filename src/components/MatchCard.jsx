@@ -1,6 +1,7 @@
 import { Clock, Gauge, Medal } from 'lucide-react'
 import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
 import { formatKickoffTime } from '../utils/formatters'
+import { getAiPickDisplay } from '../utils/pickSide'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
 
@@ -10,6 +11,7 @@ export default function MatchCard({ match, onOpen }) {
   const riskLevel = match.riskLevel ?? getRiskLevel(match)
   const rankingScore = Math.round(match.rankingScore ?? match.ranking_score ?? confidence)
   const aiPickLabel = match.aiPickLabel ?? match.ai_pick_label ?? (match.rank ? `AI PICK #${match.rank}` : '')
+  const pickDisplay = getAiPickDisplay(match)
   const analysisSummary = buildCardSummary(match, recommendation, confidence)
   const rankBadges = buildDisplayBadges(match, recommendation, riskLevel, confidence)
   const cardClass = buildCardClass(match.rank, recommendation, riskLevel)
@@ -42,10 +44,13 @@ export default function MatchCard({ match, onOpen }) {
             <span className="truncate">{match.league?.name ?? 'Unknown league'}</span>
           </div>
           {aiPickLabel ? <p className="mt-1 text-[10px] font-black uppercase tracking-normal text-[var(--page-accent)]">{aiPickLabel}</p> : null}
+          <p className={`mt-1 text-clamp-1 text-xs font-black leading-5 ${pickDisplay.canHighlight ? 'text-emerald-100' : 'text-slate-400'}`}>
+            {pickDisplay.label}
+          </p>
           <div className="mt-1.5 min-w-0">
-            <p className="truncate text-base font-black leading-5 text-white">{match.homeTeam?.name ?? 'Unknown team'}</p>
+            <p className={`truncate text-base font-black leading-5 ${teamTextClass(pickDisplay.pickSide, 'HOME')}`}>{match.homeTeam?.name ?? 'Unknown team'}</p>
             <p className="mt-0.5 truncate text-xs font-black uppercase leading-4 text-slate-500">vs</p>
-            <p className="truncate text-sm font-bold leading-5 text-slate-300">{match.awayTeam?.name ?? 'Unknown team'}</p>
+            <p className={`truncate text-sm font-bold leading-5 ${teamTextClass(pickDisplay.pickSide, 'AWAY')}`}>{match.awayTeam?.name ?? 'Unknown team'}</p>
           </div>
         </div>
 
@@ -142,4 +147,9 @@ function badgeClass(badge) {
   if (badge === 'NO BET') return 'border-red-300/30 bg-red-400/10 text-red-100'
   if (badge === 'LIMITED DATA') return 'border-slate-400/25 bg-slate-400/10 text-slate-200'
   return 'border-white/10 bg-white/[0.05] text-slate-300'
+}
+
+function teamTextClass(pickSide, side) {
+  if (pickSide !== side) return side === 'HOME' ? 'text-white' : 'text-slate-300'
+  return 'text-emerald-100 underline decoration-emerald-300/60 underline-offset-4'
 }

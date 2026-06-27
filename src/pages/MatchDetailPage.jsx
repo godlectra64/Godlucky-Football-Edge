@@ -69,6 +69,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
     <main className="app-page theme-analysis">
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
+      <PickSummarySection detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <ScoreBreakdownSection items={detail.moduleItems} />
       <ExplainableAiSection explanation={explainability} />
@@ -164,6 +165,25 @@ function AiVerdictSection({ detail, verdict }) {
       </div>
       <TwoColumnLists leftTitle="Reasons" leftItems={verdict.reasons} rightTitle="Cautions" rightItems={verdict.cautions} />
       <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{verdict.playable}</p>
+    </Section>
+  )
+}
+
+function PickSummarySection({ detail }) {
+  return (
+    <Section title="AI เลือก" icon={Sparkles} accent>
+      <div className="rounded-2xl border border-emerald-300/25 bg-emerald-300/10 p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`semantic-badge ${detail.aiPickDisplay?.canHighlight ? 'badge-positive' : 'border-slate-400/25 bg-slate-400/10 text-slate-200'}`}>
+            {detail.aiPickDisplay?.label ?? 'ข้อมูลยังไม่พอเลือกฝั่ง'}
+          </span>
+          <ScoreBadge recommendation={detail.recommendation} />
+          <RiskBadge level={detail.riskLevel} />
+          <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{detail.confidence}%</span>
+        </div>
+        <p className="mt-3 text-sm font-semibold leading-6 text-slate-200">{detail.pickReason}</p>
+        <p className="text-clamp-2 mt-2 text-sm leading-6 text-slate-300">{detail.analysisSummary || 'ข้อมูลวิเคราะห์ยังจำกัด'}</p>
+      </div>
     </Section>
   )
 }

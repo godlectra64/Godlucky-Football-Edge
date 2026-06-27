@@ -176,6 +176,9 @@ function createFallbackAnalysis(row) {
     confidence_score: 59,
     recommendation: 'NO BET',
     risk_level: 'MEDIUM',
+    pick_side: 'NONE',
+    pick_team: null,
+    pick_reason: 'ไม่แนะนำเดิมพัน เพราะข้อมูลวิเคราะห์ยังไม่ครบพอให้เลือกฝั่ง',
     analysis_summary: summary,
     thai_reason: summary,
     raw: {

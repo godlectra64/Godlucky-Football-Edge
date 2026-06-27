@@ -39,6 +39,18 @@ const checks = [
     label: 'invalid risk_level',
     query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).not('risk_level', 'in', '("LOW","MEDIUM","HIGH")'),
   },
+  {
+    label: 'invalid pick_side',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).not('pick_side', 'in', '("HOME","AWAY","DRAW","NONE")'),
+  },
+  {
+    label: 'missing pick_reason for selected side',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).in('pick_side', ['HOME', 'AWAY', 'DRAW']).is('pick_reason', null),
+  },
+  {
+    label: 'pick_side NONE with pick_team',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('pick_side', 'NONE').not('pick_team', 'is', null),
+  },
 ]
 
 let failed = false

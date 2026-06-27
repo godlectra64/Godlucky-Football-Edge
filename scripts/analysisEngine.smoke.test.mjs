@@ -50,6 +50,7 @@ import {
 } from '../src/utils/dataPlatform.js'
 import { buildExplainableAi } from '../src/utils/explainableAi.js'
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
+import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { getPagePath, getRouteState } from '../src/utils/routes.js'
 import { fetchEnabledLeagues, updateLeagueSettingsById } from '../src/repositories/analysisRepository.js'
 import { fetchMatchById, fetchMatchesByKickoffRange } from '../src/repositories/matchesRepository.js'
@@ -207,6 +208,54 @@ const highRiskFallback = rankTopMatches([
 ], 10)
 assert.deepEqual(highRiskFallback.map((match) => match.id), ['only-high-1', 'only-high-2'])
 assert.ok(highRiskFallback[0].rankBadges.includes('NO BET'), 'HIGH risk fallback should be clearly badged as NO BET')
+
+const homePick = deriveAiPickSide({
+  ...baseMatch,
+  analysis: {
+    recommendation: 'BET',
+    risk_level: 'MEDIUM',
+    confidence_score: 76,
+    home_advantage_score: 68,
+    away_weakness_score: 64,
+    goal_scoring_score: 70,
+    defensive_stability_score: 66,
+    market_risk_score: 60,
+  },
+})
+assert.equal(homePick.pickSide, 'HOME')
+assert.equal(homePick.pickTeam, 'Home FC')
+assert.ok(homePick.pickReason.length > 0)
+
+const awayPick = deriveAiPickSide({
+  ...baseMatch,
+  analysis: {
+    recommendation: 'LEAN',
+    risk_level: 'MEDIUM',
+    confidence_score: 66,
+    home_advantage_score: 35,
+    away_weakness_score: 35,
+    goal_scoring_score: 62,
+    defensive_stability_score: 62,
+    market_risk_score: 58,
+  },
+})
+assert.equal(awayPick.pickSide, 'AWAY')
+assert.equal(awayPick.pickTeam, 'Away FC')
+
+const noBetPick = deriveAiPickSide({
+  ...baseMatch,
+  analysis: {
+    recommendation: 'NO BET',
+    risk_level: 'LOW',
+    confidence_score: 80,
+    home_advantage_score: 80,
+    away_weakness_score: 80,
+    market_risk_score: 80,
+  },
+})
+assert.equal(noBetPick.pickSide, 'NONE')
+assert.equal(noBetPick.pickTeam, null)
+assert.equal(getAiPickDisplay({ ...baseMatch, analysis: noBetPick }).canHighlight, false)
 
 const normalizedEmptyDetail = normalizeDetailPayload({ id: 'empty-detail', analysis: { raw: null } })
 assert.equal(normalizedEmptyDetail.footballIntelligence.h2h.reason, 'ยังไม่มีข้อมูล H2H เพียงพอ')

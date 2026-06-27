@@ -337,6 +337,9 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
     confidence_score: safeAnalysis.confidence_score,
     recommendation: safeAnalysis.recommendation,
     risk_level: safeAnalysis.risk_level,
+    pick_side: safeAnalysis.pick_side,
+    pick_team: safeAnalysis.pick_team,
+    pick_reason: safeAnalysis.pick_reason,
     analysis_summary: safeAnalysis.analysis_summary,
     thai_reason: safeAnalysis.thai_reason,
     raw: safeAnalysis,
@@ -376,6 +379,11 @@ function normalizeAnalysisPayload(analysis: any) {
       analysis?.thai_reason ||
       `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskLevel}. ข้อมูลบางส่วนยังจำกัด ควรตรวจราคาก่อนตัดสินใจ`,
   ).trim()
+  const pick = derivePickSideFromAnalysis(analysis ?? {}, {
+    recommendation,
+    risk_level: riskLevel,
+    confidence_score: confidence,
+  })
 
   return {
     ...(analysis ?? {}),
@@ -390,6 +398,9 @@ function normalizeAnalysisPayload(analysis: any) {
     confidence_score: confidence,
     recommendation,
     risk_level: riskLevel,
+    pick_side: pick.pick_side,
+    pick_team: pick.pick_team,
+    pick_reason: pick.pick_reason,
     analysis_summary: summary,
     thai_reason: summary,
   }
@@ -675,7 +686,7 @@ async function recomputeProcessedAnalysisRows(matchIds: Array<string>) {
 async function normalizeLegacyAnalysisRows() {
   const result = await supabase
     .from('match_analysis')
-    .select('id, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, motivation_score, market_risk_score, confidence_score, recommendation, risk_level, analysis_summary, thai_reason, raw')
+    .select('id, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, motivation_score, market_risk_score, confidence_score, recommendation, risk_level, pick_side, pick_team, pick_reason, analysis_summary, thai_reason, raw')
     .limit(1000)
 
   if (result.error) throw result.error
@@ -687,6 +698,16 @@ async function normalizeLegacyAnalysisRows() {
     const riskLevel = normalizeRiskLevel(row.risk_level ?? row.raw?.risk_level)
     const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
     const analysisSummary = row.analysis_summary || row.raw?.analysis_summary || row.thai_reason || `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskLevel}. ข้อมูลบางส่วนยังจำกัด ควรตรวจราคาก่อนตัดสินใจ`
+    const pick = derivePickSideFromAnalysis(row.raw?.raw_match ?? row.raw ?? {}, {
+      home_advantage_score: row.home_advantage_score ?? row.raw?.home_advantage_score,
+      away_weakness_score: row.away_weakness_score ?? row.raw?.away_weakness_score,
+      goal_scoring_score: row.goal_scoring_score ?? row.raw?.goal_scoring_score,
+      defensive_stability_score: row.defensive_stability_score ?? row.raw?.defensive_stability_score,
+      market_risk_score: row.market_risk_score ?? row.raw?.market_risk_score,
+      confidence_score: confidence,
+      recommendation,
+      risk_level: riskLevel,
+    })
     const nextPayload = {
       team_strength_score: normalizeScore(row.team_strength_score ?? row.raw?.team_strength_score ?? row.raw?.modules?.teamStrength ?? 56),
       form_score: normalizeScore(row.form_score ?? row.raw?.form_score ?? row.raw?.modules?.recentForm ?? 56),
@@ -700,12 +721,18 @@ async function normalizeLegacyAnalysisRows() {
       analysis_summary: analysisSummary,
       recommendation,
       risk_level: riskLevel,
+      pick_side: pick.pick_side,
+      pick_team: pick.pick_team,
+      pick_reason: pick.pick_reason,
     }
 
     if (
       row.analysis_summary &&
       row.recommendation === recommendation &&
       row.risk_level === riskLevel &&
+      row.pick_side === pick.pick_side &&
+      (row.pick_team ?? null) === (pick.pick_team ?? null) &&
+      row.pick_reason === pick.pick_reason &&
       ['team_strength_score', 'form_score', 'home_advantage_score', 'away_weakness_score', 'goal_scoring_score', 'defensive_stability_score', 'motivation_score', 'market_risk_score', 'confidence_score'].every((key) => row[key] !== null && row[key] !== undefined)
     ) {
       continue
@@ -786,6 +813,16 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority, re
     intelligenceSignals: footballIntelligence.signals,
   })
   const analysisSummary = buildAnalysisSummary(match, confidence, riskLevel, recommendation, analysisBreakdown)
+  const pick = derivePickSideFromAnalysis(match, {
+    home_advantage_score: analysisBreakdown.home_away_advantage.score,
+    away_weakness_score: analysisBreakdown.away_weakness.score,
+    goal_scoring_score: analysisBreakdown.attack_quality.score,
+    defensive_stability_score: analysisBreakdown.defensive_stability.score,
+    market_risk_score: analysisBreakdown.market_odds_risk.score,
+    confidence_score: confidence,
+    recommendation,
+    risk_level: riskLevel,
+  })
 
   return {
     provider: 'football-data.org',
@@ -806,6 +843,9 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority, re
     final_confidence_score: confidence,
     recommendation,
     risk_level: riskLevel,
+    pick_side: pick.pick_side,
+    pick_team: pick.pick_team,
+    pick_reason: pick.pick_reason,
     analysis_summary: analysisSummary,
     thai_reason: analysisSummary,
     modules: roundedModules,
@@ -1017,6 +1057,64 @@ function hasMarketData(match: any) {
       match?.raw?.market ||
       match?.raw?.bookmakers,
   )
+}
+
+function derivePickSideFromAnalysis(match: any, analysis: any) {
+  const storedSide = normalizePickSide(analysis?.pick_side)
+  const storedReason = String(analysis?.pick_reason ?? '').trim()
+  const recommendation = String(analysis?.recommendation ?? 'NO BET').toUpperCase()
+  const riskLevel = normalizeRiskLevel(analysis?.risk_level)
+  const confidence = normalizeScore(analysis?.confidence_score ?? 0)
+  const homeName = match?.homeTeam?.name ?? match?.home_team?.name ?? match?.raw_match?.homeTeam?.name ?? null
+  const awayName = match?.awayTeam?.name ?? match?.away_team?.name ?? match?.raw_match?.awayTeam?.name ?? null
+
+  if (storedSide !== 'NONE' && storedReason && recommendation !== 'NO BET' && confidence >= 58) {
+    return buildPickResult(storedSide, homeName, awayName, storedReason)
+  }
+
+  if (recommendation === 'NO BET') {
+    return buildPickResult('NONE', homeName, awayName, 'ไม่แนะนำเดิมพัน เพราะระบบประเมินว่ายังไม่มีความคุ้มค่าพอ')
+  }
+  if (riskLevel === 'HIGH') {
+    return buildPickResult('NONE', homeName, awayName, 'ความเสี่ยงสูง จึงไม่แนะนำเลือกฝั่ง')
+  }
+  if (confidence < 58) {
+    return buildPickResult('NONE', homeName, awayName, 'ข้อมูลยังไม่พอให้เลือกฝั่งอย่างมั่นใจ')
+  }
+
+  const homeAdvantage = normalizeScore(analysis?.home_advantage_score ?? analysis?.modules?.homeAwayAdvantage ?? 56)
+  const awayWeakness = normalizeScore(analysis?.away_weakness_score ?? analysis?.modules?.awayWeakness ?? 55)
+  const goalScoring = normalizeScore(analysis?.goal_scoring_score ?? analysis?.modules?.attackQuality ?? 56)
+  const defensiveStability = normalizeScore(analysis?.defensive_stability_score ?? analysis?.modules?.defensiveStability ?? 56)
+  const marketRisk = normalizeScore(analysis?.market_risk_score ?? analysis?.modules?.marketOddsRisk ?? 52)
+  const marketPenalty = Math.max(0, 55 - marketRisk) * 0.35
+  const homeEdge = (homeAdvantage - 50) * 0.55 + (awayWeakness - 50) * 0.45 + (goalScoring - 55) * 0.15 + (defensiveStability - 55) * 0.1 - marketPenalty
+  const awayEdge = (50 - homeAdvantage) * 0.7 + (50 - awayWeakness) * 0.55 + (goalScoring - 55) * 0.05 + (defensiveStability - 55) * 0.05 - marketPenalty
+
+  if (homeEdge >= 14 && homeAdvantage >= 62 && awayWeakness >= 60 && marketRisk >= 48) {
+    return buildPickResult('HOME', homeName, awayName, 'เจ้าบ้านได้เปรียบชัดจากคะแนนเหย้าและความอ่อนแอของทีมเยือน')
+  }
+  if (awayEdge >= 16 && homeAdvantage <= 42 && awayWeakness <= 42 && marketRisk >= 52) {
+    return buildPickResult('AWAY', homeName, awayName, 'ทีมเยือนมีภาษีดีกว่าจากคะแนนฝั่งเจ้าบ้านที่อ่อนและทีมเยือนไม่เปราะชัด')
+  }
+
+  return buildPickResult('NONE', homeName, awayName, 'ข้อมูลยังไม่พอให้เลือกฝั่งอย่างมั่นใจ')
+}
+
+function buildPickResult(pickSide: string, homeName: string | null, awayName: string | null, pickReason: string) {
+  const normalized = normalizePickSide(pickSide)
+  const pickTeam = normalized === 'HOME' ? homeName : normalized === 'AWAY' ? awayName : normalized === 'DRAW' ? 'เสมอ' : null
+
+  return {
+    pick_side: normalized,
+    pick_team: pickTeam,
+    pick_reason: pickReason,
+  }
+}
+
+function normalizePickSide(value: unknown) {
+  const normalized = String(value ?? '').toUpperCase()
+  return ['HOME', 'AWAY', 'DRAW', 'NONE'].includes(normalized) ? normalized : 'NONE'
 }
 
 function normalizeRiskLevel(value: unknown) {
