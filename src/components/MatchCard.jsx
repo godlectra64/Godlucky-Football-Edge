@@ -30,7 +30,7 @@ export default function MatchCard({ match, onOpen }) {
         }
       }}
       aria-label={`${match.homeTeam?.name ?? 'home team'} vs ${match.awayTeam?.name ?? 'away team'}`}
-      className="cursor-pointer rounded-lg border border-emerald-300/10 bg-gradient-to-br from-pitch-800 via-pitch-800 to-pitch-900 p-3.5 shadow-[0_18px_40px_rgba(0,0,0,0.28)] transition duration-200 hover:-translate-y-0.5 hover:border-emerald-300/35 hover:shadow-[0_22px_52px_rgba(0,0,0,0.36),0_0_28px_rgba(79,70,229,0.08)] active:translate-y-0 focus:outline-none focus:ring-2 focus:ring-emerald-300/50"
+      className="premium-card premium-focus cursor-pointer p-3.5 transition duration-200 hover:-translate-y-0.5 hover:border-emerald-300/35 hover:shadow-[0_22px_52px_rgba(0,0,0,0.36)] active:translate-y-0"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -45,7 +45,7 @@ export default function MatchCard({ match, onOpen }) {
               <Clock size={14} />
               {formatKickoffTime(match.kickoffAt)}
             </span>
-            <span className="min-w-0 truncate">{match.league?.name ?? 'ไม่ระบุลีก'}</span>
+            <span className="min-w-0 truncate text-slate-400">{match.league?.name ?? 'ไม่ระบุลีก'}</span>
           </div>
           <TeamLine team={match.homeTeam} strong />
           <TeamLine team={match.awayTeam} />
@@ -64,14 +64,14 @@ export default function MatchCard({ match, onOpen }) {
       {rankBadges.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {rankBadges.slice(0, 3).map((badge) => (
-            <span key={badge} className="rounded-full border border-white/10 bg-white/[0.045] px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+            <span key={badge} className="rounded-full border border-white/10 bg-white/[0.045] px-2 py-0.5 text-[11px] font-bold text-slate-300">
               {badge}
             </span>
           ))}
         </div>
       ) : null}
 
-      <p className="text-clamp-2 mt-3 rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2 text-sm leading-5 text-slate-200">
+      <p className="text-clamp-2 mt-3 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm leading-5 text-slate-200">
         {rankReason}
       </p>
 
@@ -93,7 +93,7 @@ function TeamLine({ team, strong = false }) {
 
 function InfoTile({ icon: Icon, label, value, highlight = false, accent = false }) {
   return (
-    <div className={`rounded-lg border p-2.5 ${accent ? 'border-amber-300/25 bg-amber-300/10' : 'border-white/10 bg-pitch-900/80'}`}>
+    <div className={`metric-card p-2.5 ${accent ? 'border-amber-300/25 bg-amber-300/10' : ''}`}>
       <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400">
         <Icon size={14} />
         {label}

@@ -37,20 +37,21 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
   const latestRows = filteredRows.slice(0, 50)
 
   return (
-    <main className="mx-auto max-w-[430px] px-4 py-4 lg:max-w-[1180px]">
-      <section className="rounded-lg border border-emerald-400/20 bg-gradient-to-br from-pitch-800 via-pitch-850 to-pitch-900 p-4 shadow-[0_20px_58px_rgba(0,0,0,0.26),0_0_34px_rgba(79,70,229,0.08)]">
-        <div className="flex items-start justify-between gap-3">
+    <main className="app-page-wide theme-performance">
+      <section className="premium-hero p-4">
+        <div className="relative z-10 flex items-start justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold text-emerald-200">AI Performance</p>
-            <h2 className="mt-1 text-2xl font-black text-white">Performance Intelligence</h2>
+            <p className="eyebrow">AI Performance</p>
+            <h2 className="mt-1 text-2xl font-black leading-8 text-white">Performance Intelligence</h2>
+            <p className="mt-1 text-sm font-semibold text-slate-300">ติดตามคุณภาพโมเดลจากผลจริง</p>
           </div>
-          <button type="button" onClick={onRefresh} className="flex min-h-10 items-center gap-2 rounded-lg bg-emerald-400 px-3 text-sm font-bold text-pitch-950">
+          <button type="button" onClick={onRefresh} className="premium-button premium-focus flex items-center gap-2 px-3 text-sm">
             <RefreshCw size={16} />
             Sync
           </button>
         </div>
-        {error ? <p className="mt-3 rounded-lg border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-100">{error}</p> : null}
-        {loading ? <p className="mt-3 text-sm text-slate-300">Loading performance data...</p> : null}
+        {error ? <p className="relative z-10 mt-3 rounded-2xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-100">{error}</p> : null}
+        {loading ? <p className="relative z-10 mt-3 text-sm text-slate-300">Loading performance data...</p> : null}
       </section>
 
       <section className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-6">
@@ -73,7 +74,7 @@ export default function AiPerformancePage({ rows = [], loading = false, error = 
 
 function PerformanceState({ readiness }) {
   return (
-    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-5 text-center">
+    <section className="premium-card-subtle mt-4 p-5 text-center">
       <p className="text-lg font-bold text-white">{readiness.title}</p>
       <p className="mt-2 text-sm leading-6 text-slate-300">{readiness.message}</p>
     </section>
@@ -87,7 +88,7 @@ function ModelIntelligenceSection({ analysis, exportPreview, dataCoverage }) {
   const explainability = analysis.modelExplainability ?? {}
 
   return (
-    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
+    <section className="premium-card-subtle mt-4 p-4">
       <h3 className="text-lg font-bold text-white">Model Intelligence</h3>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <MiniMetric label="Overall Accuracy" value={`${analysis.overall.accuracy}%`} />
@@ -110,7 +111,7 @@ function ModelIntelligenceSection({ analysis, exportPreview, dataCoverage }) {
 
 function ModelExplainabilityPanel({ explainability }) {
   return (
-    <div className="mt-4 rounded-lg border border-white/10 bg-pitch-900 p-3">
+    <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
       <p className="text-sm font-bold text-white">Model Explainability</p>
       <p className="mt-2 text-xs leading-5 text-slate-300">{explainability.message || 'กำลังสะสมข้อมูล'}</p>
       <CompactList title="Frequent Positive Modules" items={(explainability.positiveModules ?? []).map((item) => item.reason)} />
@@ -128,7 +129,7 @@ function CompactList({ title, items }) {
       <p className="text-sm font-bold text-white">{title}</p>
       <div className="mt-2 space-y-2">
         {safeItems.map((item) => (
-          <p key={item} className="rounded-lg border border-white/10 bg-pitch-900 p-2 text-xs leading-5 text-slate-300">{item}</p>
+          <p key={item} className="rounded-xl border border-white/10 bg-white/[0.04] p-2 text-xs leading-5 text-slate-300">{item}</p>
         ))}
       </div>
     </div>
@@ -137,10 +138,10 @@ function CompactList({ title, items }) {
 
 function SummaryCard({ icon: Icon, label, value }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-pitch-800 p-4 shadow-[0_12px_32px_rgba(0,0,0,0.18)]">
+    <div className="metric-card">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-semibold text-slate-400">{label}</p>
-        {Icon ? <Icon size={16} className="text-emerald-200" /> : null}
+        {Icon ? <Icon size={16} className="text-amber-200" /> : null}
       </div>
       <p className="mt-2 break-words text-xl font-black leading-7 text-white lg:text-2xl">{value}</p>
     </div>
@@ -149,7 +150,7 @@ function SummaryCard({ icon: Icon, label, value }) {
 
 function FilterPanel({ filters, setFilters, options }) {
   return (
-    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
+    <section className="premium-card-subtle mt-4 p-4">
       <h3 className="text-lg font-bold text-white">Filters</h3>
       <div className="mt-3 grid grid-cols-1 gap-3">
         <Select label="League" value={filters.league} onChange={(league) => setFilters((current) => ({ ...current, league }))} options={options.leagues} />
@@ -168,7 +169,7 @@ function Select({ label, value, onChange, options }) {
   return (
     <label className="block">
       <span className="text-xs font-semibold text-slate-400">{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 min-h-11 w-full rounded-lg border border-white/10 bg-pitch-900 px-3 text-sm font-semibold text-white">
+      <select value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-white/10 bg-[#071018] px-3 text-sm font-semibold text-white focus:outline-none focus:ring-2 focus:ring-amber-300/40">
         <option value="">All</option>
         {options.map((option) => (
           <option key={option} value={option}>{option}</option>
@@ -182,7 +183,7 @@ function DateInput({ label, value, onChange }) {
   return (
     <label className="block">
       <span className="text-xs font-semibold text-slate-400">{label}</span>
-      <input type="date" value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 min-h-11 w-full rounded-lg border border-white/10 bg-pitch-900 px-3 text-sm font-semibold text-white" />
+      <input type="date" value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-white/10 bg-[#071018] px-3 text-sm font-semibold text-white focus:outline-none focus:ring-2 focus:ring-amber-300/40" />
     </label>
   )
 }
@@ -190,7 +191,7 @@ function DateInput({ label, value, onChange }) {
 function TrendPreview({ trends, groups }) {
   const versionCount = Object.keys(groups.byVersion).length
   return (
-    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
+    <section className="premium-card-subtle mt-4 p-4">
       <h3 className="text-lg font-bold text-white">Trend Data</h3>
       <div className="mt-3 grid grid-cols-2 gap-2">
         <MiniMetric label="Timeline" value={trends.winRateTimeline.length} />
@@ -204,7 +205,7 @@ function TrendPreview({ trends, groups }) {
 
 function MiniMetric({ label, value }) {
   return (
-    <div className="rounded-lg border border-white/10 bg-pitch-900 p-3">
+    <div className="metric-card">
       <p className="text-xs text-slate-400">{label}</p>
       <p className="mt-1 text-xl font-black text-white">{value}</p>
     </div>
@@ -213,10 +214,10 @@ function MiniMetric({ label, value }) {
 
 function LatestTable({ rows, onOpenMatch }) {
   return (
-    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
+    <section className="premium-card-subtle mt-4 p-4">
       <h3 className="text-lg font-bold text-white">Latest 50</h3>
       <div className="mt-3 space-y-3">
-        {!rows.length ? <p className="rounded-lg border border-white/10 bg-white/[0.04] p-4 text-center text-sm text-slate-300">กำลังสะสมข้อมูลเพื่อประเมินผลงาน AI</p> : null}
+        {!rows.length ? <p className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-center text-sm text-slate-300">กำลังสะสมข้อมูลเพื่อประเมินผลงาน AI</p> : null}
         {rows.map((row) => {
           const matchId = row.match_id ?? row.matchId
           const clickable = Boolean(matchId && onOpenMatch)
@@ -243,7 +244,7 @@ function LatestTable({ rows, onOpenMatch }) {
                 key={row.id}
                 type="button"
                 onClick={() => onOpenMatch(matchId)}
-                className="block min-h-11 w-full rounded-lg border border-white/10 bg-pitch-900 p-3 text-left transition hover:border-emerald-300/35 hover:bg-pitch-850 focus:outline-none focus:ring-2 focus:ring-emerald-300/50"
+                className="block min-h-11 w-full rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-left transition hover:border-amber-300/35 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-amber-300/40"
                 aria-label={`เปิดรายละเอียด ${row.home_team} vs ${row.away_team}`}
               >
                 {content}
@@ -252,7 +253,7 @@ function LatestTable({ rows, onOpenMatch }) {
           }
 
           return (
-            <article key={row.id} className="rounded-lg border border-white/10 bg-pitch-900 p-3">
+            <article key={row.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
               {content}
             </article>
           )
@@ -264,7 +265,7 @@ function LatestTable({ rows, onOpenMatch }) {
 
 function Cell({ label, value, badge = false }) {
   return (
-    <div className="rounded-lg bg-white/[0.04] p-2">
+    <div className="rounded-xl bg-white/[0.04] p-2">
       <p className="text-slate-400">{label}</p>
       {badge ? (
         <span className="mt-1 inline-flex rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 font-bold text-amber-100">{value}</span>

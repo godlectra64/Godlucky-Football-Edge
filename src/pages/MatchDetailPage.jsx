@@ -13,12 +13,6 @@ import { calculateDataCoverage, normalizeDataPlatform } from '../utils/dataPlatf
 import { buildExplainableAi } from '../utils/explainableAi'
 import { normalizeMarketIntelligence } from '../utils/marketIntelligence'
 
-const recommendationTone = {
-  BET: 'border-emerald-300/35 bg-gradient-to-br from-emerald-300/10 via-pitch-800 to-pitch-900 text-emerald-100',
-  LEAN: 'border-amber-300/35 bg-gradient-to-br from-amber-300/10 via-pitch-800 to-pitch-900 text-amber-100',
-  'NO BET': 'border-slate-400/25 bg-gradient-to-br from-slate-400/10 via-pitch-800 to-pitch-900 text-slate-100',
-}
-
 const moduleSubtitles = {
   'Team Strength': 'ความแข็งแกร่งทีม',
   'Recent Form': 'ฟอร์มล่าสุด',
@@ -33,7 +27,7 @@ const moduleSubtitles = {
 export default function MatchDetailPage({ match, loading = false, error = '', performanceContext = 'กำลังสะสมข้อมูล', onBack, onGoToday }) {
   if (loading) {
     return (
-      <main className="mx-auto max-w-[430px] px-4 py-4">
+      <main className="app-page theme-analysis">
         <BackButton onBack={onBack} />
         <StatePanel title="กำลังโหลดรายละเอียด" message="กำลังอ่านข้อมูลการแข่งขันและผลวิเคราะห์ล่าสุด" />
       </main>
@@ -42,7 +36,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
 
   if (error) {
     return (
-      <main className="mx-auto max-w-[430px] px-4 py-4">
+      <main className="app-page theme-analysis">
         <BackButton onBack={onBack} />
         <StatePanel title="โหลดรายละเอียดไม่สำเร็จ" message={error} tone="error" />
       </main>
@@ -51,7 +45,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
 
   if (!match) {
     return (
-      <main className="mx-auto max-w-[430px] px-4 py-6">
+      <main className="app-page theme-analysis py-6">
         <StatePanel title="ยังไม่ได้เลือกคู่สำหรับวิเคราะห์" message="กลับไปหน้า Today แล้วเลือกคู่ที่ต้องการดูรายละเอียด">
           <button type="button" onClick={onGoToday} className="mt-4 min-h-12 rounded-lg bg-emerald-400 px-5 font-bold text-pitch-950">
             ไปหน้า Today
@@ -72,7 +66,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
   const marketIntelligence = normalizeMarketIntelligence(detail)
 
   return (
-    <main className="mx-auto max-w-[430px] px-4 py-4">
+    <main className="app-page theme-analysis">
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
@@ -94,7 +88,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
 
 function BackButton({ onBack }) {
   return (
-    <button type="button" onClick={onBack} className="sticky top-2 z-10 mb-3 flex min-h-11 items-center gap-2 rounded-lg border border-white/10 bg-pitch-900/95 px-3 font-semibold text-slate-200 backdrop-blur">
+    <button type="button" onClick={onBack} className="premium-button premium-focus sticky top-2 z-10 mb-3 flex items-center gap-2 px-3 text-sm">
       <ArrowLeft size={20} />
       กลับ
     </button>
@@ -106,7 +100,8 @@ function HeroHeader({ detail }) {
   const venue = getVenueText(detail)
 
   return (
-    <section className={`rounded-lg border p-4 shadow-[0_20px_58px_rgba(0,0,0,0.32),0_0_34px_rgba(79,70,229,0.09)] ${recommendationTone[detail.recommendation] ?? recommendationTone['NO BET']}`}>
+    <section className="premium-hero p-4">
+      <div className="relative z-10">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
@@ -140,6 +135,7 @@ function HeroHeader({ detail }) {
         <Metric label="Status" value={detail.status ?? '-'} compact />
         <Metric label="ผลล่าสุด" value={formatScore(detail.homeGoals, detail.awayGoals)} compact />
       </div>
+      </div>
     </section>
   )
 }
@@ -147,9 +143,12 @@ function HeroHeader({ detail }) {
 function AiVerdictSection({ detail, verdict }) {
   return (
     <Section title="คำตัดสินของ AI" icon={Sparkles}>
-      <div className="flex items-center justify-between gap-3">
+      <div className="rounded-2xl border border-blue-300/25 bg-blue-300/10 p-3">
+        <div className="flex items-center justify-between gap-3">
         <ScoreBadge recommendation={verdict.verdict} />
-        <p className="text-sm font-semibold text-slate-300">{detail.confidence}% confidence</p>
+          <p className="text-sm font-black text-blue-100">{detail.confidence}% confidence</p>
+        </div>
+        <p className="mt-2 text-sm leading-6 text-slate-200">{detail.rankReason}</p>
       </div>
       <BulletList title="เหตุผลหลัก" items={verdict.reasons} />
       <BulletList title="ข้อควรระวัง" items={verdict.cautions} tone="warning" />
@@ -355,8 +354,8 @@ function SummarySection({ detail }) {
 
 function Section({ title, icon: Icon, children }) {
   return (
-    <section className="mt-4 rounded-lg border border-white/10 bg-pitch-800 p-4">
-      <h3 className="flex items-center gap-2 text-lg font-bold text-white">
+    <section className="premium-card-subtle mt-4 p-4">
+      <h3 className="section-title flex items-center gap-2">
         <Icon size={20} />
         {title}
       </h3>
@@ -369,7 +368,7 @@ function ScoreRow({ item }) {
   const subtitle = moduleSubtitles[item.label] ?? ''
 
   return (
-    <div className="rounded-lg border border-white/10 bg-pitch-900/90 p-3">
+    <div className="premium-card-flat p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-bold leading-5 text-white">{item.label}</p>
@@ -503,7 +502,7 @@ function TeamName({ team }) {
 
 function Metric({ label, value, tone = 'default', compact = false }) {
   return (
-    <div className={`rounded-lg border p-2.5 ${tone === 'gold' ? 'border-amber-300/25 bg-amber-300/10' : 'border-white/10 bg-pitch-900/80'}`}>
+    <div className={`metric-card p-2.5 ${tone === 'gold' ? 'border-amber-300/25 bg-amber-300/10' : tone === 'primary' ? 'metric-card-emphasis' : ''}`}>
       <p className="text-[11px] font-semibold text-slate-400">{label}</p>
       <div className={`${compact ? 'text-sm' : 'text-base'} mt-1 font-black leading-6 ${tone === 'primary' ? 'text-emerald-100' : tone === 'gold' ? 'text-amber-100' : 'text-white'}`}>{value || '-'}</div>
     </div>

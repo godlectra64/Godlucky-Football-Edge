@@ -211,9 +211,9 @@ function App() {
   titles.performance = 'AI Performance'
 
   return (
-    <div className="min-h-screen bg-pitch-950 text-slate-100">
-      <MobileHeader title={titles[activePage]} subtitle="ข้อมูลจริงจาก Supabase และ Edge Function" connectionText={connection.message} />
-      <div className="pb-32">
+    <div className="min-h-screen bg-[#05080d] text-slate-100">
+      <MobileHeader title={titles[activePage]} subtitle="ข้อมูลจริงจาก Supabase และ Edge Function" connectionText={connection.message} activePage={activePage} />
+      <div className="pb-[calc(env(safe-area-inset-bottom)+116px)]">
         {activePage === 'today' ? (
           <TodayPage
             matches={topMatches}
