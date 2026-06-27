@@ -199,14 +199,13 @@ export function enrichMatch(match) {
 
 export function compareForTopMatches(a, b) {
   const recommendationDiff = getRecommendationPriority(a.recommendation) - getRecommendationPriority(b.recommendation)
-  const confidenceDiff = getPickConfidence(b) - getPickConfidence(a)
-  const scoreA = a.rankingScore ?? a.ranking_score ?? getPickConfidence(a)
-  const scoreB = b.rankingScore ?? b.ranking_score ?? getPickConfidence(b)
-  const rankingDiff = scoreB - scoreA
+  const confidenceDiff = getAiPickConfidence(b) - getAiPickConfidence(a)
+  const scoreDiff = getAiPickScore(b) - getAiPickScore(a)
+  const marketRiskDiff = getAiPickMarketRisk(a) - getAiPickMarketRisk(b)
   const kickoffA = new Date(a.kickoffAt ?? a.kickoff_at ?? 0).getTime()
   const kickoffB = new Date(b.kickoffAt ?? b.kickoff_at ?? 0).getTime()
 
-  return recommendationDiff || confidenceDiff || rankingDiff || kickoffA - kickoffB
+  return recommendationDiff || confidenceDiff || scoreDiff || marketRiskDiff || kickoffA - kickoffB
 }
 
 export function calculateStats(matches) {
@@ -243,9 +242,7 @@ export function rankTopMatches(matchesWithAnalysis, limit = 10) {
 export function rankTopAiPicks(matchesWithAnalysis, limit = 10) {
   const maxItems = Math.max(0, limit)
   const enriched = [...(matchesWithAnalysis ?? [])].map((match) => enrichMatch(match))
-  const normalRisk = enriched.filter((match) => normalizeRiskLevel(match.riskLevel) !== riskLabels.high).sort(compareForTopMatches)
-  const highRisk = enriched.filter((match) => normalizeRiskLevel(match.riskLevel) === riskLabels.high).sort(compareForTopMatches)
-  const selected = normalRisk.length >= maxItems ? normalRisk.slice(0, maxItems) : [...normalRisk, ...highRisk].slice(0, maxItems)
+  const selected = enriched.sort(compareForTopMatches).slice(0, maxItems)
 
   return selected.map((match, index) => {
     const aiPickRank = index + 1
@@ -292,15 +289,51 @@ export function getRecommendationBonus(recommendation = recommendationLabels.noB
   return 0
 }
 
-function getRecommendationPriority(recommendation = recommendationLabels.noBet) {
-  if (recommendation === recommendationLabels.bet) return 0
-  if (recommendation === recommendationLabels.lean) return 1
-  return 2
+export function getRecommendationPriority(recommendation = recommendationLabels.noBet) {
+  const normalized = String(recommendation || '').toUpperCase().replace('_', ' ')
+  if (normalized === recommendationLabels.bet) return 1
+  if (normalized === recommendationLabels.lean) return 2
+  if (normalized === recommendationLabels.noBet) return 3
+  return 4
 }
 
 export function getDataCompletenessScore(match) {
   const stored = numberValue(match?.dataCompleteness ?? match?.data_completeness ?? match?.analysis?.raw?.data_completeness)
   return Math.round(clamp(stored || getDataCompleteness(match ?? {}), 0, 100))
+}
+
+function getAiPickConfidence(match) {
+  return numberValue(
+    match?.confidence_score ??
+      match?.confidenceScore ??
+      match?.analysis?.confidence_score ??
+      match?.confidence ??
+      getPickConfidence(match),
+  )
+}
+
+function getAiPickScore(match) {
+  return numberValue(
+    match?.ai_score ??
+      match?.aiScore ??
+      match?.score ??
+      match?.rankingScore ??
+      match?.ranking_score ??
+      match?.analysis?.ai_score ??
+      match?.analysis?.score ??
+      0,
+  )
+}
+
+function getAiPickMarketRisk(match) {
+  return numberValue(
+    match?.market_risk_score ??
+      match?.marketRiskScore ??
+      match?.analysis?.market_risk_score ??
+      match?.analysis?.raw?.modules?.marketOddsRisk ??
+      match?.analysis?.raw?.analysis_breakdown?.market_odds_risk?.score ??
+      0,
+  )
 }
 
 export function getModuleConsistencyScore(analysisBreakdown = {}) {

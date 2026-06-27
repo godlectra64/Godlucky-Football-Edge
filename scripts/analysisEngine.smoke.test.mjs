@@ -198,10 +198,9 @@ const phase2Candidates = [
 const phase2Ranked = rankTopMatches(phase2Candidates, 10)
 assert.equal(phase2Ranked.length, 10)
 assert.equal(phase2Ranked[0].aiPickLabel, 'AI PICK #1')
-assert.ok(!phase2Ranked.some((match) => match.id === 'high-risk-99'), 'HIGH risk should be excluded while enough alternatives exist')
-assert.ok(phase2Ranked[0].rankBadges.includes('BEST VALUE'))
+assert.equal(phase2Ranked[0].id, 'high-risk-99', 'Top picks should rank BET first even when risk is high')
 assert.ok(phase2Ranked[0].rankBadges.includes('HIGH CONFIDENCE'))
-assert.ok(phase2Ranked[0].rankBadges.includes('SAFE PICK'))
+assert.ok(phase2Ranked[0].rankBadges.includes('NO BET'))
 
 const highRiskFallback = rankTopMatches([
   { ...baseMatch, id: 'only-high-1', confidence: 89, recommendation: 'BET', riskLevel: 'HIGH' },
@@ -209,6 +208,16 @@ const highRiskFallback = rankTopMatches([
 ], 10)
 assert.deepEqual(highRiskFallback.map((match) => match.id), ['only-high-1', 'only-high-2'])
 assert.ok(highRiskFallback[0].rankBadges.includes('NO BET'), 'HIGH risk fallback should be clearly badged as NO BET')
+
+const mixedRecommendationPool = [
+  ...Array.from({ length: 2 }, (_, index) => ({ ...baseMatch, id: `mix-bet-${index}`, confidence: 80 - index, recommendation: 'BET', riskLevel: 'MEDIUM' })),
+  ...Array.from({ length: 5 }, (_, index) => ({ ...baseMatch, id: `mix-lean-${index}`, confidence: 75 - index, recommendation: 'LEAN', riskLevel: 'LOW' })),
+  ...Array.from({ length: 10 }, (_, index) => ({ ...baseMatch, id: `mix-no-bet-${index}`, confidence: 95 - index, recommendation: 'NO BET', riskLevel: 'LOW' })),
+]
+const mixedTop10 = rankTopMatches(mixedRecommendationPool, 10)
+assert.equal(mixedTop10.filter((match) => match.recommendation === 'BET').length, 2)
+assert.equal(mixedTop10.filter((match) => match.recommendation === 'LEAN').length, 5)
+assert.equal(mixedTop10.filter((match) => match.recommendation === 'NO BET').length, 3)
 
 const homePick = deriveAiPickSide({
   ...baseMatch,
@@ -300,13 +309,8 @@ const oneBestWatchlist = getOneBestPickOfDay([
 assert.equal(oneBestWatchlist.heroType, 'WATCHLIST')
 assert.equal(oneBestWatchlist.match.id, 'watch-no-bet')
 
-const noSideLean = oneBestCandidate('no-side-lean', 'LEAN', 70, 'LOW', 'NONE', 50)
-const oneBestNoClear = getOneBestPickOfDay([
-  oneBestCandidate('high-risk-bet', 'BET', 91, 'HIGH'),
-  { ...noSideLean, analysis: { ...noSideLean.analysis, pick_side: 'NONE', pick_team: null } },
-])
-assert.equal(oneBestNoClear.heroType, 'NO_CLEAR_PICK')
-assert.equal(oneBestNoClear.match, null)
+const oneBestNoData = getOneBestPickOfDay([])
+assert.equal(oneBestNoData, null)
 
 const normalizedEmptyDetail = normalizeDetailPayload({ id: 'empty-detail', analysis: { raw: null } })
 assert.equal(normalizedEmptyDetail.footballIntelligence.h2h.reason, 'ยังไม่มีข้อมูล H2H เพียงพอ')

@@ -7,19 +7,19 @@ const oneBestPickCopy = {
     title: 'AI FINAL PICK',
     subtitle: 'คู่ที่ AI มั่นใจที่สุดของวันนี้',
     badgeLabel: 'FINAL PICK',
-    note: 'คู่ที่ AI มั่นใจที่สุดของวันนี้',
+    note: 'วันนี้ AI เลือกคู่นี้เป็นอันดับ 1 ของวัน',
   },
   BEST_AVAILABLE: {
     title: 'BEST AVAILABLE PICK',
     subtitle: 'คู่ที่ดีที่สุดของวันนี้ แม้ยังไม่ถึงระดับ BET',
     badgeLabel: 'BEST AVAILABLE',
-    note: 'คู่ที่ดีที่สุดของวันนี้ แม้ยังไม่ถึงระดับ BET',
+    note: 'อันดับ 1 วันนี้ยังไม่ถึงระดับ BET แต่เป็นคู่ที่ AI ประเมินดีที่สุด',
   },
   WATCHLIST: {
     title: 'WATCHLIST',
     subtitle: 'มีทรงน่าสนใจ แต่ควรรอข้อมูลเพิ่ม',
     badgeLabel: 'WATCHLIST',
-    note: 'มีทรงน่าสนใจ แต่ควรรอข้อมูลเพิ่ม',
+    note: 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ไม่แนะนำให้เดิมพัน แต่เป็นคู่ที่น่าติดตามที่สุดของวัน',
   },
   NO_CLEAR_PICK: {
     title: 'NO CLEAR PICK',
@@ -110,24 +110,21 @@ export function buildAiFinalPick(match = {}) {
 }
 
 export function getOneBestPickOfDay(matches = []) {
-  const enriched = (matches ?? []).map((match) => ({
-    match,
-    finalPick: buildAiFinalPick(match),
-    storedPick: getStoredPick(match),
-    combinedModuleScore: getCombinedModuleScore(match),
-  }))
-  const reliableRecommendations = enriched.filter((item) => isReliablePick(item.finalPick))
-  const finalPick = sortOneBestCandidates(reliableRecommendations.filter((item) => item.finalPick.recommendation === 'BET'))[0]
+  const validMatches = (matches ?? [])
+    .filter(Boolean)
+    .filter(hasRecommendationData)
+    .map((match) => ({
+      match,
+      finalPick: buildAiFinalPick(match),
+      combinedModuleScore: getCombinedModuleScore(match),
+    }))
 
-  if (finalPick) return buildOneBestResult(finalPick.match, 'FINAL_PICK')
+  const topPick = sortOneBestCandidates(validMatches)[0]
+  if (!topPick) return null
 
-  const bestAvailable = sortOneBestCandidates(reliableRecommendations.filter((item) => item.finalPick.recommendation === 'LEAN'))[0]
-  if (bestAvailable) return buildOneBestResult(bestAvailable.match, 'BEST_AVAILABLE')
-
-  const watchlist = sortOneBestCandidates(enriched.filter((item) => item.finalPick.riskLevel !== 'HIGH' && isStoredPickValid(item.storedPick)))[0]
-  if (watchlist) return buildOneBestResult(watchlist.match, 'WATCHLIST')
-
-  return buildOneBestResult(null, 'NO_CLEAR_PICK')
+  if (topPick.finalPick.recommendation === 'BET') return buildOneBestResult(topPick.match, 'FINAL_PICK')
+  if (topPick.finalPick.recommendation === 'LEAN') return buildOneBestResult(topPick.match, 'BEST_AVAILABLE')
+  return buildOneBestResult(topPick.match, 'WATCHLIST')
 }
 
 function getProbability(analysis, raw, pickSide, confidence) {
@@ -205,34 +202,33 @@ function buildOneBestResult(match, heroType) {
   }
 }
 
-function isReliablePick(finalPick) {
-  return (
-    ['HOME', 'AWAY', 'DRAW'].includes(finalPick.pickSide) &&
-    Boolean(finalPick.pickTeam) &&
-    finalPick.riskLevel !== 'HIGH'
-  )
-}
-
-function isStoredPickValid(pick) {
-  return ['HOME', 'AWAY', 'DRAW'].includes(pick.pickSide) && Boolean(pick.pickTeam)
-}
-
-function getStoredPick(match) {
+function getStoredRecommendation(match) {
   const analysis = match.analysis ?? match.match_analysis ?? match
-  const pickSide = normalizePickSide(analysis.pick_side ?? match.pickSide ?? match.pick_side)
-  const pickTeam = firstText(analysis.pick_team, match.pickTeam, match.pick_team)
-  return { pickSide, pickTeam }
+  return normalizeRecommendation(analysis.recommendation ?? match.recommendation)
+}
+
+function hasRecommendationData(match) {
+  const analysis = match.analysis ?? match.match_analysis ?? {}
+  return Boolean(analysis.recommendation ?? match.recommendation)
 }
 
 function sortOneBestCandidates(items) {
   return [...items].sort((a, b) => {
+    const recommendationDiff = recommendationPriority(getStoredRecommendation(a.match)) - recommendationPriority(getStoredRecommendation(b.match))
     const confidenceDiff = b.finalPick.confidence - a.finalPick.confidence
     const riskDiff = riskPriority(a.finalPick.riskLevel) - riskPriority(b.finalPick.riskLevel)
     const moduleDiff = b.combinedModuleScore - a.combinedModuleScore
     const kickoffA = new Date(a.match.kickoffAt ?? a.match.kickoff_at ?? 0).getTime()
     const kickoffB = new Date(b.match.kickoffAt ?? b.match.kickoff_at ?? 0).getTime()
-    return confidenceDiff || riskDiff || moduleDiff || kickoffA - kickoffB
+    return recommendationDiff || confidenceDiff || riskDiff || moduleDiff || kickoffA - kickoffB
   })
+}
+
+function recommendationPriority(recommendation) {
+  if (recommendation === 'BET') return 1
+  if (recommendation === 'LEAN') return 2
+  if (recommendation === 'NO BET') return 3
+  return 4
 }
 
 function riskPriority(riskLevel) {
@@ -266,11 +262,6 @@ function normalizeRecommendation(value) {
 function normalizeRiskLevel(value) {
   const normalized = String(value ?? '').toUpperCase()
   return ['LOW', 'MEDIUM', 'HIGH'].includes(normalized) ? normalized : 'MEDIUM'
-}
-
-function normalizePickSide(value) {
-  const normalized = String(value ?? '').toUpperCase()
-  return ['HOME', 'AWAY', 'DRAW', 'NONE'].includes(normalized) ? normalized : 'NONE'
 }
 
 function clamp(value, min, max) {
