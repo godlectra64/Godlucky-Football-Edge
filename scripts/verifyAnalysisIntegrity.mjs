@@ -51,6 +51,26 @@ const checks = [
     label: 'pick_side NONE with pick_team',
     query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('pick_side', 'NONE').not('pick_team', 'is', null),
   },
+  {
+    label: 'invalid value_status',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).not('value_status', 'in', '("YES","NO","WAITING_DATA","NOT_APPLICABLE")'),
+  },
+  {
+    label: 'value YES with missing market_line',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('value_status', 'YES').is('market_line', null),
+  },
+  {
+    label: 'value YES with missing fair_line',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('value_status', 'YES').is('fair_line', null),
+  },
+  {
+    label: 'value YES on NO BET',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('value_status', 'YES').eq('recommendation', 'NO BET'),
+  },
+  {
+    label: 'value YES with pick_side NONE',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('value_status', 'YES').eq('pick_side', 'NONE'),
+  },
 ]
 
 let failed = false

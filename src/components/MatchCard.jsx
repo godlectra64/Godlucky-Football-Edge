@@ -1,7 +1,7 @@
 import { Clock, Gauge, Medal } from 'lucide-react'
 import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
+import { buildAiFinalPick } from '../utils/finalPick'
 import { formatKickoffTime } from '../utils/formatters'
-import { getAiPickDisplay } from '../utils/pickSide'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
 
@@ -11,7 +11,7 @@ export default function MatchCard({ match, onOpen }) {
   const riskLevel = match.riskLevel ?? getRiskLevel(match)
   const rankingScore = Math.round(match.rankingScore ?? match.ranking_score ?? confidence)
   const aiPickLabel = match.aiPickLabel ?? match.ai_pick_label ?? (match.rank ? `AI PICK #${match.rank}` : '')
-  const pickDisplay = getAiPickDisplay(match)
+  const finalPick = buildAiFinalPick(match)
   const analysisSummary = buildCardSummary(match, recommendation, confidence)
   const rankBadges = buildDisplayBadges(match, recommendation, riskLevel, confidence)
   const cardClass = buildCardClass(match.rank, recommendation, riskLevel)
@@ -44,13 +44,13 @@ export default function MatchCard({ match, onOpen }) {
             <span className="truncate">{match.league?.name ?? 'Unknown league'}</span>
           </div>
           {aiPickLabel ? <p className="mt-1 text-[10px] font-black uppercase tracking-normal text-[var(--page-accent)]">{aiPickLabel}</p> : null}
-          <p className={`mt-1 text-clamp-1 text-xs font-black leading-5 ${pickDisplay.canHighlight ? 'text-emerald-100' : 'text-slate-400'}`}>
-            {pickDisplay.label}
+          <p className={`mt-1 text-clamp-1 text-xs font-black leading-5 ${finalPick.canHighlight ? 'text-emerald-100' : 'text-slate-400'}`}>
+            {finalPick.pickLabel}
           </p>
           <div className="mt-1.5 min-w-0">
-            <p className={`truncate text-base font-black leading-5 ${teamTextClass(pickDisplay.pickSide, 'HOME')}`}>{match.homeTeam?.name ?? 'Unknown team'}</p>
+            <p className={`truncate text-base font-black leading-5 ${teamTextClass(finalPick.pickSide, 'HOME')}`}>{match.homeTeam?.name ?? 'Unknown team'}</p>
             <p className="mt-0.5 truncate text-xs font-black uppercase leading-4 text-slate-500">vs</p>
-            <p className={`truncate text-sm font-bold leading-5 ${teamTextClass(pickDisplay.pickSide, 'AWAY')}`}>{match.awayTeam?.name ?? 'Unknown team'}</p>
+            <p className={`truncate text-sm font-bold leading-5 ${teamTextClass(finalPick.pickSide, 'AWAY')}`}>{match.awayTeam?.name ?? 'Unknown team'}</p>
           </div>
         </div>
 
@@ -79,7 +79,15 @@ export default function MatchCard({ match, onOpen }) {
         </div>
       </div>
 
-      <p className="text-clamp-2 mt-2 min-w-0 text-xs font-semibold leading-5 text-slate-300">{analysisSummary}</p>
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <MiniInfo label="Market" value={finalPick.marketType ?? 'รอราคา'} muted={!finalPick.marketType} />
+        <MiniInfo label="Line" value={finalPick.marketLine ?? 'ยังไม่มีข้อมูล'} muted={!finalPick.marketLine} />
+        <MiniInfo label={finalPick.probabilitySource === 'confidence_estimate' ? 'Model' : 'Win Prob'} value={`${finalPick.modelProbability}%`} />
+        <MiniInfo label="Value" value={finalPick.valueLabel} muted={finalPick.valueStatus !== 'YES'} />
+      </div>
+
+      <p className="text-clamp-2 mt-2 min-w-0 text-xs font-bold leading-5 text-slate-200">{finalPick.pickReason}</p>
+      <p className="text-clamp-2 mt-1 min-w-0 text-[11px] font-semibold leading-5 text-slate-400">{analysisSummary}</p>
 
       <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
         {rankBadges.map((badge) => (
@@ -87,6 +95,15 @@ export default function MatchCard({ match, onOpen }) {
         ))}
       </div>
     </article>
+  )
+}
+
+function MiniInfo({ label, value, muted = false }) {
+  return (
+    <div className="min-w-0 rounded-xl border border-white/10 bg-black/18 px-2 py-1.5">
+      <p className="text-[9px] font-black uppercase text-slate-500">{label}</p>
+      <p className={`truncate text-[11px] font-black leading-4 ${muted ? 'text-slate-400' : 'text-white'}`}>{value}</p>
+    </div>
   )
 }
 

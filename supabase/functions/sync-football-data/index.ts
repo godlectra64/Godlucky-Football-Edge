@@ -27,6 +27,7 @@ const secretKeys = parseSupabaseSecretKeys(Deno.env.get('SUPABASE_SECRET_KEYS'))
 const supabase = createClient(supabaseUrl, serviceRoleKey)
 const legacyAnalysisSelect = 'id, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, motivation_score, market_risk_score, confidence_score, recommendation, risk_level, analysis_summary, thai_reason, raw'
 const pickAnalysisSelect = `${legacyAnalysisSelect}, pick_side, pick_team, pick_reason`
+const finalPickAnalysisSelect = `${pickAnalysisSelect}, market_type, market_line, fair_line, model_probability, value_status, value_reason`
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
@@ -342,6 +343,12 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
     pick_side: safeAnalysis.pick_side,
     pick_team: safeAnalysis.pick_team,
     pick_reason: safeAnalysis.pick_reason,
+    market_type: safeAnalysis.market_type,
+    market_line: safeAnalysis.market_line,
+    fair_line: safeAnalysis.fair_line,
+    model_probability: safeAnalysis.model_probability,
+    value_status: safeAnalysis.value_status,
+    value_reason: safeAnalysis.value_reason,
     analysis_summary: safeAnalysis.analysis_summary,
     thai_reason: safeAnalysis.thai_reason,
     raw: safeAnalysis,
@@ -382,9 +389,20 @@ function normalizeAnalysisPayload(analysis: any) {
       `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskLevel}. ข้อมูลบางส่วนยังจำกัด ควรตรวจราคาก่อนตัดสินใจ`,
   ).trim()
   const pick = derivePickSideFromAnalysis(analysis ?? {}, {
+    home_advantage_score: analysis?.home_advantage_score ?? analysis?.modules?.homeAwayAdvantage,
+    away_weakness_score: analysis?.away_weakness_score ?? analysis?.modules?.awayWeakness,
+    goal_scoring_score: analysis?.goal_scoring_score ?? analysis?.modules?.attackQuality,
+    defensive_stability_score: analysis?.defensive_stability_score ?? analysis?.modules?.defensiveStability,
+    market_risk_score: analysis?.market_risk_score ?? analysis?.modules?.marketOddsRisk,
     recommendation,
     risk_level: riskLevel,
     confidence_score: confidence,
+  })
+  const finalPick = normalizeFinalPickFields(analysis ?? {}, {
+    recommendation,
+    risk_level: riskLevel,
+    confidence_score: confidence,
+    pick_side: pick.pick_side,
   })
 
   return {
@@ -403,6 +421,12 @@ function normalizeAnalysisPayload(analysis: any) {
     pick_side: pick.pick_side,
     pick_team: pick.pick_team,
     pick_reason: pick.pick_reason,
+    market_type: finalPick.market_type,
+    market_line: finalPick.market_line,
+    fair_line: finalPick.fair_line,
+    model_probability: finalPick.model_probability,
+    value_status: finalPick.value_status,
+    value_reason: finalPick.value_reason,
     analysis_summary: summary,
     thai_reason: summary,
   }
@@ -686,7 +710,7 @@ async function recomputeProcessedAnalysisRows(matchIds: Array<string>) {
 }
 
 async function normalizeLegacyAnalysisRows() {
-  const { rows, hasPickColumns } = await fetchAnalysisRowsForNormalization()
+  const { rows, hasPickColumns, hasFinalPickColumns } = await fetchAnalysisRowsForNormalization()
 
   let fixed = 0
 
@@ -704,6 +728,19 @@ async function normalizeLegacyAnalysisRows() {
       confidence_score: confidence,
       recommendation,
       risk_level: riskLevel,
+    })
+    const finalPick = normalizeFinalPickFields(row.raw?.raw_match ?? row.raw ?? {}, {
+      ...row.raw,
+      recommendation,
+      risk_level: riskLevel,
+      confidence_score: confidence,
+      pick_side: pick.pick_side,
+      market_type: row.market_type,
+      market_line: row.market_line,
+      fair_line: row.fair_line,
+      model_probability: row.model_probability,
+      value_status: row.value_status,
+      value_reason: row.value_reason,
     })
     const basePayload = {
       team_strength_score: normalizeScore(row.team_strength_score ?? row.raw?.team_strength_score ?? row.raw?.modules?.teamStrength ?? 56),
@@ -725,6 +762,16 @@ async function normalizeLegacyAnalysisRows() {
           pick_side: pick.pick_side,
           pick_team: pick.pick_team,
           pick_reason: pick.pick_reason,
+          ...(hasFinalPickColumns
+            ? {
+                market_type: finalPick.market_type,
+                market_line: finalPick.market_line,
+                fair_line: finalPick.fair_line,
+                model_probability: finalPick.model_probability,
+                value_status: finalPick.value_status,
+                value_reason: finalPick.value_reason,
+              }
+            : {}),
         }
       : basePayload
 
@@ -733,18 +780,27 @@ async function normalizeLegacyAnalysisRows() {
       (row.pick_team ?? null) === (pick.pick_team ?? null) &&
       row.pick_reason === pick.pick_reason
     )
+    const finalPickColumnsMatch = !hasFinalPickColumns || (
+      (row.market_type ?? null) === (finalPick.market_type ?? null) &&
+      (row.market_line ?? null) === (finalPick.market_line ?? null) &&
+      (row.fair_line ?? null) === (finalPick.fair_line ?? null) &&
+      Number(row.model_probability ?? 0) === Number(finalPick.model_probability ?? 0) &&
+      row.value_status === finalPick.value_status &&
+      row.value_reason === finalPick.value_reason
+    )
 
     if (
       row.analysis_summary &&
       row.recommendation === recommendation &&
       row.risk_level === riskLevel &&
       pickColumnsMatch &&
+      finalPickColumnsMatch &&
       ['team_strength_score', 'form_score', 'home_advantage_score', 'away_weakness_score', 'goal_scoring_score', 'defensive_stability_score', 'motivation_score', 'market_risk_score', 'confidence_score'].every((key) => row[key] !== null && row[key] !== undefined)
     ) {
       continue
     }
 
-    const updateResult = await updateMatchAnalysisRow(row.id, nextPayload, hasPickColumns)
+    const updateResult = await updateMatchAnalysisRow(row.id, nextPayload, hasPickColumns, hasFinalPickColumns)
 
     if (updateResult.error) throw updateResult.error
     fixed += 1
@@ -756,14 +812,25 @@ async function normalizeLegacyAnalysisRows() {
 async function fetchAnalysisRowsForNormalization() {
   const result = await supabase
     .from('match_analysis')
-    .select(pickAnalysisSelect)
+    .select(finalPickAnalysisSelect)
     .limit(1000)
 
   if (!result.error) {
-    return { rows: result.data ?? [], hasPickColumns: true }
+    return { rows: result.data ?? [], hasPickColumns: true, hasFinalPickColumns: true }
   }
 
   if (!isMissingColumnError(result.error)) throw result.error
+
+  const pickResult = await supabase
+    .from('match_analysis')
+    .select(pickAnalysisSelect)
+    .limit(1000)
+
+  if (!pickResult.error) {
+    return { rows: pickResult.data ?? [], hasPickColumns: true, hasFinalPickColumns: false }
+  }
+
+  if (!isMissingColumnError(pickResult.error)) throw pickResult.error
 
   const legacyResult = await supabase
     .from('match_analysis')
@@ -771,18 +838,29 @@ async function fetchAnalysisRowsForNormalization() {
     .limit(1000)
 
   if (legacyResult.error) throw legacyResult.error
-  return { rows: legacyResult.data ?? [], hasPickColumns: false }
+  return { rows: legacyResult.data ?? [], hasPickColumns: false, hasFinalPickColumns: false }
 }
 
-async function updateMatchAnalysisRow(id: string, payload: Record<string, unknown>, hasPickColumns: boolean) {
+async function updateMatchAnalysisRow(id: string, payload: Record<string, unknown>, hasPickColumns: boolean, hasFinalPickColumns: boolean) {
   const result = await supabase
     .from('match_analysis')
     .update(payload)
     .eq('id', id)
 
-  if (!result.error || !hasPickColumns || !isMissingColumnError(result.error)) return result
+  if (!result.error || (!hasPickColumns && !hasFinalPickColumns) || !isMissingColumnError(result.error)) return result
 
-  const { pick_side: _pickSide, pick_team: _pickTeam, pick_reason: _pickReason, ...legacyPayload } = payload
+  const {
+    pick_side: _pickSide,
+    pick_team: _pickTeam,
+    pick_reason: _pickReason,
+    market_type: _marketType,
+    market_line: _marketLine,
+    fair_line: _fairLine,
+    model_probability: _modelProbability,
+    value_status: _valueStatus,
+    value_reason: _valueReason,
+    ...legacyPayload
+  } = payload
   return supabase
     .from('match_analysis')
     .update(legacyPayload)
@@ -867,6 +945,12 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority, re
     recommendation,
     risk_level: riskLevel,
   })
+  const finalPick = normalizeFinalPickFields(match, {
+    confidence_score: confidence,
+    recommendation,
+    risk_level: riskLevel,
+    pick_side: pick.pick_side,
+  })
 
   return {
     provider: 'football-data.org',
@@ -890,6 +974,12 @@ function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority, re
     pick_side: pick.pick_side,
     pick_team: pick.pick_team,
     pick_reason: pick.pick_reason,
+    market_type: finalPick.market_type,
+    market_line: finalPick.market_line,
+    fair_line: finalPick.fair_line,
+    model_probability: finalPick.model_probability,
+    value_status: finalPick.value_status,
+    value_reason: finalPick.value_reason,
     analysis_summary: analysisSummary,
     thai_reason: analysisSummary,
     modules: roundedModules,
@@ -1101,6 +1191,104 @@ function hasMarketData(match: any) {
       match?.raw?.market ||
       match?.raw?.bookmakers,
   )
+}
+
+function normalizeFinalPickFields(source: any, analysis: any) {
+  const marketType = firstText(
+    analysis?.market_type,
+    analysis?.bet_market,
+    analysis?.recommended_market,
+    source?.market_type,
+    source?.bet_market,
+    source?.recommended_market,
+    source?.market?.type,
+    source?.odds?.market_type,
+    source?.raw?.market_type,
+    source?.raw?.market?.type,
+  )
+  const marketLine = firstText(
+    analysis?.market_line,
+    analysis?.odds_line,
+    analysis?.handicap_line,
+    analysis?.current_line,
+    source?.market_line,
+    source?.odds_line,
+    source?.handicap_line,
+    source?.current_line,
+    source?.market?.line,
+    source?.odds?.line,
+    source?.raw?.market_line,
+    source?.raw?.market?.line,
+  )
+  const fairLine = firstText(analysis?.fair_line, source?.fair_line, source?.raw?.fair_line)
+  const recommendation = String(analysis?.recommendation ?? 'NO BET').toUpperCase()
+  const pickSide = normalizePickSide(analysis?.pick_side)
+  const confidence = normalizeScore(analysis?.confidence_score ?? 0)
+  const modelProbability = Math.round(clamp(firstNumber(analysis?.model_probability, source?.model_probability, source?.win_probability, confidence) ?? confidence, 0, 100))
+  const valueStatus = normalizeValueStatus(analysis?.value_status, {
+    recommendation,
+    pickSide,
+    marketLine,
+    fairLine,
+  })
+
+  return {
+    market_type: marketType,
+    market_line: marketLine,
+    fair_line: fairLine,
+    model_probability: modelProbability,
+    value_status: valueStatus,
+    value_reason: getValueReason(valueStatus, analysis?.value_reason, marketLine, fairLine),
+  }
+}
+
+function normalizeValueStatus(value: unknown, context: { recommendation: string; pickSide: string; marketLine: string | null; fairLine: string | null }) {
+  if (context.recommendation === 'NO BET' || context.pickSide === 'NONE') return 'NOT_APPLICABLE'
+  if (!context.marketLine || !context.fairLine) return 'WAITING_DATA'
+
+  const normalized = String(value ?? '').toUpperCase()
+  if (['YES', 'NO', 'WAITING_DATA', 'NOT_APPLICABLE'].includes(normalized)) return normalized
+
+  const market = parseLineNumber(context.marketLine)
+  const fair = parseLineNumber(context.fairLine)
+  if (market === null || fair === null) return 'NO'
+  return market > fair ? 'YES' : 'NO'
+}
+
+function getValueReason(status: string, storedReason: unknown, marketLine: string | null, fairLine: string | null) {
+  const reason = String(storedReason ?? '').trim()
+  if (reason) return reason
+  if (status === 'YES') return 'ราคาตลาดดีกว่า Fair Line จากข้อมูลจริงที่มี'
+  if (status === 'NO') return 'มีข้อมูลราคาแล้ว แต่ส่วนต่างยังไม่คุ้มพอ'
+  if (status === 'NOT_APPLICABLE') return 'ไม่ใช่จังหวะเดิมพัน จึงไม่ประเมิน Value เชิงรุก'
+  if (!marketLine || !fairLine) return 'ยังไม่มีราคาตลาดหรือ Fair Line เพียงพอสำหรับประเมิน Value'
+  return 'รอข้อมูลราคาเพิ่มเติม'
+}
+
+function firstText(...values: Array<unknown>) {
+  for (const value of values) {
+    if (value === null || value === undefined) continue
+    const text = String(value).trim()
+    if (text) return text
+  }
+  return null
+}
+
+function firstNumber(...values: Array<unknown>) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue
+    const numeric = Number(value)
+    if (Number.isFinite(numeric)) return numeric
+  }
+  return null
+}
+
+function parseLineNumber(value: unknown) {
+  if (value === null || value === undefined) return null
+  const match = String(value).replace(',', '.').match(/-?\d+(?:\.\d+)?/)
+  if (!match) return null
+  const numeric = Number(match[0])
+  return Number.isFinite(numeric) ? numeric : null
 }
 
 function derivePickSideFromAnalysis(match: any, analysis: any) {

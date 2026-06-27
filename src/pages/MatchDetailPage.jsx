@@ -69,7 +69,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
     <main className="app-page theme-analysis">
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
-      <PickSummarySection detail={detail} />
+      <FinalDecisionSection detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <ScoreBreakdownSection items={detail.moduleItems} />
       <ExplainableAiSection explanation={explainability} />
@@ -169,23 +169,57 @@ function AiVerdictSection({ detail, verdict }) {
   )
 }
 
-function PickSummarySection({ detail }) {
+function FinalDecisionSection({ detail }) {
+  const finalPick = detail.finalPick
+
   return (
-    <Section title="AI เลือก" icon={Sparkles} accent>
-      <div className="rounded-2xl border border-emerald-300/25 bg-emerald-300/10 p-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={`semantic-badge ${detail.aiPickDisplay?.canHighlight ? 'badge-positive' : 'border-slate-400/25 bg-slate-400/10 text-slate-200'}`}>
-            {detail.aiPickDisplay?.label ?? 'ข้อมูลยังไม่พอเลือกฝั่ง'}
-          </span>
-          <ScoreBadge recommendation={detail.recommendation} />
-          <RiskBadge level={detail.riskLevel} />
-          <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{detail.confidence}%</span>
+    <Section title="AI FINAL DECISION" icon={Sparkles} accent>
+      <div className={`rounded-2xl border p-3 ${finalDecisionClass(finalPick)}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase text-slate-400">AI เลือก</p>
+            <p className={`mt-1 text-clamp-2 text-2xl font-black leading-7 ${finalPick.canHighlight ? 'text-white' : 'text-slate-300'}`}>
+              {finalPick.canHighlight ? finalPick.pickTeam : finalPick.pickLabel}
+            </p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{finalPick.pickReason}</p>
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-1.5">
+            <ScoreBadge recommendation={finalPick.recommendation} />
+            <RiskBadge level={finalPick.riskLevel} />
+            <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{finalPick.confidence}%</span>
+          </div>
         </div>
-        <p className="mt-3 text-sm font-semibold leading-6 text-slate-200">{detail.pickReason}</p>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <DecisionMetric label="Market" value={finalPick.marketTypeLabel} muted={!finalPick.marketType} />
+          <DecisionMetric label="Line" value={finalPick.marketLineLabel} muted={!finalPick.marketLine} />
+          <DecisionMetric label={finalPick.probabilitySource === 'confidence_estimate' ? 'Model Probability' : 'Win Probability'} value={finalPick.probabilityLabel} />
+          <DecisionMetric label="Fair Line" value={finalPick.fairLineLabel} muted={!finalPick.fairLine} />
+          <DecisionMetric label="Value" value={finalPick.valueStatusLabel} muted={finalPick.valueStatus !== 'YES'} />
+          <DecisionMetric label="Reason" value={finalPick.valueReason} muted={finalPick.valueStatus !== 'YES'} />
+        </div>
         <p className="text-clamp-2 mt-2 text-sm leading-6 text-slate-300">{detail.analysisSummary || 'ข้อมูลวิเคราะห์ยังจำกัด'}</p>
       </div>
     </Section>
   )
+}
+
+function DecisionMetric({ label, value, muted = false }) {
+  return (
+    <div className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.04] p-2.5">
+      <p className="text-[10px] font-black uppercase text-slate-500">{label}</p>
+      <p className={`text-clamp-2 mt-1 text-xs font-black leading-5 ${muted ? 'text-slate-400' : 'text-white'}`}>{value}</p>
+    </div>
+  )
+}
+
+function finalDecisionClass(finalPick) {
+  if (finalPick.riskLevel === 'HIGH' || finalPick.recommendation === 'NO BET') {
+    return 'border-red-300/25 bg-red-400/10'
+  }
+  if (finalPick.recommendation === 'BET') {
+    return 'border-emerald-300/25 bg-emerald-300/10'
+  }
+  return 'border-amber-300/25 bg-amber-300/10'
 }
 
 function ScoreBreakdownSection({ items }) {

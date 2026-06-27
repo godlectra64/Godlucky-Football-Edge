@@ -7,6 +7,7 @@ import {
   getRiskLevel,
 } from './analysisEngine.js'
 import { dataIntelligenceSections, normalizeDataIntelligence } from './dataIntelligence.js'
+import { buildAiFinalPick } from './finalPick.js'
 import { deriveAiPickSide, getAiPickDisplay } from './pickSide.js'
 
 const intelligenceFallback = {
@@ -122,6 +123,7 @@ export function normalizeDetailPayload(match) {
   const rankingScore = Math.round(safeMatch.rankingScore ?? safeMatch.ranking_score ?? safeMatch.analysis?.raw?.ranking_score ?? getConfidence(safeMatch))
   const aiPick = deriveAiPickSide(safeMatch)
   const aiPickDisplay = getAiPickDisplay(safeMatch)
+  const finalPick = buildAiFinalPick(safeMatch)
 
   return {
     ...safeMatch,
@@ -136,6 +138,7 @@ export function normalizeDetailPayload(match) {
     pickTeam: aiPick.pickTeam,
     pickReason: aiPick.pickReason,
     aiPickDisplay,
+    finalPick,
     rankReason: safeMatch.rankReason ?? safeMatch.rank_reason ?? 'ข้อมูลอันดับยังจำกัด',
     rankBadges: safeMatch.rankBadges ?? safeMatch.rank_badges ?? [],
     analysisSummary: getAnalysisSummary(safeMatch),

@@ -203,6 +203,12 @@ function createFallbackAnalysis(row) {
     pick_side: 'NONE',
     pick_team: null,
     pick_reason: 'ไม่แนะนำเดิมพัน เพราะข้อมูลวิเคราะห์ยังไม่ครบพอให้เลือกฝั่ง',
+    market_type: null,
+    market_line: null,
+    fair_line: null,
+    model_probability: 59,
+    value_status: 'NOT_APPLICABLE',
+    value_reason: 'ไม่ใช่จังหวะเดิมพัน จึงไม่ประเมิน Value เชิงรุก',
     analysis_summary: summary,
     thai_reason: summary,
     raw: {
