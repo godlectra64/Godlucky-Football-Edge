@@ -8,7 +8,7 @@ export default function RiskBadge({ level }) {
   const normalized = ['low', 'medium', 'high'].includes(level) ? level : 'medium'
 
   return (
-    <span className={`badge-premium uppercase ${styles[normalized]}`}>
+    <span className={`semantic-badge uppercase ${styles[normalized]}`}>
       {normalized}
     </span>
   )

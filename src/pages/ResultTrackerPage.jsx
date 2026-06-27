@@ -1,43 +1,64 @@
+import { Radio, Trophy } from 'lucide-react'
+import ScoreBadge from '../components/ScoreBadge'
 import { getRecommendation } from '../utils/analysisEngine'
 import { formatKickoffTime, formatScore, formatShortDate } from '../utils/formatters'
 
 export default function ResultTrackerPage({ matches }) {
+  const liveLike = matches.filter((match) => match.status && !['NS', 'TBD'].includes(match.status)).length
+
   return (
-    <main className="mx-auto max-w-[430px] px-4 py-4">
-      <section className="rounded-lg border border-white/10 bg-pitch-800 p-4">
-        <h2 className="text-2xl font-black text-white">ผลการแข่งขัน</h2>
-        <p className="mt-1 text-sm text-slate-400">อ่านสถานะและสกอร์จากข้อมูลจริงที่ sync ล่าสุด</p>
+    <main className="app-page theme-results">
+      <section className="premium-hero p-4">
+        <div className="relative z-10">
+          <p className="eyebrow flex items-center gap-1.5">
+            <Radio size={14} />
+            Live Score Monitor
+          </p>
+          <div className="mt-2 flex items-end justify-between gap-3">
+            <div>
+              <h2 className="text-3xl font-black leading-9 text-white">Match Results</h2>
+              <p className="mt-1 text-sm font-semibold text-slate-400">Fixture status, score, and prediction result in one scan.</p>
+            </div>
+            <div className="metric-display min-w-[82px] text-right">
+              <p className="text-[10px] font-black uppercase text-slate-500">Active</p>
+              <p className="text-2xl font-black leading-7 text-white">{liveLike}</p>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <div className="mt-4 space-y-3">
+      <div className="mt-3 grid gap-1.5">
         {!matches.length ? (
-          <div className="rounded-lg border border-white/10 bg-pitch-800 p-5 text-center text-slate-300">
-            ยังไม่มีข้อมูลผลการแข่งขัน
+          <div className="empty-state">
+            <Trophy size={28} className="mx-auto text-[var(--page-accent)]" />
+            <p className="mt-3 font-black text-white">No result data yet</p>
+            <p className="mt-1 text-sm text-slate-400">Sync fixtures from Admin to populate the monitor.</p>
           </div>
         ) : null}
         {matches.map((match) => (
-          <article key={match.id} className="rounded-lg border border-white/10 bg-pitch-800 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs text-slate-400">{formatShortDate(match.kickoffAt)} · {formatKickoffTime(match.kickoffAt)} · {match.league?.name}</p>
-                <h3 className="mt-1 truncate text-base font-bold text-white">{match.homeTeam?.name}</h3>
-                <p className="truncate text-sm text-slate-400">vs {match.awayTeam?.name}</p>
+          <article key={match.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="truncate text-[11px] font-bold text-slate-500">{formatShortDate(match.kickoffAt)} · {formatKickoffTime(match.kickoffAt)} · {match.league?.name ?? '-'}</p>
+              <div className="mt-1 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                <p className="truncate text-sm font-black text-white">{match.homeTeam?.name ?? '-'}</p>
+                <p className="rounded-xl border border-white/10 bg-black/30 px-2 py-1 text-sm font-black text-white">{formatScore(match.homeGoals, match.awayGoals)}</p>
+                <p className="truncate text-right text-sm font-black text-white">{match.awayTeam?.name ?? '-'}</p>
               </div>
-              <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-bold text-slate-200">{getRecommendation(match)}</span>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-white/[0.04] p-3">
-              <div>
-                <p className="text-xs text-slate-400">สถานะ</p>
-                <p className="font-bold text-white">{match.status || '-'}</p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-400">สกอร์</p>
-                <p className="font-bold text-white">{formatScore(match.homeGoals, match.awayGoals)}</p>
-              </div>
+            <div className="flex min-w-[72px] flex-col items-end gap-1">
+              <span className={statusClass(match.status)}>{match.status || 'PENDING'}</span>
+              <ScoreBadge recommendation={getRecommendation(match)} />
             </div>
           </article>
         ))}
       </div>
     </main>
   )
+}
+
+function statusClass(status) {
+  const normalized = String(status ?? '').toUpperCase()
+  if (['FT', 'AET', 'PEN', 'FINISHED'].includes(normalized)) return 'semantic-badge border-emerald-300/30 bg-emerald-300/10 text-emerald-100'
+  if (['1H', '2H', 'HT', 'LIVE', 'ET'].includes(normalized)) return 'semantic-badge border-red-300/35 bg-red-400/10 text-red-100'
+  return 'semantic-badge border-white/10 bg-white/[0.05] text-slate-300'
 }

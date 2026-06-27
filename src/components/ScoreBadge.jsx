@@ -5,9 +5,10 @@ const styles = {
 }
 
 export default function ScoreBadge({ recommendation }) {
+  const value = recommendation || 'NO BET'
   return (
-    <span className={`badge-premium ${styles[recommendation] ?? styles['NO BET']}`}>
-      {recommendation}
+    <span className={`semantic-badge ${styles[value] ?? styles['NO BET']}`}>
+      {value}
     </span>
   )
 }

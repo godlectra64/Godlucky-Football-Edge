@@ -200,20 +200,28 @@ function App() {
   }
 
   const titles = {
-    today: 'รายการคู่จริง',
-    analysis: 'รายละเอียดวิเคราะห์',
-    admin: 'ศูนย์ควบคุมข้อมูล',
-    results: 'ผลการแข่งขัน',
-    stats: 'สถิติระบบ',
-    notFound: 'ไม่พบหน้า',
+    today: 'Today Edge Board',
+    analysis: 'Match Analysis',
+    admin: 'Data Control',
+    results: 'Live Results',
+    stats: 'Analytics',
+    performance: 'Premium AI Lab',
+    notFound: 'Page Not Found',
   }
 
-  titles.performance = 'AI Performance'
+  const themeClass = {
+    today: 'theme-today',
+    analysis: 'theme-analysis',
+    admin: 'theme-admin',
+    results: 'theme-results',
+    stats: 'theme-stats',
+    performance: 'theme-performance',
+  }[activePage] ?? 'theme-today'
 
   return (
-    <div className="min-h-screen bg-[#05080d] text-slate-100">
-      <MobileHeader title={titles[activePage]} subtitle="ข้อมูลจริงจาก Supabase และ Edge Function" connectionText={connection.message} activePage={activePage} />
-      <div className="pb-[calc(env(safe-area-inset-bottom)+116px)]">
+    <div className={`min-h-screen bg-[var(--bg-app)] text-slate-100 ${themeClass}`}>
+      <MobileHeader title={titles[activePage]} subtitle="Supabase live data + Edge Function sync" connectionText={connection.message} activePage={activePage} />
+      <div>
         {activePage === 'today' ? (
           <TodayPage
             matches={topMatches}
@@ -253,10 +261,10 @@ function App() {
 
 function PageFallback() {
   return (
-    <main className="mx-auto max-w-[430px] px-4 py-4">
-      <div className="rounded-lg border border-white/10 bg-pitch-800 p-5 text-center">
-        <p className="font-bold text-white">กำลังโหลดหน้า</p>
-        <p className="mt-1 text-sm leading-6 text-slate-300">กำลังเตรียมข้อมูลและหน้าจอให้พร้อมใช้งาน</p>
+    <main className="app-page">
+      <div className="empty-state">
+        <p className="font-black text-white">Loading screen</p>
+        <p className="mt-1 text-sm leading-6 text-slate-300">Preparing football intelligence data.</p>
       </div>
     </main>
   )
@@ -264,12 +272,12 @@ function PageFallback() {
 
 function NotFoundPage({ onGoToday }) {
   return (
-    <main className="mx-auto max-w-[430px] px-4 py-6">
-      <section className="rounded-lg border border-white/10 bg-pitch-800 p-6 text-center">
-        <p className="text-lg font-bold text-white">ไม่พบหน้าที่ต้องการ</p>
-        <p className="mt-2 text-sm leading-6 text-slate-300">ลิงก์นี้ไม่มีอยู่ หรืออาจถูกย้ายแล้ว ระบบยังทำงานได้ตามปกติ</p>
-        <button type="button" onClick={onGoToday} className="mt-4 min-h-12 rounded-lg bg-emerald-400 px-5 font-bold text-pitch-950">
-          กลับหน้าวันนี้
+    <main className="app-page theme-today">
+      <section className="empty-state">
+        <p className="text-lg font-black text-white">Page not found</p>
+        <p className="mt-2 text-sm leading-6 text-slate-300">This route is unavailable. The app is still ready.</p>
+        <button type="button" onClick={onGoToday} className="premium-button mt-4 px-5">
+          Back to Today
         </button>
       </section>
     </main>
