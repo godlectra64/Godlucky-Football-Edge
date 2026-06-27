@@ -168,8 +168,9 @@ function buildDataConfidenceContribution(breakdown) {
 }
 
 function getRiskImpact(riskLevel = 'medium') {
-  if (riskLevel === 'low') return { value: 2, label: 'Low Risk', reason: 'ความเสี่ยงต่ำช่วยหนุนความมั่นใจ' }
-  if (riskLevel === 'high') return { value: -6, label: 'High Risk', reason: 'ความเสี่ยงสูงกดคะแนนความมั่นใจ' }
+  const normalized = String(riskLevel).toLowerCase()
+  if (normalized === 'low') return { value: 2, label: 'Low Risk', reason: 'ความเสี่ยงต่ำช่วยหนุนความมั่นใจ' }
+  if (normalized === 'high') return { value: -6, label: 'High Risk', reason: 'ความเสี่ยงสูงกดคะแนนความมั่นใจ' }
   return { value: -2, label: 'Medium Risk', reason: 'ความเสี่ยงระดับกลางทำให้โมเดลระมัดระวัง' }
 }
 

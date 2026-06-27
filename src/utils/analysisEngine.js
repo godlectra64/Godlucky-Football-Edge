@@ -12,19 +12,20 @@ export const recommendationLabels = {
 }
 
 export const riskLabels = {
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
+  low: 'LOW',
+  medium: 'MEDIUM',
+  high: 'HIGH',
 }
 
 export const footballMasterModules = [
-  { key: 'team_strength_score', breakdownKey: 'team_strength', label: 'Team Strength', weight: 0.18, max: 100 },
-  { key: 'form_score', breakdownKey: 'recent_form', label: 'Recent Form', weight: 0.17, max: 100 },
-  { key: 'goal_scoring_score', legacyKey: 'goal_quality_score', breakdownKey: 'attack_quality', label: 'Attack Quality', weight: 0.15, max: 100 },
-  { key: 'defensive_stability_score', breakdownKey: 'defensive_stability', label: 'Defensive Stability', weight: 0.15, max: 100 },
-  { key: 'home_advantage_score', legacyKey: 'home_away_score', breakdownKey: 'home_away_advantage', label: 'Home/Away Advantage', weight: 0.12, max: 100 },
-  { key: 'motivation_score', breakdownKey: 'motivation_context', label: 'Motivation & Context', weight: 0.1, max: 100 },
-  { key: 'market_risk_score', legacyKey: 'risk_score', breakdownKey: 'market_odds_risk', label: 'Market & Odds Risk', weight: 0.13, max: 100 },
+  { key: 'team_strength_score', breakdownKey: 'team_strength', label: 'Team Strength', weight: 0.1, max: 100 },
+  { key: 'form_score', breakdownKey: 'recent_form', label: 'Recent Form', weight: 0.1, max: 100 },
+  { key: 'home_advantage_score', legacyKey: 'home_away_score', breakdownKey: 'home_away_advantage', label: 'Home Advantage', weight: 0.14, max: 100 },
+  { key: 'away_weakness_score', breakdownKey: 'away_weakness', label: 'Away Weakness', weight: 0.14, max: 100 },
+  { key: 'goal_scoring_score', legacyKey: 'goal_quality_score', breakdownKey: 'attack_quality', label: 'Goal Scoring', weight: 0.16, max: 100 },
+  { key: 'defensive_stability_score', breakdownKey: 'defensive_stability', label: 'Defensive Stability', weight: 0.16, max: 100 },
+  { key: 'market_risk_score', legacyKey: 'risk_score', breakdownKey: 'market_odds_risk', label: 'Market Risk', weight: 0.14, max: 100 },
+  { key: 'motivation_score', breakdownKey: 'motivation_context', label: 'Motivation & Context', weight: 0.06, max: 100 },
 ]
 
 export const analysisModuleLabels = Object.fromEntries(footballMasterModules.map((module) => [module.key, module.label]))
@@ -32,7 +33,7 @@ export const analysisModuleLabels = Object.fromEntries(footballMasterModules.map
 export function calculateFootballMasterAnalysis(match) {
   const analysis = match.analysis ?? match.match_analysis ?? match
   const storedBreakdown = analysis.raw?.analysis_breakdown
-  const moduleBreakdown = storedBreakdown ? getStoredModuleBreakdown(storedBreakdown) : buildModuleBreakdown(match)
+  const moduleBreakdown = storedBreakdown ? getStoredModuleBreakdown(storedBreakdown, match) : buildModuleBreakdown(match)
   const modules = footballMasterModules.map((module) => ({
     ...module,
     score: moduleBreakdown[module.breakdownKey].score,
@@ -55,7 +56,8 @@ export function calculateFootballMasterAnalysis(match) {
   })
   const dataIntelligenceModifier = storedBreakdown?.data_intelligence?.modifier ?? calculateDataIntelligenceModifier(dataIntelligence, baseConfidence, footballModifier)
   const intelligenceModifier = getCombinedIntelligenceModifier(baseConfidence, footballModifier, dataIntelligenceModifier)
-  const confidence = Math.round(clamp(baseConfidence + intelligenceModifier, 0, 100))
+  const rawConfidence = Math.round(clamp(baseConfidence + intelligenceModifier, 0, 100))
+  const confidence = applyMarketDataConfidenceGuard(rawConfidence, baseConfidence, moduleBreakdown)
   const storedV3Risk = storedBreakdown?.football_intelligence ? storedBreakdown?.overall_risk : null
   const overallRisk = calculateOverallRisk(moduleBreakdown, confidence, dataCompleteness, footballIntelligence)
   const riskLevel = normalizeRiskLevel(storedV3Risk?.level ?? overallRisk.level)
@@ -99,9 +101,9 @@ export function calculateAnalysisScore(match) {
 
 export function getRiskLevel(match) {
   const analysis = match.analysis ?? match.match_analysis ?? match
-  const stored = String(analysis.risk_level ?? analysis.raw?.analysis_breakdown?.overall_risk?.level ?? '').toLowerCase()
+  const stored = analysis.risk_level ?? analysis.raw?.analysis_breakdown?.overall_risk?.level
 
-  if (['football-master-v2', 'football-intelligence-v3'].includes(analysis.raw?.framework) && ['low', 'medium', 'high'].includes(stored)) return stored
+  if (['football-master-v2', 'football-intelligence-v3'].includes(analysis.raw?.framework)) return normalizeRiskLevel(stored)
   return calculateFootballMasterAnalysis(match).riskLevel
 }
 
@@ -110,9 +112,9 @@ export function getRecommendation(match) {
 }
 
 export function getRecommendationFromConfidence(confidence, riskLevel = riskLabels.medium) {
-  if (String(riskLevel).toLowerCase() === riskLabels.high) return recommendationLabels.noBet
-  if (confidence >= 75) return recommendationLabels.bet
-  if (confidence >= 62) return recommendationLabels.lean
+  if (normalizeRiskLevel(riskLevel) === riskLabels.high) return recommendationLabels.noBet
+  if (confidence >= 72) return recommendationLabels.bet
+  if (confidence >= 58) return recommendationLabels.lean
   return recommendationLabels.noBet
 }
 
@@ -209,9 +211,9 @@ export function calculateStats(matches) {
   const bet = enriched.filter((match) => match.recommendation === recommendationLabels.bet)
   const lean = enriched.filter((match) => match.recommendation === recommendationLabels.lean)
   const noBet = enriched.filter((match) => match.recommendation === recommendationLabels.noBet)
-  const lowRisk = enriched.filter((match) => match.riskLevel === 'low')
-  const mediumRisk = enriched.filter((match) => match.riskLevel === 'medium')
-  const highRisk = enriched.filter((match) => match.riskLevel === 'high')
+  const lowRisk = enriched.filter((match) => normalizeRiskLevel(match.riskLevel) === riskLabels.low)
+  const mediumRisk = enriched.filter((match) => normalizeRiskLevel(match.riskLevel) === riskLabels.medium)
+  const highRisk = enriched.filter((match) => normalizeRiskLevel(match.riskLevel) === riskLabels.high)
   const averageConfidence = enriched.length
     ? Math.round(enriched.reduce((total, match) => total + match.confidence, 0) / enriched.length)
     : 0
@@ -409,8 +411,8 @@ function generateRankReasonFromProfile(profile) {
   const supportParts = []
   const cautionParts = []
 
-  if (profile.confidence >= 75) supportParts.push('คะแนนความมั่นใจสูง')
-  else if (profile.confidence >= 62) supportParts.push('คะแนนความมั่นใจอยู่ในโซนติดตาม')
+  if (profile.confidence >= 72) supportParts.push('คะแนนความมั่นใจสูง')
+  else if (profile.confidence >= 58) supportParts.push('คะแนนความมั่นใจอยู่ในโซนติดตาม')
   else supportParts.push('คะแนนยังไม่ถึงโซนเล่นจริง')
 
   if (profile.intelligence?.momentum?.momentum === 'positive') supportParts.push('โมเมนตัมสนับสนุน')
@@ -705,16 +707,28 @@ function buildModuleBreakdown(match) {
     attack_quality: scoreAttackQuality(homeForm, awayForm, homeStanding, awayStanding),
     defensive_stability: scoreDefensiveStability(homeForm, awayForm),
     home_away_advantage: scoreHomeAwayAdvantage(match, homeForm),
+    away_weakness: scoreAwayWeakness(awayForm, awayStanding),
     motivation_context: scoreMotivationContext(match, leaguePriority),
     market_odds_risk: scoreMarketOddsRisk(match, homeForm, awayForm),
   }
 }
 
-function getStoredModuleBreakdown(breakdown) {
+function getStoredModuleBreakdown(breakdown, match) {
+  const fallback = buildModuleBreakdown(match)
   return Object.fromEntries(
     footballMasterModules.map((module) => {
       const item = breakdown[module.breakdownKey] ?? {}
-      return [module.breakdownKey, { score: Math.round(clamp(numberValue(item.score), 0, 100)), reason: String(item.reason ?? '') }]
+      const fallbackItem = fallback[module.breakdownKey]
+      const hasStoredScore = item.score !== undefined && item.score !== null
+      return [
+        module.breakdownKey,
+        {
+          ...fallbackItem,
+          ...item,
+          score: Math.round(clamp(hasStoredScore ? numberValue(item.score) : fallbackItem.score, 0, 100)),
+          reason: String(item.reason || fallbackItem.reason || 'ข้อมูลจำกัด'),
+        },
+      ]
     }),
   )
 }
@@ -779,6 +793,28 @@ function scoreHomeAwayAdvantage(match, homeForm) {
   return moduleResult(score, played ? 'เจ้าบ้านมีแรงหนุนจากสภาพการแข่งขันและฟอร์มฝั่งเหย้า' : 'ไม่มีข้อมูลสนามละเอียด จึงให้น้ำหนักเจ้าบ้านแบบจำกัด')
 }
 
+function scoreAwayWeakness(awayForm, awayStanding) {
+  const played = numberValue(awayForm?.played)
+  const standingPosition = numberValue(awayStanding?.position)
+
+  if (!played && !standingPosition) {
+    return moduleResult(55, 'ข้อมูลจุดอ่อนทีมเยือนยังจำกัด จึงประเมินแบบระมัดระวัง')
+  }
+
+  const lossRate = played ? numberValue(awayForm?.losses) / played : 0.25
+  const concededPerMatch = played ? numberValue(awayForm?.goals_against) / played : 1.2
+  const failedRate = played ? numberValue(awayForm?.failed_to_score) / played : 0.2
+  const tableWeakness = standingPosition ? clamp((standingPosition - 6) * 2.2, -8, 18) : 0
+  const score = clamp(45 + lossRate * 24 + concededPerMatch * 12 + failedRate * 12 + tableWeakness, 28, 88)
+
+  return moduleResult(
+    score,
+    score >= 68
+      ? 'ทีมเยือนมีสัญญาณเปราะจากฟอร์มแพ้/เสียประตูและอันดับตาราง'
+      : 'ทีมเยือนยังไม่เห็นจุดอ่อนชัดพอ จึงให้คะแนนแบบกลางค่อนไปทางระวัง',
+  )
+}
+
 function scoreMotivationContext(match, leaguePriority) {
   const raw = match.raw ?? {}
   const stage = String(raw.stage ?? raw.group ?? match.round ?? '').toLowerCase()
@@ -789,13 +825,17 @@ function scoreMotivationContext(match, leaguePriority) {
 }
 
 function scoreMarketOddsRisk(match, homeForm, awayForm) {
-  const raw = match.raw ?? {}
-  const hasOdds = Boolean(raw.odds || raw.market || raw.bookmakers)
-  if (!hasOdds) return moduleResult(60, 'ยังไม่มีข้อมูลราคาเพียงพอ จึงประเมินแบบกลางและไม่ยกระดับเป็น high risk อัตโนมัติ')
+  const hasOdds = hasMarketData(match)
+  if (!hasOdds) {
+    return {
+      ...moduleResult(52, 'ข้อมูลราคาตลาดยังจำกัด จึงให้คะแนน conservative และไม่ใช้เป็นเหตุผลหนุน BET เต็มตัว'),
+      has_market_data: false,
+    }
+  }
 
   const formGap = Math.abs(formPoints(homeForm) - formPoints(awayForm))
   const score = clamp(58 + Math.min(formGap, 8) * 2.2, 42, 82)
-  return moduleResult(score, 'มีข้อมูลตลาดบางส่วนและใช้ร่วมกับความต่างของฟอร์มเพื่อประเมินความเสี่ยง')
+  return { ...moduleResult(score, 'มีข้อมูลตลาดบางส่วนและใช้ร่วมกับความต่างของฟอร์มเพื่อประเมินความเสี่ยง'), has_market_data: true }
 }
 
 function calculateOverallRisk(breakdown, confidence, dataCompleteness, intelligence) {
@@ -803,6 +843,7 @@ function calculateOverallRisk(breakdown, confidence, dataCompleteness, intellige
   const spread = Math.max(...scores) - Math.min(...scores)
   const weakCore = ['team_strength', 'recent_form', 'attack_quality', 'defensive_stability'].filter((key) => breakdown[key].score < 45).length
   const marketRiskWeak = breakdown.market_odds_risk.score < 45
+  const marketDataMissing = breakdown.market_odds_risk.has_market_data === false
   const leagueType = intelligence?.league_context?.type
   const dataConfidence = intelligence?.ai_explanation?.data_confidence ?? getIntelligenceDataConfidence(intelligence)
   const totalRiskModifier = numberValue(intelligence?.league_context?.risk_modifier) + numberValue(intelligence?.match_importance?.risk_modifier)
@@ -814,33 +855,35 @@ function calculateOverallRisk(breakdown, confidence, dataCompleteness, intellige
     spread >= 42 ||
     marketRiskWeak ||
     (leagueType === 'friendly' && dataConfidence === 'low') ||
-    (totalRiskModifier >= 4 && confidence < 68)
+    (totalRiskModifier >= 4 && confidence < 68) ||
+    (marketDataMissing && confidence < 50)
   ) {
     return { level: riskLabels.high, reason: 'คะแนนสำคัญอ่อน/ขัดแย้ง หรือบริบทการแข่งขันมี variance สูง จึงจัดเป็นความเสี่ยงสูง' }
   }
-  if (confidence >= 72 && dataCompleteness >= 70 && spread <= 28 && totalRiskModifier <= 1 && lowConfidenceSignals <= 1) {
+  if (!marketDataMissing && confidence >= 72 && dataCompleteness >= 70 && spread <= 28 && totalRiskModifier <= 1 && lowConfidenceSignals <= 1) {
     return { level: riskLabels.low, reason: 'หลายโมดูลให้ภาพสอดคล้องกัน ข้อมูลรองรับค่อนข้างครบ และ risk modifier ต่ำ' }
   }
-  return { level: riskLabels.medium, reason: 'ข้อมูลยังไม่ครบทุกมิติ แต่ไม่มีสัญญาณอันตรายชัด จึงคงความเสี่ยงระดับกลาง' }
+  return {
+    level: riskLabels.medium,
+    reason: marketDataMissing
+      ? 'ข้อมูลตลาดยังจำกัด จึงคุมความเสี่ยงไว้ระดับกลางและหลีกเลี่ยง BET เว้นแต่คะแนนฝั่งฟุตบอลแข็งมาก'
+      : 'ข้อมูลยังไม่ครบทุกมิติ แต่ไม่มีสัญญาณอันตรายชัด จึงคงความเสี่ยงระดับกลาง',
+  }
 }
 
 function buildAnalysisSummary(match, modules, baseConfidence, confidence, riskLevel, recommendation, breakdown) {
-  const home = match.homeTeam?.name ?? 'ทีมเหย้า'
-  const away = match.awayTeam?.name ?? 'ทีมเยือน'
-  const bestModule = [...modules].sort((a, b) => b.score - a.score)[0]
-  const weakestModule = [...modules].sort((a, b) => a.score - b.score)[0]
-  const intelligence = breakdown.football_intelligence
-  const contextText = buildContextSummary(intelligence)
-  const riskReason = breakdown.overall_risk.reason
-  const modifierText = `base ${baseConfidence}/100, v3 ${formatSigned(intelligence.modifier)}, final ${confidence}/100`
+  const bestModule = [...modules].sort((a, b) => b.score - a.score)[0] ?? { label: 'ภาพรวมทีม', score: baseConfidence }
+  const weakestModule = [...modules].sort((a, b) => a.score - b.score)[0] ?? { label: 'ข้อมูลตลาด', score: 0 }
+  const marketMissing = breakdown.market_odds_risk?.has_market_data === false
+  const riskText = riskLevel === riskLabels.low ? 'ต่ำ' : riskLevel === riskLabels.high ? 'สูง' : 'กลาง'
+  const marketText = marketMissing ? ' ข้อมูลตลาดยังจำกัด จึงไม่ควรไล่ราคาแรง' : ''
+  const caution = recommendation === recommendationLabels.bet
+    ? 'ยังควรเช็กไลน์อัปและราคาใกล้แข่งก่อนเข้า'
+    : recommendation === recommendationLabels.lean
+      ? 'เหมาะติดตามหรือรอราคานิ่งมากกว่า BET เต็มตัว'
+      : 'ควรข้ามหรือรอข้อมูลใหม่ก่อน'
 
-  if (recommendation === recommendationLabels.bet) {
-    return `${home} พบ ${away}: ระบบให้เป็น BET เพราะคะแนนสุดท้าย ${confidence}/100 (${modifierText}) และความเสี่ยงอยู่ระดับ ${riskLevel}. จุดหนุนหลักคือ ${bestModule.label} (${bestModule.score}/100) ร่วมกับ ${contextText}. ${riskReason}`
-  }
-  if (recommendation === recommendationLabels.lean) {
-    return `${home} พบ ${away}: ระบบให้เป็น LEAN เพราะภาพรวมยังสนับสนุนบางด้าน โดยเฉพาะ ${bestModule.label} (${bestModule.score}/100) และ ${contextText} แต่ ${weakestModule.label} ยังถ่วงอยู่ (${weakestModule.score}/100) จึงยังไม่ถึงระดับ BET. ${riskReason}`
-  }
-  return `${home} พบ ${away}: คู่นี้เป็น NO BET เพราะคะแนนสุดท้าย ${confidence}/100 (${modifierText}) ยังไม่พอ หรือความเสี่ยงอยู่ระดับ ${riskLevel}. แม้มีจุดเด่นที่ ${bestModule.label} (${bestModule.score}/100) แต่ ${contextText} และ ${weakestModule.label} (${weakestModule.score}/100) ยังจำกัดความมั่นใจ. ${riskReason}`
+  return `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskText}. จุดหนุนคือ ${bestModule.label} ${bestModule.score}/100 แต่ความเสี่ยงหลักอยู่ที่ ${weakestModule.label} ${weakestModule.score}/100.${marketText} ${caution}`
 }
 
 function normalizeFootballIntelligence(intelligence, fallbackModifier) {
@@ -904,16 +947,6 @@ function buildFootballIntelligenceExplanation(intelligence, modifier) {
   return `v3 ประเมินบริบทเป็น ${league}, momentum ${momentum}, H2H confidence ${h2hConfidence}, squad confidence ${squadConfidence}; modifier ${formatSigned(modifier)}`
 }
 
-function buildContextSummary(intelligence) {
-  const parts = []
-  parts.push(`บริบทการแข่งขันเป็น ${intelligence.league_context.type}`)
-  parts.push(`โมเมนตัม ${intelligence.momentum.momentum}`)
-  if (intelligence.h2h.confidence === 'low') parts.push('ข้อมูล H2H ยังจำกัด')
-  if (intelligence.squad_context.confidence === 'low') parts.push('ข้อมูลตัวผู้เล่นยังจำกัด')
-  if (intelligence.match_importance.risk_modifier > 0) parts.push('รายการมีความผันผวนเพิ่มขึ้น')
-  return parts.join(', ')
-}
-
 function collectIntelligenceSignals(intelligence) {
   return [
     ...(intelligence?.h2h?.signals ?? []),
@@ -924,6 +957,36 @@ function collectIntelligenceSignals(intelligence) {
     `schedule_${intelligence?.schedule_difficulty?.difficulty ?? 'unknown'}`,
     `rest_advantage_${intelligence?.rest_days?.advantage ?? 'none'}`,
   ]
+}
+
+function applyMarketDataConfidenceGuard(confidence, baseConfidence, breakdown) {
+  if (breakdown?.market_odds_risk?.has_market_data !== false || confidence < 72) return confidence
+
+  const coreScores = [
+    breakdown.home_away_advantage?.score,
+    breakdown.away_weakness?.score,
+    breakdown.attack_quality?.score,
+    breakdown.defensive_stability?.score,
+  ].map(numberValue)
+  const coreAverage = coreScores.reduce((total, score) => total + score, 0) / Math.max(coreScores.length, 1)
+  const footballCaseIsVeryStrong = baseConfidence >= 78 && coreAverage >= 74
+
+  return footballCaseIsVeryStrong ? confidence : Math.min(confidence, 71)
+}
+
+function hasMarketData(match) {
+  const raw = match?.raw ?? {}
+  return Boolean(
+    raw.odds ||
+      raw.market ||
+      raw.bookmakers ||
+      match?.odds ||
+      match?.market ||
+      match?.bookmakers ||
+      match?.analysis?.raw?.odds ||
+      match?.analysis?.raw?.market ||
+      match?.analysis?.raw?.bookmakers,
+  )
 }
 
 function getIntelligenceDataConfidence(intelligence) {
@@ -1080,7 +1143,10 @@ function formGoalDiff(form) {
 
 function normalizeRiskLevel(value) {
   const normalized = String(value ?? '').toLowerCase()
-  return ['low', 'medium', 'high'].includes(normalized) ? normalized : riskLabels.medium
+  if (normalized === 'low') return riskLabels.low
+  if (normalized === 'medium') return riskLabels.medium
+  if (normalized === 'high') return riskLabels.high
+  return riskLabels.medium
 }
 
 function numberValue(value) {

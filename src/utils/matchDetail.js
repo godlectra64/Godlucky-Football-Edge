@@ -169,7 +169,7 @@ export function buildRiskFactors(detail) {
   const dataIntelligence = detail.dataIntelligence ?? extractDataIntelligence(detail)
   const consistency = detail.analysisBreakdown?.overall_risk?.reason
 
-  if (detail.riskLevel === 'high') factors.push('ความเสี่ยงรวมอยู่ระดับสูง จึงไม่ควรบังคับเล่น')
+  if (String(detail.riskLevel).toLowerCase() === 'high') factors.push('ความเสี่ยงรวมอยู่ระดับสูง จึงไม่ควรบังคับเล่น')
   if (intelligence.h2h?.confidence === 'low') factors.push('ข้อมูล H2H ยังจำกัด')
   if (intelligence.squad_context?.confidence === 'low') factors.push('ยังไม่มีข้อมูลตัวผู้เล่น/อาการบาดเจ็บเพียงพอ')
   if (intelligence.league_context?.risk_modifier > 0) factors.push('บริบทการแข่งขันมีความผันผวน')

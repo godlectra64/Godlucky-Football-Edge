@@ -78,7 +78,7 @@ const baseMatch = {
 
 const missingH2H = calculateFootballMasterAnalysis(baseMatch)
 assert.equal(missingH2H.analysisBreakdown.football_intelligence.h2h.reason, 'ยังไม่มีข้อมูล H2H เพียงพอ')
-assert.notEqual(missingH2H.riskLevel, 'high', 'missing H2H alone must not force high risk')
+assert.notEqual(missingH2H.riskLevel, 'HIGH', 'missing H2H alone must not force high risk')
 
 const friendlyLowData = calculateFootballMasterAnalysis({
   ...baseMatch,
@@ -89,8 +89,10 @@ const friendlyLowData = calculateFootballMasterAnalysis({
   standings: [],
 })
 assert.equal(friendlyLowData.analysisBreakdown.football_intelligence.league_context.type, 'friendly')
-assert.equal(friendlyLowData.riskLevel, 'high')
+assert.equal(friendlyLowData.riskLevel, 'HIGH')
 assert.ok(friendlyLowData.analysisSummary.length > 0)
+assert.ok(['BET', 'LEAN', 'NO BET'].includes(friendlyLowData.recommendation))
+assert.ok(['LOW', 'MEDIUM', 'HIGH'].includes(friendlyLowData.riskLevel))
 
 const leagueContext = calculateLeagueContext({ league: { name: 'Premier League' } })
 const cupContext = calculateLeagueContext({ league: { name: 'FA Cup' } })
@@ -99,13 +101,17 @@ assert.equal(cupContext.type, 'cup')
 assert.ok(leagueContext.risk_modifier < cupContext.risk_modifier)
 
 assert.ok(missingH2H.intelligenceModifier >= -6 && missingH2H.intelligenceModifier <= 6)
-assert.equal(getRecommendationFromConfidence(75, 'medium'), 'BET')
+assert.equal(getRecommendationFromConfidence(72, 'MEDIUM'), 'BET')
+assert.equal(getRecommendationFromConfidence(58, 'MEDIUM'), 'LEAN')
+assert.equal(getRecommendationFromConfidence(90, 'HIGH'), 'NO BET')
 assert.ok(missingH2H.analysisBreakdown.data_intelligence, 'data_intelligence should be added to analysis_breakdown')
 assert.ok(missingH2H.analysisBreakdown.data_intelligence.data_confidence.score >= 0)
 assert.ok(missingH2H.analysisBreakdown.data_intelligence.data_confidence.score <= 100)
 assert.ok(missingH2H.intelligenceModifier >= -10 && missingH2H.intelligenceModifier <= 10, 'combined modifier stays bounded')
 assert.equal(missingH2H.analysisBreakdown.data_intelligence.head_to_head.confidence, 'low')
-assert.notEqual(missingH2H.riskLevel, 'high', 'missing data_intelligence H2H alone must not force high risk')
+assert.notEqual(missingH2H.riskLevel, 'HIGH', 'missing data_intelligence H2H alone must not force high risk')
+assert.ok(missingH2H.analysisBreakdown.away_weakness.score >= 0)
+assert.ok(missingH2H.analysisBreakdown.away_weakness.score <= 100)
 
 const base72Match = {
   ...baseMatch,
@@ -119,6 +125,7 @@ const base72Match = {
         attack_quality: { score: 72, reason: 'stored' },
         defensive_stability: { score: 72, reason: 'stored' },
         home_away_advantage: { score: 72, reason: 'stored' },
+        away_weakness: { score: 72, reason: 'stored' },
         motivation_context: { score: 72, reason: 'stored' },
         market_odds_risk: { score: 72, reason: 'stored' },
       },

@@ -9,7 +9,7 @@ export default function MatchCard({ match, onOpen }) {
   const confidence = Math.round(match.confidence ?? getConfidence(match))
   const riskLevel = match.riskLevel ?? getRiskLevel(match)
   const rankingScore = Math.round(match.rankingScore ?? match.ranking_score ?? confidence)
-  const rankReason = buildCardReason(match, recommendation, rankingScore)
+  const analysisSummary = buildCardSummary(match, recommendation, confidence)
   const rankBadges = match.rankBadges ?? match.rank_badges ?? []
   const open = () => onOpen?.(match.id)
 
@@ -68,7 +68,7 @@ export default function MatchCard({ match, onOpen }) {
       </div>
 
       <div className="mt-2 flex min-w-0 items-center gap-2">
-        <p className="text-clamp-1 min-w-0 flex-1 text-xs font-semibold leading-5 text-slate-300">{rankReason}</p>
+        <p className="text-clamp-1 min-w-0 flex-1 text-xs font-semibold leading-5 text-slate-300">{analysisSummary}</p>
         {rankBadges.length ? (
           <span className="semantic-badge shrink-0 border-white/10 bg-white/[0.05] text-slate-300">{rankBadges[0]}</span>
         ) : null}
@@ -88,9 +88,11 @@ function TeamRow({ team, strong = false }) {
   )
 }
 
-function buildCardReason(match, recommendation, rankingScore) {
-  if (recommendation === 'NO BET' && rankingScore >= 62) {
-    return 'Interesting data profile, but not enough edge to play.'
+function buildCardSummary(match, recommendation, confidence) {
+  const summary = getAnalysisSummary(match)
+  if (summary) return summary
+  if (recommendation === 'NO BET') {
+    return `แนะนำ NO BET เพราะความมั่นใจ ${confidence}% ยังไม่พอหรือความเสี่ยงสูง ควรรอข้อมูลเพิ่ม`
   }
-  return match.rankReason ?? match.rank_reason ?? getAnalysisSummary(match)
+  return `แนะนำ ${recommendation} ด้วยความมั่นใจ ${confidence}% แต่ควรเช็กราคาและไลน์อัปก่อนตัดสินใจ`
 }

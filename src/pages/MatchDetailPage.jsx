@@ -16,11 +16,12 @@ import { normalizeMarketIntelligence } from '../utils/marketIntelligence'
 const moduleSubtitles = {
   'Team Strength': 'Squad quality',
   'Recent Form': 'Current run',
-  'Attack Quality': 'Chance creation',
+  'Goal Scoring': 'Chance creation',
   'Defensive Stability': 'Resistance',
-  'Home/Away Advantage': 'Venue edge',
+  'Home Advantage': 'Venue edge',
+  'Away Weakness': 'Opponent vulnerability',
   'Motivation & Context': 'Match context',
-  'Market & Odds Risk': 'Price movement',
+  'Market Risk': 'Price movement',
   'Overall Risk': 'Total volatility',
 }
 
@@ -264,7 +265,7 @@ function RiskAnalysisSection({ detail, riskLabel, riskFactors }) {
           <span className="text-sm font-black text-white">{riskLabel.label}</span>
         </div>
       </div>
-      <BulletList title="Risk factors" items={riskFactors} tone={detail.riskLevel === 'high' ? 'danger' : 'warning'} />
+      <BulletList title="Risk factors" items={riskFactors} tone={String(detail.riskLevel).toLowerCase() === 'high' ? 'danger' : 'warning'} />
     </Section>
   )
 }

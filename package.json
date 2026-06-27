@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test": "node scripts/analysisEngine.smoke.test.mjs",
+    "verify:analysis": "node scripts/verifyAnalysisIntegrity.mjs",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
