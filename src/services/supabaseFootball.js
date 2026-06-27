@@ -11,7 +11,10 @@ export async function getTodayMatches() {
   const { start, end } = todayAndTomorrowRangeBangkok()
   const { data, error } = await fetchMatchesByKickoffRange(start, end)
 
-  if (error) throw error
+  if (error) {
+    logSupabaseReadError('getTodayMatches', error)
+    return []
+  }
   return (data ?? []).map(normalizeMatch)
 }
 
@@ -23,7 +26,10 @@ export async function getTodayTopMatches() {
 export async function getMatchAnalysis(matchId) {
   const { data, error } = await fetchMatchById(matchId)
 
-  if (error) throw error
+  if (error) {
+    logSupabaseReadError('getMatchAnalysis', error)
+    return null
+  }
   return normalizeMatch(data)
 }
 
@@ -34,7 +40,10 @@ export async function getMatchDetail(matchId) {
 export async function getEnabledLeagues() {
   const { data, error } = await fetchEnabledLeagues()
 
-  if (error) throw error
+  if (error) {
+    logSupabaseReadError('getEnabledLeagues', error)
+    return []
+  }
   return data ?? []
 }
 
@@ -48,21 +57,30 @@ export async function updateLeagueSettings(leagueId, patch) {
 export async function getSyncLogs() {
   const { data, error } = await fetchSyncLogs(20)
 
-  if (error) throw error
+  if (error) {
+    logSupabaseReadError('getSyncLogs', error)
+    return []
+  }
   return data ?? []
 }
 
 export async function getLatestSyncLog() {
   const { data, error } = await fetchLatestSyncLog()
 
-  if (error) throw error
+  if (error) {
+    logSupabaseReadError('getLatestSyncLog', error)
+    return null
+  }
   return data ?? null
 }
 
 export async function getAiPerformanceData(limit = 500) {
   const { data: snapshots, error } = await fetchPredictionSnapshots(limit)
 
-  if (error) throw error
+  if (error) {
+    logSupabaseReadError('getAiPerformanceData.snapshots', error)
+    return []
+  }
   const ids = (snapshots ?? []).map((item) => item.id)
   if (!ids.length) return []
 
@@ -71,8 +89,14 @@ export async function getAiPerformanceData(limit = 500) {
     fetchPredictionEvaluations(ids),
   ])
 
-  if (resultsError) throw resultsError
-  if (evaluationsError) throw evaluationsError
+  if (resultsError) {
+    logSupabaseReadError('getAiPerformanceData.results', resultsError)
+    return []
+  }
+  if (evaluationsError) {
+    logSupabaseReadError('getAiPerformanceData.evaluations', evaluationsError)
+    return []
+  }
   return normalizePerformanceRows(snapshots ?? [], results ?? [], evaluations ?? [])
 }
 
@@ -206,4 +230,12 @@ function createFallbackAnalysis(row) {
     },
     updated_at: row.updated_at ?? row.created_at,
   }
+}
+
+function logSupabaseReadError(context, error) {
+  if (!error) return
+  console.warn(`[supabase:${context}] returning safe empty result`, {
+    code: error.code,
+    message: error.message,
+  })
 }

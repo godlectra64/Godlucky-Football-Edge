@@ -25,6 +25,8 @@ const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const secretKeys = parseSupabaseSecretKeys(Deno.env.get('SUPABASE_SECRET_KEYS'))
 
 const supabase = createClient(supabaseUrl, serviceRoleKey)
+const legacyAnalysisSelect = 'id, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, motivation_score, market_risk_score, confidence_score, recommendation, risk_level, analysis_summary, thai_reason, raw'
+const pickAnalysisSelect = `${legacyAnalysisSelect}, pick_side, pick_team, pick_reason`
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
@@ -684,16 +686,11 @@ async function recomputeProcessedAnalysisRows(matchIds: Array<string>) {
 }
 
 async function normalizeLegacyAnalysisRows() {
-  const result = await supabase
-    .from('match_analysis')
-    .select('id, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, motivation_score, market_risk_score, confidence_score, recommendation, risk_level, pick_side, pick_team, pick_reason, analysis_summary, thai_reason, raw')
-    .limit(1000)
-
-  if (result.error) throw result.error
+  const { rows, hasPickColumns } = await fetchAnalysisRowsForNormalization()
 
   let fixed = 0
 
-  for (const row of result.data ?? []) {
+  for (const row of rows) {
     const confidence = Math.round(clamp(Number(row.confidence_score ?? row.raw?.confidence_score ?? 0), 0, 100))
     const riskLevel = normalizeRiskLevel(row.risk_level ?? row.raw?.risk_level)
     const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
@@ -708,7 +705,7 @@ async function normalizeLegacyAnalysisRows() {
       recommendation,
       risk_level: riskLevel,
     })
-    const nextPayload = {
+    const basePayload = {
       team_strength_score: normalizeScore(row.team_strength_score ?? row.raw?.team_strength_score ?? row.raw?.modules?.teamStrength ?? 56),
       form_score: normalizeScore(row.form_score ?? row.raw?.form_score ?? row.raw?.modules?.recentForm ?? 56),
       home_advantage_score: normalizeScore(row.home_advantage_score ?? row.raw?.home_advantage_score ?? row.raw?.modules?.homeAwayAdvantage ?? 56),
@@ -721,33 +718,80 @@ async function normalizeLegacyAnalysisRows() {
       analysis_summary: analysisSummary,
       recommendation,
       risk_level: riskLevel,
-      pick_side: pick.pick_side,
-      pick_team: pick.pick_team,
-      pick_reason: pick.pick_reason,
     }
+    const nextPayload = hasPickColumns
+      ? {
+          ...basePayload,
+          pick_side: pick.pick_side,
+          pick_team: pick.pick_team,
+          pick_reason: pick.pick_reason,
+        }
+      : basePayload
+
+    const pickColumnsMatch = !hasPickColumns || (
+      row.pick_side === pick.pick_side &&
+      (row.pick_team ?? null) === (pick.pick_team ?? null) &&
+      row.pick_reason === pick.pick_reason
+    )
 
     if (
       row.analysis_summary &&
       row.recommendation === recommendation &&
       row.risk_level === riskLevel &&
-      row.pick_side === pick.pick_side &&
-      (row.pick_team ?? null) === (pick.pick_team ?? null) &&
-      row.pick_reason === pick.pick_reason &&
+      pickColumnsMatch &&
       ['team_strength_score', 'form_score', 'home_advantage_score', 'away_weakness_score', 'goal_scoring_score', 'defensive_stability_score', 'motivation_score', 'market_risk_score', 'confidence_score'].every((key) => row[key] !== null && row[key] !== undefined)
     ) {
       continue
     }
 
-    const updateResult = await supabase
-      .from('match_analysis')
-      .update(nextPayload)
-      .eq('id', row.id)
+    const updateResult = await updateMatchAnalysisRow(row.id, nextPayload, hasPickColumns)
 
     if (updateResult.error) throw updateResult.error
     fixed += 1
   }
 
-  return { checked: result.data?.length ?? 0, fixed }
+  return { checked: rows.length, fixed }
+}
+
+async function fetchAnalysisRowsForNormalization() {
+  const result = await supabase
+    .from('match_analysis')
+    .select(pickAnalysisSelect)
+    .limit(1000)
+
+  if (!result.error) {
+    return { rows: result.data ?? [], hasPickColumns: true }
+  }
+
+  if (!isMissingColumnError(result.error)) throw result.error
+
+  const legacyResult = await supabase
+    .from('match_analysis')
+    .select(legacyAnalysisSelect)
+    .limit(1000)
+
+  if (legacyResult.error) throw legacyResult.error
+  return { rows: legacyResult.data ?? [], hasPickColumns: false }
+}
+
+async function updateMatchAnalysisRow(id: string, payload: Record<string, unknown>, hasPickColumns: boolean) {
+  const result = await supabase
+    .from('match_analysis')
+    .update(payload)
+    .eq('id', id)
+
+  if (!result.error || !hasPickColumns || !isMissingColumnError(result.error)) return result
+
+  const { pick_side: _pickSide, pick_team: _pickTeam, pick_reason: _pickReason, ...legacyPayload } = payload
+  return supabase
+    .from('match_analysis')
+    .update(legacyPayload)
+    .eq('id', id)
+}
+
+function isMissingColumnError(error: any) {
+  const message = String(error?.message ?? error?.details ?? '')
+  return error?.code === '42703' || /column .* does not exist/i.test(message) || /Could not find .* column/i.test(message)
 }
 
 function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority, recentMatches, recentOpponents }: any) {
