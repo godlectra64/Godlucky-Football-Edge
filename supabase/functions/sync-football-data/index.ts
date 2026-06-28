@@ -33,6 +33,9 @@ const legacyAnalysisSelect = 'id, team_strength_score, form_score, home_advantag
 const pickAnalysisSelect = `${legacyAnalysisSelect}, pick_side, pick_team, pick_reason`
 const finalPickAnalysisSelect = `${pickAnalysisSelect}, market_type, market_line, fair_line, model_probability, value_status, value_reason`
 const selectionV2AnalysisSelect = `${finalPickAnalysisSelect}, data_validation_status, data_validation_notes, league_quality_score, match_quality_score, tactical_matchup_score, market_reading_score, home_away_score, risk_score, edge_score, ai_score, ranking_score, final_rank, recommendation_tier, final_pick_note, is_top_pick, is_final_pick`
+const defaultManualLimit = 50
+const maxManualLimit = 100
+const syncChunkSize = 10
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
@@ -50,7 +53,9 @@ Deno.serve(async (request) => {
     const body = await safeJson(request)
     const dayRange = getSyncDateRange(body)
     const { dateKey, dateFrom, dateTo, startUtc, endUtc } = dayRange
-    const syncType = body.mode ?? 'manual-football-data'
+    const mode = normalizeSyncMode(body.mode)
+    const syncType = typeof body.mode === 'string' && body.mode ? body.mode : 'manual'
+    const limit = getSyncLimit(body.limit)
     const primaryProvider = getProviderAdapter(requestedProviderName)
 
     const log = await supabase
@@ -75,32 +80,46 @@ Deno.serve(async (request) => {
     const providerResult = await fetchProviderFixtures(primaryProvider, dayRange)
     const activeProvider = providerResult.provider
     const matches = providerResult.matches
+    const totalFetched = matches.length
+    const matchesToProcess = matches.slice(0, limit)
+    const skippedByLimit = Math.max(0, totalFetched - matchesToProcess.length)
     let processed = 0
     const processedMatchIds: Array<string> = []
     const failures: Array<{ matchId?: number; message: string }> = []
 
-    for (const footballDataMatch of matches) {
-      try {
-        const synced = await syncMatch(footballDataMatch, { enrichFixtureData: activeProvider.supportsFixtureEnrichment })
-        if (synced?.matchId) processedMatchIds.push(synced.matchId)
-        processed += 1
-      } catch (error) {
-        failures.push({
-          matchId: footballDataMatch?.id,
-          message: error instanceof Error ? error.message : 'match sync failed',
-        })
+    for (let index = 0; index < matchesToProcess.length; index += syncChunkSize) {
+      const chunk = matchesToProcess.slice(index, index + syncChunkSize)
+      for (const footballDataMatch of chunk) {
+        try {
+          const synced = await syncMatch(footballDataMatch, { enrichFixtureData: mode === 'recompute' && activeProvider.supportsFixtureEnrichment })
+          if (synced?.matchId) processedMatchIds.push(synced.matchId)
+          processed += 1
+        } catch (error) {
+          failures.push({
+            matchId: footballDataMatch?.id,
+            message: error instanceof Error ? error.message : 'match sync failed',
+          })
+        }
       }
+      console.info('sync-football-data-progress', {
+        provider: activeProvider.name,
+        dateKey,
+        processed,
+        totalBatch: matchesToProcess.length,
+        totalFetched,
+        skippedByLimit,
+      })
     }
 
-    const recomputeResult = await recomputeProcessedAnalysisRows(processedMatchIds)
-    const recomputedStoredRows = body.recomputeStoredAnalysisRows ? await recomputeStoredAnalysisRows(Number(body.recomputeStoredLimit ?? 50)) : 0
-    const normalizedAnalysisRows = await normalizeLegacyAnalysisRows()
+    const recomputeResult = mode === 'recompute' ? await recomputeProcessedAnalysisRows(processedMatchIds) : { updated: 0, failures: [] }
+    const recomputedStoredRows = mode === 'recompute' ? await recomputeStoredAnalysisRows(Number(body.recomputeStoredLimit ?? limit)) : 0
+    const normalizedAnalysisRows = mode === 'recompute' ? await normalizeLegacyAnalysisRows() : { checked: 0, fixed: 0 }
     const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
     const topPickCount = rankedSelectionRows
     const updatedAnalysisCount = recomputeResult.updated + recomputedStoredRows
     const invalidRowsFixed = normalizedAnalysisRows.fixed
     const allFailures = [...failures, ...recomputeResult.failures]
-    const total = matches.length
+    const total = totalFetched
     const status = allFailures.length ? 'partial_success' : 'success'
     const message = total === 0
       ? 'ไม่พบคู่แข่งขันวันนี้และพรุ่งนี้'
@@ -120,7 +139,10 @@ Deno.serve(async (request) => {
       endUtc,
       competitions: providerResult.competitions,
       total,
+      totalFetched,
+      limit,
       processed,
+      skippedByLimit,
       topPickCount,
       updatedAnalysisCount,
       invalidRowsFixed,
@@ -140,8 +162,11 @@ Deno.serve(async (request) => {
       dateTo,
       startUtc,
       endUtc,
+      totalFetched,
+      limit,
       processed,
       total,
+      skippedByLimit,
       topPickCount,
       updatedAnalysisCount,
       invalidRowsFixed,
@@ -2553,6 +2578,16 @@ function normalizeProviderName(value: string) {
   const normalized = sanitizeHeaderValue(value).toLowerCase()
   if (['api-football', 'api_football', 'apisports', 'api-sports'].includes(normalized)) return 'api-football'
   return 'api-football'
+}
+
+function normalizeSyncMode(value: unknown) {
+  return String(value ?? 'manual').toLowerCase() === 'recompute' ? 'recompute' : 'manual'
+}
+
+function getSyncLimit(value: unknown) {
+  const numeric = Number(value ?? defaultManualLimit)
+  if (!Number.isFinite(numeric) || numeric <= 0) return defaultManualLimit
+  return Math.max(1, Math.min(Math.floor(numeric), maxManualLimit))
 }
 
 function getSyncDateRange(body: Record<string, unknown>) {

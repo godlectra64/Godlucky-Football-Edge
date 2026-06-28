@@ -79,6 +79,16 @@ assert.ok(syncFootballDataSource.includes("fetchFixtures: ({ dateKey }) => fetch
 assert.ok(syncFootballDataSource.includes("apiFootballGet('/fixtures', { date: dateKey })"), 'API-FOOTBALL adapter must use /fixtures?date=YYYY-MM-DD')
 assert.ok(syncFootballDataSource.includes("const fallbackProvider = getProviderAdapter('football-data.org')"), 'football-data.org must remain as fallback provider')
 assert.ok(syncFootballDataSource.includes('fallbackProvider: providerResult.fallbackProvider'), 'sync response should expose fallbackProvider')
+assert.ok(syncFootballDataSource.includes('const defaultManualLimit = 50'), 'manual sync should default to a 50 fixture limit')
+assert.ok(syncFootballDataSource.includes('const maxManualLimit = 100'), 'manual sync should cap limit at 100')
+assert.ok(syncFootballDataSource.includes('const syncChunkSize = 10'), 'manual sync should process fixtures in chunks of 10')
+assert.ok(syncFootballDataSource.includes('const matchesToProcess = matches.slice(0, limit)'), 'manual sync should process only the limited batch')
+assert.ok(syncFootballDataSource.includes('const skippedByLimit = Math.max(0, totalFetched - matchesToProcess.length)'), 'sync response should report fixtures skipped by limit')
+assert.ok(syncFootballDataSource.includes("mode === 'recompute' ? await recomputeProcessedAnalysisRows(processedMatchIds)"), 'manual sync must not run processed-row recompute automatically')
+assert.ok(syncFootballDataSource.includes("mode === 'recompute' ? await recomputeStoredAnalysisRows"), 'stored analysis recompute should run only in recompute mode')
+assert.ok(syncFootballDataSource.includes("mode === 'recompute' ? await normalizeLegacyAnalysisRows()"), 'legacy analysis normalization should run only in recompute mode')
+assert.equal(Math.min(150, 50), 50, 'API-FOOTBALL fixtures 150 with limit 50 should process 50')
+assert.equal(Math.max(0, 150 - Math.min(150, 50)), 100, 'API-FOOTBALL fixtures 150 with limit 50 should skip 100')
 
 const baseMatch = {
   id: 'match-1',
