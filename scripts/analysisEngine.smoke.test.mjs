@@ -93,6 +93,12 @@ assert.ok(syncFootballDataSource.includes('rankingMayBePartial: hasMore'), 'manu
 assert.ok(syncFootballDataSource.includes('processedMatches:'), 'manual sync response should include processed match samples')
 assert.ok(syncFootballDataSource.includes('function getFixtureSyncPriority'), 'manual sync should use fixture sync priority helper')
 assert.ok(syncFootballDataSource.includes('getFixtureSoftPenalty'), 'manual sync should use soft penalties instead of hard exclusions')
+assert.ok(syncFootballDataSource.includes('function getLeagueTierScore'), 'league scoring should use tier scoring')
+assert.ok(syncFootballDataSource.includes('apiFootballLeagueTierScores'), 'league scoring should use API-FOOTBALL league id tiers')
+assert.ok(syncFootballDataSource.includes('country: syncPriority.country'), 'processedMatches should include country')
+assert.ok(syncFootballDataSource.includes('leagueId: syncPriority.leagueId'), 'processedMatches should include leagueId')
+assert.ok(syncFootballDataSource.includes("if (exactCountryLeague.includes('england:premier league')) return 100"), 'England Premier League should be tier A by country and name')
+assert.ok(syncFootballDataSource.includes("if (leagueName.toLowerCase().includes('premier league') && !isHighTierPremierCountry(country.toLowerCase())) cap = Math.min(cap, 72)"), 'foreign Premier League names should be capped')
 assert.ok(syncFootballDataSource.includes('const defaultEnrichLimit = 10'), 'enrich sync should default to a 10 match limit')
 assert.ok(syncFootballDataSource.includes('const maxEnrichLimit = 30'), 'enrich sync should cap limit at 30')
 assert.ok(syncFootballDataSource.includes('const enrichChunkSize = 5'), 'enrich sync should process enrichment in small chunks')
@@ -140,14 +146,27 @@ assert.deepEqual(getPaginationSample(333, 50, 300), {
 }, 'manual pagination should stop at the final partial batch')
 assert.equal(getPaginationSample(333, 50, 0).hasMore, true, 'rankingMayBePartial should be true when hasMore is true')
 const prioritySamples = [
-  getFixturePrioritySample({ league: 'USL League Two', home: 'Little Rock Rangers', away: 'Red River' }),
-  getFixturePrioritySample({ league: 'Premier League', home: 'Arsenal', away: 'Chelsea' }),
-  getFixturePrioritySample({ league: 'MLS Next Pro', home: 'Colorado Rapids II', away: 'Vancouver Whitecaps II' }),
-  getFixturePrioritySample({ league: 'Premier League Women', home: 'Arsenal W', away: 'Chelsea W' }),
+  getFixturePrioritySample({ league: 'USL League Two', country: 'USA', home: 'Little Rock Rangers', away: 'Red River' }),
+  getFixturePrioritySample({ league: 'Premier League', country: 'England', home: 'Arsenal', away: 'Chelsea' }),
+  getFixturePrioritySample({ league: 'MLS Next Pro', country: 'USA', home: 'Colorado Rapids II', away: 'Vancouver Whitecaps II' }),
+  getFixturePrioritySample({ league: 'Premier League Women', country: 'England', home: 'Arsenal W', away: 'Chelsea W' }),
 ].sort((a, b) => b.syncPriorityScore - a.syncPriorityScore)
 assert.equal(prioritySamples[0].league, 'Premier League', 'high quality leagues should sort before small leagues')
 assert.ok(prioritySamples.some((item) => item.league === 'Premier League Women'), 'women fixtures should receive a soft penalty but stay in the candidate list')
 assert.ok(prioritySamples.some((item) => item.league === 'MLS Next Pro'), 'reserve fixtures should receive a soft penalty but stay in the candidate list')
+assert.ok(getFixturePrioritySample({ league: 'Premier League', country: 'England', home: 'Arsenal', away: 'Chelsea' }).leagueQualityScore >= 95, 'England Premier League should score tier A')
+assert.ok(getFixturePrioritySample({ league: 'La Liga', country: 'Spain', home: 'Barcelona', away: 'Real Madrid' }).leagueQualityScore >= 95, 'Spain La Liga should score tier A')
+assert.ok(getFixturePrioritySample({ league: 'Serie A', country: 'Italy', home: 'Inter', away: 'Milan' }).leagueQualityScore >= 95, 'Italy Serie A should score tier A')
+assert.ok(getFixturePrioritySample({ league: 'Bundesliga', country: 'Germany', home: 'Bayern', away: 'Dortmund' }).leagueQualityScore >= 95, 'Germany Bundesliga should score tier A')
+assert.ok(getFixturePrioritySample({ league: 'Ligue 1', country: 'France', home: 'PSG', away: 'Lyon' }).leagueQualityScore >= 95, 'France Ligue 1 should score tier A')
+assert.ok(getFixturePrioritySample({ league: 'Premier League', country: 'Ethiopia', home: 'Adama Kenema', away: 'Welayta Dicha' }).leagueQualityScore <= 72, 'Ethiopia Premier League should not score as England Premier League')
+assert.ok(getFixturePrioritySample({ league: 'Premier League', country: 'Mongolia', home: 'Ulaangom City', away: 'Khovd' }).leagueQualityScore <= 72, 'Mongolia Premier League should not score as England Premier League')
+assert.ok(getFixturePrioritySample({ league: 'Premier League', country: 'Kazakhstan', home: 'Irtysh', away: 'Kaisar' }).leagueQualityScore <= 72, 'Kazakhstan Premier League should not score as England Premier League')
+assert.notEqual(getFixturePrioritySample({ league: 'Premier League', country: '', home: 'Generic FC', away: 'Other FC' }).leagueQualityScore, 100, 'Premier League without country/id must not score 100')
+assert.ok(getFixturePrioritySample({ league: 'MLS Next Pro', country: 'USA', home: 'Colorado Rapids II', away: 'Vancouver Whitecaps II' }).leagueQualityScore <= 55, 'MLS Next Pro should be capped as development league')
+assert.ok(getFixturePrioritySample({ league: 'USL League Two', country: 'USA', home: 'Little Rock Rangers', away: 'Red River' }).leagueQualityScore <= 55, 'USL League Two should be capped as lower division')
+assert.ok(getFixturePrioritySample({ league: 'Premier League', country: 'England', home: 'Arsenal II', away: 'Chelsea' }).syncPriorityScore < getFixturePrioritySample({ league: 'Premier League', country: 'England', home: 'Arsenal', away: 'Chelsea' }).syncPriorityScore, 'II teams should receive a soft penalty')
+assert.ok(getFixturePrioritySample({ league: 'Premier League Women', country: 'England', home: 'Arsenal W', away: 'Chelsea W' }).leagueQualityScore <= 70, 'Women leagues should be softly capped but retained')
 
 const coverageSample = [
   { ok: true, dataCount: 3, rowsSaved: 7 },
@@ -175,20 +194,52 @@ function getPaginationSample(totalFetched, limit, offset) {
   }
 }
 
-function getFixturePrioritySample({ league, home, away }) {
-  const leagueQualityScore = league.includes('Premier League') ? 100 : league.includes('MLS') ? 84 : 65
-  const knownLeagueBonus = league === 'Premier League' ? 15 : 0
-  const coverageBonus = leagueQualityScore >= 84 ? 10 : 0
+function getFixturePrioritySample({ league, country = '', home, away }) {
+  const leagueQualityScore = getLeagueQualitySample({ league, country, home, away })
+  const knownLeagueBonus = league === 'Premier League' && country === 'England' ? 8 : 0
+  const coverageBonus = leagueQualityScore >= 85 ? 8 : leagueQualityScore >= 75 ? 5 : leagueQualityScore >= 60 ? 2 : 0
+  const cap = getFixtureScoreCapSample({ league, country, home, away })
   let softPenalty = 0
   const text = `${league} ${home} ${away}`.toLowerCase()
-  if (/\b(u19|u20|u21|u23|youth|reserve|reserves|academy)\b/i.test(text)) softPenalty += 24
-  if (/\b(w|women|woman|femenil|feminine)\b/i.test(text)) softPenalty += 18
-  if (/\b(ii|2|b)\b/i.test(text)) softPenalty += 14
-  if (text.includes('next pro') || text.includes('league two')) softPenalty += 10
+  if (/\b(u19|u20|u21|u23|youth)\b/i.test(text)) softPenalty += 35
+  if (/\b(reserve|reserves|academy|development)\b/i.test(text)) softPenalty += 30
+  if (/\b(w|women|woman|femenil|feminine)\b/i.test(text)) softPenalty += 15
+  if (/\b(ii|b)\b/i.test(text)) softPenalty += 30
+  if (text.includes('next pro') || text.includes('league two')) softPenalty += 25
   return {
     league,
-    syncPriorityScore: Math.max(0, Math.min(100, Math.round(leagueQualityScore + knownLeagueBonus + coverageBonus - Math.min(softPenalty, 45)))),
+    leagueQualityScore,
+    syncPriorityScore: Math.max(0, Math.min(100, Math.round(Math.min(cap, leagueQualityScore + knownLeagueBonus + coverageBonus - Math.min(softPenalty, 45))))),
   }
+}
+
+function getLeagueQualitySample({ league, country, home = '', away = '' }) {
+  const lowerLeague = league.toLowerCase()
+  const lowerCountry = country.toLowerCase()
+  let score = 65
+  if (lowerCountry === 'england' && lowerLeague === 'premier league') score = 100
+  else if (lowerCountry === 'spain' && lowerLeague.includes('la liga')) score = 98
+  else if (lowerCountry === 'italy' && lowerLeague.includes('serie a')) score = 97
+  else if (lowerCountry === 'germany' && lowerLeague.includes('bundesliga')) score = 97
+  else if (lowerCountry === 'france' && lowerLeague.includes('ligue 1')) score = 95
+  else if (lowerLeague.includes('premier league')) score = lowerCountry === 'england' ? 100 : 72
+  else if (lowerLeague.includes('mls next pro') || lowerLeague.includes('league two')) score = 50
+  let penalty = 0
+  const text = `${league} ${home} ${away}`.toLowerCase()
+  if (/\b(w|women|woman|femenil|feminine)\b/i.test(text)) penalty += 15
+  if (/\b(ii|b)\b/i.test(text) || text.includes('next pro') || text.includes('league two')) penalty += 30
+  return Math.max(0, Math.min(getFixtureScoreCapSample({ league, country, home, away }), score - Math.min(penalty, 45)))
+}
+
+function getFixtureScoreCapSample({ league, country, home, away }) {
+  const text = `${league} ${home} ${away}`.toLowerCase()
+  let cap = 100
+  if (/\b(u19|u20|u21|u23|youth)\b/i.test(text)) cap = Math.min(cap, 50)
+  if (/\b(reserve|reserves|academy|development|ii|b)\b/i.test(text)) cap = Math.min(cap, 55)
+  if (text.includes('next pro') || text.includes('league two')) cap = Math.min(cap, 55)
+  if (/\b(w|women|woman|femenil|feminine)\b/i.test(text)) cap = Math.min(cap, 70)
+  if (league.toLowerCase().includes('premier league') && !country.toLowerCase().includes('england')) cap = Math.min(cap, 72)
+  return cap
 }
 
 const baseMatch = {

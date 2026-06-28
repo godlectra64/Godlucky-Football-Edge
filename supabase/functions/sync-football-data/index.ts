@@ -19,6 +19,34 @@ const priorityLeagues = new Map<string, number>([
   ['Europa League', 20],
 ])
 
+const apiFootballLeagueTierScores = new Map<number, number>([
+  [2, 100], // UEFA Champions League
+  [3, 96], // UEFA Europa League
+  [848, 95], // UEFA Conference League
+  [39, 100], // England Premier League
+  [140, 98], // Spain La Liga
+  [135, 97], // Italy Serie A
+  [78, 97], // Germany Bundesliga
+  [61, 95], // France Ligue 1
+  [40, 92], // England Championship
+  [88, 90], // Netherlands Eredivisie
+  [94, 90], // Portugal Primeira Liga
+  [144, 84], // Belgium Pro League
+  [203, 88], // Turkey Super Lig
+  [179, 86], // Scotland Premiership
+  [207, 86], // Switzerland Super League
+  [218, 86], // Austria Bundesliga
+  [119, 86], // Denmark Superliga
+  [71, 84], // Brazil Serie A
+  [128, 83], // Argentina Primera Division
+  [253, 82], // USA MLS
+  [262, 82], // Mexico Liga MX
+  [98, 80], // Japan J1 League
+  [292, 80], // Korea K League 1
+  [307, 80], // Saudi Pro League
+  [188, 78], // Australia A-League
+])
+
 const requestedProviderName = normalizeProviderName(Deno.env.get('FOOTBALL_PROVIDER') ?? 'api-football')
 const FOOTBALL_DATA_BASE_URL = sanitizeUrl(Deno.env.get('FOOTBALL_API_BASE_URL') ?? 'https://api.football-data.org/v4')
 const FOOTBALL_DATA_TOKEN = sanitizeHeaderValue(Deno.env.get('FOOTBALL_API_KEY') ?? '')
@@ -324,15 +352,19 @@ function compareFixtureSyncPriority(a: any, b: any) {
 }
 
 function getFixtureSyncPriority(fixture: any) {
-  const leagueName = firstText(fixture?.competition?.name, fixture?.league?.name, fixture?.raw?.apiFootball?.league?.name) ?? ''
+  const leagueMeta = getLeagueMeta(fixture)
+  const leagueName = leagueMeta.name
   const homeName = firstText(fixture?.homeTeam?.name, fixture?.home_team?.name, fixture?.raw?.apiFootball?.teams?.home?.name) ?? ''
   const awayName = firstText(fixture?.awayTeam?.name, fixture?.away_team?.name, fixture?.raw?.apiFootball?.teams?.away?.name) ?? ''
-  const leagueQualityScore = getLeagueQualityScore(leagueName)
-  const knownLeagueBonus = getKnownLeagueBonus(leagueName)
-  const coverageBonus = leagueQualityScore >= 84 ? 10 : leagueQualityScore >= 72 ? 5 : 0
+  const leagueQualityScore = getLeagueQualityScore(fixture)
+  const knownLeagueBonus = getKnownLeagueBonus(leagueMeta)
+  const coverageBonus = leagueQualityScore >= 85 ? 8 : leagueQualityScore >= 75 ? 5 : leagueQualityScore >= 60 ? 2 : 0
   const softPenalty = getFixtureSoftPenalty({ leagueName, homeName, awayName })
-  const syncPriorityScore = normalizeScore(leagueQualityScore + knownLeagueBonus + coverageBonus - softPenalty)
+  const scoreCap = getFixtureScoreCap({ leagueName, country: leagueMeta.country, homeName, awayName })
+  const syncPriorityScore = normalizeScore(Math.min(scoreCap, leagueQualityScore + knownLeagueBonus + coverageBonus - softPenalty))
   return {
+    leagueId: leagueMeta.id,
+    country: leagueMeta.country,
     leagueQualityScore,
     syncPriorityScore,
     knownLeagueBonus,
@@ -341,23 +373,122 @@ function getFixtureSyncPriority(fixture: any) {
   }
 }
 
-function getKnownLeagueBonus(leagueName: string) {
-  if (priorityLeagues.has(leagueName)) return 15
-  const normalized = leagueName.toLowerCase()
+function getKnownLeagueBonus(league: { name: string; country: string }) {
+  const tierScore = getLeagueTierScore(league)
+  if (tierScore >= 95) return 8
+  if (tierScore >= 85) return 5
+  if (tierScore >= 75) return 3
+  const normalized = league.name.toLowerCase()
   for (const key of priorityLeagues.keys()) {
     if (normalized.includes(key.toLowerCase())) return 12
   }
   return 0
 }
 
+function getLeagueMeta(source: any) {
+  const apiFootballLeague = source?.raw?.apiFootball?.league ?? source?.raw?.raw?.apiFootball?.league
+  const id = getApiFootballLeagueId(firstText(apiFootballLeague?.id, source?.api_sports_league_id, source?.competition?.id, source?.league?.id))
+  const rawName = firstText(source?.competition?.name, source?.league?.name, apiFootballLeague?.name)
+  const country = normalizeCountry(firstText(source?.competition?.country, source?.competition?.area?.name, source?.league?.country, source?.area?.name, apiFootballLeague?.country))
+  return {
+    id,
+    name: normalizeLeagueName(rawName),
+    country,
+    season: firstText(source?.season, apiFootballLeague?.season),
+  }
+}
+
+function getApiFootballLeagueId(value: unknown) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric === 0) return null
+  return Math.abs(Math.trunc(numeric))
+}
+
+function normalizeLeagueName(value: unknown) {
+  return String(value ?? '').trim()
+}
+
+function normalizeCountry(value: unknown) {
+  return String(value ?? '').trim()
+}
+
+function getLeagueTierScore(source: any) {
+  const league = typeof source === 'string'
+    ? { name: source, country: '' }
+    : source?.name !== undefined || source?.country !== undefined
+      ? { id: getApiFootballLeagueId(source.id), name: normalizeLeagueName(source.name), country: normalizeCountry(source.country) }
+      : getLeagueMeta(source)
+  if (league.id && apiFootballLeagueTierScores.has(league.id)) return apiFootballLeagueTierScores.get(league.id) ?? 65
+  const name = league.name.toLowerCase()
+  const country = league.country.toLowerCase()
+  const exactCountryLeague = `${country}:${name}`
+
+  if (name.includes('champions league') && (country.includes('world') || country.includes('europe') || country.includes('uefa') || !country)) return 100
+  if (name.includes('europa league') || name.includes('conference league')) return 96
+  if (exactCountryLeague.includes('england:premier league')) return 100
+  if ((country.includes('spain') || country.includes('espana')) && (name.includes('la liga') || name.includes('primera'))) return 98
+  if (country.includes('italy') && name.includes('serie a')) return 97
+  if (country.includes('germany') && name.includes('bundesliga')) return 97
+  if (country.includes('france') && name.includes('ligue 1')) return 95
+
+  if (country.includes('england') && name.includes('championship')) return 92
+  if (country.includes('netherlands') && name.includes('eredivisie')) return 90
+  if (country.includes('portugal') && (name.includes('primeira') || name.includes('liga portugal'))) return 90
+  if (country.includes('belgium') && (name.includes('pro league') || name.includes('first division'))) return 88
+  if (country.includes('turkey') && (name.includes('super lig') || name.includes('super liga'))) return 88
+  if (country.includes('scotland') && name.includes('premiership')) return 86
+  if (country.includes('switzerland') && name.includes('super league')) return 86
+  if (country.includes('austria') && name.includes('bundesliga')) return 86
+  if (country.includes('denmark') && name.includes('superliga')) return 86
+
+  if ((country.includes('brazil') || country.includes('brasil')) && name.includes('serie a')) return 84
+  if (country.includes('argentina') && name.includes('primera')) return 83
+  if ((country.includes('usa') || country.includes('united states')) && (name === 'major league soccer' || name === 'mls')) return 82
+  if (country.includes('mexico') && name.includes('liga mx')) return 82
+  if (country.includes('japan') && (name.includes('j1') || name.includes('j. league'))) return 80
+  if ((country.includes('korea') || country.includes('south-korea')) && name.includes('k league 1')) return 80
+  if (country.includes('saudi') && name.includes('pro league')) return 80
+  if (country.includes('australia') && name.includes('a-league')) return 78
+
+  if (isLowerDevelopmentLeague({ leagueName: name, homeName: '', awayName: '' })) return 50
+  if (name.includes('premier league')) return isHighTierPremierCountry(country) ? 85 : 72
+  return 65
+}
+
+function isHighTierPremierCountry(country: string) {
+  return ['england', 'scotland', 'wales', 'northern ireland'].some((item) => country.includes(item))
+}
+
 function getFixtureSoftPenalty({ leagueName, homeName, awayName }: { leagueName: string; homeName: string; awayName: string }) {
   const text = `${leagueName} ${homeName} ${awayName}`.toLowerCase()
   let penalty = 0
-  if (/\b(u19|u20|u21|u23|youth|reserve|reserves|academy)\b/i.test(text)) penalty += 24
-  if (/\b(w|women|woman|femenil|feminine)\b/i.test(text)) penalty += 18
-  if (/\b(ii|2|b)\b/i.test(text)) penalty += 14
-  if (text.includes('next pro') || text.includes('league two')) penalty += 10
+  if (/\b(u19|u20|u21|u23|youth)\b/i.test(text)) penalty += 35
+  if (/\b(reserve|reserves|academy|development)\b/i.test(text)) penalty += 30
+  if (/\b(w|women|woman|femenil|feminine)\b/i.test(text)) penalty += 15
+  if (/\b(ii|b)\b/i.test(text)) penalty += 30
+  if (text.includes('next pro') || text.includes('league two') || text.includes('lower division') || text.includes('amateur')) penalty += 25
   return Math.min(penalty, 45)
+}
+
+function getFixtureScoreCap({ leagueName, country, homeName, awayName }: { leagueName: string; country: string; homeName: string; awayName: string }) {
+  const text = `${leagueName} ${homeName} ${awayName}`.toLowerCase()
+  let cap = 100
+  if (/\b(u19|u20|u21|u23|youth)\b/i.test(text)) cap = Math.min(cap, 50)
+  if (/\b(reserve|reserves|academy|development|ii|b)\b/i.test(text)) cap = Math.min(cap, 55)
+  if (text.includes('next pro') || text.includes('league two') || text.includes('lower division') || text.includes('amateur')) cap = Math.min(cap, 55)
+  if (/\b(w|women|woman|femenil|feminine)\b/i.test(text)) cap = Math.min(cap, 70)
+  if (leagueName.toLowerCase().includes('premier league') && !isHighTierPremierCountry(country.toLowerCase())) cap = Math.min(cap, 72)
+  return cap
+}
+
+function isLowerDevelopmentLeague({ leagueName, homeName, awayName }: { leagueName: string; homeName: string; awayName: string }) {
+  const text = `${leagueName} ${homeName} ${awayName}`.toLowerCase()
+  return text.includes('next pro') ||
+    text.includes('league two') ||
+    text.includes('reserve') ||
+    text.includes('academy') ||
+    text.includes('development') ||
+    /\b(u19|u20|u21|u23|youth)\b/i.test(text)
 }
 
 async function runRecomputeMode(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
@@ -1180,7 +1311,9 @@ async function syncMatch(match: any, options: { enrichFixtureData?: boolean } = 
     matchId: matchResult.data.id,
     processedMatch: {
       fixtureId: match.raw_fixture_id ?? match.id ?? null,
+      leagueId: syncPriority.leagueId,
       league: match.competition?.name ?? null,
+      country: syncPriority.country,
       homeTeam: match.homeTeam?.name ?? null,
       awayTeam: match.awayTeam?.name ?? null,
       kickoffAt: match.utcDate ?? null,
@@ -1287,6 +1420,7 @@ function normalizeApiFootballFixture(row: any) {
       name: league.name ?? 'Unknown Competition',
       code: league.id ? String(league.id) : null,
       emblem: league.logo ?? null,
+      country: league.country ?? null,
       area: { name: league.country ?? null },
     },
     homeTeam: {
@@ -2454,7 +2588,7 @@ function hasMarketData(match: any) {
 }
 
 function buildSelectionV2Analysis(match: any, analysis: any) {
-  const leagueQualityScore = getLeagueQualityScore(match?.competition?.name ?? match?.league?.name)
+  const leagueQualityScore = getLeagueQualityScore(match)
   const matchQualityScore = getMatchQualityScoreV2(match, analysis)
   const validation = getDataValidationStatusV2(match, analysis)
   const base = normalizeScore(60 + (leagueQualityScore - 65) * 0.1 + recommendationBoost(analysis?.recommendation) + (Number(analysis?.confidence_score ?? 0) - 60) * 0.08)
@@ -2528,20 +2662,14 @@ function getDataValidationStatusV2(match: any, analysis: any) {
   return { status: notes.length ? 'PARTIAL' : 'VALID', notes: notes.length ? notes : ['ready'] }
 }
 
-function getLeagueQualityScore(leagueName: unknown) {
-  const league = String(leagueName ?? '').toLowerCase()
-  if (league.includes('champions league') || league.includes('premier league')) return 100
-  if (league.includes('la liga') || league.includes('primera division')) return 98
-  if (league.includes('serie a')) return 96
-  if (league.includes('bundesliga') || league.includes('europa league')) return 95
-  if (league.includes('ligue 1')) return 93
-  if (league.includes('brazil') || league.includes('brasileir')) return 90
-  if (league.includes('eredivisie')) return 88
-  if (league.includes('primeira') || league.includes('j league')) return 87
-  if (league.includes('argentina')) return 86
-  if (league.includes('k league') || league.includes('mls')) return 84
-  if (league.includes('thai league')) return 72
-  return 65
+function getLeagueQualityScore(source: any) {
+  const league = typeof source === 'string' ? { name: source, country: '' } : getLeagueMeta(source)
+  const homeName = firstText(source?.homeTeam?.name, source?.home_team?.name, source?.raw?.apiFootball?.teams?.home?.name) ?? ''
+  const awayName = firstText(source?.awayTeam?.name, source?.away_team?.name, source?.raw?.apiFootball?.teams?.away?.name) ?? ''
+  const tierScore = getLeagueTierScore(league)
+  const penalty = getFixtureSoftPenalty({ leagueName: league.name, homeName, awayName })
+  const cap = getFixtureScoreCap({ leagueName: league.name, country: league.country, homeName, awayName })
+  return normalizeScore(Math.min(cap, tierScore - penalty))
 }
 
 function getMatchQualityScoreV2(match: any, analysis: any) {
