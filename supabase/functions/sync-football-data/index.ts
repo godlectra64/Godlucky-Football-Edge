@@ -98,6 +98,8 @@ Deno.serve(async (request) => {
     const recomputedStoredRows = modeResult.recomputedStoredRows ?? 0
     const normalizedAnalysisRows = modeResult.normalizedAnalysisRows ?? { checked: 0, fixed: 0 }
     const rankedSelectionRows = modeResult.rankedSelectionRows ?? await updateDailySelectionRanks(dayRange)
+    const endpointCoverage = modeResult.endpointCoverage ?? null
+    const enrichedMatches = modeResult.enrichedMatches ?? []
     const topPickCount = rankedSelectionRows
     const updatedAnalysisCount = recomputeResult.updated + recomputedStoredRows
     const invalidRowsFixed = normalizedAnalysisRows.fixed
@@ -134,6 +136,8 @@ Deno.serve(async (request) => {
       recomputedStoredRows,
       normalizedAnalysisRows: normalizedAnalysisRows.checked,
       rankedSelectionRows,
+      endpointCoverage,
+      enrichedMatches,
       durationMs: Date.now() - startedMs,
       failures: allFailures,
     })
@@ -161,6 +165,8 @@ Deno.serve(async (request) => {
       recomputedStoredRows,
       normalizedAnalysisRows: normalizedAnalysisRows.checked,
       rankedSelectionRows,
+      endpointCoverage,
+      enrichedMatches,
       durationMs: Date.now() - startedMs,
       failures: allFailures,
     })
@@ -249,10 +255,11 @@ async function runManualMode(provider: ProviderAdapter, dayRange: ReturnType<typ
 async function runEnrichMode(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
   const provider = getProviderAdapter('api-football')
   const providerResult = { provider, fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] }
-  const candidates = await fetchDbMatchCandidates(dayRange, Math.min(limit, maxEnrichLimit), true)
-  const batch = candidates.rows
+  const candidates = await fetchEnrichCandidates(dayRange)
+  const batch = candidates.rows.slice(0, Math.min(limit, maxEnrichLimit))
   const result = await processInChunks(batch, enrichChunkSize, enrichMatchData, { provider: provider.name, dateKey: dayRange.dateKey, totalBatch: batch.length, totalFetched: candidates.totalCandidates })
   const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  const endpointCoverage = summarizeEndpointCoverage(result.results)
   return {
     providerResult,
     totalCandidates: candidates.totalCandidates,
@@ -261,6 +268,8 @@ async function runEnrichMode(dayRange: ReturnType<typeof getBangkokDayRange>, li
     processed: result.processed,
     processedMatchIds: result.processedMatchIds,
     failures: result.failures,
+    endpointCoverage,
+    enrichedMatches: result.results.map((item: any) => item.enrichedMatch).filter(Boolean).slice(0, 30),
     rankedSelectionRows,
   }
 }
@@ -310,6 +319,7 @@ async function processInChunks(rows: Array<any>, chunkSize: number, worker: (row
   let processed = 0
   const processedMatchIds: Array<string> = []
   const failures: Array<{ matchId?: number; message: string }> = []
+  const results: Array<any> = []
 
   for (let index = 0; index < rows.length; index += chunkSize) {
     const chunk = rows.slice(index, index + chunkSize)
@@ -317,6 +327,7 @@ async function processInChunks(rows: Array<any>, chunkSize: number, worker: (row
       try {
         const result = await worker(row)
         if (result?.matchId) processedMatchIds.push(result.matchId)
+        if (result) results.push(result)
         processed += 1
       } catch (error) {
         failures.push({
@@ -332,7 +343,51 @@ async function processInChunks(rows: Array<any>, chunkSize: number, worker: (row
     })
   }
 
-  return { processed, processedMatchIds, failures }
+  return { processed, processedMatchIds, failures, results }
+}
+
+async function fetchEnrichCandidates(dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_fixture_id,
+      api_provider,
+      api_sports_fixture_id,
+      api_sports_home_team_id,
+      api_sports_away_team_id,
+      kickoff_at,
+      status,
+      home_goals,
+      away_goals,
+      raw,
+      league:football_leagues(id, api_league_id, name, priority),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, match_id, is_top_pick, final_rank, ranking_score, league_quality_score, confidence_score, risk_score, recommendation, value_market, value_side, value_line, calibrated_confidence_score, raw)
+    `, { count: 'exact' })
+    .gte('kickoff_at', dayRange.startUtc)
+    .lt('kickoff_at', dayRange.endUtc)
+    .not('api_sports_fixture_id', 'is', null)
+    .order('kickoff_at', { ascending: true })
+    .limit(1000)
+
+  if (result.error) throw result.error
+  const rows = [...(result.data ?? [])].sort(compareEnrichCandidatePriority)
+  return { rows, totalCandidates: result.count ?? rows.length }
+}
+
+function compareEnrichCandidatePriority(a: any, b: any) {
+  const analysisA = getAnalysis(a)
+  const analysisB = getAnalysis(b)
+  const topPickDiff = Number(Boolean(analysisB?.is_top_pick)) - Number(Boolean(analysisA?.is_top_pick))
+  const finalRankDiff = numericSortValue(analysisA?.final_rank, 999) - numericSortValue(analysisB?.final_rank, 999)
+  const rankingDiff = numericSortValue(analysisB?.ranking_score, -1) - numericSortValue(analysisA?.ranking_score, -1)
+  const leagueQualityDiff = numericSortValue(analysisB?.league_quality_score, -1) - numericSortValue(analysisA?.league_quality_score, -1)
+  const confidenceDiff = numericSortValue(analysisB?.confidence_score, -1) - numericSortValue(analysisA?.confidence_score, -1)
+  const kickoffA = new Date(a?.kickoff_at ?? 0).getTime()
+  const kickoffB = new Date(b?.kickoff_at ?? 0).getTime()
+  return topPickDiff || finalRankDiff || rankingDiff || leagueQualityDiff || confidenceDiff || kickoffA - kickoffB
 }
 
 async function fetchDbMatchCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number, requireApiFootballFixture: boolean) {
@@ -405,6 +460,12 @@ async function enrichMatchData(row: any) {
   const statsResult = await storeTeamStatistics(row, fixtureId, stats)
   const injuriesResult = await storeInjuries(row, fixtureId, injuries)
   const lineupsResult = await storeLineups(row, fixtureId, lineups)
+  const endpointCoverage = buildEndpointCoverage({
+    odds: { response: odds, normalized: oddsResult },
+    statistics: { response: stats, normalized: statsResult },
+    injuries: { response: injuries, normalized: injuriesResult },
+    lineups: { response: lineups, normalized: lineupsResult },
+  })
   const v4 = buildV4EnrichmentAnalysis({
     match: row,
     odds: oddsResult,
@@ -414,10 +475,11 @@ async function enrichMatchData(row: any) {
   })
 
   await updateMatchAnalysisByMatchId(row.id, v4)
+  const enrichmentStatus = getEnrichmentStatus(endpointCoverage)
   await supabase
     .from('football_matches')
     .update({
-      enrichment_status: 'ENRICHED',
+      enrichment_status: enrichmentStatus,
       enrichment_updated_at: new Date().toISOString(),
       odds_updated_at: oddsResult.available ? new Date().toISOString() : null,
       stats_updated_at: statsResult.available ? new Date().toISOString() : null,
@@ -426,7 +488,82 @@ async function enrichMatchData(row: any) {
     })
     .eq('id', row.id)
 
-  return { matchId: row.id }
+  return {
+    matchId: row.id,
+    endpointCoverage,
+    enrichedMatch: {
+      matchId: row.id,
+      fixtureId,
+      homeTeam: row.homeTeam?.name ?? null,
+      awayTeam: row.awayTeam?.name ?? null,
+      league: row.league?.name ?? null,
+      finalRank: getAnalysis(row)?.final_rank ?? null,
+      oddsRows: oddsResult.rows.length,
+      statisticsRows: statsResult.rows.length,
+      injuriesRows: injuriesResult.rows.length,
+      lineupsRows: lineupsResult.rows.length,
+    },
+  }
+}
+
+function buildEndpointCoverage(results: Record<string, { response: any; normalized: any }>) {
+  return Object.fromEntries(Object.entries(results).map(([name, result]) => {
+    const dataCount = Array.isArray(result.response?.data) ? result.response.data.length : 0
+    const rowsSaved = Array.isArray(result.normalized?.rows) ? result.normalized.rows.length : 0
+    const failed = !result.response?.ok
+    return [name, {
+      called: 1,
+      withData: !failed && dataCount > 0 ? 1 : 0,
+      empty: !failed && dataCount === 0 ? 1 : 0,
+      failed: failed ? 1 : 0,
+      rowsSaved,
+    }]
+  }))
+}
+
+function summarizeEndpointCoverage(results: Array<any>) {
+  const summary = createEmptyEndpointCoverage()
+  for (const result of results) {
+    mergeEndpointCoverage(summary, result?.endpointCoverage)
+  }
+  return summary
+}
+
+function createEmptyEndpointCoverage() {
+  return {
+    odds: createEmptyEndpointCounter(),
+    statistics: createEmptyEndpointCounter(),
+    injuries: createEmptyEndpointCounter(),
+    lineups: createEmptyEndpointCounter(),
+  }
+}
+
+function createEmptyEndpointCounter() {
+  return { called: 0, withData: 0, empty: 0, failed: 0, rowsSaved: 0 }
+}
+
+function mergeEndpointCoverage(target: any, source: any) {
+  for (const endpoint of ['odds', 'statistics', 'injuries', 'lineups']) {
+    const current = source?.[endpoint]
+    if (!current) continue
+    target[endpoint].called += Number(current.called ?? 0)
+    target[endpoint].withData += Number(current.withData ?? 0)
+    target[endpoint].empty += Number(current.empty ?? 0)
+    target[endpoint].failed += Number(current.failed ?? 0)
+    target[endpoint].rowsSaved += Number(current.rowsSaved ?? 0)
+  }
+  return target
+}
+
+function getEnrichmentStatus(endpointCoverage: any) {
+  const totalRowsSaved = ['odds', 'statistics', 'injuries', 'lineups'].reduce((total, endpoint) => total + Number(endpointCoverage?.[endpoint]?.rowsSaved ?? 0), 0)
+  const oddsRows = Number(endpointCoverage?.odds?.rowsSaved ?? 0)
+  const failed = ['odds', 'statistics', 'injuries', 'lineups'].some((endpoint) => Number(endpointCoverage?.[endpoint]?.failed ?? 0) > 0)
+  if (failed && totalRowsSaved === 0) return 'ENRICH_FAILED'
+  if (totalRowsSaved === 0) return 'ENRICHED_EMPTY'
+  if (oddsRows > 0 && totalRowsSaved === oddsRows) return 'ENRICHED_ODDS_ONLY'
+  if (['odds', 'statistics', 'injuries', 'lineups'].every((endpoint) => Number(endpointCoverage?.[endpoint]?.rowsSaved ?? 0) > 0)) return 'ENRICHED_FULL'
+  return 'ENRICHED_PARTIAL'
 }
 
 async function fetchApiFootballOdds(fixtureId: number) {
@@ -2467,6 +2604,11 @@ function firstNumber(...values: Array<unknown>) {
     if (Number.isFinite(numeric)) return numeric
   }
   return null
+}
+
+function numericSortValue(value: unknown, fallback: number) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
 }
 
 function parseLineNumber(value: unknown) {

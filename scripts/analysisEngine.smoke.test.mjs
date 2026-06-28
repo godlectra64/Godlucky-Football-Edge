@@ -97,8 +97,37 @@ assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/odds'"), 'enrich
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/fixtures/statistics'"), 'enrich mode should fetch API-FOOTBALL fixture statistics')
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/injuries'"), 'enrich mode should fetch API-FOOTBALL injuries')
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/fixtures/lineups'"), 'enrich mode should fetch API-FOOTBALL lineups')
+assert.ok(syncFootballDataSource.includes('fetchEnrichCandidates(dayRange)'), 'enrich mode should use dedicated candidate selection')
+assert.ok(syncFootballDataSource.includes('sort(compareEnrichCandidatePriority)'), 'enrich candidates should be sorted by priority before applying limit')
+assert.ok(syncFootballDataSource.includes('Number(Boolean(analysisB?.is_top_pick)) - Number(Boolean(analysisA?.is_top_pick))'), 'enrich should prioritize top picks before non-top-picks')
+assert.ok(syncFootballDataSource.includes('numericSortValue(analysisA?.final_rank, 999) - numericSortValue(analysisB?.final_rank, 999)'), 'enrich should sort final_rank ascending')
+assert.ok(syncFootballDataSource.includes('numericSortValue(analysisB?.ranking_score, -1) - numericSortValue(analysisA?.ranking_score, -1)'), 'enrich should sort ranking_score descending')
+assert.ok(syncFootballDataSource.includes('numericSortValue(analysisB?.league_quality_score, -1) - numericSortValue(analysisA?.league_quality_score, -1)'), 'enrich should sort league_quality_score descending')
+assert.ok(syncFootballDataSource.includes('numericSortValue(analysisB?.confidence_score, -1) - numericSortValue(analysisA?.confidence_score, -1)'), 'enrich should sort confidence_score descending')
+assert.ok(syncFootballDataSource.includes(".not('api_sports_fixture_id', 'is', null)"), 'enrich should skip matches without API-FOOTBALL fixture ids')
+assert.ok(syncFootballDataSource.includes('endpointCoverage,'), 'enrich response should include endpoint coverage')
+assert.ok(syncFootballDataSource.includes('enrichedMatches,'), 'enrich response should include per-match enrichment summaries')
+assert.ok(syncFootballDataSource.includes('rowsSaved'), 'endpoint coverage should include rowsSaved')
+assert.ok(syncFootballDataSource.includes('empty: !failed && dataCount === 0 ? 1 : 0'), 'endpoint coverage should count empty API responses')
+assert.ok(syncFootballDataSource.includes("return 'ENRICHED_ODDS_ONLY'"), 'enrichment status should distinguish odds-only enrichment')
+assert.ok(syncFootballDataSource.includes('statsResult.rows.length'), 'per-match enrichment summary should include statistics rows')
+assert.ok(syncFootballDataSource.includes('lineupsResult.rows.length'), 'per-match enrichment summary should include lineups rows')
+assert.ok(syncFootballDataSource.includes('failures.push({'), 'only row-level worker errors should be counted as failures')
 assert.equal(Math.min(150, 50), 50, 'API-FOOTBALL fixtures 150 with limit 50 should process 50')
 assert.equal(Math.max(0, 150 - Math.min(150, 50)), 100, 'API-FOOTBALL fixtures 150 with limit 50 should skip 100')
+
+const coverageSample = [
+  { ok: true, dataCount: 3, rowsSaved: 7 },
+  { ok: true, dataCount: 0, rowsSaved: 0 },
+  { ok: false, dataCount: 0, rowsSaved: 0 },
+].reduce((summary, item) => ({
+  called: summary.called + 1,
+  withData: summary.withData + (item.ok && item.dataCount > 0 ? 1 : 0),
+  empty: summary.empty + (item.ok && item.dataCount === 0 ? 1 : 0),
+  failed: summary.failed + (!item.ok ? 1 : 0),
+  rowsSaved: summary.rowsSaved + item.rowsSaved,
+}), { called: 0, withData: 0, empty: 0, failed: 0, rowsSaved: 0 })
+assert.deepEqual(coverageSample, { called: 3, withData: 1, empty: 1, failed: 1, rowsSaved: 7 }, 'endpoint coverage should count called, empty, withData, failed, and rowsSaved')
 
 const baseMatch = {
   id: 'match-1',
