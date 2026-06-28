@@ -72,6 +72,14 @@ assert.equal(isWithinBangkokDay('2026-06-27T17:00:00.000Z', '2026-06-28'), true)
 assert.equal(isWithinBangkokDay('2026-06-28T16:59:59.000Z', '2026-06-28'), true)
 assert.equal(isWithinBangkokDay('2026-06-28T17:00:00.000Z', '2026-06-28'), false)
 
+const syncFootballDataSource = readFileSync(new URL('../supabase/functions/sync-football-data/index.ts', import.meta.url), 'utf8')
+assert.ok(syncFootballDataSource.includes("Deno.env.get('FOOTBALL_PROVIDER') ?? 'api-football'"), 'sync-football-data should default to API-FOOTBALL')
+assert.ok(syncFootballDataSource.includes('const primaryProvider = getProviderAdapter(requestedProviderName)'), 'sync-football-data should choose the primary provider before fetching')
+assert.ok(syncFootballDataSource.includes("fetchFixtures: ({ dateKey }) => fetchApiFootballFixtures(dateKey)"), 'API-FOOTBALL adapter should fetch fixtures by Bangkok dateKey')
+assert.ok(syncFootballDataSource.includes("apiFootballGet('/fixtures', { date: dateKey })"), 'API-FOOTBALL adapter must use /fixtures?date=YYYY-MM-DD')
+assert.ok(syncFootballDataSource.includes("const fallbackProvider = getProviderAdapter('football-data.org')"), 'football-data.org must remain as fallback provider')
+assert.ok(syncFootballDataSource.includes('fallbackProvider: providerResult.fallbackProvider'), 'sync response should expose fallbackProvider')
+
 const baseMatch = {
   id: 'match-1',
   kickoffAt: '2026-06-26T12:00:00Z',

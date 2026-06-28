@@ -19,7 +19,7 @@ const priorityLeagues = new Map<string, number>([
   ['Europa League', 20],
 ])
 
-const requestedProviderName = normalizeProviderName(Deno.env.get('FOOTBALL_PROVIDER') ?? 'football-data.org')
+const requestedProviderName = normalizeProviderName(Deno.env.get('FOOTBALL_PROVIDER') ?? 'api-football')
 const FOOTBALL_DATA_BASE_URL = sanitizeUrl(Deno.env.get('FOOTBALL_API_BASE_URL') ?? 'https://api.football-data.org/v4')
 const FOOTBALL_DATA_TOKEN = sanitizeHeaderValue(Deno.env.get('FOOTBALL_API_KEY') ?? '')
 const API_FOOTBALL_BASE_URL = sanitizeUrl(Deno.env.get('API_FOOTBALL_BASE_URL') ?? 'https://v3.football.api-sports.io')
@@ -60,7 +60,7 @@ Deno.serve(async (request) => {
         status: 'running',
         message: `${primaryProvider.name} sync ${dateFrom} to ${dateTo}`,
         started_at: startedAt,
-        raw: { provider: primaryProvider.name, fallbackUsed: false, dateKey, dateFrom, dateTo, startUtc, endUtc },
+        raw: { provider: primaryProvider.name, fallbackUsed: false, fallbackProvider: null, dateKey, dateFrom, dateTo, startUtc, endUtc },
       })
       .select('id')
       .single()
@@ -109,8 +109,9 @@ Deno.serve(async (request) => {
       : `บันทึกข้อมูล ${processed} คู่ และอัปเดตวิเคราะห์ ${updatedAnalysisCount} รายการ`
 
     await finishLog(logId, status, message, {
-      provider: activeProvider.name,
+      provider: primaryProvider.name,
       fallbackUsed: providerResult.fallbackUsed,
+      fallbackProvider: providerResult.fallbackProvider,
       fallbackError: providerResult.fallbackError,
       dateKey,
       dateFrom,
@@ -131,8 +132,9 @@ Deno.serve(async (request) => {
 
     return json({
       ok: true,
-      provider: activeProvider.name,
+      provider: primaryProvider.name,
       fallbackUsed: providerResult.fallbackUsed,
+      fallbackProvider: providerResult.fallbackProvider,
       dateKey,
       dateFrom,
       dateTo,
@@ -150,8 +152,8 @@ Deno.serve(async (request) => {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'sync failed'
-    await finishLog(logId, 'failed', message, { provider: requestedProviderName, fallbackUsed: false, error: serializeError(error) })
-    return json({ ok: false, provider: requestedProviderName, fallbackUsed: false, message }, 500)
+    await finishLog(logId, 'failed', message, { provider: requestedProviderName, fallbackUsed: false, fallbackProvider: null, error: serializeError(error) })
+    return json({ ok: false, provider: requestedProviderName, fallbackUsed: false, fallbackProvider: null, message }, 500)
   }
 })
 
@@ -166,7 +168,8 @@ async function fetchProviderFixtures(provider: ProviderAdapter, range: ReturnTyp
   try {
     const competitions = provider.syncCompetitions ? await provider.syncCompetitions() : 0
     const matches = await provider.fetchFixtures(range)
-    return { provider, fallbackUsed: false, fallbackError: null, competitions, matches }
+    if (provider.name === 'api-football' && matches.length === 0) throw new Error(`api-football returned no fixtures for ${range.dateKey}`)
+    return { provider, fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions, matches }
   } catch (error) {
     if (provider.name === 'football-data.org') throw error
 
@@ -177,6 +180,7 @@ async function fetchProviderFixtures(provider: ProviderAdapter, range: ReturnTyp
     return {
       provider: fallbackProvider,
       fallbackUsed: true,
+      fallbackProvider: fallbackProvider.name,
       fallbackError: serializeError(error),
       competitions,
       matches,
@@ -2548,7 +2552,7 @@ function sanitizeHeaderValue(value: string) {
 function normalizeProviderName(value: string) {
   const normalized = sanitizeHeaderValue(value).toLowerCase()
   if (['api-football', 'api_football', 'apisports', 'api-sports'].includes(normalized)) return 'api-football'
-  return 'football-data.org'
+  return 'api-football'
 }
 
 function getSyncDateRange(body: Record<string, unknown>) {
