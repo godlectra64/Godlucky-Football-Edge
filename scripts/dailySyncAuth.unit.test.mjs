@@ -11,6 +11,11 @@ assertIncludes(source, 'const authError = await getServiceAuthError(request, mod
 assertIncludes(source, 'value === serviceRoleKey', 'shared auth helper must accept the Supabase service role key')
 assertIncludes(source, 'secretKeys.includes(value)', 'shared auth helper must accept configured SUPABASE_SECRET_KEYS')
 assertIncludes(source, 'await isAdminJwt(bearerToken)', 'shared auth helper must accept admin JWT bearer tokens')
+assertIncludes(source, "token.startsWith('sb_secret_')", 'admin auth debug must classify sb_secret tokens without logging the key')
+assertIncludes(source, "passedPath: 'admin_jwt'", 'admin auth debug must log the admin_jwt pass path')
+assertIncludes(source, "passedPath: 'denied'", 'admin auth debug must log denied auth attempts')
+assertIncludes(source, 'splitSupabaseSecretKeys(trimmed)', 'SUPABASE_SECRET_KEYS must support single or comma-separated sb_secret values')
+assertIncludes(source, 'normalizeSupabaseSecretKeyList(parsed)', 'SUPABASE_SECRET_KEYS must support JSON object/array values')
 
 const authIndex = source.indexOf('const authError = await getServiceAuthError(request, mode)')
 const configIndex = source.indexOf('assertRuntimeConfig(mode)')

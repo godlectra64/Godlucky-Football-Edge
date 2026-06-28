@@ -5372,12 +5372,33 @@ async function getServiceAuthError(request: Request, mode: string) {
   const apiKey = sanitizeHeaderValue(request.headers.get('apikey') ?? '')
   const authorization = sanitizeHeaderValue(request.headers.get('authorization') ?? '')
   const bearerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? ''
+  const authDebug = {
+    mode,
+    authorizationPrefix: getSafeAuthPrefix(bearerToken || authorization),
+    apiKeyPrefix: getSafeAuthPrefix(apiKey),
+  }
   const adminOnlyMessage = isFootballEnrichmentMode(mode)
     ? 'Unauthorized enrichment request. API-Football enrichment modes are admin-only. Invoke this Edge Function with the Supabase service role key, a configured SUPABASE_SECRET_KEYS admin key, or a valid admin user JWT. Publishable/anon keys are not allowed.'
     : 'Unauthorized sync request. Invoke this Edge Function with the Supabase service role key, a configured SUPABASE_SECRET_KEYS admin key, or a valid admin user JWT. Publishable/anon keys are not allowed.'
 
-  if (isTrustedAdminToken(apiKey) || isTrustedAdminToken(bearerToken)) return null
-  if (bearerToken && await isAdminJwt(bearerToken)) return null
+  const apiKeyPath = getTrustedAdminTokenPath(apiKey)
+  if (apiKeyPath) {
+    logAdminAuthDebug({ ...authDebug, passedPath: apiKeyPath })
+    return null
+  }
+
+  const bearerPath = getTrustedAdminTokenPath(bearerToken)
+  if (bearerPath) {
+    logAdminAuthDebug({ ...authDebug, passedPath: bearerPath })
+    return null
+  }
+
+  if (bearerToken && await isAdminJwt(bearerToken)) {
+    logAdminAuthDebug({ ...authDebug, passedPath: 'admin_jwt' })
+    return null
+  }
+
+  logAdminAuthDebug({ ...authDebug, passedPath: 'denied' })
 
   return new Response(JSON.stringify({
     ok: false,
@@ -5391,8 +5412,14 @@ async function getServiceAuthError(request: Request, mode: string) {
 }
 
 function isTrustedAdminToken(value: string) {
+  return Boolean(getTrustedAdminTokenPath(value))
+}
+
+function getTrustedAdminTokenPath(value: string) {
   if (!value) return false
-  return value === serviceRoleKey || secretKeys.includes(value)
+  if (value === serviceRoleKey) return 'service_role'
+  if (secretKeys.includes(value)) return 'SUPABASE_SECRET_KEYS'
+  return null
 }
 
 async function isAdminJwt(token: string) {
@@ -5409,15 +5436,43 @@ async function isAdminJwt(token: string) {
 }
 
 function parseSupabaseSecretKeys(value: string | undefined | null) {
-  if (!value) return []
+  const trimmed = sanitizeHeaderValue(String(value ?? ''))
+  if (!trimmed) return []
 
   try {
-    const parsed = JSON.parse(value)
-    if (!parsed || typeof parsed !== 'object') return []
-    return Object.values(parsed).map((key) => sanitizeHeaderValue(String(key))).filter(Boolean)
+    const parsed = JSON.parse(trimmed)
+    return normalizeSupabaseSecretKeyList(parsed)
   } catch {
-    return []
+    return splitSupabaseSecretKeys(trimmed)
   }
+}
+
+function normalizeSupabaseSecretKeyList(value: unknown): Array<string> {
+  if (!value) return []
+  if (typeof value === 'string') return splitSupabaseSecretKeys(value)
+  if (Array.isArray(value)) return value.flatMap(normalizeSupabaseSecretKeyList)
+  if (typeof value === 'object') return Object.values(value).flatMap(normalizeSupabaseSecretKeyList)
+  return splitSupabaseSecretKeys(String(value))
+}
+
+function splitSupabaseSecretKeys(value: string) {
+  return value
+    .split(/[\s,]+/)
+    .map((key) => sanitizeHeaderValue(key))
+    .filter(Boolean)
+}
+
+function getSafeAuthPrefix(value: string) {
+  if (!value) return 'missing'
+  const token = value.replace(/^Bearer\s+/i, '').trim()
+  if (token.startsWith('sb_secret_')) return 'sb_secret'
+  if (token.startsWith('sb_publishable_')) return 'sb_publishable'
+  if (token.split('.').length === 3) return 'jwt'
+  return 'other'
+}
+
+function logAdminAuthDebug(payload: { mode: string; authorizationPrefix: string; apiKeyPrefix: string; passedPath: string }) {
+  console.log('admin auth debug', payload)
 }
 
 function sanitizeUrl(value: string) {
