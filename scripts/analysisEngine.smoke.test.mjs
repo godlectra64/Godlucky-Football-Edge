@@ -82,15 +82,26 @@ assert.ok(syncFootballDataSource.includes('fallbackProvider: providerResult.fall
 assert.ok(syncFootballDataSource.includes('const defaultManualLimit = 50'), 'manual sync should default to a 50 fixture limit')
 assert.ok(syncFootballDataSource.includes('const maxManualLimit = 100'), 'manual sync should cap limit at 100')
 assert.ok(syncFootballDataSource.includes('const syncChunkSize = 10'), 'manual sync should process fixtures in chunks of 10')
+assert.ok(syncFootballDataSource.includes('const offset = getSyncOffset(body.offset)'), 'manual sync should parse an offset from request body')
+assert.ok(syncFootballDataSource.includes('runManualMode(primaryProvider, dayRange, limit, offset)'), 'manual sync should pass offset into manual mode')
+assert.ok(syncFootballDataSource.includes('const matches = [...providerResult.matches].sort(compareFixtureSyncPriority)'), 'manual sync should sort fixtures by priority before slicing')
+assert.ok(syncFootballDataSource.includes('const batch = matches.slice(safeOffset, safeOffset + limit)'), 'manual sync should slice fixtures by offset and limit')
+assert.ok(syncFootballDataSource.includes('nextOffset: hasMore ? nextOffset : null'), 'manual sync response should expose nextOffset only when more fixtures remain')
+assert.ok(syncFootballDataSource.includes('skippedBeforeOffset'), 'manual sync response should expose skippedBeforeOffset')
+assert.ok(syncFootballDataSource.includes('skippedAfterLimit'), 'manual sync response should expose skippedAfterLimit')
+assert.ok(syncFootballDataSource.includes('rankingMayBePartial: hasMore'), 'manual sync should mark ranking partial while more fixtures remain')
+assert.ok(syncFootballDataSource.includes('processedMatches:'), 'manual sync response should include processed match samples')
+assert.ok(syncFootballDataSource.includes('function getFixtureSyncPriority'), 'manual sync should use fixture sync priority helper')
+assert.ok(syncFootballDataSource.includes('getFixtureSoftPenalty'), 'manual sync should use soft penalties instead of hard exclusions')
 assert.ok(syncFootballDataSource.includes('const defaultEnrichLimit = 10'), 'enrich sync should default to a 10 match limit')
 assert.ok(syncFootballDataSource.includes('const maxEnrichLimit = 30'), 'enrich sync should cap limit at 30')
 assert.ok(syncFootballDataSource.includes('const enrichChunkSize = 5'), 'enrich sync should process enrichment in small chunks')
-assert.ok(syncFootballDataSource.includes('const batch = matches.slice(0, limit)'), 'manual sync should process only the limited batch')
-assert.ok(syncFootballDataSource.includes('skippedByLimit: Math.max(0, matches.length - batch.length)'), 'manual sync response should report fixtures skipped by limit')
+assert.ok(syncFootballDataSource.includes('const batch = matches.slice(safeOffset, safeOffset + limit)'), 'manual sync should process only the limited offset batch')
+assert.ok(syncFootballDataSource.includes('skippedByLimit: skippedBeforeOffset + skippedAfterLimit'), 'manual sync response should report fixtures skipped around the selected batch')
 assert.ok(syncFootballDataSource.includes("mode === 'enrich'"), 'sync should expose a separate enrich mode')
 assert.ok(syncFootballDataSource.includes("mode === 'recompute'"), 'sync should expose a separate recompute mode')
 assert.ok(syncFootballDataSource.includes("mode === 'learning'"), 'sync should expose a separate learning mode')
-assert.ok(syncFootballDataSource.includes('await runManualMode(primaryProvider, dayRange, limit)'), 'manual sync should not run heavy recompute automatically')
+assert.ok(syncFootballDataSource.includes('await runManualMode(primaryProvider, dayRange, limit, offset)'), 'manual sync should not run heavy recompute automatically')
 assert.ok(syncFootballDataSource.includes('const v4Result = await recomputeV4AnalysisRows(ids)'), 'recompute mode should refresh v4 analysis rows')
 assert.ok(syncFootballDataSource.includes('const result = await processInChunks(candidates.rows, syncChunkSize, storePredictionResult'), 'learning mode should store prediction results')
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/odds'"), 'enrich mode should fetch API-FOOTBALL odds only outside manual sync')
@@ -115,6 +126,28 @@ assert.ok(syncFootballDataSource.includes('lineupsResult.rows.length'), 'per-mat
 assert.ok(syncFootballDataSource.includes('failures.push({'), 'only row-level worker errors should be counted as failures')
 assert.equal(Math.min(150, 50), 50, 'API-FOOTBALL fixtures 150 with limit 50 should process 50')
 assert.equal(Math.max(0, 150 - Math.min(150, 50)), 100, 'API-FOOTBALL fixtures 150 with limit 50 should skip 100')
+assert.deepEqual(getPaginationSample(333, 50, 0), {
+  nextOffset: 50,
+  hasMore: true,
+  skippedBeforeOffset: 0,
+  skippedAfterLimit: 283,
+}, 'manual pagination should expose nextOffset and hasMore for the first batch')
+assert.deepEqual(getPaginationSample(333, 50, 300), {
+  nextOffset: null,
+  hasMore: false,
+  skippedBeforeOffset: 300,
+  skippedAfterLimit: 0,
+}, 'manual pagination should stop at the final partial batch')
+assert.equal(getPaginationSample(333, 50, 0).hasMore, true, 'rankingMayBePartial should be true when hasMore is true')
+const prioritySamples = [
+  getFixturePrioritySample({ league: 'USL League Two', home: 'Little Rock Rangers', away: 'Red River' }),
+  getFixturePrioritySample({ league: 'Premier League', home: 'Arsenal', away: 'Chelsea' }),
+  getFixturePrioritySample({ league: 'MLS Next Pro', home: 'Colorado Rapids II', away: 'Vancouver Whitecaps II' }),
+  getFixturePrioritySample({ league: 'Premier League Women', home: 'Arsenal W', away: 'Chelsea W' }),
+].sort((a, b) => b.syncPriorityScore - a.syncPriorityScore)
+assert.equal(prioritySamples[0].league, 'Premier League', 'high quality leagues should sort before small leagues')
+assert.ok(prioritySamples.some((item) => item.league === 'Premier League Women'), 'women fixtures should receive a soft penalty but stay in the candidate list')
+assert.ok(prioritySamples.some((item) => item.league === 'MLS Next Pro'), 'reserve fixtures should receive a soft penalty but stay in the candidate list')
 
 const coverageSample = [
   { ok: true, dataCount: 3, rowsSaved: 7 },
@@ -128,6 +161,35 @@ const coverageSample = [
   rowsSaved: summary.rowsSaved + item.rowsSaved,
 }), { called: 0, withData: 0, empty: 0, failed: 0, rowsSaved: 0 })
 assert.deepEqual(coverageSample, { called: 3, withData: 1, empty: 1, failed: 1, rowsSaved: 7 }, 'endpoint coverage should count called, empty, withData, failed, and rowsSaved')
+
+function getPaginationSample(totalFetched, limit, offset) {
+  const safeOffset = Math.min(Math.max(0, offset), totalFetched)
+  const batchSize = Math.max(0, Math.min(limit, totalFetched - safeOffset))
+  const nextOffset = safeOffset + batchSize
+  const hasMore = nextOffset < totalFetched
+  return {
+    nextOffset: hasMore ? nextOffset : null,
+    hasMore,
+    skippedBeforeOffset: safeOffset,
+    skippedAfterLimit: Math.max(0, totalFetched - nextOffset),
+  }
+}
+
+function getFixturePrioritySample({ league, home, away }) {
+  const leagueQualityScore = league.includes('Premier League') ? 100 : league.includes('MLS') ? 84 : 65
+  const knownLeagueBonus = league === 'Premier League' ? 15 : 0
+  const coverageBonus = leagueQualityScore >= 84 ? 10 : 0
+  let softPenalty = 0
+  const text = `${league} ${home} ${away}`.toLowerCase()
+  if (/\b(u19|u20|u21|u23|youth|reserve|reserves|academy)\b/i.test(text)) softPenalty += 24
+  if (/\b(w|women|woman|femenil|feminine)\b/i.test(text)) softPenalty += 18
+  if (/\b(ii|2|b)\b/i.test(text)) softPenalty += 14
+  if (text.includes('next pro') || text.includes('league two')) softPenalty += 10
+  return {
+    league,
+    syncPriorityScore: Math.max(0, Math.min(100, Math.round(leagueQualityScore + knownLeagueBonus + coverageBonus - Math.min(softPenalty, 45)))),
+  }
+}
 
 const baseMatch = {
   id: 'match-1',

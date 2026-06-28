@@ -60,6 +60,7 @@ Deno.serve(async (request) => {
     const mode = normalizeSyncMode(body.mode)
     const syncType = typeof body.mode === 'string' && body.mode ? body.mode : 'manual'
     const limit = getSyncLimit(body.limit, mode)
+    const offset = getSyncOffset(body.offset)
     const primaryProvider = getProviderAdapter(requestedProviderName)
 
     const log = await supabase
@@ -87,7 +88,7 @@ Deno.serve(async (request) => {
         ? await runRecomputeMode(dayRange, limit)
         : mode === 'learning'
           ? await runLearningMode(dayRange, limit)
-          : await runManualMode(primaryProvider, dayRange, limit)
+          : await runManualMode(primaryProvider, dayRange, limit, offset)
     const providerResult = modeResult.providerResult
     const processed = modeResult.processed
     const totalCandidates = modeResult.totalCandidates
@@ -100,6 +101,13 @@ Deno.serve(async (request) => {
     const rankedSelectionRows = modeResult.rankedSelectionRows ?? await updateDailySelectionRanks(dayRange)
     const endpointCoverage = modeResult.endpointCoverage ?? null
     const enrichedMatches = modeResult.enrichedMatches ?? []
+    const nextOffset = modeResult.nextOffset ?? null
+    const hasMore = Boolean(modeResult.hasMore)
+    const skippedBeforeOffset = modeResult.skippedBeforeOffset ?? 0
+    const skippedAfterLimit = modeResult.skippedAfterLimit ?? skippedByLimit
+    const processedMatches = modeResult.processedMatches ?? []
+    const analyzedCandidateCount = modeResult.analyzedCandidateCount ?? null
+    const rankingMayBePartial = Boolean(modeResult.rankingMayBePartial)
     const topPickCount = rankedSelectionRows
     const updatedAnalysisCount = recomputeResult.updated + recomputedStoredRows
     const invalidRowsFixed = normalizedAnalysisRows.fixed
@@ -128,9 +136,16 @@ Deno.serve(async (request) => {
       totalCandidates,
       totalFetched,
       limit,
+      offset,
+      nextOffset,
+      hasMore,
+      skippedBeforeOffset,
+      skippedAfterLimit,
       processed,
       skippedByLimit,
       topPickCount,
+      analyzedCandidateCount,
+      rankingMayBePartial,
       updatedAnalysisCount,
       invalidRowsFixed,
       recomputedStoredRows,
@@ -138,6 +153,7 @@ Deno.serve(async (request) => {
       rankedSelectionRows,
       endpointCoverage,
       enrichedMatches,
+      processedMatches,
       durationMs: Date.now() - startedMs,
       failures: allFailures,
     })
@@ -156,10 +172,17 @@ Deno.serve(async (request) => {
       totalCandidates,
       totalFetched,
       limit,
+      offset,
+      nextOffset,
+      hasMore,
+      skippedBeforeOffset,
+      skippedAfterLimit,
       processed,
       total,
       skippedByLimit,
       topPickCount,
+      analyzedCandidateCount,
+      rankingMayBePartial,
       updatedAnalysisCount,
       invalidRowsFixed,
       recomputedStoredRows,
@@ -167,6 +190,7 @@ Deno.serve(async (request) => {
       rankedSelectionRows,
       endpointCoverage,
       enrichedMatches,
+      processedMatches,
       durationMs: Date.now() - startedMs,
       failures: allFailures,
     })
@@ -231,23 +255,38 @@ async function syncFootballDataCompetitions() {
   return competitions.length
 }
 
-async function runManualMode(provider: ProviderAdapter, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+async function runManualMode(provider: ProviderAdapter, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number, offset = 0) {
   const providerResult = await fetchProviderFixtures(provider, dayRange)
-  const matches = providerResult.matches
-  const batch = matches.slice(0, limit)
+  const matches = [...providerResult.matches].sort(compareFixtureSyncPriority)
+  const totalFetched = matches.length
+  const safeOffset = Math.min(Math.max(0, offset), totalFetched)
+  const batch = matches.slice(safeOffset, safeOffset + limit)
+  const nextOffset = safeOffset + batch.length
+  const hasMore = nextOffset < totalFetched
   const result = await processInChunks(batch, syncChunkSize, async (footballDataMatch: any) => {
     return syncMatch(footballDataMatch, { enrichFixtureData: false })
-  }, { provider: providerResult.provider.name, dateKey: dayRange.dateKey, totalBatch: batch.length, totalFetched: matches.length })
+  }, { provider: providerResult.provider.name, dateKey: dayRange.dateKey, totalBatch: batch.length, totalFetched, offset: safeOffset })
 
   const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  const analyzedCandidateCount = await countAnalyzedCandidates(dayRange)
+  const skippedBeforeOffset = safeOffset
+  const skippedAfterLimit = Math.max(0, totalFetched - nextOffset)
   return {
     providerResult,
-    totalCandidates: matches.length,
-    totalFetched: matches.length,
-    skippedByLimit: Math.max(0, matches.length - batch.length),
+    totalCandidates: totalFetched,
+    totalFetched,
+    offset: safeOffset,
+    nextOffset: hasMore ? nextOffset : null,
+    hasMore,
+    skippedBeforeOffset,
+    skippedAfterLimit,
+    skippedByLimit: skippedBeforeOffset + skippedAfterLimit,
     processed: result.processed,
     processedMatchIds: result.processedMatchIds,
     failures: result.failures,
+    processedMatches: result.results.map((item: any) => item.processedMatch).filter(Boolean).slice(0, 20),
+    analyzedCandidateCount,
+    rankingMayBePartial: hasMore,
     rankedSelectionRows,
   }
 }
@@ -272,6 +311,53 @@ async function runEnrichMode(dayRange: ReturnType<typeof getBangkokDayRange>, li
     enrichedMatches: result.results.map((item: any) => item.enrichedMatch).filter(Boolean).slice(0, 30),
     rankedSelectionRows,
   }
+}
+
+function compareFixtureSyncPriority(a: any, b: any) {
+  const priorityA = getFixtureSyncPriority(a)
+  const priorityB = getFixtureSyncPriority(b)
+  const scoreDiff = priorityB.syncPriorityScore - priorityA.syncPriorityScore
+  const qualityDiff = priorityB.leagueQualityScore - priorityA.leagueQualityScore
+  const kickoffA = new Date(a?.utcDate ?? a?.kickoff_at ?? 0).getTime()
+  const kickoffB = new Date(b?.utcDate ?? b?.kickoff_at ?? 0).getTime()
+  return scoreDiff || qualityDiff || kickoffA - kickoffB
+}
+
+function getFixtureSyncPriority(fixture: any) {
+  const leagueName = firstText(fixture?.competition?.name, fixture?.league?.name, fixture?.raw?.apiFootball?.league?.name) ?? ''
+  const homeName = firstText(fixture?.homeTeam?.name, fixture?.home_team?.name, fixture?.raw?.apiFootball?.teams?.home?.name) ?? ''
+  const awayName = firstText(fixture?.awayTeam?.name, fixture?.away_team?.name, fixture?.raw?.apiFootball?.teams?.away?.name) ?? ''
+  const leagueQualityScore = getLeagueQualityScore(leagueName)
+  const knownLeagueBonus = getKnownLeagueBonus(leagueName)
+  const coverageBonus = leagueQualityScore >= 84 ? 10 : leagueQualityScore >= 72 ? 5 : 0
+  const softPenalty = getFixtureSoftPenalty({ leagueName, homeName, awayName })
+  const syncPriorityScore = normalizeScore(leagueQualityScore + knownLeagueBonus + coverageBonus - softPenalty)
+  return {
+    leagueQualityScore,
+    syncPriorityScore,
+    knownLeagueBonus,
+    coverageBonus,
+    softPenalty,
+  }
+}
+
+function getKnownLeagueBonus(leagueName: string) {
+  if (priorityLeagues.has(leagueName)) return 15
+  const normalized = leagueName.toLowerCase()
+  for (const key of priorityLeagues.keys()) {
+    if (normalized.includes(key.toLowerCase())) return 12
+  }
+  return 0
+}
+
+function getFixtureSoftPenalty({ leagueName, homeName, awayName }: { leagueName: string; homeName: string; awayName: string }) {
+  const text = `${leagueName} ${homeName} ${awayName}`.toLowerCase()
+  let penalty = 0
+  if (/\b(u19|u20|u21|u23|youth|reserve|reserves|academy)\b/i.test(text)) penalty += 24
+  if (/\b(w|women|woman|femenil|feminine)\b/i.test(text)) penalty += 18
+  if (/\b(ii|2|b)\b/i.test(text)) penalty += 14
+  if (text.includes('next pro') || text.includes('league two')) penalty += 10
+  return Math.min(penalty, 45)
 }
 
 async function runRecomputeMode(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
@@ -1089,7 +1175,19 @@ async function syncMatch(match: any, options: { enrichFixtureData?: boolean } = 
     analysis,
   })
 
-  return { matchId: matchResult.data.id }
+  const syncPriority = getFixtureSyncPriority(match)
+  return {
+    matchId: matchResult.data.id,
+    processedMatch: {
+      fixtureId: match.raw_fixture_id ?? match.id ?? null,
+      league: match.competition?.name ?? null,
+      homeTeam: match.homeTeam?.name ?? null,
+      awayTeam: match.awayTeam?.name ?? null,
+      kickoffAt: match.utcDate ?? null,
+      leagueQualityScore: syncPriority.leagueQualityScore,
+      syncPriorityScore: syncPriority.syncPriorityScore,
+    },
+  }
 }
 
 async function footballDataApiGet(path: string, params: Record<string, string | number | undefined> = {}) {
@@ -2006,6 +2104,27 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
   }
 
   return updated
+}
+
+async function countAnalyzedCandidates(range: { startUtc: string; endUtc: string }) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      analysis:match_analysis(id, data_validation_status)
+    `)
+    .gte('kickoff_at', range.startUtc)
+    .lt('kickoff_at', range.endUtc)
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return null
+    throw result.error
+  }
+
+  return (result.data ?? []).filter((match: any) => {
+    const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
+    return analysis && String(analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID'
+  }).length
 }
 
 function isMissingColumnError(error: any) {
@@ -3429,6 +3548,12 @@ function getSyncLimit(value: unknown, mode = 'manual') {
   const numeric = Number(value ?? defaultLimit)
   if (!Number.isFinite(numeric) || numeric <= 0) return defaultLimit
   return Math.max(1, Math.min(Math.floor(numeric), maxLimit))
+}
+
+function getSyncOffset(value: unknown) {
+  const numeric = Number(value ?? 0)
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0
+  return Math.floor(numeric)
 }
 
 function getSyncDateRange(body: Record<string, unknown>) {
