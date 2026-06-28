@@ -85,7 +85,15 @@ const footballEnrichmentModes = [
   'enrich-all',
   'daily-full-sync',
   'auto-daily-enrichment',
+  'daily-full-sync-safe',
+  'daily-sync-start',
+  'daily-sync-phase',
+  'daily-sync-status',
+  'daily-sync-next',
 ]
+
+const dailySyncRunMode = 'daily-full-sync-safe'
+const dailySyncPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
@@ -117,6 +125,9 @@ Deno.serve(async (request) => {
         ok: true,
         provider: 'api-football',
         mode,
+        runId: modeResult.runId ?? null,
+        phase: modeResult.phase ?? null,
+        status: modeResult.status ?? 'success',
         dateKey,
         dateFrom,
         dateTo,
@@ -124,6 +135,9 @@ Deno.serve(async (request) => {
         endUtc,
         limit,
         processed: modeResult.processed,
+        rowsSaved: modeResult.rowsSaved ?? 0,
+        failed: modeResult.failed ?? 0,
+        skipped: modeResult.skipped ?? 0,
         totalCandidates: modeResult.totalCandidates,
         totalFetched: modeResult.totalFetched,
         endpointCoverage: modeResult.endpointCoverage,
@@ -132,6 +146,8 @@ Deno.serve(async (request) => {
         skippedEndpoints: modeResult.skippedEndpoints,
         rateLimited: modeResult.rateLimited,
         durationMs: Date.now() - startedMs,
+        nextAction: modeResult.nextAction ?? null,
+        nextRequestExample: modeResult.nextRequestExample ?? null,
       })
     }
 
@@ -418,6 +434,8 @@ type DailyFullSyncStepSummary = {
   totalCandidates: number
   rowsSaved: number
   failed: number
+  skipped: number
+  rateLimited: boolean
   durationMs: number
   message?: string
 }
@@ -428,8 +446,8 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
   const context = createFootballEnrichmentContext(mode, limit, typeof body.date === 'string' ? body.date : dayRange.dateKey)
   const started = Date.now()
 
-  if (mode === 'daily-full-sync' || mode === 'auto-daily-enrichment') {
-    return runDailyFullSyncMode(mode, body, dayRange, context, providerResult, started)
+  if (isDailySyncOrchestratorMode(mode)) {
+    return runDailySyncOrchestratorMode(mode, body, dayRange, context, providerResult, started)
   }
 
   let processed = 0
@@ -464,6 +482,490 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
     durationMs: Date.now() - started,
     steps: [],
   }
+}
+
+async function runDailySyncOrchestratorMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, providerResult: any, started: number) {
+  if (mode === 'daily-sync-status') {
+    const state = await getDailySyncState(String(body.runId ?? ''))
+    return buildDailySyncStatusResponse(mode, state, Date.now() - started)
+  }
+
+  if (mode === 'daily-sync-start') {
+    const state = await startDailySyncRun(body, dayRange)
+    return buildDailySyncStartResponse(mode, state, Date.now() - started)
+  }
+
+  if (mode === 'daily-sync-next') {
+    const state = await getDailySyncState(String(body.runId ?? ''))
+    const result = await runNextDailySyncStep(state, body, getBangkokDayRange(state.run.run_date), context)
+    return buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started)
+  }
+
+  if (mode === 'daily-sync-phase') {
+    const state = await getDailySyncState(String(body.runId ?? ''))
+    const result = await runRequestedDailySyncPhase(state, String(body.phase ?? ''), body, getBangkokDayRange(state.run.run_date), context)
+    return buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started)
+  }
+
+  if (['daily-full-sync', 'daily-full-sync-safe', 'auto-daily-enrichment'].includes(mode)) {
+    const state = await startDailySyncRun(body, dayRange)
+    if (state.run.status === 'success') return buildDailySyncStatusResponse(mode, state, Date.now() - started, 'daily sync already completed')
+
+    const autoAdvance = body.autoAdvance === true
+    const stepsToRun = autoAdvance ? Math.min(getPositiveLimit(body.autoAdvanceSteps, 2, 2), 2) : 1
+    let currentState = state
+    let lastResult: any = null
+    const stepResults: Array<any> = []
+    for (let index = 0; index < stepsToRun; index += 1) {
+      lastResult = await runNextDailySyncStep(currentState, body, getBangkokDayRange(currentState.run.run_date), context)
+      stepResults.push(lastResult.summary)
+      if (!lastResult.nextStep || lastResult.run.status === 'success') break
+      currentState = await getDailySyncState(state.run.id)
+    }
+    return buildDailySyncStepResponse(mode, lastResult, providerResult, Date.now() - started, stepResults)
+  }
+
+  return buildDailySyncSafeResponse({
+    mode,
+    runId: null,
+    phase: null,
+    status: 'failed',
+    processed: 0,
+    totalCandidates: 0,
+    rowsSaved: 0,
+    failed: 1,
+    skipped: 0,
+    rateLimited: false,
+    durationMs: Date.now() - started,
+    nextAction: 'use daily-full-sync-safe',
+    nextRequestExample: { mode: 'daily-full-sync-safe', limit: 10, enrichmentLimit: 20 },
+  })
+}
+
+async function startDailySyncRun(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const runDate = dayRange.dateKey
+  const limits = getDailyPhaseLimits(body)
+  const limitValue = getPositiveLimit(body.limit, defaultFootballEnrichmentLimit, maxFootballEnrichmentLimit)
+  const enrichmentLimit = getPositiveLimit(body.enrichmentLimit, 20, maxFootballEnrichmentLimit)
+  const existing = await supabase
+    .from('api_football_daily_sync_runs')
+    .select('*')
+    .eq('run_date', runDate)
+    .eq('mode', dailySyncRunMode)
+    .maybeSingle()
+
+  if (existing.error) throw existing.error
+
+  let run = existing.data
+  if (!run) {
+    const inserted = await supabase
+      .from('api_football_daily_sync_runs')
+      .insert({
+        run_date: runDate,
+        mode: dailySyncRunMode,
+        status: 'started',
+        current_phase: null,
+        current_step: 0,
+        total_steps: dailySyncPhases.length,
+        limit_value: limitValue,
+        enrichment_limit: enrichmentLimit,
+        summary: { phaseLimits: limits },
+      })
+      .select('*')
+      .single()
+    if (inserted.error) throw inserted.error
+    run = inserted.data
+    await createDailySyncSteps(run.id, limits)
+    return getDailySyncState(run.id)
+  }
+
+  if (run.status !== 'success') {
+    const updated = await supabase
+      .from('api_football_daily_sync_runs')
+      .update({
+        status: 'started',
+        current_phase: null,
+        current_step: 0,
+        total_steps: dailySyncPhases.length,
+        limit_value: limitValue,
+        enrichment_limit: enrichmentLimit,
+        started_at: new Date().toISOString(),
+        finished_at: null,
+        last_error: null,
+        summary: { phaseLimits: limits },
+      })
+      .eq('id', run.id)
+      .select('*')
+      .single()
+    if (updated.error) throw updated.error
+    await supabase.from('api_football_daily_sync_steps').delete().eq('run_id', run.id)
+    await createDailySyncSteps(run.id, limits)
+    return getDailySyncState(run.id)
+  }
+
+  return getDailySyncState(run.id)
+}
+
+async function createDailySyncSteps(runId: string, limits: Record<string, number>) {
+  const rows = dailySyncPhases.map((phase, index) => ({
+    run_id: runId,
+    step_order: index + 1,
+    phase,
+    status: 'pending',
+    summary: { phaseLimit: limits[phase] ?? 10 },
+  }))
+  const result = await supabase.from('api_football_daily_sync_steps').insert(rows)
+  if (result.error) throw result.error
+}
+
+async function getDailySyncState(runId: string) {
+  if (!runId) throw new Error('Missing daily sync runId')
+  const runResult = await supabase
+    .from('api_football_daily_sync_runs')
+    .select('*')
+    .eq('id', runId)
+    .maybeSingle()
+  if (runResult.error) throw runResult.error
+  if (!runResult.data) throw new Error('Daily sync run not found')
+
+  const stepsResult = await supabase
+    .from('api_football_daily_sync_steps')
+    .select('*')
+    .eq('run_id', runId)
+    .order('step_order', { ascending: true })
+  if (stepsResult.error) throw stepsResult.error
+
+  return { run: runResult.data, steps: stepsResult.data ?? [] }
+}
+
+async function runNextDailySyncStep(state: any, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const step = findNextDailySyncStep(state.steps)
+  if (!step) {
+    const run = await markDailySyncRunFinished(state.run.id, state.steps)
+    return { run, step: null, nextStep: null, summary: emptyDailyStepSummary('complete', 'success'), steps: state.steps }
+  }
+  return runDailySyncStep(state.run, step, body, dayRange, context)
+}
+
+async function runRequestedDailySyncPhase(state: any, phase: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  if (!dailySyncPhases.includes(phase)) throw new Error(`Unsupported daily sync phase: ${phase}`)
+  const step = state.steps.find((item: any) => item.phase === phase)
+  if (!step) throw new Error(`Daily sync phase not found: ${phase}`)
+  return runDailySyncStep(state.run, step, body, dayRange, context)
+}
+
+async function runDailySyncStep(run: any, step: any, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const startedAt = Date.now()
+  const limits = getDailyPhaseLimits({ ...run.summary, ...body, phaseLimits: body.phaseLimits ?? run.summary?.phaseLimits })
+  const phaseLimit = limits[step.phase] ?? 10
+  context.limit = phaseLimit
+
+  await supabase
+    .from('api_football_daily_sync_runs')
+    .update({ status: 'running', current_phase: step.phase, current_step: step.step_order, last_error: null })
+    .eq('id', run.id)
+  await supabase
+    .from('api_football_daily_sync_steps')
+    .update({ status: 'running', started_at: new Date().toISOString(), finished_at: null, error_message: null })
+    .eq('id', step.id)
+
+  let summary: DailyFullSyncStepSummary
+  try {
+    const before = cloneEndpointCounters(context.endpoints)
+    summary = await executeDailySyncPhase(step.step_order, step.phase, body, dayRange, context, before)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `${step.phase} failed`
+    summary = {
+      step: step.step_order,
+      mode: step.phase,
+      status: 'error',
+      processed: 0,
+      totalCandidates: 0,
+      rowsSaved: 0,
+      failed: 1,
+      skipped: 0,
+      rateLimited: context.rateLimited,
+      durationMs: Date.now() - startedAt,
+      message,
+    }
+  }
+
+  const stepStatus = mapDailyStepStatus(summary)
+  const finishedAt = new Date().toISOString()
+  const stepUpdate = await supabase
+    .from('api_football_daily_sync_steps')
+    .update({
+      status: stepStatus,
+      finished_at: finishedAt,
+      duration_ms: summary.durationMs,
+      processed: summary.processed,
+      total_candidates: summary.totalCandidates,
+      rows_saved: summary.rowsSaved,
+      failed: summary.failed,
+      skipped: summary.skipped,
+      rate_limited: summary.rateLimited,
+      summary,
+      error_message: summary.message ?? null,
+    })
+    .eq('id', step.id)
+  if (stepUpdate.error) throw stepUpdate.error
+
+  const freshState = await getDailySyncState(run.id)
+  const runStatus = getDailyRunStatus(freshState.steps)
+  const runUpdate = await supabase
+    .from('api_football_daily_sync_runs')
+    .update({
+      status: runStatus,
+      current_phase: step.phase,
+      current_step: step.step_order,
+      finished_at: runStatus === 'success' || runStatus === 'failed' ? finishedAt : null,
+      last_error: summary.message ?? null,
+      summary: buildDailyRunSummary(freshState.steps, summary),
+    })
+    .eq('id', run.id)
+    .select('*')
+    .single()
+  if (runUpdate.error) throw runUpdate.error
+
+  const nextStep = findNextDailySyncStep(freshState.steps.filter((item: any) => item.id !== step.id).concat([{ ...step, status: stepStatus }]).sort((a: any, b: any) => a.step_order - b.step_order))
+  return { run: runUpdate.data, step: { ...step, status: stepStatus }, nextStep, summary, steps: freshState.steps }
+}
+
+async function executeDailySyncPhase(stepOrder: number, phase: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, before: Record<string, FootballEnrichmentEndpointCounter>) {
+  await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'started', started_at: new Date().toISOString(), finished_at: new Date().toISOString() })
+  const startedAt = Date.now()
+  const results: Array<any> = []
+
+  if (phase === 'core') {
+    results.push(await syncApiFootballDailyFixtures(dayRange, context.limit))
+    results.push(await executeFootballEnrichmentMode('coverage', body, dayRange, context))
+    results.push(await executeFootballEnrichmentMode('rounds', body, dayRange, context))
+  } else if (phase === 'fixture-enrichment') {
+    results.push(await executeFootballEnrichmentMode('fixture-enrich', body, dayRange, context))
+  } else if (phase === 'team-enrichment') {
+    results.push(await executeFootballEnrichmentMode('injuries', body, dayRange, context))
+    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('squads', body, dayRange, context))
+    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('coaches', body, dayRange, context))
+    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('venues', body, dayRange, context))
+  } else if (phase === 'league-enrichment') {
+    results.push(await executeFootballEnrichmentMode('top-players', body, dayRange, context))
+  } else if (phase === 'ranking') {
+    results.push(await runDailyRankingStep(dayRange))
+  } else {
+    throw new Error(`Unsupported daily sync phase: ${phase}`)
+  }
+
+  const endpointDelta = diffEndpointCounters(before, context.endpoints)
+  const processed = sumResultField(results, 'processed')
+  const totalCandidates = sumResultField(results, 'totalCandidates')
+  const rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
+  const failed = sumResultField(results, 'failed') + endpointDelta.failed
+  const skipped = sumResultField(results, 'skipped') + endpointDelta.skipped
+  const status = failed > 0 ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
+  await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: status === 'partial_success' ? 'success' : status, results_count: rowsSaved, finished_at: new Date().toISOString() })
+  await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'finished', results_count: rowsSaved, finished_at: new Date().toISOString() })
+
+  return {
+    step: stepOrder,
+    mode: phase,
+    status,
+    processed,
+    totalCandidates,
+    rowsSaved,
+    failed,
+    skipped,
+    rateLimited: context.rateLimited,
+    durationMs: Date.now() - startedAt,
+  }
+}
+
+async function markDailySyncRunFinished(runId: string, steps: Array<any>) {
+  const status = getDailyRunStatus(steps)
+  const result = await supabase
+    .from('api_football_daily_sync_runs')
+    .update({ status, finished_at: new Date().toISOString(), summary: buildDailyRunSummary(steps) })
+    .eq('id', runId)
+    .select('*')
+    .single()
+  if (result.error) throw result.error
+  return result.data
+}
+
+function buildDailySyncStartResponse(mode: string, state: any, durationMs: number) {
+  const nextStep = findNextDailySyncStep(state.steps)
+  return buildDailySyncSafeResponse({
+    mode,
+    runId: state.run.id,
+    phase: nextStep?.phase ?? null,
+    status: state.run.status,
+    processed: 0,
+    totalCandidates: state.steps.length,
+    rowsSaved: 0,
+    failed: countDailySteps(state.steps, 'failed'),
+    skipped: countDailySteps(state.steps, 'skipped'),
+    rateLimited: false,
+    durationMs,
+    steps: state.steps,
+    nextAction: nextStep ? 'call daily-sync-next' : 'daily sync already completed',
+    nextRequestExample: nextStep ? { mode: 'daily-sync-next', runId: state.run.id } : { mode: 'daily-sync-status', runId: state.run.id },
+  })
+}
+
+function buildDailySyncStatusResponse(mode: string, state: any, durationMs: number, message = '') {
+  const nextStep = findNextDailySyncStep(state.steps)
+  return buildDailySyncSafeResponse({
+    mode,
+    runId: state.run.id,
+    phase: nextStep?.phase ?? state.run.current_phase ?? null,
+    status: state.run.status,
+    processed: sumStepField(state.steps, 'processed'),
+    totalCandidates: state.steps.length,
+    rowsSaved: sumStepField(state.steps, 'rows_saved'),
+    failed: countDailySteps(state.steps, 'failed'),
+    skipped: countDailySteps(state.steps, 'skipped'),
+    rateLimited: state.steps.some((step: any) => step.rate_limited),
+    durationMs,
+    steps: state.steps,
+    nextAction: nextStep ? 'call daily-sync-next again' : message || 'daily sync complete',
+    nextRequestExample: nextStep ? { mode: 'daily-sync-next', runId: state.run.id } : { mode: 'daily-sync-status', runId: state.run.id },
+  })
+}
+
+function buildDailySyncStepResponse(mode: string, result: any, providerResult: any, durationMs: number, stepResults: Array<any> = []) {
+  const summary = result?.summary ?? emptyDailyStepSummary(result?.step?.phase ?? null, 'success')
+  const nextStep = result?.nextStep
+  return {
+    providerResult,
+    runId: result?.run?.id ?? null,
+    phase: summary.mode ?? result?.step?.phase ?? null,
+    status: result?.run?.status ?? summary.status,
+    totalCandidates: summary.totalCandidates,
+    totalFetched: summary.totalCandidates,
+    processed: summary.processed,
+    rowsSaved: summary.rowsSaved,
+    failed: summary.failed,
+    skipped: summary.skipped,
+    skippedByLimit: 0,
+    failures: summary.failed ? [{ message: summary.message ?? `${summary.mode} failed` }] : [],
+    rankedSelectionRows: summary.mode === 'ranking' ? summary.processed : 0,
+    topSelections: [],
+    endpointCoverage: {},
+    enrichedMatches: [],
+    processedMatches: [],
+    skippedEndpoints: [],
+    rateLimited: summary.rateLimited,
+    durationMs,
+    steps: stepResults.length ? stepResults : [summary],
+    limits: result?.run?.summary?.phaseLimits ?? {},
+    nextAction: nextStep ? 'call daily-sync-next again' : 'daily sync complete or check daily-sync-status',
+    nextRequestExample: nextStep ? { mode: 'daily-sync-next', runId: result?.run?.id } : { mode: 'daily-sync-status', runId: result?.run?.id },
+  }
+}
+
+function buildDailySyncSafeResponse(payload: any) {
+  return {
+    providerResult: { provider: getProviderAdapter('api-football'), fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] },
+    runId: payload.runId,
+    phase: payload.phase,
+    status: payload.status,
+    totalCandidates: payload.totalCandidates ?? 0,
+    totalFetched: payload.totalCandidates ?? 0,
+    processed: payload.processed ?? 0,
+    rowsSaved: payload.rowsSaved ?? 0,
+    failed: payload.failed ?? 0,
+    skipped: payload.skipped ?? 0,
+    skippedByLimit: 0,
+    failures: payload.failed ? [{ message: payload.status }] : [],
+    rankedSelectionRows: 0,
+    topSelections: [],
+    endpointCoverage: {},
+    enrichedMatches: [],
+    processedMatches: [],
+    skippedEndpoints: [],
+    rateLimited: Boolean(payload.rateLimited),
+    durationMs: payload.durationMs ?? 0,
+    steps: payload.steps ?? [],
+    limits: payload.limits ?? {},
+    nextAction: payload.nextAction,
+    nextRequestExample: payload.nextRequestExample,
+  }
+}
+
+function findNextDailySyncStep(steps: Array<any>) {
+  return [...(steps ?? [])]
+    .sort((a, b) => Number(a.step_order ?? 0) - Number(b.step_order ?? 0))
+    .find((step) => ['pending', 'failed', 'partial'].includes(String(step.status ?? 'pending')))
+}
+
+function mapDailyStepStatus(summary: DailyFullSyncStepSummary) {
+  if (summary.status === 'error') return 'failed'
+  if (summary.status === 'partial_success') return 'partial'
+  if (summary.status === 'skipped_not_due') return 'skipped'
+  return 'success'
+}
+
+function getDailyRunStatus(steps: Array<any>) {
+  const safeSteps = steps ?? []
+  if (!safeSteps.length) return 'started'
+  const failed = safeSteps.some((step) => step.status === 'failed')
+  const partial = safeSteps.some((step) => step.status === 'partial')
+  const running = safeSteps.some((step) => step.status === 'running')
+  const pending = safeSteps.some((step) => step.status === 'pending')
+  if (running || pending) return failed || partial ? 'partial' : 'running'
+  if (failed) return 'failed'
+  if (partial) return 'partial'
+  return 'success'
+}
+
+function buildDailyRunSummary(steps: Array<any>, latest: any = null) {
+  return {
+    completed: (steps ?? []).filter((step) => ['success', 'skipped'].includes(step.status)).length,
+    failed: countDailySteps(steps, 'failed'),
+    partial: countDailySteps(steps, 'partial'),
+    processed: sumStepField(steps, 'processed'),
+    rowsSaved: sumStepField(steps, 'rows_saved'),
+    skipped: sumStepField(steps, 'skipped'),
+    rateLimited: (steps ?? []).some((step) => step.rate_limited),
+    latest,
+  }
+}
+
+function emptyDailyStepSummary(mode: string | null, status: DailyFullSyncStepSummary['status']) {
+  return {
+    step: 0,
+    mode: mode ?? 'daily-sync',
+    status,
+    processed: 0,
+    totalCandidates: 0,
+    rowsSaved: 0,
+    failed: 0,
+    skipped: 0,
+    rateLimited: false,
+    durationMs: 0,
+  }
+}
+
+function getDailyPhaseLimits(body: any) {
+  const phaseLimits = body?.phaseLimits && typeof body.phaseLimits === 'object' ? body.phaseLimits : {}
+  return {
+    core: getPositiveLimit(phaseLimits.core, 10, maxFootballEnrichmentLimit),
+    'fixture-enrichment': getPositiveLimit(phaseLimits['fixture-enrichment'], 5, maxFootballEnrichmentLimit),
+    'team-enrichment': getPositiveLimit(phaseLimits['team-enrichment'], 10, maxFootballEnrichmentLimit),
+    'league-enrichment': getPositiveLimit(phaseLimits['league-enrichment'], 10, maxFootballEnrichmentLimit),
+    ranking: getPositiveLimit(phaseLimits.ranking, 10, maxFootballEnrichmentLimit),
+  }
+}
+
+function sumResultField(results: Array<any>, field: string) {
+  return results.reduce((total, item) => total + Number(item?.[field] ?? 0), 0)
+}
+
+function sumStepField(steps: Array<any>, field: string) {
+  return (steps ?? []).reduce((total, step) => total + Number(step?.[field] ?? 0), 0)
+}
+
+function countDailySteps(steps: Array<any>, status: string) {
+  return (steps ?? []).filter((step) => step.status === status).length
 }
 
 async function runDailyFullSyncMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, providerResult: any, started: number) {
@@ -533,22 +1035,23 @@ async function runDailyStep(context: FootballEnrichmentContext, step: number, mo
     const totalCandidates = Number(result?.totalCandidates ?? 0)
     const rowsSaved = Number(result?.rowsSaved ?? endpointDelta.rowsSaved ?? processed)
     const failed = Number(result?.failed ?? endpointDelta.failed ?? 0)
+    const skipped = Number(result?.skipped ?? endpointDelta.skipped ?? 0)
     const status = failed > 0 ? 'partial_success' : rowsSaved > 0 || processed > 0 ? 'success' : 'empty'
     await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: status === 'partial_success' ? 'success' : status, results_count: rowsSaved, finished_at: new Date().toISOString() })
     await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'finished', results_count: rowsSaved, finished_at: new Date().toISOString() })
-    return { step, mode, status, processed, totalCandidates, rowsSaved, failed, durationMs: Date.now() - startedAt }
+    return { step, mode, status, processed, totalCandidates, rowsSaved, failed, skipped, rateLimited: context.rateLimited, durationMs: Date.now() - startedAt }
   } catch (error) {
     const message = error instanceof Error ? error.message : `${mode} failed`
     await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'error', error_message: message, finished_at: new Date().toISOString() }).catch(() => {})
     await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'finished', error_message: message, finished_at: new Date().toISOString() }).catch(() => {})
-    return { step, mode, status: 'error' as const, processed: 0, totalCandidates: 0, rowsSaved: 0, failed: 1, durationMs: Date.now() - startedAt, message }
+    return { step, mode, status: 'error' as const, processed: 0, totalCandidates: 0, rowsSaved: 0, failed: 1, skipped: 0, rateLimited: context.rateLimited, durationMs: Date.now() - startedAt, message }
   }
 }
 
 async function logDailyStepSkipped(context: FootballEnrichmentContext, step: number, mode: string) {
   await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'skipped_not_due', error_message: 'Skipped because API-Football rate limit protection stopped earlier steps', finished_at: new Date().toISOString() })
   await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'finished', error_message: 'Skipped because API-Football rate limit protection stopped earlier steps', finished_at: new Date().toISOString() })
-  return { step, mode, status: 'skipped_not_due' as const, processed: 0, totalCandidates: 0, rowsSaved: 0, failed: 0, durationMs: 0, message: 'rate limit protection' }
+  return { step, mode, status: 'skipped_not_due' as const, processed: 0, totalCandidates: 0, rowsSaved: 0, failed: 0, skipped: 1, rateLimited: context.rateLimited, durationMs: 0, message: 'rate limit protection' }
 }
 
 async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
@@ -4947,6 +5450,18 @@ function getSyncLimit(value: unknown, mode = 'manual') {
 
 function isFootballEnrichmentMode(mode: unknown) {
   return footballEnrichmentModes.includes(String(mode ?? '').toLowerCase())
+}
+
+function isDailySyncOrchestratorMode(mode: unknown) {
+  return [
+    'daily-sync-start',
+    'daily-sync-phase',
+    'daily-sync-status',
+    'daily-sync-next',
+    'daily-full-sync-safe',
+    'daily-full-sync',
+    'auto-daily-enrichment',
+  ].includes(String(mode ?? '').toLowerCase())
 }
 
 function getSyncOffset(value: unknown) {

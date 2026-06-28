@@ -210,6 +210,8 @@ const enrichmentTables = [
   'api_football_top_players',
   'api_football_rounds',
   'api_football_enrichment_sync_log',
+  'api_football_daily_sync_runs',
+  'api_football_daily_sync_steps',
 ]
 
 const footballEnrichmentChecks = [
@@ -232,6 +234,14 @@ const footballEnrichmentChecks = [
   {
     label: 'football enrichment betting keyword scan',
     query: checkFootballEnrichmentKeywordScan,
+  },
+  {
+    label: 'daily sync modes present',
+    query: checkDailySyncModesPresent,
+  },
+  {
+    label: 'daily sync docs curl example',
+    query: checkDailySyncDocs,
   },
 ]
 
@@ -351,7 +361,9 @@ async function runLinkedCliVerification() {
         ('api_football_venues'),
         ('api_football_top_players'),
         ('api_football_rounds'),
-        ('api_football_enrichment_sync_log')
+        ('api_football_enrichment_sync_log'),
+        ('api_football_daily_sync_runs'),
+        ('api_football_daily_sync_steps')
     )
     select
       count(*) filter (where analysis_summary is null) as "null analysis_summary",
@@ -401,7 +413,7 @@ async function runLinkedCliVerification() {
       if (count > 0) failedCliCheck = true
     }
 
-    for (const check of [checkFrontendEmptyEnrichment, checkFootballEnrichmentKeywordScan]) {
+    for (const check of [checkFrontendEmptyEnrichment, checkFootballEnrichmentKeywordScan, checkDailySyncModesPresent, checkDailySyncDocs]) {
       const { count, warning } = await check()
       const label = check.name.replace(/^check/, '')
       if (warning) console.warn(`${label}: ${warning}`)
@@ -504,6 +516,7 @@ async function checkFrontendEmptyEnrichment() {
 async function checkFootballEnrichmentKeywordScan() {
   const files = [
     'supabase/migrations/20260630_add_api_football_enrichment_tables.sql',
+    'supabase/migrations/20260703_add_daily_sync_orchestrator.sql',
     'src/repositories/matchesRepository.js',
   ]
   const banned = /\b(odds|bookmakers|AH|OU|betting markets)\b/i
@@ -514,7 +527,21 @@ async function checkFootballEnrichmentKeywordScan() {
   const edgeText = await readFile('supabase/functions/sync-football-data/index.ts', 'utf8')
   const enrichmentLines = edgeText
     .split('\n')
-    .filter((line) => /api_football_|footballEnrichment|top-players|fixture-enrich|coverage|rounds|squads|coaches|venues/.test(line))
+    .filter((line) => /api_football_|footballEnrichment|daily-sync|dailySync|top-players|fixture-enrich|coverage|rounds|squads|coaches|venues/.test(line))
     .join('\n')
   return { count: banned.test(enrichmentLines) ? 1 : 0 }
+}
+
+async function checkDailySyncModesPresent() {
+  const text = await readFile('supabase/functions/sync-football-data/index.ts', 'utf8')
+  const required = ['daily-sync-start', 'daily-sync-phase', 'daily-sync-status', 'daily-sync-next', 'daily-full-sync-safe']
+  const missing = required.filter((mode) => !text.includes(mode))
+  return missing.length ? { count: 1, warning: `missing modes: ${missing.join(', ')}` } : { count: 0 }
+}
+
+async function checkDailySyncDocs() {
+  const text = await readFile('docs/admin-daily-sync-orchestrator.md', 'utf8').catch((error) => `missing:${error.message}`)
+  const required = ['WORKER_RESOURCE_LIMIT', 'daily-sync-start', 'daily-sync-next', 'daily-sync-status', 'daily-sync-phase', 'curl', 'SERVICE_OR_SECRET_KEY']
+  const missing = required.filter((item) => !text.includes(item))
+  return missing.length ? { count: 1, warning: `daily sync docs missing: ${missing.join(', ')}` } : { count: 0 }
 }
