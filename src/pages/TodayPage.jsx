@@ -16,6 +16,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
   }, [filter, matches])
   const avgConfidence = matches.length ? Math.round(matches.reduce((total, match) => total + getConfidence(match), 0) / matches.length) : 0
   const playableCount = matches.filter((match) => [recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.watch].includes(match.recommendation)).length
+  const v4ReadyCount = matches.filter((match) => Number(match.calibratedConfidence ?? match.calibrated_confidence_score ?? match.analysis?.calibrated_confidence_score ?? 0) > 0).length
   const oneBestPick = useMemo(() => providedOneBestPick ?? getOneBestPickOfDay(matches), [providedOneBestPick, matches])
 
   return (
@@ -53,7 +54,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             <div className="min-w-0">
               <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-slate-400">
                 <span>Board strength</span>
-                <span className="text-emerald-100">{playableCount}/{matches.length || 0} actionable</span>
+                <span className="text-emerald-100">{playableCount}/{matches.length || 0} actionable - V4 {v4ReadyCount}/{matches.length || 0}</span>
               </div>
               <div className="progress-bar mt-1.5">
                 <span style={{ width: `${matches.length ? Math.max(6, Math.round((playableCount / matches.length) * 100)) : 4}%` }} />

@@ -163,6 +163,40 @@ const optionalV2Checks = [
   },
 ]
 
+const optionalV4Checks = [
+  {
+    label: 'invalid calibrated_confidence_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('calibrated_confidence_score.lt.0,calibrated_confidence_score.gt.100'),
+  },
+  {
+    label: 'invalid market_edge_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('market_edge_score.lt.0,market_edge_score.gt.100'),
+  },
+  {
+    label: 'invalid data_depth_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('data_depth_score.lt.0,data_depth_score.gt.100'),
+  },
+  {
+    label: 'duplicate v4 prediction results',
+    query: async () => {
+      const { data, error } = await supabase
+        .from('football_prediction_results')
+        .select('match_id, model_version')
+        .eq('model_version', 'v4')
+      if (error) return { error }
+
+      const seen = new Set()
+      let duplicates = 0
+      for (const row of data ?? []) {
+        const key = `${row.match_id}:${row.model_version}`
+        if (seen.has(key)) duplicates += 1
+        seen.add(key)
+      }
+      return { count: duplicates }
+    },
+  },
+]
+
 let failed = false
 
 for (const check of checks) {
@@ -178,6 +212,23 @@ for (const check of checks) {
 }
 
 for (const check of optionalV2Checks) {
+  const { count, error } = await check.query()
+  if (error) {
+    if (isOptionalV2Missing(error)) {
+      console.log(`${check.label}: skipped (${error.message})`)
+      continue
+    }
+
+    failed = true
+    console.error(`${check.label}: query failed - ${error.message}`)
+    continue
+  }
+
+  console.log(`${check.label}: ${count ?? 0}`)
+  if ((count ?? 0) > 0) failed = true
+}
+
+for (const check of optionalV4Checks) {
   const { count, error } = await check.query()
   if (error) {
     if (isOptionalV2Missing(error)) {

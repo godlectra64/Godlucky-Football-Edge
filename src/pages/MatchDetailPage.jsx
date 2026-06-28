@@ -72,6 +72,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
       <HeroHeader detail={detail} />
       <FinalDecisionSection detail={detail} heroSelection={heroSelection} />
       <AiSelectionBreakdownSection detail={detail} />
+      <DataIntelligenceV4Section detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <ScoreBreakdownSection items={detail.moduleItems} />
       <ExplainableAiSection explanation={explainability} />
@@ -261,6 +262,39 @@ function AiSelectionBreakdownSection({ detail }) {
       <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">
         {analysis.final_pick_note || analysis.analysis_summary || detail.analysisSummary || 'Selection Engine กำลังรอข้อมูลวิเคราะห์เพิ่มเติม'}
       </p>
+    </Section>
+  )
+}
+
+function DataIntelligenceV4Section({ detail }) {
+  const analysis = detail.analysis ?? {}
+  const items = [
+    ['Calibrated', analysis.calibrated_confidence_score ?? detail.calibratedConfidence ?? detail.confidence],
+    ['Market Edge', analysis.market_edge_score ?? detail.marketEdgeScore],
+    ['Odds Conf', analysis.odds_confidence_score ?? detail.oddsConfidenceScore],
+    ['Movement', analysis.odds_movement_score ?? detail.oddsMovementScore],
+    ['Team Stats', analysis.team_stats_score ?? detail.teamStatsScore],
+    ['Injuries', analysis.injuries_score ?? detail.injuriesScore],
+    ['Lineups', analysis.lineups_score ?? detail.lineupsScore],
+    ['Data Depth', analysis.data_depth_score ?? detail.dataDepthScore],
+  ]
+  const hasV4 = items.some(([, value]) => value !== null && value !== undefined)
+  if (!hasV4 && !analysis.enriched_summary && !analysis.odds_movement_summary) return null
+
+  return (
+    <Section title="Data Intelligence v4" icon={TrendingUp}>
+      <div className="grid grid-cols-2 gap-2">
+        {items.map(([label, value]) => (
+          <Metric key={label} label={label} value={formatSelectionValue(value)} />
+        ))}
+      </div>
+      <div className="mt-3 grid gap-2">
+        <DecisionMetric label="Value Market" value={analysis.value_market ?? '-'} muted={!analysis.value_market} />
+        <DecisionMetric label="Value Side" value={analysis.value_side ?? '-'} muted={!analysis.value_side} />
+        <DecisionMetric label="Line" value={analysis.value_line ?? analysis.latest_line ?? '-'} muted={!analysis.value_line && !analysis.latest_line} />
+        <DecisionMetric label="Odds Move" value={analysis.odds_movement_summary ?? '-'} muted={!analysis.odds_movement_summary} />
+      </div>
+      {analysis.enriched_summary ? <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{analysis.enriched_summary}</p> : null}
     </Section>
   )
 }

@@ -125,6 +125,9 @@ export function getRiskAdjustedRecommendation(confidence, riskLevel = riskLabels
 
 export function getConfidence(match) {
   const analysis = match.analysis ?? match.match_analysis ?? match
+  const calibratedConfidence = numberValue(analysis.calibrated_confidence_score ?? match.calibratedConfidence ?? match.calibrated_confidence_score)
+  if (calibratedConfidence > 0) return Math.round(clamp(calibratedConfidence, 0, 100))
+
   const storedConfidence = numberValue(analysis.confidence_score)
 
   if (['football-master-v2', 'football-intelligence-v3'].includes(analysis.raw?.framework) && storedConfidence > 0) {
@@ -205,7 +208,10 @@ function enrichStoredTopPick(match, index) {
 export function enrichMatch(match) {
   const master = calculateFootballMasterAnalysis(match)
   const ranking = buildRankingProfile(match, master)
-  const confidence = getPickConfidence({ ...match, confidence: match.confidence ?? match.analysis?.confidence_score ?? master.confidence })
+  const confidence = getPickConfidence({
+    ...match,
+    confidence: match.calibratedConfidence ?? match.calibrated_confidence_score ?? match.analysis?.calibrated_confidence_score ?? match.confidence ?? match.analysis?.confidence_score ?? master.confidence,
+  })
   const riskLevel = normalizeRiskLevel(match.riskLevel ?? match.risk_level ?? match.analysis?.risk_level ?? master.riskLevel)
   const recommendation = match.recommendation ?? match.analysis?.recommendation ?? getRecommendationFromConfidence(confidence, riskLevel)
 
@@ -337,7 +343,10 @@ export function getDataCompletenessScore(match) {
 
 function getAiPickConfidence(match) {
   return numberValue(
-    match?.confidence_score ??
+    match?.calibrated_confidence_score ??
+      match?.calibratedConfidence ??
+      match?.analysis?.calibrated_confidence_score ??
+      match?.confidence_score ??
       match?.confidenceScore ??
       match?.analysis?.confidence_score ??
       match?.confidence ??
@@ -347,7 +356,10 @@ function getAiPickConfidence(match) {
 
 function getAiPickScore(match) {
   return numberValue(
-    match?.ai_score ??
+    match?.analysis?.calibrated_confidence_score ??
+      match?.calibrated_confidence_score ??
+      match?.calibratedConfidence ??
+      match?.ai_score ??
       match?.aiScore ??
       match?.score ??
       match?.rankingScore ??

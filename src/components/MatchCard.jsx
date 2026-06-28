@@ -17,6 +17,7 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
   const analysisSummary = buildCardSummary(match, recommendation, confidence)
   const oneBestBadge = getOneBestCardBadge(match, oneBestPick)
   const rankBadges = buildDisplayBadges(match, recommendation, riskLevel, confidence, oneBestBadge)
+  const v4Metrics = getV4CardMetrics(match)
   const cardClass = buildCardClass(finalRank ?? match.rank, recommendation, riskLevel)
   const confidenceTone = String(riskLevel).toUpperCase() === 'HIGH' ? 'bg-gradient-to-r from-red-400 to-rose-200' : confidence >= 72 ? 'bg-gradient-to-r from-emerald-400 to-cyan-200' : confidence >= 58 ? 'bg-gradient-to-r from-amber-300 to-blue-300' : 'bg-gradient-to-r from-red-400 to-rose-200'
   const open = () => onOpen?.(match.id)
@@ -89,6 +90,14 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
         <MiniInfo label={finalPick.probabilitySource === 'confidence_estimate' ? 'Model' : 'Win Prob'} value={`${finalPick.modelProbability}%`} />
         <MiniInfo label="Value" value={finalPick.valueLabel} muted={finalPick.valueStatus !== 'YES'} />
       </div>
+      {v4Metrics ? (
+        <div className="mt-1.5 grid grid-cols-4 gap-1.5">
+          <MiniInfo label="V4 Cal" value={`${v4Metrics.calibrated}%`} />
+          <MiniInfo label="Edge" value={`${v4Metrics.edge}%`} muted={!v4Metrics.edge} />
+          <MiniInfo label="Depth" value={`${v4Metrics.depth}%`} muted={!v4Metrics.depth} />
+          <MiniInfo label="Data" value={v4Metrics.status} muted={v4Metrics.status !== 'ENRICHED'} />
+        </div>
+      ) : null}
 
       <p className="text-clamp-2 mt-2 min-w-0 text-xs font-bold leading-5 text-slate-200">{recommendation === 'NO BET' ? 'ไม่แนะนำเดิมพัน' : finalPick.pickReason}</p>
       <p className="text-clamp-2 mt-1 min-w-0 text-[11px] font-semibold leading-5 text-slate-400">{analysisSummary}</p>
@@ -109,6 +118,26 @@ function MiniInfo({ label, value, muted = false }) {
       <p className={`truncate text-[11px] font-black leading-4 ${muted ? 'text-slate-400' : 'text-white'}`}>{value}</p>
     </div>
   )
+}
+
+function getV4CardMetrics(match) {
+  const analysis = match.analysis ?? match.match_analysis ?? {}
+  const calibrated = numberOrNull(match.calibratedConfidence ?? match.calibrated_confidence_score ?? analysis.calibrated_confidence_score)
+  const edge = numberOrNull(match.marketEdgeScore ?? match.market_edge_score ?? analysis.market_edge_score)
+  const depth = numberOrNull(match.dataDepthScore ?? match.data_depth_score ?? analysis.data_depth_score)
+  const status = String(match.enrichmentStatus ?? match.enrichment_status ?? '').toUpperCase()
+  if (calibrated === null && edge === null && depth === null && !status) return null
+  return {
+    calibrated: calibrated ?? Math.round(match.confidence ?? getConfidence(match)),
+    edge: edge ?? 0,
+    depth: depth ?? 0,
+    status: status || 'V4',
+  }
+}
+
+function numberOrNull(value) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? Math.round(numeric) : null
 }
 
 function buildCardSummary(match, recommendation, confidence) {

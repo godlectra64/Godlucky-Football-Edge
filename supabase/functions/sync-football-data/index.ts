@@ -35,14 +35,18 @@ const finalPickAnalysisSelect = `${pickAnalysisSelect}, market_type, market_line
 const selectionV2AnalysisSelect = `${finalPickAnalysisSelect}, data_validation_status, data_validation_notes, league_quality_score, match_quality_score, tactical_matchup_score, market_reading_score, home_away_score, risk_score, edge_score, ai_score, ranking_score, final_rank, recommendation_tier, final_pick_note, is_top_pick, is_final_pick`
 const defaultManualLimit = 50
 const maxManualLimit = 100
+const defaultEnrichLimit = 10
+const maxEnrichLimit = 30
 const syncChunkSize = 10
+const enrichChunkSize = 5
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
-  const startedAt = new Date().toISOString()
+  const startedMs = Date.now()
+  const startedAt = new Date(startedMs).toISOString()
   let logId: string | null = null
 
   try {
@@ -55,7 +59,7 @@ Deno.serve(async (request) => {
     const { dateKey, dateFrom, dateTo, startUtc, endUtc } = dayRange
     const mode = normalizeSyncMode(body.mode)
     const syncType = typeof body.mode === 'string' && body.mode ? body.mode : 'manual'
-    const limit = getSyncLimit(body.limit)
+    const limit = getSyncLimit(body.limit, mode)
     const primaryProvider = getProviderAdapter(requestedProviderName)
 
     const log = await supabase
@@ -77,44 +81,23 @@ Deno.serve(async (request) => {
       await resetMatchesForRange(dayRange)
     }
 
-    const providerResult = await fetchProviderFixtures(primaryProvider, dayRange)
-    const activeProvider = providerResult.provider
-    const matches = providerResult.matches
-    const totalFetched = matches.length
-    const matchesToProcess = matches.slice(0, limit)
-    const skippedByLimit = Math.max(0, totalFetched - matchesToProcess.length)
-    let processed = 0
-    const processedMatchIds: Array<string> = []
-    const failures: Array<{ matchId?: number; message: string }> = []
-
-    for (let index = 0; index < matchesToProcess.length; index += syncChunkSize) {
-      const chunk = matchesToProcess.slice(index, index + syncChunkSize)
-      for (const footballDataMatch of chunk) {
-        try {
-          const synced = await syncMatch(footballDataMatch, { enrichFixtureData: mode === 'recompute' && activeProvider.supportsFixtureEnrichment })
-          if (synced?.matchId) processedMatchIds.push(synced.matchId)
-          processed += 1
-        } catch (error) {
-          failures.push({
-            matchId: footballDataMatch?.id,
-            message: error instanceof Error ? error.message : 'match sync failed',
-          })
-        }
-      }
-      console.info('sync-football-data-progress', {
-        provider: activeProvider.name,
-        dateKey,
-        processed,
-        totalBatch: matchesToProcess.length,
-        totalFetched,
-        skippedByLimit,
-      })
-    }
-
-    const recomputeResult = mode === 'recompute' ? await recomputeProcessedAnalysisRows(processedMatchIds) : { updated: 0, failures: [] }
-    const recomputedStoredRows = mode === 'recompute' ? await recomputeStoredAnalysisRows(Number(body.recomputeStoredLimit ?? limit)) : 0
-    const normalizedAnalysisRows = mode === 'recompute' ? await normalizeLegacyAnalysisRows() : { checked: 0, fixed: 0 }
-    const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+    const modeResult = mode === 'enrich'
+      ? await runEnrichMode(dayRange, limit)
+      : mode === 'recompute'
+        ? await runRecomputeMode(dayRange, limit)
+        : mode === 'learning'
+          ? await runLearningMode(dayRange, limit)
+          : await runManualMode(primaryProvider, dayRange, limit)
+    const providerResult = modeResult.providerResult
+    const processed = modeResult.processed
+    const totalCandidates = modeResult.totalCandidates
+    const totalFetched = modeResult.totalFetched ?? totalCandidates
+    const skippedByLimit = modeResult.skippedByLimit
+    const failures = modeResult.failures
+    const recomputeResult = modeResult.recomputeResult ?? { updated: 0, failures: [] }
+    const recomputedStoredRows = modeResult.recomputedStoredRows ?? 0
+    const normalizedAnalysisRows = modeResult.normalizedAnalysisRows ?? { checked: 0, fixed: 0 }
+    const rankedSelectionRows = modeResult.rankedSelectionRows ?? await updateDailySelectionRanks(dayRange)
     const topPickCount = rankedSelectionRows
     const updatedAnalysisCount = recomputeResult.updated + recomputedStoredRows
     const invalidRowsFixed = normalizedAnalysisRows.fixed
@@ -129,6 +112,7 @@ Deno.serve(async (request) => {
 
     await finishLog(logId, status, message, {
       provider: primaryProvider.name,
+      mode,
       fallbackUsed: providerResult.fallbackUsed,
       fallbackProvider: providerResult.fallbackProvider,
       fallbackError: providerResult.fallbackError,
@@ -139,6 +123,7 @@ Deno.serve(async (request) => {
       endUtc,
       competitions: providerResult.competitions,
       total,
+      totalCandidates,
       totalFetched,
       limit,
       processed,
@@ -149,12 +134,14 @@ Deno.serve(async (request) => {
       recomputedStoredRows,
       normalizedAnalysisRows: normalizedAnalysisRows.checked,
       rankedSelectionRows,
+      durationMs: Date.now() - startedMs,
       failures: allFailures,
     })
 
     return json({
       ok: true,
       provider: primaryProvider.name,
+      mode,
       fallbackUsed: providerResult.fallbackUsed,
       fallbackProvider: providerResult.fallbackProvider,
       dateKey,
@@ -162,6 +149,7 @@ Deno.serve(async (request) => {
       dateTo,
       startUtc,
       endUtc,
+      totalCandidates,
       totalFetched,
       limit,
       processed,
@@ -173,6 +161,7 @@ Deno.serve(async (request) => {
       recomputedStoredRows,
       normalizedAnalysisRows: normalizedAnalysisRows.checked,
       rankedSelectionRows,
+      durationMs: Date.now() - startedMs,
       failures: allFailures,
     })
   } catch (error) {
@@ -236,6 +225,664 @@ async function syncFootballDataCompetitions() {
   return competitions.length
 }
 
+async function runManualMode(provider: ProviderAdapter, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+  const providerResult = await fetchProviderFixtures(provider, dayRange)
+  const matches = providerResult.matches
+  const batch = matches.slice(0, limit)
+  const result = await processInChunks(batch, syncChunkSize, async (footballDataMatch: any) => {
+    return syncMatch(footballDataMatch, { enrichFixtureData: false })
+  }, { provider: providerResult.provider.name, dateKey: dayRange.dateKey, totalBatch: batch.length, totalFetched: matches.length })
+
+  const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  return {
+    providerResult,
+    totalCandidates: matches.length,
+    totalFetched: matches.length,
+    skippedByLimit: Math.max(0, matches.length - batch.length),
+    processed: result.processed,
+    processedMatchIds: result.processedMatchIds,
+    failures: result.failures,
+    rankedSelectionRows,
+  }
+}
+
+async function runEnrichMode(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+  const provider = getProviderAdapter('api-football')
+  const providerResult = { provider, fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] }
+  const candidates = await fetchDbMatchCandidates(dayRange, Math.min(limit, maxEnrichLimit), true)
+  const batch = candidates.rows
+  const result = await processInChunks(batch, enrichChunkSize, enrichMatchData, { provider: provider.name, dateKey: dayRange.dateKey, totalBatch: batch.length, totalFetched: candidates.totalCandidates })
+  const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  return {
+    providerResult,
+    totalCandidates: candidates.totalCandidates,
+    totalFetched: candidates.totalCandidates,
+    skippedByLimit: Math.max(0, candidates.totalCandidates - batch.length),
+    processed: result.processed,
+    processedMatchIds: result.processedMatchIds,
+    failures: result.failures,
+    rankedSelectionRows,
+  }
+}
+
+async function runRecomputeMode(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+  const provider = getProviderAdapter('api-football')
+  const providerResult = { provider, fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] }
+  const candidates = await fetchDbMatchCandidates(dayRange, limit, false)
+  const ids = candidates.rows.map((row: any) => row.id).filter(Boolean)
+  const recomputeResult = await recomputeProcessedAnalysisRows(ids)
+  const v4Result = await recomputeV4AnalysisRows(ids)
+  const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  return {
+    providerResult,
+    totalCandidates: candidates.totalCandidates,
+    totalFetched: candidates.totalCandidates,
+    skippedByLimit: Math.max(0, candidates.totalCandidates - ids.length),
+    processed: recomputeResult.updated + v4Result.updated,
+    processedMatchIds: ids,
+    failures: [...recomputeResult.failures, ...v4Result.failures],
+    recomputeResult: { updated: recomputeResult.updated + v4Result.updated, failures: [...recomputeResult.failures, ...v4Result.failures] },
+    recomputedStoredRows: 0,
+    normalizedAnalysisRows: { checked: 0, fixed: 0 },
+    rankedSelectionRows,
+  }
+}
+
+async function runLearningMode(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+  const provider = getProviderAdapter('api-football')
+  const providerResult = { provider, fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] }
+  const candidates = await fetchFinishedLearningCandidates(dayRange, limit)
+  const result = await processInChunks(candidates.rows, syncChunkSize, storePredictionResult, { provider: provider.name, dateKey: dayRange.dateKey, totalBatch: candidates.rows.length, totalFetched: candidates.totalCandidates })
+  const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  return {
+    providerResult,
+    totalCandidates: candidates.totalCandidates,
+    totalFetched: candidates.totalCandidates,
+    skippedByLimit: Math.max(0, candidates.totalCandidates - candidates.rows.length),
+    processed: result.processed,
+    processedMatchIds: result.processedMatchIds,
+    failures: result.failures,
+    rankedSelectionRows,
+  }
+}
+
+async function processInChunks(rows: Array<any>, chunkSize: number, worker: (row: any) => Promise<any>, context: any) {
+  let processed = 0
+  const processedMatchIds: Array<string> = []
+  const failures: Array<{ matchId?: number; message: string }> = []
+
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const chunk = rows.slice(index, index + chunkSize)
+    for (const row of chunk) {
+      try {
+        const result = await worker(row)
+        if (result?.matchId) processedMatchIds.push(result.matchId)
+        processed += 1
+      } catch (error) {
+        failures.push({
+          matchId: Number(row?.id ?? row?.api_sports_fixture_id ?? row?.api_fixture_id ?? 0) || undefined,
+          message: error instanceof Error ? error.message : 'row processing failed',
+        })
+      }
+    }
+    console.info('sync-football-data-progress', {
+      ...context,
+      processed,
+      skippedByLimit: Math.max(0, Number(context.totalFetched ?? 0) - Number(context.totalBatch ?? 0)),
+    })
+  }
+
+  return { processed, processedMatchIds, failures }
+}
+
+async function fetchDbMatchCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number, requireApiFootballFixture: boolean) {
+  let query = supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_fixture_id,
+      api_provider,
+      api_sports_fixture_id,
+      api_sports_home_team_id,
+      api_sports_away_team_id,
+      kickoff_at,
+      status,
+      home_goals,
+      away_goals,
+      raw,
+      league:football_leagues(id, api_league_id, name, priority),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, risk_score, ranking_score, value_market, value_side, value_line, calibrated_confidence_score, raw)
+    `, { count: 'exact' })
+    .gte('kickoff_at', dayRange.startUtc)
+    .lt('kickoff_at', dayRange.endUtc)
+    .order('kickoff_at', { ascending: true })
+    .limit(limit)
+
+  if (requireApiFootballFixture) query = query.not('api_sports_fixture_id', 'is', null)
+
+  const result = await query
+  if (result.error) throw result.error
+  return { rows: result.data ?? [], totalCandidates: result.count ?? (result.data ?? []).length }
+}
+
+async function fetchFinishedLearningCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      kickoff_at,
+      status,
+      home_goals,
+      away_goals,
+      raw,
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, value_market, value_side, value_line, model_version, raw)
+    `, { count: 'exact' })
+    .gte('kickoff_at', dayRange.startUtc)
+    .lt('kickoff_at', dayRange.endUtc)
+    .in('status', ['FINISHED', 'FT', 'AET', 'PEN'])
+    .not('home_goals', 'is', null)
+    .not('away_goals', 'is', null)
+    .order('kickoff_at', { ascending: true })
+    .limit(limit)
+
+  if (result.error) throw result.error
+  return { rows: result.data ?? [], totalCandidates: result.count ?? (result.data ?? []).length }
+}
+
+async function enrichMatchData(row: any) {
+  const fixtureId = Number(row.api_sports_fixture_id ?? row.raw?.raw_fixture_id ?? row.raw?.raw?.apiFootball?.fixture?.id ?? 0)
+  if (!fixtureId) throw new Error('missing API-FOOTBALL fixture id')
+
+  const odds = await fetchApiFootballOdds(fixtureId)
+  const stats = await fetchApiFootballFixtureStatistics(fixtureId)
+  const injuries = await fetchApiFootballInjuries(fixtureId)
+  const lineups = await fetchApiFootballLineups(fixtureId)
+
+  const oddsResult = await storeOddsSnapshots(row, fixtureId, odds)
+  const statsResult = await storeTeamStatistics(row, fixtureId, stats)
+  const injuriesResult = await storeInjuries(row, fixtureId, injuries)
+  const lineupsResult = await storeLineups(row, fixtureId, lineups)
+  const v4 = buildV4EnrichmentAnalysis({
+    match: row,
+    odds: oddsResult,
+    stats: statsResult,
+    injuries: injuriesResult,
+    lineups: lineupsResult,
+  })
+
+  await updateMatchAnalysisByMatchId(row.id, v4)
+  await supabase
+    .from('football_matches')
+    .update({
+      enrichment_status: 'ENRICHED',
+      enrichment_updated_at: new Date().toISOString(),
+      odds_updated_at: oddsResult.available ? new Date().toISOString() : null,
+      stats_updated_at: statsResult.available ? new Date().toISOString() : null,
+      injuries_updated_at: injuriesResult.available ? new Date().toISOString() : null,
+      lineups_updated_at: lineupsResult.available ? new Date().toISOString() : null,
+    })
+    .eq('id', row.id)
+
+  return { matchId: row.id }
+}
+
+async function fetchApiFootballOdds(fixtureId: number) {
+  return apiFootballSafeGet('/odds', { fixture: fixtureId })
+}
+
+async function fetchApiFootballFixtureStatistics(fixtureId: number) {
+  return apiFootballSafeGet('/fixtures/statistics', { fixture: fixtureId })
+}
+
+async function fetchApiFootballInjuries(fixtureId: number) {
+  return apiFootballSafeGet('/injuries', { fixture: fixtureId })
+}
+
+async function fetchApiFootballLineups(fixtureId: number) {
+  return apiFootballSafeGet('/fixtures/lineups', { fixture: fixtureId })
+}
+
+async function apiFootballSafeGet(path: string, params: Record<string, string | number | undefined> = {}) {
+  try {
+    const data = await apiFootballGet(path, params)
+    return { ok: true, data: data.response ?? [], error: null, raw: data }
+  } catch (error) {
+    return {
+      ok: false,
+      data: [],
+      error: error instanceof Error ? error.message : 'api-football request failed',
+      raw: null,
+    }
+  }
+}
+
+async function storeOddsSnapshots(match: any, fixtureId: number, response: any) {
+  const normalized = normalizeOddsPayload(match, response)
+  if (normalized.rows.length) {
+    await supabase.from('football_odds_snapshots').insert(normalized.rows.map((row: any) => ({
+      match_id: match.id,
+      fixture_id: fixtureId,
+      ...row,
+    })))
+  }
+  return normalized
+}
+
+function normalizeOddsPayload(match: any, response: any) {
+  const rawRows = response.ok ? response.data ?? [] : []
+  const rows: Array<any> = []
+  for (const item of rawRows) {
+    for (const bookmaker of item.bookmakers ?? []) {
+      for (const bet of bookmaker.bets ?? []) {
+        const market = normalizeMarketName(bet.name)
+        if (!market) continue
+        for (const value of bet.values ?? []) {
+          rows.push({
+            bookmaker: bookmaker.name ?? null,
+            market,
+            selection: value.value ?? null,
+            line: parseBetLine(value.value),
+            price: nullableNumber(value.odd),
+            odd_text: value.odd ? String(value.odd) : null,
+            is_opening: rows.length === 0,
+            is_latest: true,
+            raw: { bookmaker, bet, value },
+          })
+        }
+      }
+    }
+  }
+  const latest = rows.at(-1)
+  const opening = rows[0]
+  const available = rows.length > 0
+  const pickSide = getAnalysis(match)?.pick_side ?? null
+  const movement = opening && latest && opening.line !== latest.line ? `${opening.line ?? '-'} -> ${latest.line ?? '-'}` : available ? 'ราคาล่าสุดพร้อมใช้งาน แต่ยังไม่เห็นการไหลชัดเจน' : 'ยังไม่มีข้อมูลราคา'
+  return {
+    available,
+    rows,
+    market_edge_score: available ? 62 : 50,
+    odds_confidence_score: available ? 64 : 50,
+    odds_movement_score: available && pickSide && String(latest?.selection ?? '').toUpperCase().includes(String(pickSide).toUpperCase()) ? 66 : available ? 58 : 50,
+    value_market: latest?.market ?? null,
+    value_side: latest?.selection ?? null,
+    value_line: latest?.line ?? null,
+    opening_line: opening?.line ?? null,
+    latest_line: latest?.line ?? null,
+    opening_odds: opening?.odd_text ?? null,
+    latest_odds: latest?.odd_text ?? null,
+    odds_movement_summary: movement,
+  }
+}
+
+async function storeTeamStatistics(match: any, fixtureId: number, response: any) {
+  const normalized = normalizeFixtureStatistics(match, response)
+  if (normalized.rows.length) await supabase.from('football_team_statistics').insert(normalized.rows)
+  return normalized
+}
+
+function normalizeFixtureStatistics(match: any, response: any) {
+  const rawRows = response.ok ? response.data ?? [] : []
+  const rows = rawRows.map((item: any) => {
+    const stats = Object.fromEntries((item.statistics ?? []).map((stat: any) => [String(stat.type ?? '').toLowerCase(), stat.value]))
+    const teamId = nullableNumber(item.team?.id)
+    return {
+      match_id: match.id,
+      fixture_id: nullableNumber(match.api_sports_fixture_id),
+      team_id: teamId,
+      team_name: item.team?.name ?? null,
+      is_home: Number(teamId) === Number(match.api_sports_home_team_id),
+      shots_on_goal: statNumber(stats['shots on goal']),
+      shots_off_goal: statNumber(stats['shots off goal']),
+      total_shots: statNumber(stats['total shots']),
+      blocked_shots: statNumber(stats['blocked shots']),
+      shots_inside_box: statNumber(stats['shots insidebox'] ?? stats['shots inside box']),
+      shots_outside_box: statNumber(stats['shots outsidebox'] ?? stats['shots outside box']),
+      fouls: statNumber(stats.fouls),
+      corner_kicks: statNumber(stats['corner kicks']),
+      offsides: statNumber(stats.offsides),
+      ball_possession: statNumber(stats['ball possession']),
+      yellow_cards: statNumber(stats['yellow cards']),
+      red_cards: statNumber(stats['red cards']),
+      goalkeeper_saves: statNumber(stats['goalkeeper saves']),
+      total_passes: statNumber(stats['total passes']),
+      passes_accurate: statNumber(stats['passes accurate']),
+      passes_percent: statNumber(stats['passes %']),
+      expected_goals: statNumber(stats['expected goals']),
+      raw: item,
+    }
+  })
+  const available = rows.length > 0
+  const attack = rows.reduce((total: number, row: any) => total + Number(row.shots_on_goal ?? 0) + Number(row.expected_goals ?? 0) * 8 + Number(row.corner_kicks ?? 0), 0)
+  return {
+    available,
+    rows,
+    team_stats_score: available ? normalizeScore(58 + attack / Math.max(rows.length, 1)) : 60,
+  }
+}
+
+async function storeInjuries(match: any, fixtureId: number, response: any) {
+  const normalized = normalizeInjuries(match, fixtureId, response)
+  if (normalized.rows.length) await supabase.from('football_injuries').insert(normalized.rows)
+  return normalized
+}
+
+function normalizeInjuries(match: any, fixtureId: number, response: any) {
+  const rawRows = response.ok ? response.data ?? [] : []
+  const rows = rawRows.map((item: any) => ({
+    match_id: match.id,
+    fixture_id: fixtureId,
+    team_id: nullableNumber(item.team?.id),
+    team_name: item.team?.name ?? null,
+    player_id: nullableNumber(item.player?.id),
+    player_name: item.player?.name ?? null,
+    player_type: item.player?.type ?? null,
+    reason: item.player?.reason ?? null,
+    raw: item,
+  }))
+  return {
+    available: rows.length > 0,
+    rows,
+    injuries_score: normalizeScore(60 - Math.min(rows.length * 3, 25)),
+  }
+}
+
+async function storeLineups(match: any, fixtureId: number, response: any) {
+  const normalized = normalizeLineups(match, fixtureId, response)
+  if (normalized.rows.length) await supabase.from('football_lineups').insert(normalized.rows)
+  return normalized
+}
+
+function normalizeLineups(match: any, fixtureId: number, response: any) {
+  const rawRows = response.ok ? response.data ?? [] : []
+  const rows = rawRows.map((item: any) => ({
+    match_id: match.id,
+    fixture_id: fixtureId,
+    team_id: nullableNumber(item.team?.id),
+    team_name: item.team?.name ?? null,
+    formation: item.formation ?? null,
+    coach_name: item.coach?.name ?? null,
+    start_xi: item.startXI ?? [],
+    substitutes: item.substitutes ?? [],
+    raw: item,
+  }))
+  return {
+    available: rows.length > 0,
+    rows,
+    lineups_score: rows.length ? 72 : 60,
+  }
+}
+
+function buildV4EnrichmentAnalysis({ match, odds, stats, injuries, lineups }: any) {
+  const analysis = getAnalysis(match)
+  const baseConfidence = normalizeScore(analysis?.calibrated_confidence_score ?? analysis?.confidence_score ?? 58)
+  const marketEdgeScore = normalizeScore(odds?.market_edge_score ?? 50)
+  const oddsConfidenceScore = normalizeScore(odds?.odds_confidence_score ?? 50)
+  const oddsMovementScore = normalizeScore(odds?.odds_movement_score ?? 50)
+  const teamStatsScore = normalizeScore(stats?.team_stats_score ?? 60)
+  const injuriesScore = normalizeScore(injuries?.injuries_score ?? 60)
+  const lineupsScore = normalizeScore(lineups?.lineups_score ?? 60)
+  const dataDepthScore = calculateV4DataDepth({ odds, stats, injuries, lineups })
+  const historicalAccuracyScore = normalizeScore(analysis?.historical_accuracy_score ?? 50)
+  const learningAdjustmentScore = normalizeScore(analysis?.learning_adjustment_score ?? 50) - 50
+  const calibratedConfidenceScore = normalizeScore(
+    baseConfidence * 0.42 +
+      oddsConfidenceScore * 0.16 +
+      oddsMovementScore * 0.1 +
+      teamStatsScore * 0.12 +
+      injuriesScore * 0.08 +
+      lineupsScore * 0.06 +
+      dataDepthScore * 0.06 +
+      learningAdjustmentScore,
+  )
+  const riskScore = normalizeScore(analysis?.risk_score ?? 100 - calibratedConfidenceScore)
+  const riskLevel = getRiskLevelFromRiskScore(riskScore)
+  const recommendation = getRecommendationFromConfidence(calibratedConfidenceScore, riskLevel)
+  const rankingScore = normalizeScore(
+    calibratedConfidenceScore * 0.48 +
+      marketEdgeScore * 0.14 +
+      oddsMovementScore * 0.1 +
+      teamStatsScore * 0.1 +
+      dataDepthScore * 0.1 +
+      historicalAccuracyScore * 0.08,
+  )
+
+  return {
+    market_edge_score: marketEdgeScore,
+    odds_confidence_score: oddsConfidenceScore,
+    odds_movement_score: oddsMovementScore,
+    team_stats_score: teamStatsScore,
+    injuries_score: injuriesScore,
+    lineups_score: lineupsScore,
+    data_depth_score: dataDepthScore,
+    learning_adjustment_score: learningAdjustmentScore,
+    calibrated_confidence_score: calibratedConfidenceScore,
+    historical_accuracy_score: historicalAccuracyScore,
+    model_version: 'v4',
+    value_side: odds?.value_side ?? analysis?.value_side ?? analysis?.pick_side ?? null,
+    value_market: odds?.value_market ?? analysis?.value_market ?? analysis?.market_type ?? null,
+    value_line: odds?.value_line ?? analysis?.value_line ?? analysis?.market_line ?? null,
+    opening_line: odds?.opening_line ?? analysis?.opening_line ?? null,
+    latest_line: odds?.latest_line ?? analysis?.latest_line ?? null,
+    opening_odds: odds?.opening_odds ?? analysis?.opening_odds ?? null,
+    latest_odds: odds?.latest_odds ?? analysis?.latest_odds ?? null,
+    odds_movement_summary: odds?.odds_movement_summary ?? analysis?.odds_movement_summary ?? null,
+    enriched_summary: buildV4Summary({ odds, stats, injuries, lineups, calibratedConfidenceScore, dataDepthScore }),
+    recommendation,
+    risk_level: riskLevel,
+    confidence_score: Math.max(Number(analysis?.confidence_score ?? 0), calibratedConfidenceScore),
+    ranking_score: rankingScore,
+    ai_score: rankingScore,
+  }
+}
+
+async function updateMatchAnalysisByMatchId(matchId: string, payload: Record<string, unknown>) {
+  const result = await supabase
+    .from('match_analysis')
+    .update(payload)
+    .eq('match_id', matchId)
+
+  if (result.error) throw result.error
+}
+
+async function recomputeV4AnalysisRows(matchIds: Array<string>) {
+  if (!matchIds.length) return { updated: 0, failures: [] }
+
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, risk_score, ranking_score, market_edge_score, odds_confidence_score, odds_movement_score, team_stats_score, injuries_score, lineups_score, data_depth_score, learning_adjustment_score, historical_accuracy_score, value_market, value_side, value_line)
+    `)
+    .in('id', matchIds)
+
+  if (result.error) throw result.error
+
+  let updated = 0
+  const failures: Array<{ matchId?: string; message: string }> = []
+  for (const row of result.data ?? []) {
+    try {
+      const analysis = getAnalysis(row)
+      const payload = buildV4RecomputeAnalysis(analysis)
+      await updateMatchAnalysisByMatchId(row.id, payload)
+      updated += 1
+    } catch (error) {
+      failures.push({ matchId: row.id, message: error instanceof Error ? error.message : 'v4 recompute failed' })
+    }
+  }
+
+  return { updated, failures }
+}
+
+function buildV4RecomputeAnalysis(analysis: any) {
+  const confidence = normalizeScore(analysis?.calibrated_confidence_score ?? analysis?.confidence_score ?? 58)
+  const marketEdge = normalizeScore(analysis?.market_edge_score ?? 50)
+  const oddsConfidence = normalizeScore(analysis?.odds_confidence_score ?? 50)
+  const oddsMovement = normalizeScore(analysis?.odds_movement_score ?? 50)
+  const teamStats = normalizeScore(analysis?.team_stats_score ?? 60)
+  const injuries = normalizeScore(analysis?.injuries_score ?? 60)
+  const lineups = normalizeScore(analysis?.lineups_score ?? 60)
+  const depth = normalizeScore(analysis?.data_depth_score ?? 25)
+  const learningAdjustment = Number(analysis?.learning_adjustment_score ?? 0)
+  const calibrated = normalizeScore(confidence * 0.5 + oddsConfidence * 0.14 + oddsMovement * 0.1 + teamStats * 0.1 + injuries * 0.06 + lineups * 0.04 + depth * 0.06 + learningAdjustment)
+  const rankingScore = normalizeScore(calibrated * 0.55 + marketEdge * 0.18 + oddsMovement * 0.12 + depth * 0.15)
+  const riskScore = normalizeScore(analysis?.risk_score ?? 100 - calibrated)
+  const riskLevel = getRiskLevelFromRiskScore(riskScore)
+
+  return {
+    market_edge_score: marketEdge,
+    odds_confidence_score: oddsConfidence,
+    odds_movement_score: oddsMovement,
+    team_stats_score: teamStats,
+    injuries_score: injuries,
+    lineups_score: lineups,
+    data_depth_score: depth,
+    learning_adjustment_score: learningAdjustment,
+    calibrated_confidence_score: calibrated,
+    historical_accuracy_score: normalizeScore(analysis?.historical_accuracy_score ?? 50),
+    model_version: 'v4',
+    confidence_score: Math.max(Number(analysis?.confidence_score ?? 0), calibrated),
+    recommendation: getRecommendationFromConfidence(calibrated, riskLevel),
+    risk_level: riskLevel,
+    ranking_score: rankingScore,
+    ai_score: rankingScore,
+    enriched_summary: `Data Intelligence v4 calibrated ${calibrated}/100 with data depth ${depth}/100.`,
+  }
+}
+
+async function storePredictionResult(row: any) {
+  const analysis = getAnalysis(row)
+  const result = evaluatePredictionResult(row, analysis)
+  const learningAdjustment = getLearningAdjustment(analysis?.recommendation, result.is_success)
+  const payload = {
+    match_id: row.id,
+    fixture_id: nullableNumber(row.api_sports_fixture_id),
+    match_date: row.kickoff_at ? String(row.kickoff_at).slice(0, 10) : null,
+    recommendation: analysis?.recommendation ?? 'NO BET',
+    value_market: analysis?.value_market ?? null,
+    value_side: analysis?.value_side ?? analysis?.pick_side ?? null,
+    value_line: analysis?.value_line ?? null,
+    confidence_score: nullableNumber(analysis?.confidence_score),
+    calibrated_confidence_score: nullableNumber(analysis?.calibrated_confidence_score),
+    home_score: nullableNumber(row.home_goals),
+    away_score: nullableNumber(row.away_goals),
+    result_status: result.result_status,
+    prediction_result: result.prediction_result,
+    is_success: result.is_success,
+    profit_unit: result.profit_unit,
+    model_version: 'v4',
+    raw: { analysis, result },
+    updated_at: new Date().toISOString(),
+  }
+
+  const upsertResult = await supabase
+    .from('football_prediction_results')
+    .upsert(payload, { onConflict: 'match_id,model_version' })
+
+  if (upsertResult.error) throw upsertResult.error
+
+  await updateMatchAnalysisByMatchId(row.id, {
+    learning_adjustment_score: learningAdjustment,
+    learning_summary: result.is_success === null
+      ? 'Learning v4 waiting for a settled prediction result.'
+      : `Learning v4 recorded ${result.prediction_result}; adjustment ${learningAdjustment}.`,
+  })
+
+  return { matchId: row.id }
+}
+
+function evaluatePredictionResult(row: any, analysis: any) {
+  const homeGoals = nullableNumber(row.home_goals)
+  const awayGoals = nullableNumber(row.away_goals)
+  if (homeGoals === null || awayGoals === null) {
+    return { result_status: 'pending', prediction_result: 'PENDING', is_success: null, profit_unit: 0 }
+  }
+
+  const recommendation = String(analysis?.recommendation ?? 'NO BET').toUpperCase()
+  if (!['BET', 'LEAN'].includes(recommendation)) {
+    return { result_status: 'finished', prediction_result: 'NO_EVALUATION', is_success: null, profit_unit: 0 }
+  }
+
+  const market = String(analysis?.value_market ?? analysis?.market_type ?? 'ML').toUpperCase()
+  const side = String(analysis?.value_side ?? analysis?.pick_side ?? '').toUpperCase()
+  const line = parseLineNumber(analysis?.value_line ?? analysis?.market_line)
+  let success: boolean | null = null
+
+  if (market === 'OU') {
+    if (line === null) success = null
+    else if (side.includes('UNDER')) success = homeGoals + awayGoals < line
+    else success = homeGoals + awayGoals > line
+  } else if (market === 'AH') {
+    if (line === null) success = null
+    else if (side.includes('AWAY')) success = awayGoals + line > homeGoals
+    else success = homeGoals + line > awayGoals
+  } else if (side.includes('DRAW')) {
+    success = homeGoals === awayGoals
+  } else if (side.includes('AWAY')) {
+    success = awayGoals > homeGoals
+  } else if (side.includes('HOME') || side === '1') {
+    success = homeGoals > awayGoals
+  }
+
+  if (success === null) return { result_status: 'finished', prediction_result: 'UNKNOWN', is_success: null, profit_unit: 0 }
+  return { result_status: 'finished', prediction_result: success ? 'WIN' : 'LOSS', is_success: success, profit_unit: success ? 1 : -1 }
+}
+
+function getLearningAdjustment(recommendation: unknown, success: boolean | null) {
+  if (success === null) return 0
+  const rec = String(recommendation ?? '').toUpperCase()
+  const base = rec === 'BET' ? 3 : rec === 'LEAN' ? 1 : 0
+  return clamp(success ? base : -base, -8, 8)
+}
+
+function calculateV4DataDepth({ odds, stats, injuries, lineups }: any) {
+  return normalizeScore(
+    25 +
+      (odds?.available ? 25 : 0) +
+      (stats?.available ? 20 : 0) +
+      (injuries?.available ? 15 : 0) +
+      (lineups?.available ? 15 : 0),
+  )
+}
+
+function buildV4Summary({ odds, stats, injuries, lineups, calibratedConfidenceScore, dataDepthScore }: any) {
+  const pieces = [
+    odds?.available ? 'odds ready' : 'odds pending',
+    stats?.available ? 'stats ready' : 'stats pending',
+    injuries?.available ? 'injuries checked' : 'injuries pending',
+    lineups?.available ? 'lineups ready' : 'lineups pending',
+  ]
+  return `Data Intelligence v4 ${calibratedConfidenceScore}/100 (${pieces.join(', ')}; depth ${dataDepthScore}/100).`
+}
+
+function getAnalysis(match: any) {
+  const analysis = Array.isArray(match?.analysis) ? match.analysis[0] : match?.analysis
+  return analysis ?? match?.match_analysis ?? {}
+}
+
+function normalizeMarketName(value: unknown) {
+  const text = String(value ?? '').toLowerCase()
+  if (!text) return null
+  if (text.includes('asian')) return 'AH'
+  if (text.includes('goals') || text.includes('over') || text.includes('under')) return 'OU'
+  if (text.includes('match winner') || text.includes('1x2') || text.includes('winner')) return 'ML'
+  return null
+}
+
+function parseBetLine(value: unknown) {
+  const text = String(value ?? '')
+  if (/over|under/i.test(text)) return firstText(text.match(/-?\d+(?:\.\d+)?/)?.[0])
+  return firstText(text.match(/-?\d+(?:\.\d+)?/)?.[0])
+}
+
+function statNumber(value: unknown) {
+  if (value === null || value === undefined) return null
+  const numeric = Number(String(value).replace('%', '').replace(',', '.'))
+  return Number.isFinite(numeric) ? numeric : null
+}
+
 async function syncMatch(match: any, options: { enrichFixtureData?: boolean } = {}) {
   const league = await upsertLeague(match.competition, match.area)
   const homeTeam = await upsertTeam(match.homeTeam, match.area?.name)
@@ -256,6 +903,12 @@ async function syncMatch(match: any, options: { enrichFixtureData?: boolean } = 
         home_goals: match.score?.fullTime?.home ?? null,
         away_goals: match.score?.fullTime?.away ?? null,
         raw: match,
+        api_provider: match.provider ?? match.raw?.provider ?? null,
+        api_sports_fixture_id: match.raw_fixture_id ?? match.raw?.apiFootball?.fixture?.id ?? null,
+        api_sports_league_id: match.raw?.apiFootball?.league?.id ?? null,
+        api_sports_home_team_id: match.raw?.apiFootball?.teams?.home?.id ?? null,
+        api_sports_away_team_id: match.raw?.apiFootball?.teams?.away?.id ?? null,
+        enrichment_status: match.provider === 'api-football' ? 'PENDING' : null,
       },
       { onConflict: 'api_fixture_id' },
     )
@@ -575,6 +1228,27 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
     final_pick_note: safeAnalysis.final_pick_note,
     is_top_pick: safeAnalysis.is_top_pick,
     is_final_pick: safeAnalysis.is_final_pick,
+    market_edge_score: safeAnalysis.market_edge_score,
+    odds_confidence_score: safeAnalysis.odds_confidence_score,
+    odds_movement_score: safeAnalysis.odds_movement_score,
+    team_stats_score: safeAnalysis.team_stats_score,
+    injuries_score: safeAnalysis.injuries_score,
+    lineups_score: safeAnalysis.lineups_score,
+    data_depth_score: safeAnalysis.data_depth_score,
+    learning_adjustment_score: safeAnalysis.learning_adjustment_score,
+    calibrated_confidence_score: safeAnalysis.calibrated_confidence_score,
+    historical_accuracy_score: safeAnalysis.historical_accuracy_score,
+    model_version: safeAnalysis.model_version,
+    value_side: safeAnalysis.value_side,
+    value_market: safeAnalysis.value_market,
+    value_line: safeAnalysis.value_line,
+    opening_line: safeAnalysis.opening_line,
+    latest_line: safeAnalysis.latest_line,
+    opening_odds: safeAnalysis.opening_odds,
+    latest_odds: safeAnalysis.latest_odds,
+    odds_movement_summary: safeAnalysis.odds_movement_summary,
+    enriched_summary: safeAnalysis.enriched_summary,
+    learning_summary: safeAnalysis.learning_summary,
     analysis_summary: safeAnalysis.analysis_summary,
     thai_reason: safeAnalysis.thai_reason,
     raw: safeAnalysis,
@@ -664,6 +1338,27 @@ function normalizeAnalysisPayload(analysis: any) {
     value_status: finalPick.value_status,
     value_reason: finalPick.value_reason,
     ...selectionV2,
+    market_edge_score: analysis?.market_edge_score ?? null,
+    odds_confidence_score: analysis?.odds_confidence_score ?? null,
+    odds_movement_score: analysis?.odds_movement_score ?? null,
+    team_stats_score: analysis?.team_stats_score ?? null,
+    injuries_score: analysis?.injuries_score ?? null,
+    lineups_score: analysis?.lineups_score ?? null,
+    data_depth_score: analysis?.data_depth_score ?? null,
+    learning_adjustment_score: analysis?.learning_adjustment_score ?? 0,
+    calibrated_confidence_score: analysis?.calibrated_confidence_score ?? null,
+    historical_accuracy_score: analysis?.historical_accuracy_score ?? null,
+    model_version: analysis?.model_version ?? 'v4',
+    value_side: analysis?.value_side ?? null,
+    value_market: analysis?.value_market ?? null,
+    value_line: analysis?.value_line ?? null,
+    opening_line: analysis?.opening_line ?? null,
+    latest_line: analysis?.latest_line ?? null,
+    opening_odds: analysis?.opening_odds ?? null,
+    latest_odds: analysis?.latest_odds ?? null,
+    odds_movement_summary: analysis?.odds_movement_summary ?? null,
+    enriched_summary: analysis?.enriched_summary ?? null,
+    learning_summary: analysis?.learning_summary ?? null,
     analysis_summary: summary,
     thai_reason: summary,
   }
@@ -1110,7 +1805,7 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
     .select(`
       id,
       kickoff_at,
-      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, risk_score, data_validation_status)
+      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_score, data_validation_status)
     `)
     .gte('kickoff_at', range.startUtc)
     .lt('kickoff_at', range.endUtc)
@@ -1147,7 +1842,7 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
     .sort((a: any, b: any) => {
       const recommendationDiff = recommendationPriority(a.analysis.recommendation) - recommendationPriority(b.analysis.recommendation)
       const rankingDiff = Number(b.analysis.ranking_score ?? 0) - Number(a.analysis.ranking_score ?? 0)
-      const confidenceDiff = Number(b.analysis.confidence_score ?? 0) - Number(a.analysis.confidence_score ?? 0)
+      const confidenceDiff = Number(b.analysis.calibrated_confidence_score ?? b.analysis.confidence_score ?? 0) - Number(a.analysis.calibrated_confidence_score ?? a.analysis.confidence_score ?? 0)
       const riskDiff = Number(a.analysis.risk_score ?? 100) - Number(b.analysis.risk_score ?? 100)
       return recommendationDiff || rankingDiff || confidenceDiff || riskDiff
     })
@@ -2581,13 +3276,17 @@ function normalizeProviderName(value: string) {
 }
 
 function normalizeSyncMode(value: unknown) {
-  return String(value ?? 'manual').toLowerCase() === 'recompute' ? 'recompute' : 'manual'
+  const mode = String(value ?? 'manual').toLowerCase()
+  if (['manual', 'enrich', 'recompute', 'learning'].includes(mode)) return mode
+  return 'manual'
 }
 
-function getSyncLimit(value: unknown) {
-  const numeric = Number(value ?? defaultManualLimit)
-  if (!Number.isFinite(numeric) || numeric <= 0) return defaultManualLimit
-  return Math.max(1, Math.min(Math.floor(numeric), maxManualLimit))
+function getSyncLimit(value: unknown, mode = 'manual') {
+  const defaultLimit = mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
+  const maxLimit = mode === 'enrich' ? maxEnrichLimit : maxManualLimit
+  const numeric = Number(value ?? defaultLimit)
+  if (!Number.isFinite(numeric) || numeric <= 0) return defaultLimit
+  return Math.max(1, Math.min(Math.floor(numeric), maxLimit))
 }
 
 function getSyncDateRange(body: Record<string, unknown>) {

@@ -82,11 +82,21 @@ assert.ok(syncFootballDataSource.includes('fallbackProvider: providerResult.fall
 assert.ok(syncFootballDataSource.includes('const defaultManualLimit = 50'), 'manual sync should default to a 50 fixture limit')
 assert.ok(syncFootballDataSource.includes('const maxManualLimit = 100'), 'manual sync should cap limit at 100')
 assert.ok(syncFootballDataSource.includes('const syncChunkSize = 10'), 'manual sync should process fixtures in chunks of 10')
-assert.ok(syncFootballDataSource.includes('const matchesToProcess = matches.slice(0, limit)'), 'manual sync should process only the limited batch')
-assert.ok(syncFootballDataSource.includes('const skippedByLimit = Math.max(0, totalFetched - matchesToProcess.length)'), 'sync response should report fixtures skipped by limit')
-assert.ok(syncFootballDataSource.includes("mode === 'recompute' ? await recomputeProcessedAnalysisRows(processedMatchIds)"), 'manual sync must not run processed-row recompute automatically')
-assert.ok(syncFootballDataSource.includes("mode === 'recompute' ? await recomputeStoredAnalysisRows"), 'stored analysis recompute should run only in recompute mode')
-assert.ok(syncFootballDataSource.includes("mode === 'recompute' ? await normalizeLegacyAnalysisRows()"), 'legacy analysis normalization should run only in recompute mode')
+assert.ok(syncFootballDataSource.includes('const defaultEnrichLimit = 10'), 'enrich sync should default to a 10 match limit')
+assert.ok(syncFootballDataSource.includes('const maxEnrichLimit = 30'), 'enrich sync should cap limit at 30')
+assert.ok(syncFootballDataSource.includes('const enrichChunkSize = 5'), 'enrich sync should process enrichment in small chunks')
+assert.ok(syncFootballDataSource.includes('const batch = matches.slice(0, limit)'), 'manual sync should process only the limited batch')
+assert.ok(syncFootballDataSource.includes('skippedByLimit: Math.max(0, matches.length - batch.length)'), 'manual sync response should report fixtures skipped by limit')
+assert.ok(syncFootballDataSource.includes("mode === 'enrich'"), 'sync should expose a separate enrich mode')
+assert.ok(syncFootballDataSource.includes("mode === 'recompute'"), 'sync should expose a separate recompute mode')
+assert.ok(syncFootballDataSource.includes("mode === 'learning'"), 'sync should expose a separate learning mode')
+assert.ok(syncFootballDataSource.includes('await runManualMode(primaryProvider, dayRange, limit)'), 'manual sync should not run heavy recompute automatically')
+assert.ok(syncFootballDataSource.includes('const v4Result = await recomputeV4AnalysisRows(ids)'), 'recompute mode should refresh v4 analysis rows')
+assert.ok(syncFootballDataSource.includes('const result = await processInChunks(candidates.rows, syncChunkSize, storePredictionResult'), 'learning mode should store prediction results')
+assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/odds'"), 'enrich mode should fetch API-FOOTBALL odds only outside manual sync')
+assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/fixtures/statistics'"), 'enrich mode should fetch API-FOOTBALL fixture statistics')
+assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/injuries'"), 'enrich mode should fetch API-FOOTBALL injuries')
+assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/fixtures/lineups'"), 'enrich mode should fetch API-FOOTBALL lineups')
 assert.equal(Math.min(150, 50), 50, 'API-FOOTBALL fixtures 150 with limit 50 should process 50')
 assert.equal(Math.max(0, 150 - Math.min(150, 50)), 100, 'API-FOOTBALL fixtures 150 with limit 50 should skip 100')
 
@@ -206,6 +216,12 @@ const ranked = rankTopMatches([
 ])
 assert.deepEqual(ranked.map((match) => match.id), ['rank-1', 'rank-2', 'no-bet-candidate'])
 assert.ok(ranked.every((match) => match.rankingScore >= 0 && match.rankingScore <= 100), 'ranked scores are bounded')
+
+const calibratedRanked = rankTopMatches([
+  { ...betCandidate, id: 'stored-confidence-high', confidence: 90, analysis: { calibrated_confidence_score: 55, confidence_score: 90 } },
+  { ...betCandidate, id: 'calibrated-high', confidence: 62, analysis: { calibrated_confidence_score: 88, confidence_score: 62 } },
+], 2)
+assert.equal(calibratedRanked[0].id, 'calibrated-high', 'Top picks should prefer v4 calibrated confidence when present')
 
 const sixMatches = Array.from({ length: 6 }, (_, index) => ({
   ...baseMatch,
