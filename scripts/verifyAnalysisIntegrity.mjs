@@ -243,6 +243,10 @@ const footballEnrichmentChecks = [
     label: 'daily sync docs curl example',
     query: checkDailySyncDocs,
   },
+  {
+    label: 'daily sync retry migration',
+    query: checkDailySyncRetryMigration,
+  },
 ]
 
 let failed = false
@@ -413,7 +417,7 @@ async function runLinkedCliVerification() {
       if (count > 0) failedCliCheck = true
     }
 
-    for (const check of [checkFrontendEmptyEnrichment, checkFootballEnrichmentKeywordScan, checkDailySyncModesPresent, checkDailySyncDocs]) {
+    for (const check of [checkFrontendEmptyEnrichment, checkFootballEnrichmentKeywordScan, checkDailySyncModesPresent, checkDailySyncDocs, checkDailySyncRetryMigration]) {
       const { count, warning } = await check()
       const label = check.name.replace(/^check/, '')
       if (warning) console.warn(`${label}: ${warning}`)
@@ -534,14 +538,21 @@ async function checkFootballEnrichmentKeywordScan() {
 
 async function checkDailySyncModesPresent() {
   const text = await readFile('supabase/functions/sync-football-data/index.ts', 'utf8')
-  const required = ['daily-sync-start', 'daily-sync-phase', 'daily-sync-status', 'daily-sync-next', 'daily-full-sync-safe']
+  const required = ['daily-sync-start', 'daily-sync-phase', 'daily-sync-status', 'daily-sync-next', 'daily-full-sync-safe', 'daily-sync-auto']
   const missing = required.filter((mode) => !text.includes(mode))
   return missing.length ? { count: 1, warning: `missing modes: ${missing.join(', ')}` } : { count: 0 }
 }
 
 async function checkDailySyncDocs() {
   const text = await readFile('docs/admin-daily-sync-orchestrator.md', 'utf8').catch((error) => `missing:${error.message}`)
-  const required = ['WORKER_RESOURCE_LIMIT', 'daily-sync-start', 'daily-sync-next', 'daily-sync-status', 'daily-sync-phase', 'curl', 'SERVICE_OR_SECRET_KEY']
+  const required = ['WORKER_RESOURCE_LIMIT', 'daily-sync-start', 'daily-sync-next', 'daily-sync-status', 'daily-sync-phase', 'daily-sync-auto', 'curl', '%SERVICE_KEY%', 'maxStepsPerRequest', 'progressPercent', 'pending_retry', 'finalSummary']
   const missing = required.filter((item) => !text.includes(item))
   return missing.length ? { count: 1, warning: `daily sync docs missing: ${missing.join(', ')}` } : { count: 0 }
+}
+
+async function checkDailySyncRetryMigration() {
+  const text = await readFile('supabase/migrations/20260704_upgrade_daily_sync_orchestrator.sql', 'utf8').catch((error) => `missing:${error.message}`)
+  const required = ['attempt_count', 'max_attempts', 'last_attempt_at', 'next_retry_at', 'pending_retry']
+  const missing = required.filter((item) => !text.includes(item))
+  return missing.length ? { count: 1, warning: `daily sync retry migration missing: ${missing.join(', ')}` } : { count: 0 }
 }

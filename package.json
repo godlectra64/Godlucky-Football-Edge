@@ -9,6 +9,7 @@
     "verify:analysis": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:daily-sync": "node scripts/verifyAnalysisIntegrity.mjs",
+    "verify:daily-sync-orchestrator": "node scripts/verifyAnalysisIntegrity.mjs",
     "test:daily-sync-auth": "node scripts/dailySyncAuth.unit.test.mjs",
     "test:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "build": "vite build",
