@@ -21,7 +21,7 @@ export default function MarketOddsCard({ odds = [], compact = false }) {
             <span className="self-center text-sm font-black text-[var(--page-accent)]">{row.oddText ?? row.price ?? '-'}</span>
           </div>
         )) : (
-          <p className="rounded-xl border border-slate-400/20 bg-slate-400/10 px-3 py-2 text-sm leading-6 text-slate-300">Market data is not available yet</p>
+          <p className="rounded-xl border border-slate-400/20 bg-slate-400/10 px-3 py-2 text-sm leading-6 text-slate-300">ยังไม่มีข้อมูลตลาดราคา</p>
         )}
       </div>
     </div>

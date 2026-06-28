@@ -2943,7 +2943,7 @@ function buildEdgeAiFinalPick(match: any) {
     riskLevel,
     keyReasons,
     warningSigns,
-    marketSignal: hasOdds ? selected.marketSignal : 'No market data yet',
+    marketSignal: hasOdds ? selected.marketSignal : 'ยังไม่มีข้อมูลตลาดราคา',
     finalSummary: buildEdgeAiFinalSummary(signal, marketFocus, direction, confidenceScore, riskLevel, hasOdds),
     ahAnalysis,
     ouAnalysis,
@@ -2965,7 +2965,7 @@ function edgeAnalyzeAh(match: any) {
     rows.length ? 'AH market data is available from API-FOOTBALL' : '',
   ].filter(Boolean)
   const warnings = [
-    !rows.length ? 'No AH market data yet' : '',
+    !rows.length ? 'ยังไม่มีข้อมูลตลาดราคา' : '',
     Math.abs(gap) < 5 ? 'Team edge is narrow' : '',
     normalizeRiskLevelText(analysis.risk_level) === 'HIGH' ? 'Risk level is high' : '',
   ].filter(Boolean)
@@ -2975,7 +2975,7 @@ function edgeAnalyzeAh(match: any) {
     confidenceScore: normalizeScore(48 + Math.abs(gap) * 0.55 + (rows.length ? 8 : -10) - warnings.length * 3),
     reasons: reasons.length ? reasons : ['AH data direction is conservative'],
     warnings,
-    marketSignal: rows.length ? 'Latest AH market data is available' : 'No AH market data yet',
+    marketSignal: rows.length ? 'Latest AH market data is available' : 'ยังไม่มีข้อมูลตลาดราคา',
     hasMarket: rows.length > 0,
     bookmakerCount: new Set(rows.map((row: any) => row.bookmaker_name).filter(Boolean)).size,
   }
@@ -2995,7 +2995,7 @@ function edgeAnalyzeOu(match: any) {
     rows.length ? 'OU market data is available from API-FOOTBALL' : '',
   ].filter(Boolean)
   const warnings = [
-    !rows.length ? 'No OU market data yet' : '',
+    !rows.length ? 'ยังไม่มีข้อมูลตลาดราคา' : '',
     tempo > 47 && tempo < 57 ? 'Goal tempo is close to neutral' : '',
     normalizeRiskLevelText(analysis.risk_level) === 'HIGH' ? 'Risk level is high' : '',
   ].filter(Boolean)
@@ -3005,7 +3005,7 @@ function edgeAnalyzeOu(match: any) {
     confidenceScore: normalizeScore(46 + Math.abs(tempo - 52) * 0.58 + (rows.length ? 8 : -10) - warnings.length * 3),
     reasons: reasons.length ? reasons : ['OU data direction is conservative'],
     warnings,
-    marketSignal: rows.length ? 'Latest OU market data is available' : 'No OU market data yet',
+    marketSignal: rows.length ? 'Latest OU market data is available' : 'ยังไม่มีข้อมูลตลาดราคา',
     hasMarket: rows.length > 0,
     bookmakerCount: new Set(rows.map((row: any) => row.bookmaker_name).filter(Boolean)).size,
   }
@@ -3020,7 +3020,7 @@ function chooseEdgeMarket(ahAnalysis: any, ouAnalysis: any) {
 }
 
 function buildEdgeAiFinalSummary(signal: string, marketFocus: string, direction: string, confidenceScore: number, riskLevel: string, hasOdds: boolean) {
-  if (!hasOdds) return 'AI Final Pick is limited because market data is not available yet. Highest signal is capped at Watch.'
+  if (!hasOdds) return 'ยังไม่มีข้อมูลตลาดราคา AI Final Pick จึงจำกัดสัญญาณสูงสุดไม่ให้เป็น Strong Signal'
   if (signal === 'STRONG_SIGNAL') return `Strong Signal on ${marketFocus} ${direction} with ${confidenceScore}% confidence and ${riskLevel} risk.`
   if (signal === 'WATCH') return `Watch ${marketFocus} ${direction}. Data direction is useful but still needs confirmation.`
   return `Skip ${marketFocus} ${direction}. Risk or data conflict is too high for a final signal.`

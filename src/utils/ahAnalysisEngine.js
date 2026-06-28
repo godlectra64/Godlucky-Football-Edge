@@ -70,7 +70,7 @@ function buildAhReasons({ analysis, hasMarket, gap, isHome, movement }) {
 
 function buildAhWarnings({ analysis, hasMarket, gap, movement }) {
   const warnings = []
-  if (!hasMarket) warnings.push('No AH market data yet')
+  if (!hasMarket) warnings.push('ยังไม่มีข้อมูลตลาดราคา')
   if (Math.abs(gap) < 5) warnings.push('Team edge is narrow')
   if (String(analysis.risk_level ?? '').toUpperCase() === 'HIGH') warnings.push('Risk level is high')
   if (movement === 'against') warnings.push('Market movement is against the direction')

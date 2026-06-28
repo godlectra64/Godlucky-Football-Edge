@@ -42,7 +42,7 @@ export function generateAiFinalPick(match = {}) {
     riskLevel,
     keyReasons,
     warningSigns,
-    marketSignal: hasOdds ? selected.marketSignal : 'No market data yet',
+    marketSignal: hasOdds ? selected.marketSignal : 'ยังไม่มีข้อมูลตลาดราคา',
     finalSummary: buildFinalSummary(signal, safeMarketFocus, direction, confidenceScore, riskLevel, hasOdds),
     ahAnalysis,
     ouAnalysis,
@@ -62,7 +62,7 @@ export function normalizeStoredAiFinalPick(row, match = {}) {
     riskLevel: normalizeRiskLevel(row.risk_level ?? row.riskLevel),
     keyReasons: toArray(row.key_reasons ?? row.keyReasons),
     warningSigns: toArray(row.warning_signs ?? row.warningSigns),
-    marketSignal: row.market_signal ?? row.marketSignal ?? 'No market data yet',
+    marketSignal: row.market_signal ?? row.marketSignal ?? 'ยังไม่มีข้อมูลตลาดราคา',
     finalSummary: row.final_summary ?? row.finalSummary ?? '',
     ahAnalysis: row.ah_analysis ?? row.ahAnalysis ?? null,
     ouAnalysis: row.ou_analysis ?? row.ouAnalysis ?? null,
@@ -109,7 +109,7 @@ function resolveSignal({ totalAnalysisScore, selectionScore, confidenceScore, ri
 }
 
 function buildFinalSummary(signal, marketFocus, direction, confidenceScore, riskLevel, hasOdds) {
-  if (!hasOdds) return 'AI Final Pick is limited because market data is not available yet. Highest signal is capped at Watch.'
+  if (!hasOdds) return 'ยังไม่มีข้อมูลตลาดราคา AI Final Pick จึงจำกัดสัญญาณสูงสุดไม่ให้เป็น Strong Signal'
   if (signal === 'STRONG_SIGNAL') return `Strong Signal on ${marketFocus} ${direction} with ${confidenceScore}% confidence and ${riskLevel} risk.`
   if (signal === 'WATCH') return `Watch ${marketFocus} ${direction}. Data direction is useful but still needs confirmation.`
   return `Skip ${marketFocus} ${direction}. Risk or data conflict is too high for a final signal.`

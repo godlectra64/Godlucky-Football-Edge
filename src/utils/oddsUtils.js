@@ -61,7 +61,7 @@ export function getPrimaryOddText(match = {}, marketFocus) {
 }
 
 export function describeMarketMovement(rows = [], direction = '') {
-  if (!rows.length) return 'No market data yet'
+  if (!rows.length) return 'ยังไม่มีข้อมูลตลาดราคา'
   const sorted = [...rows].sort((a, b) => new Date(a.snapshotAt ?? 0).getTime() - new Date(b.snapshotAt ?? 0).getTime())
   const first = sorted[0]
   const last = sorted.at(-1)

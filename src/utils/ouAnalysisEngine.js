@@ -49,7 +49,7 @@ function buildOuReasons({ attacking, defending, homeGoals, awayGoals, tempo, has
 
 function buildOuWarnings({ analysis, hasMarket, tempo, movement }) {
   const warnings = []
-  if (!hasMarket) warnings.push('No OU market data yet')
+  if (!hasMarket) warnings.push('ยังไม่มีข้อมูลตลาดราคา')
   if (tempo > 47 && tempo < 57) warnings.push('Goal tempo is close to neutral')
   if (String(analysis.risk_level ?? '').toUpperCase() === 'HIGH') warnings.push('Risk level is high')
   if (movement === 'against') warnings.push('Market movement is against the direction')

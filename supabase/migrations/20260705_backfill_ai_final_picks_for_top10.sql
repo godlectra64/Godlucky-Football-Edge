@@ -27,11 +27,11 @@ select
     else 'MEDIUM'
   end,
   jsonb_build_array('Top 10 match is available', 'AI Final Pick awaits market confirmation', 'API-FOOTBALL team data is available'),
-  jsonb_build_array('No market data yet'),
-  'No market data yet',
-  'AI Final Pick is limited because market data is not available yet. Highest signal is capped at Watch.',
-  jsonb_build_object('marketFocus', 'AH', 'direction', 'No market direction', 'confidenceScore', 0, 'reasons', jsonb_build_array(), 'warnings', jsonb_build_array('No AH market data yet')),
-  jsonb_build_object('marketFocus', 'OU', 'direction', 'No market direction', 'confidenceScore', 0, 'reasons', jsonb_build_array(), 'warnings', jsonb_build_array('No OU market data yet')),
+  jsonb_build_array('ยังไม่มีข้อมูลตลาดราคา'),
+  'ยังไม่มีข้อมูลตลาดราคา',
+  'ยังไม่มีข้อมูลตลาดราคา AI Final Pick จึงจำกัดสัญญาณสูงสุดไม่ให้เป็น Strong Signal',
+  jsonb_build_object('marketFocus', 'AH', 'direction', 'No market direction', 'confidenceScore', 0, 'reasons', jsonb_build_array(), 'warnings', jsonb_build_array('ยังไม่มีข้อมูลตลาดราคา')),
+  jsonb_build_object('marketFocus', 'OU', 'direction', 'No market direction', 'confidenceScore', 0, 'reasons', jsonb_build_array(), 'warnings', jsonb_build_array('ยังไม่มีข้อมูลตลาดราคา')),
   jsonb_build_object('source', 'top10_backfill', 'final_rank', ma.final_rank),
   now()
 from public.match_analysis ma
