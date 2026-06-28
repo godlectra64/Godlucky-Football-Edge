@@ -1,5 +1,5 @@
 import { fetchEnabledLeagues, updateLeagueSettingsById } from '../repositories/analysisRepository'
-import { fetchMatchById, fetchMatchesByKickoffRange } from '../repositories/matchesRepository'
+import { fetchMatchById, fetchMatchEnrichment, fetchMatchesByKickoffRange } from '../repositories/matchesRepository'
 import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../repositories/performanceRepository'
 import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../repositories/syncRepository'
 import { getTopMatches } from '../utils/analysisEngine'
@@ -35,7 +35,19 @@ export async function getMatchAnalysis(matchId) {
 }
 
 export async function getMatchDetail(matchId) {
-  return getMatchAnalysis(matchId)
+  const { data, error } = await fetchMatchById(matchId)
+
+  if (error) {
+    logSupabaseReadError('getMatchDetail', error)
+    return null
+  }
+
+  const enrichment = await fetchMatchEnrichment(data).catch((error) => {
+    logSupabaseReadError('getMatchDetail.enrichment', error)
+    return createEmptyEnrichment()
+  })
+
+  return normalizeMatch({ ...data, enrichment })
 }
 
 export async function getEnabledLeagues() {
@@ -160,6 +172,7 @@ export function normalizeMatch(row = {}) {
     awayForm: activeAnalysis?.raw?.awayForm ?? raw.awayForm ?? null,
     standings: activeAnalysis?.raw?.standings ?? raw.standings ?? [],
     raw,
+    enrichment: normalizeEnrichment(source.enrichment),
     confidence: calibratedConfidence,
     calibratedConfidence: activeAnalysis?.calibrated_confidence_score,
     calibrated_confidence_score: activeAnalysis?.calibrated_confidence_score,
@@ -230,6 +243,40 @@ export function normalizeMatch(row = {}) {
     dataValidationStatus: activeAnalysis?.data_validation_status,
     data_validation_status: activeAnalysis?.data_validation_status,
     updatedAt: activeAnalysis?.updated_at ?? source.updated_at ?? source.created_at,
+  }
+}
+
+function normalizeEnrichment(enrichment = {}) {
+  const topPlayers = enrichment.topPlayers ?? []
+  return {
+    statistics: enrichment.statistics ?? [],
+    events: enrichment.events ?? [],
+    lineups: enrichment.lineups ?? [],
+    players: enrichment.players ?? [],
+    injuries: enrichment.injuries ?? [],
+    venue: enrichment.venue ?? null,
+    round: enrichment.round ?? null,
+    coverage: enrichment.coverage ?? null,
+    topPlayers: {
+      top_scorers: topPlayers.filter((item) => item.category === 'top_scorers'),
+      top_assists: topPlayers.filter((item) => item.category === 'top_assists'),
+      top_yellow_cards: topPlayers.filter((item) => item.category === 'top_yellow_cards'),
+      top_red_cards: topPlayers.filter((item) => item.category === 'top_red_cards'),
+    },
+  }
+}
+
+function createEmptyEnrichment() {
+  return {
+    statistics: [],
+    events: [],
+    lineups: [],
+    players: [],
+    injuries: [],
+    venue: null,
+    round: null,
+    coverage: null,
+    topPlayers: [],
   }
 }
 

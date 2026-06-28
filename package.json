@@ -7,6 +7,8 @@
     "dev": "vite",
     "test": "node scripts/analysisEngine.smoke.test.mjs",
     "verify:analysis": "node scripts/verifyAnalysisIntegrity.mjs",
+    "verify:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
+    "test:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"

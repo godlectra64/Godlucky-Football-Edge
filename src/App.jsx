@@ -109,7 +109,7 @@ function App() {
   )
   const topMatches = useMemo(() => getTopMatches(visibleMatches, 10), [visibleMatches])
   const oneBestPick = useMemo(() => getOneBestPickOfDay(topMatches), [topMatches])
-  const selectedMatch = matches.find((match) => match.id === selectedMatchId) ?? detailMatch ?? null
+  const selectedMatch = detailMatch ?? matches.find((match) => match.id === selectedMatchId) ?? null
   const performanceContext = useMemo(() => {
     const version = selectedMatch?.analysis?.raw?.framework ?? selectedMatch?.analysis?.raw?.analysis_version ?? ''
     return getPerformanceContext(performanceRows, version)
@@ -117,7 +117,7 @@ function App() {
   const predictionReliability = useMemo(() => getPredictionReliability(selectedMatch ?? {}, performanceRows), [performanceRows, selectedMatch])
 
   useEffect(() => {
-    if (!selectedMatchId || matches.some((match) => match.id === selectedMatchId) || !connection.configured) {
+    if (!selectedMatchId || !connection.configured) {
       return
     }
 
@@ -136,13 +136,13 @@ function App() {
     return () => {
       active = false
     }
-  }, [connection.configured, matches, selectedMatchId])
+  }, [connection.configured, selectedMatchId])
 
   const openMatch = (id) => {
     setSelectedMatchId(id)
     setDetailMatch(null)
     setDetailError('')
-    setDetailLoading(connection.configured && !matches.some((match) => match.id === id))
+    setDetailLoading(connection.configured)
     setActivePage('analysis')
     window.history.pushState({}, '', getMatchRoute(id))
   }

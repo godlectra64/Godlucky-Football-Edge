@@ -1,6 +1,6 @@
 import { exec } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { writeFile, unlink } from 'node:fs/promises'
+import { readFile, writeFile, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -197,6 +197,44 @@ const optionalV4Checks = [
   },
 ]
 
+const enrichmentTables = [
+  'api_football_league_coverage',
+  'api_football_fixture_statistics',
+  'api_football_fixture_events',
+  'api_football_fixture_lineups',
+  'api_football_fixture_players',
+  'api_football_injuries',
+  'api_football_squads',
+  'api_football_coaches',
+  'api_football_venues',
+  'api_football_top_players',
+  'api_football_rounds',
+  'api_football_enrichment_sync_log',
+]
+
+const footballEnrichmentChecks = [
+  ...enrichmentTables.map((table) => ({
+    label: `enrichment table ${table}`,
+    query: () => supabase.from(table).select('id', { count: 'exact', head: true }),
+  })),
+  {
+    label: 'latest enrichment sync errors',
+    query: () => supabase.from('api_football_enrichment_sync_log').select('id', { count: 'exact', head: true }).eq('status', 'error').gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
+  },
+  {
+    label: 'top 10 fixture enrichment rows',
+    query: checkTopFixtureEnrichment,
+  },
+  {
+    label: 'frontend empty enrichment normalization',
+    query: checkFrontendEmptyEnrichment,
+  },
+  {
+    label: 'football enrichment betting keyword scan',
+    query: checkFootballEnrichmentKeywordScan,
+  },
+]
+
 let failed = false
 
 for (const check of checks) {
@@ -245,6 +283,24 @@ for (const check of optionalV4Checks) {
   if ((count ?? 0) > 0) failed = true
 }
 
+for (const check of footballEnrichmentChecks) {
+  const { count, error, warning } = await check.query()
+  if (error) {
+    if (isOptionalV2Missing(error)) {
+      console.log(`${check.label}: skipped (${error.message})`)
+      continue
+    }
+
+    failed = true
+    console.error(`${check.label}: query failed - ${error.message}`)
+    continue
+  }
+
+  if (warning) console.warn(`${check.label}: ${warning}`)
+  else console.log(`${check.label}: ${count ?? 0}`)
+  if ((count ?? 0) > 0 && check.label !== 'top 10 fixture enrichment rows' && !check.label.startsWith('enrichment table ')) failed = true
+}
+
 if (failed) {
   process.exit(1)
 }
@@ -281,6 +337,21 @@ async function runLinkedCliVerification() {
       where is_top_pick is true and final_rank is not null
       group by match_day, final_rank
       having count(*) > 1
+    ),
+    enrichment_tables(name) as (
+      values
+        ('api_football_league_coverage'),
+        ('api_football_fixture_statistics'),
+        ('api_football_fixture_events'),
+        ('api_football_fixture_lineups'),
+        ('api_football_fixture_players'),
+        ('api_football_injuries'),
+        ('api_football_squads'),
+        ('api_football_coaches'),
+        ('api_football_venues'),
+        ('api_football_top_players'),
+        ('api_football_rounds'),
+        ('api_football_enrichment_sync_log')
     )
     select
       count(*) filter (where analysis_summary is null) as "null analysis_summary",
@@ -309,7 +380,8 @@ async function runLinkedCliVerification() {
       count(*) filter (where is_top_pick is true and recommendation not in ('BET', 'LEAN', 'WATCH', 'NO BET')) as "invalid top pick recommendation",
       (select count(*) from duplicate_final_pick_days) as "duplicate final pick per day",
       (select count(*) from duplicate_rank_days) as "duplicate final_rank per day",
-      count(*) filter (where is_top_pick is true and (final_rank < 1 or final_rank > 10)) as "top pick final_rank outside 1-10"
+      count(*) filter (where is_top_pick is true and (final_rank < 1 or final_rank > 10)) as "top pick final_rank outside 1-10",
+      (select count(*) from enrichment_tables where to_regclass('public.' || name) is null) as "missing enrichment tables"
     from base;
   `
 
@@ -327,6 +399,14 @@ async function runLinkedCliVerification() {
       const count = Number(rawCount ?? 0)
       console.log(`${label}: ${count}`)
       if (count > 0) failedCliCheck = true
+    }
+
+    for (const check of [checkFrontendEmptyEnrichment, checkFootballEnrichmentKeywordScan]) {
+      const { count, warning } = await check()
+      const label = check.name.replace(/^check/, '')
+      if (warning) console.warn(`${label}: ${warning}`)
+      else console.log(`${label}: ${count ?? 0}`)
+      if ((count ?? 0) > 0) failedCliCheck = true
     }
 
     if (!failedCliCheck) console.log('match_analysis integrity checks passed')
@@ -384,4 +464,57 @@ async function fetchKickoffByMatchId(rows) {
   }
 
   return { map }
+}
+
+async function checkTopFixtureEnrichment() {
+  const { data: matches, error } = await supabase
+    .from('match_analysis')
+    .select('match_id, final_rank, is_top_pick, football_matches(api_sports_fixture_id)')
+    .eq('is_top_pick', true)
+    .not('final_rank', 'is', null)
+    .order('final_rank', { ascending: true })
+    .limit(10)
+  if (error) return { error }
+
+  const fixtureIds = (matches ?? [])
+    .map((item) => item.football_matches?.api_sports_fixture_id)
+    .filter(Boolean)
+  if (!fixtureIds.length) return { count: 0, warning: 'no top 10 API-FOOTBALL fixtures available yet' }
+
+  const tables = ['api_football_fixture_statistics', 'api_football_fixture_events', 'api_football_fixture_lineups', 'api_football_fixture_players']
+  let enrichedRows = 0
+  for (const table of tables) {
+    const { count, error: tableError } = await supabase.from(table).select('id', { count: 'exact', head: true }).in('api_fixture_id', fixtureIds)
+    if (tableError) {
+      if (isOptionalV2Missing(tableError)) return { count: 0, warning: tableError.message }
+      return { error: tableError }
+    }
+    enrichedRows += count ?? 0
+  }
+  return enrichedRows > 0 ? { count: 0 } : { count: 0, warning: 'top 10 exists, but enrichment rows are still empty' }
+}
+
+async function checkFrontendEmptyEnrichment() {
+  const { normalizeFootballEnrichment } = await import('../src/utils/matchDetail.js')
+  const normalized = normalizeFootballEnrichment({ enrichment: {} })
+  const ok = Array.isArray(normalized.statistics) && Array.isArray(normalized.coverageItems) && normalized.coverageItems.length >= 7
+  return { count: ok ? 0 : 1 }
+}
+
+async function checkFootballEnrichmentKeywordScan() {
+  const files = [
+    'supabase/migrations/20260630_add_api_football_enrichment_tables.sql',
+    'src/repositories/matchesRepository.js',
+  ]
+  const banned = /\b(odds|bookmakers|AH|OU|betting markets)\b/i
+  for (const file of files) {
+    const text = await readFile(file, 'utf8')
+    if (banned.test(text)) return { count: 1, warning: `banned market keyword found in ${file}` }
+  }
+  const edgeText = await readFile('supabase/functions/sync-football-data/index.ts', 'utf8')
+  const enrichmentLines = edgeText
+    .split('\n')
+    .filter((line) => /api_football_|footballEnrichment|top-players|fixture-enrich|coverage|rounds|squads|coaches|venues/.test(line))
+    .join('\n')
+  return { count: banned.test(enrichmentLines) ? 1 : 0 }
 }

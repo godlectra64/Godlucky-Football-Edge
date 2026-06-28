@@ -67,8 +67,23 @@ const defaultManualLimit = 50
 const maxManualLimit = 100
 const defaultEnrichLimit = 10
 const maxEnrichLimit = 30
+const defaultFootballEnrichmentLimit = 10
+const maxFootballEnrichmentLimit = 50
 const syncChunkSize = 10
 const enrichChunkSize = 5
+const footballEnrichmentChunkSize = 2
+
+const footballEnrichmentModes = [
+  'coverage',
+  'rounds',
+  'fixture-enrich',
+  'injuries',
+  'squads',
+  'coaches',
+  'venues',
+  'top-players',
+  'enrich-all',
+]
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
@@ -112,13 +127,15 @@ Deno.serve(async (request) => {
       await resetMatchesForRange(dayRange)
     }
 
-    const modeResult = mode === 'enrich'
-      ? await runEnrichMode(dayRange, limit)
-      : mode === 'recompute'
-        ? await runRecomputeMode(dayRange, limit)
-        : mode === 'learning'
-          ? await runLearningMode(dayRange, limit)
-          : await runManualMode(primaryProvider, dayRange, limit, offset)
+    const modeResult = isFootballEnrichmentMode(mode)
+      ? await runFootballEnrichmentMode(mode, body, dayRange, limit)
+      : mode === 'enrich'
+        ? await runEnrichMode(dayRange, limit)
+        : mode === 'recompute'
+          ? await runRecomputeMode(dayRange, limit)
+          : mode === 'learning'
+            ? await runLearningMode(dayRange, limit)
+            : await runManualMode(primaryProvider, dayRange, limit, offset)
     const providerResult = modeResult.providerResult
     const processed = modeResult.processed
     const totalCandidates = modeResult.totalCandidates
@@ -344,6 +361,305 @@ async function runEnrichMode(dayRange: ReturnType<typeof getBangkokDayRange>, li
     enrichedMatches: result.results.map((item: any) => item.enrichedMatch).filter(Boolean).slice(0, 30),
     rankedSelectionRows,
   }
+}
+
+type FootballEnrichmentContext = {
+  mode: string
+  limit: number
+  dateKey: string
+  rateLimited: boolean
+  endpoints: Record<string, FootballEnrichmentEndpointCounter>
+  skippedEndpoints: Array<{ endpoint: string; reason: string; apiFixtureId?: number; apiLeagueId?: number; apiTeamId?: number; season?: number }>
+}
+
+type FootballEnrichmentEndpointCounter = {
+  called: number
+  withData: number
+  empty: number
+  skipped: number
+  failed: number
+  rowsSaved: number
+}
+
+type FootballEnrichmentEndpointCounterKey = keyof FootballEnrichmentEndpointCounter
+
+async function runFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+  const provider = getProviderAdapter('api-football')
+  const providerResult = { provider, fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] }
+  const context = createFootballEnrichmentContext(mode, limit, typeof body.date === 'string' ? body.date : dayRange.dateKey)
+  const started = Date.now()
+
+  let processed = 0
+  let totalCandidates = 0
+  if (mode === 'enrich-all') {
+    for (const childMode of ['coverage', 'rounds', 'squads', 'coaches', 'venues', 'injuries', 'top-players', 'fixture-enrich']) {
+      if (context.rateLimited) break
+      const child = await executeFootballEnrichmentMode(childMode, body, dayRange, context)
+      processed += child.processed
+      totalCandidates += child.totalCandidates
+    }
+  } else {
+    const result = await executeFootballEnrichmentMode(mode, body, dayRange, context)
+    processed = result.processed
+    totalCandidates = result.totalCandidates
+  }
+
+  return {
+    providerResult,
+    totalCandidates,
+    totalFetched: totalCandidates,
+    processed,
+    skippedByLimit: 0,
+    failures: [],
+    rankedSelectionRows: 0,
+    topSelections: [],
+    endpointCoverage: context.endpoints,
+    enrichedMatches: [],
+    processedMatches: [],
+    skippedEndpoints: context.skippedEndpoints,
+    rateLimited: context.rateLimited,
+    durationMs: Date.now() - started,
+  }
+}
+
+async function executeFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  if (mode === 'coverage') return syncApiFootballCoverage(context)
+  if (mode === 'rounds') return syncApiFootballRounds(context)
+  if (mode === 'fixture-enrich') return syncApiFootballFixtureEnrichment(dayRange, context)
+  if (mode === 'injuries') return syncApiFootballInjuries(String(body.date ?? context.dateKey), context)
+  if (mode === 'squads') return syncApiFootballSquads(context)
+  if (mode === 'coaches') return syncApiFootballCoaches(context)
+  if (mode === 'venues') return syncApiFootballVenues(context)
+  if (mode === 'top-players') return syncApiFootballTopPlayers(context)
+  return { processed: 0, totalCandidates: 0 }
+}
+
+function createFootballEnrichmentContext(mode: string, limit: number, dateKey: string): FootballEnrichmentContext {
+  return {
+    mode,
+    limit,
+    dateKey,
+    rateLimited: false,
+    endpoints: {},
+    skippedEndpoints: [],
+  }
+}
+
+async function syncApiFootballCoverage(context: FootballEnrichmentContext) {
+  const leagues = (await fetchDistinctApiFootballLeagues()).slice(0, context.limit)
+  let processed = 0
+  for (const item of leagues) {
+    if (context.rateLimited) break
+    const response = await trackedApiFootballGet(context, '/leagues', { id: item.api_league_id, season: item.season }, { apiLeagueId: item.api_league_id, season: item.season })
+    if (!response.ok) continue
+    const rows = (response.data ?? []).map((row: any) => normalizeLeagueCoverage(row, item))
+    await upsertApiFootballData('api_football_league_coverage', 'api_league_id,season', rows)
+    addEndpointRowsSaved(context, '/leagues', rows.length)
+    processed += rows.length
+  }
+  return { processed, totalCandidates: leagues.length }
+}
+
+async function syncApiFootballRounds(context: FootballEnrichmentContext) {
+  const leagues = (await fetchDistinctApiFootballLeagues()).slice(0, context.limit)
+  let processed = 0
+  for (const item of leagues) {
+    if (context.rateLimited) break
+    const allRounds = await trackedApiFootballGet(context, '/fixtures/rounds', { league: item.api_league_id, season: item.season }, { apiLeagueId: item.api_league_id, season: item.season })
+    const current = context.rateLimited ? { data: [] } : await trackedApiFootballGet(context, '/fixtures/rounds', { league: item.api_league_id, season: item.season, current: 'true' }, { apiLeagueId: item.api_league_id, season: item.season })
+    if (!allRounds.ok) continue
+    const currentRound = Array.isArray(current.data) ? current.data[0] : null
+    const rows = (allRounds.data ?? []).map((roundName: string, index: number) => ({
+      api_league_id: item.api_league_id,
+      season: item.season,
+      round_name: String(roundName),
+      is_current: currentRound ? String(roundName) === String(currentRound) : false,
+      round_order: index + 1,
+      raw_payload: { round: roundName, current: currentRound },
+      synced_at: new Date().toISOString(),
+    }))
+    await upsertApiFootballData('api_football_rounds', 'api_league_id,season,round_name', rows)
+    addEndpointRowsSaved(context, '/fixtures/rounds', rows.length)
+    processed += rows.length
+  }
+  return { processed, totalCandidates: leagues.length }
+}
+
+async function syncApiFootballFixtureEnrichment(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const fixtures = await fetchApiFootballFixtureCandidates(dayRange, context.limit)
+  let processed = 0
+  for (const group of chunk(fixtures, footballEnrichmentChunkSize)) {
+    for (const match of group) {
+      if (context.rateLimited) break
+      processed += await enrichOneApiFootballFixture(match, context)
+    }
+    if (context.rateLimited) break
+  }
+  return { processed, totalCandidates: fixtures.length }
+}
+
+async function enrichOneApiFootballFixture(match: any, context: FootballEnrichmentContext) {
+  const fixtureId = getMatchFixtureId(match)
+  if (!fixtureId) return 0
+  const coverage = await fetchCoverageForMatch(match)
+  let saved = 0
+  const calls = [
+    { endpoint: '/fixtures/statistics', coverageKey: 'has_fixture_statistics', normalizer: normalizeFixtureStatisticsRows, table: 'api_football_fixture_statistics', conflict: 'api_fixture_id,api_team_id' },
+    { endpoint: '/fixtures/events', coverageKey: 'has_events', normalizer: normalizeFixtureEventRows, table: 'api_football_fixture_events', conflict: '' },
+    { endpoint: '/fixtures/lineups', coverageKey: 'has_lineups', normalizer: normalizeFixtureLineupRows, table: 'api_football_fixture_lineups', conflict: 'api_fixture_id,api_team_id' },
+    { endpoint: '/fixtures/players', coverageKey: 'has_player_statistics', normalizer: normalizeFixturePlayerRows, table: 'api_football_fixture_players', conflict: 'api_fixture_id,api_team_id,api_player_id' },
+  ]
+
+  for (const call of calls) {
+    if (context.rateLimited) break
+    if (!shouldFetchFixtureEnrichment(match, call.endpoint)) {
+      await logEnrichmentSync({ mode: context.mode, api_fixture_id: fixtureId, api_league_id: getMatchLeagueId(match), season: getMatchSeason(match), endpoint: call.endpoint, status: 'skipped_not_due' })
+      rememberSkippedEndpoint(context, call.endpoint, 'skipped_not_due', { apiFixtureId: fixtureId, apiLeagueId: getMatchLeagueId(match), season: getMatchSeason(match) })
+      continue
+    }
+    if (coverage && !hasCoverage(coverage, call.coverageKey)) {
+      await logEnrichmentSync({ mode: context.mode, api_fixture_id: fixtureId, api_league_id: getMatchLeagueId(match), season: getMatchSeason(match), endpoint: call.endpoint, status: 'skipped_no_coverage' })
+      rememberSkippedEndpoint(context, call.endpoint, 'skipped_no_coverage', { apiFixtureId: fixtureId, apiLeagueId: getMatchLeagueId(match), season: getMatchSeason(match) })
+      addEndpointSkipped(context, call.endpoint)
+      continue
+    }
+    const response = await trackedApiFootballGet(context, call.endpoint, { fixture: fixtureId }, { apiFixtureId: fixtureId, apiLeagueId: getMatchLeagueId(match), season: getMatchSeason(match) })
+    if (!response.ok) continue
+    const rows = call.normalizer(response.data ?? [], fixtureId)
+    if (call.table === 'api_football_fixture_events') {
+      await replaceApiFootballRows(call.table, { api_fixture_id: fixtureId }, rows)
+    } else {
+      await upsertApiFootballData(call.table, call.conflict, rows)
+    }
+    addEndpointRowsSaved(context, call.endpoint, rows.length)
+    saved += rows.length
+  }
+  return saved > 0 ? 1 : 0
+}
+
+async function syncApiFootballInjuries(dateKey: string, context: FootballEnrichmentContext) {
+  const fixtures = await fetchApiFootballFixtureCandidates(getBangkokDayRange(dateKey), context.limit)
+  const leagues = (await fetchDistinctApiFootballLeagues()).slice(0, context.limit)
+  let processed = 0
+
+  for (const match of fixtures) {
+    if (context.rateLimited) break
+    const fixtureId = getMatchFixtureId(match)
+    if (!fixtureId) continue
+    const coverage = await fetchCoverageForMatch(match)
+    if (coverage && !hasCoverage(coverage, 'has_injuries')) {
+      await logEnrichmentSync({ mode: context.mode, api_fixture_id: fixtureId, api_league_id: getMatchLeagueId(match), season: getMatchSeason(match), endpoint: '/injuries', status: 'skipped_no_coverage' })
+      rememberSkippedEndpoint(context, '/injuries', 'skipped_no_coverage', { apiFixtureId: fixtureId, apiLeagueId: getMatchLeagueId(match), season: getMatchSeason(match) })
+      addEndpointSkipped(context, '/injuries')
+      continue
+    }
+    const response = await trackedApiFootballGet(context, '/injuries', { fixture: fixtureId }, { apiFixtureId: fixtureId, apiLeagueId: getMatchLeagueId(match), season: getMatchSeason(match) })
+    if (!response.ok) continue
+    const rows = normalizeInjuryRows(response.data ?? [])
+    await replaceApiFootballRows('api_football_injuries', { api_fixture_id: fixtureId }, rows)
+    addEndpointRowsSaved(context, '/injuries', rows.length)
+    processed += rows.length
+  }
+
+  for (const item of leagues) {
+    if (context.rateLimited || processed >= context.limit) break
+    const coverage = await fetchCoverageForLeague(item.api_league_id, item.season)
+    if (coverage && !hasCoverage(coverage, 'has_injuries')) {
+      await logEnrichmentSync({ mode: context.mode, api_league_id: item.api_league_id, season: item.season, endpoint: '/injuries', status: 'skipped_no_coverage' })
+      rememberSkippedEndpoint(context, '/injuries', 'skipped_no_coverage', { apiLeagueId: item.api_league_id, season: item.season })
+      addEndpointSkipped(context, '/injuries')
+      continue
+    }
+    const response = await trackedApiFootballGet(context, '/injuries', { league: item.api_league_id, season: item.season, date: dateKey }, { apiLeagueId: item.api_league_id, season: item.season })
+    if (!response.ok) continue
+    const rows = normalizeInjuryRows(response.data ?? [])
+    await replaceApiFootballRows('api_football_injuries', { api_league_id: item.api_league_id, season: item.season }, rows)
+    addEndpointRowsSaved(context, '/injuries', rows.length)
+    processed += rows.length
+  }
+  return { processed, totalCandidates: fixtures.length + leagues.length }
+}
+
+async function syncApiFootballSquads(context: FootballEnrichmentContext) {
+  const teams = (await fetchDistinctApiFootballTeams()).slice(0, context.limit)
+  let processed = 0
+  for (const team of teams) {
+    if (context.rateLimited) break
+    const response = await trackedApiFootballGet(context, '/players/squads', { team: team.api_team_id }, { apiTeamId: team.api_team_id })
+    if (!response.ok) continue
+    const rows = normalizeSquadRows(response.data ?? [], team)
+    await upsertApiFootballData('api_football_squads', 'api_team_id,api_player_id', rows)
+    addEndpointRowsSaved(context, '/players/squads', rows.length)
+    processed += rows.length
+  }
+  return { processed, totalCandidates: teams.length }
+}
+
+async function syncApiFootballCoaches(context: FootballEnrichmentContext) {
+  const teams = (await fetchDistinctApiFootballTeams()).slice(0, context.limit)
+  let processed = 0
+  for (const team of teams) {
+    if (context.rateLimited) break
+    const response = await trackedApiFootballGet(context, '/coachs', { team: team.api_team_id }, { apiTeamId: team.api_team_id })
+    if (!response.ok) continue
+    const rows = normalizeCoachRows(response.data ?? [], team)
+    await upsertApiFootballData('api_football_coaches', 'api_coach_id,api_team_id', rows)
+    addEndpointRowsSaved(context, '/coachs', rows.length)
+    processed += rows.length
+  }
+  return { processed, totalCandidates: teams.length }
+}
+
+async function syncApiFootballVenues(context: FootballEnrichmentContext) {
+  const venues = (await fetchDistinctApiFootballVenues()).slice(0, context.limit)
+  let processed = 0
+  for (const venue of venues) {
+    if (context.rateLimited) break
+    if (!venue.api_venue_id) {
+      const fallback = normalizeVenueFallbackRow(venue)
+      await upsertApiFootballData('api_football_venues', 'api_venue_id', fallback ? [fallback] : [])
+      if (fallback) processed += 1
+      continue
+    }
+    const response = await trackedApiFootballGet(context, '/venues', { id: venue.api_venue_id }, {})
+    if (!response.ok) continue
+    const rows = normalizeVenueRows(response.data ?? [], venue)
+    await upsertApiFootballData('api_football_venues', 'api_venue_id', rows)
+    addEndpointRowsSaved(context, '/venues', rows.length)
+    processed += rows.length
+  }
+  return { processed, totalCandidates: venues.length }
+}
+
+async function syncApiFootballTopPlayers(context: FootballEnrichmentContext) {
+  const leagues = (await fetchDistinctApiFootballLeagues()).slice(0, context.limit)
+  const endpoints = [
+    { endpoint: '/players/topscorers', category: 'top_scorers', coverageKey: 'has_top_scorers' },
+    { endpoint: '/players/topassists', category: 'top_assists', coverageKey: 'has_top_assists' },
+    { endpoint: '/players/topyellowcards', category: 'top_yellow_cards', coverageKey: 'has_top_cards' },
+    { endpoint: '/players/topredcards', category: 'top_red_cards', coverageKey: 'has_top_cards' },
+  ]
+  let processed = 0
+  for (const league of leagues) {
+    if (context.rateLimited) break
+    const coverage = await fetchCoverageForLeague(league.api_league_id, league.season)
+    for (const item of endpoints) {
+      if (context.rateLimited) break
+      if (coverage && !hasCoverage(coverage, item.coverageKey)) {
+        await logEnrichmentSync({ mode: context.mode, api_league_id: league.api_league_id, season: league.season, endpoint: item.endpoint, status: 'skipped_no_coverage' })
+        rememberSkippedEndpoint(context, item.endpoint, 'skipped_no_coverage', { apiLeagueId: league.api_league_id, season: league.season })
+        addEndpointSkipped(context, item.endpoint)
+        continue
+      }
+      const response = await trackedApiFootballGet(context, item.endpoint, { league: league.api_league_id, season: league.season }, { apiLeagueId: league.api_league_id, season: league.season })
+      if (!response.ok) continue
+      const rows = normalizeTopPlayerRows(response.data ?? [], item.category, league)
+      await upsertApiFootballData('api_football_top_players', 'category,api_league_id,season,api_player_id', rows)
+      addEndpointRowsSaved(context, item.endpoint, rows.length)
+      processed += rows.length
+    }
+  }
+  return { processed, totalCandidates: leagues.length }
 }
 
 function compareFixtureSyncPriority(a: any, b: any) {
@@ -824,6 +1140,549 @@ async function apiFootballSafeGet(path: string, params: Record<string, string | 
       raw: null,
     }
   }
+}
+
+async function trackedApiFootballGet(context: FootballEnrichmentContext, endpoint: string, params: Record<string, string | number | undefined> = {}, meta: any = {}) {
+  if (context.rateLimited) {
+    await logEnrichmentSync({ mode: context.mode, endpoint, status: 'skipped_not_due', ...toSyncMeta(meta) })
+    return { ok: false, data: [], raw: null, rateLimited: true }
+  }
+
+  await sleep(700 + Math.floor(Math.random() * 501))
+  bumpEndpoint(context, endpoint, 'called')
+  const startedAt = new Date().toISOString()
+  try {
+    const raw = await apiFootballGet(endpoint, params)
+    const results = Number(raw?.results ?? (Array.isArray(raw?.response) ? raw.response.length : 0))
+    const status = results === 0 ? 'empty' : 'success'
+    bumpEndpoint(context, endpoint, results === 0 ? 'empty' : 'withData')
+    await logEnrichmentSync({ mode: context.mode, endpoint, status, results_count: results, started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
+    return { ok: true, data: raw?.response ?? [], raw, rateLimited: false }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'api-football request failed'
+    if (message.includes('api-football 429')) context.rateLimited = true
+    bumpEndpoint(context, endpoint, 'failed')
+    await logEnrichmentSync({ mode: context.mode, endpoint, status: 'error', error_message: message, started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
+    return { ok: false, data: [], raw: null, error: message, rateLimited: context.rateLimited }
+  }
+}
+
+async function upsertApiFootballData(table: string, conflictTarget: string, rows: Array<any>) {
+  if (!rows.length) return { count: 0 }
+  const result = await supabase
+    .from(table)
+    .upsert(rows, { onConflict: conflictTarget })
+  if (result.error) throw result.error
+  return { count: rows.length }
+}
+
+async function replaceApiFootballRows(table: string, match: Record<string, string | number | null | undefined>, rows: Array<any>) {
+  let query = supabase.from(table).delete()
+  for (const [key, value] of Object.entries(match)) {
+    if (value !== undefined && value !== null) query = query.eq(key, value)
+  }
+  const deleteResult = await query
+  if (deleteResult.error) throw deleteResult.error
+  if (!rows.length) return { count: 0 }
+  const insertResult = await supabase.from(table).insert(rows)
+  if (insertResult.error) throw insertResult.error
+  return { count: rows.length }
+}
+
+function normalizeLeagueCoverage(row: any, fallback: any) {
+  const league = row?.league ?? {}
+  const country = row?.country ?? {}
+  const coverage = row?.seasons?.find((season: any) => Number(season?.year) === Number(fallback.season))?.coverage ?? row?.coverage ?? {}
+  return {
+    api_league_id: safeNumber(league.id ?? fallback.api_league_id),
+    season: safeNumber(fallback.season),
+    league_name: league.name ?? fallback.league_name ?? null,
+    country_name: country.name ?? fallback.country_name ?? null,
+    coverage,
+    has_events: Boolean(coverage?.fixtures?.events),
+    has_lineups: Boolean(coverage?.fixtures?.lineups),
+    has_fixture_statistics: Boolean(coverage?.fixtures?.statistics_fixtures),
+    has_player_statistics: Boolean(coverage?.fixtures?.statistics_players),
+    has_standings: Boolean(coverage?.standings),
+    has_players: Boolean(coverage?.players),
+    has_top_scorers: Boolean(coverage?.top_scorers),
+    has_top_assists: Boolean(coverage?.top_assists),
+    has_top_cards: Boolean(coverage?.top_cards),
+    has_injuries: Boolean(coverage?.injuries),
+    raw_payload: row,
+    synced_at: new Date().toISOString(),
+  }
+}
+
+function normalizeFixtureStatisticsRows(items: Array<any>, fixtureId: number) {
+  return items.map((item: any) => {
+    const stats = item.statistics ?? []
+    return {
+      api_fixture_id: fixtureId,
+      api_team_id: safeNumber(item.team?.id),
+      team_name: item.team?.name ?? null,
+      shots_on_goal: getStatValue(stats, 'Shots on Goal'),
+      shots_off_goal: getStatValue(stats, 'Shots off Goal'),
+      total_shots: getStatValue(stats, 'Total Shots'),
+      blocked_shots: getStatValue(stats, 'Blocked Shots'),
+      shots_insidebox: getStatValue(stats, 'Shots insidebox') ?? getStatValue(stats, 'Shots inside box'),
+      shots_outsidebox: getStatValue(stats, 'Shots outsidebox') ?? getStatValue(stats, 'Shots outside box'),
+      fouls: getStatValue(stats, 'Fouls'),
+      corner_kicks: getStatValue(stats, 'Corner Kicks'),
+      offsides: getStatValue(stats, 'Offsides'),
+      ball_possession: parsePercent(firstStatValue(stats, 'Ball Possession')),
+      yellow_cards: getStatValue(stats, 'Yellow Cards'),
+      red_cards: getStatValue(stats, 'Red Cards'),
+      goalkeeper_saves: getStatValue(stats, 'Goalkeeper Saves'),
+      total_passes: getStatValue(stats, 'Total passes') ?? getStatValue(stats, 'Total Passes'),
+      passes_accurate: getStatValue(stats, 'Passes accurate') ?? getStatValue(stats, 'Passes Accurate'),
+      passes_percentage: parsePercent(firstStatValue(stats, 'Passes %')),
+      raw_statistics: stats,
+      raw_payload: item,
+      synced_at: new Date().toISOString(),
+    }
+  }).filter((row: any) => row.api_team_id)
+}
+
+function normalizeFixtureEventRows(items: Array<any>, fixtureId: number) {
+  return items.map((item: any) => ({
+    api_fixture_id: fixtureId,
+    api_team_id: safeNumber(item.team?.id),
+    team_name: item.team?.name ?? null,
+    api_player_id: safeNumber(item.player?.id),
+    player_name: item.player?.name ?? null,
+    api_assist_player_id: safeNumber(item.assist?.id),
+    assist_player_name: item.assist?.name ?? null,
+    elapsed: safeNumber(item.time?.elapsed),
+    extra: safeNumber(item.time?.extra),
+    event_type: item.type ?? null,
+    event_detail: item.detail ?? null,
+    comments: item.comments ?? null,
+    raw_payload: item,
+    synced_at: new Date().toISOString(),
+  }))
+}
+
+function normalizeFixtureLineupRows(items: Array<any>, fixtureId: number) {
+  return items.map((item: any) => ({
+    api_fixture_id: fixtureId,
+    api_team_id: safeNumber(item.team?.id),
+    team_name: item.team?.name ?? null,
+    formation: item.formation ?? null,
+    coach_id: safeNumber(item.coach?.id),
+    coach_name: item.coach?.name ?? null,
+    start_xi: item.startXI ?? [],
+    substitutes: item.substitutes ?? [],
+    raw_payload: item,
+    synced_at: new Date().toISOString(),
+  })).filter((row: any) => row.api_team_id)
+}
+
+function normalizeFixturePlayerRows(items: Array<any>, fixtureId: number) {
+  const rows: Array<any> = []
+  for (const team of items) {
+    for (const item of team.players ?? []) {
+      const stats = item.statistics?.[0] ?? {}
+      rows.push({
+        api_fixture_id: fixtureId,
+        api_team_id: safeNumber(team.team?.id),
+        team_name: team.team?.name ?? null,
+        api_player_id: safeNumber(item.player?.id),
+        player_name: item.player?.name ?? null,
+        player_photo: item.player?.photo ?? null,
+        minutes: safeNumber(stats.games?.minutes),
+        number: safeNumber(stats.games?.number),
+        position: stats.games?.position ?? null,
+        rating: safeNumber(stats.games?.rating),
+        captain: stats.games?.captain ?? null,
+        substitute: stats.games?.substitute ?? null,
+        shots_total: safeNumber(stats.shots?.total),
+        shots_on: safeNumber(stats.shots?.on),
+        goals_total: safeNumber(stats.goals?.total),
+        goals_conceded: safeNumber(stats.goals?.conceded),
+        assists: safeNumber(stats.goals?.assists),
+        saves: safeNumber(stats.goals?.saves),
+        passes_total: safeNumber(stats.passes?.total),
+        passes_key: safeNumber(stats.passes?.key),
+        passes_accuracy: parsePercent(stats.passes?.accuracy),
+        tackles_total: safeNumber(stats.tackles?.total),
+        tackles_blocks: safeNumber(stats.tackles?.blocks),
+        tackles_interceptions: safeNumber(stats.tackles?.interceptions),
+        duels_total: safeNumber(stats.duels?.total),
+        duels_won: safeNumber(stats.duels?.won),
+        dribbles_attempts: safeNumber(stats.dribbles?.attempts),
+        dribbles_success: safeNumber(stats.dribbles?.success),
+        fouls_drawn: safeNumber(stats.fouls?.drawn),
+        fouls_committed: safeNumber(stats.fouls?.committed),
+        yellow_cards: safeNumber(stats.cards?.yellow),
+        red_cards: safeNumber(stats.cards?.red),
+        penalty_won: safeNumber(stats.penalty?.won),
+        penalty_committed: safeNumber(stats.penalty?.commited ?? stats.penalty?.committed),
+        penalty_scored: safeNumber(stats.penalty?.scored),
+        penalty_missed: safeNumber(stats.penalty?.missed),
+        penalty_saved: safeNumber(stats.penalty?.saved),
+        raw_statistics: stats,
+        raw_payload: item,
+        synced_at: new Date().toISOString(),
+      })
+    }
+  }
+  return rows.filter((row) => row.api_team_id && row.api_player_id)
+}
+
+function normalizeInjuryRows(items: Array<any>) {
+  return items.map((item: any) => ({
+    api_fixture_id: safeNumber(item.fixture?.id),
+    api_league_id: safeNumber(item.league?.id),
+    season: safeNumber(item.league?.season),
+    api_team_id: safeNumber(item.team?.id),
+    team_name: item.team?.name ?? null,
+    api_player_id: safeNumber(item.player?.id),
+    player_name: item.player?.name ?? null,
+    player_photo: item.player?.photo ?? null,
+    player_type: item.player?.type ?? null,
+    reason: item.player?.reason ?? null,
+    fixture_date: item.fixture?.date ?? null,
+    timezone: item.fixture?.timezone ?? null,
+    raw_payload: item,
+    synced_at: new Date().toISOString(),
+  }))
+}
+
+function normalizeSquadRows(items: Array<any>, fallback: any) {
+  const rows: Array<any> = []
+  for (const team of items) {
+    for (const player of team.players ?? []) {
+      rows.push({
+        api_team_id: safeNumber(team.team?.id ?? fallback.api_team_id),
+        team_name: team.team?.name ?? fallback.team_name ?? null,
+        api_player_id: safeNumber(player.id),
+        player_name: player.name ?? null,
+        age: safeNumber(player.age),
+        number: safeNumber(player.number),
+        position: player.position ?? null,
+        photo: player.photo ?? null,
+        raw_payload: { team: team.team, player },
+        synced_at: new Date().toISOString(),
+      })
+    }
+  }
+  return rows.filter((row) => row.api_team_id && row.api_player_id)
+}
+
+function normalizeCoachRows(items: Array<any>, fallback: any) {
+  return items.map((item: any) => ({
+    api_coach_id: safeNumber(item.id),
+    api_team_id: safeNumber(fallback.api_team_id ?? item.team?.id),
+    coach_name: item.name ?? null,
+    firstname: item.firstname ?? null,
+    lastname: item.lastname ?? null,
+    age: safeNumber(item.age),
+    birth_date: item.birth?.date ?? null,
+    birth_place: item.birth?.place ?? null,
+    birth_country: item.birth?.country ?? null,
+    nationality: item.nationality ?? null,
+    height: item.height ?? null,
+    weight: item.weight ?? null,
+    photo: item.photo ?? null,
+    career: item.career ?? [],
+    raw_payload: item,
+    synced_at: new Date().toISOString(),
+  })).filter((row: any) => row.api_coach_id)
+}
+
+function normalizeVenueRows(items: Array<any>, fallback: any) {
+  return items.map((item: any) => ({
+    api_venue_id: safeNumber(item.id ?? fallback.api_venue_id),
+    venue_name: item.name ?? fallback.venue_name ?? null,
+    address: item.address ?? null,
+    city: item.city ?? fallback.city ?? null,
+    country: item.country ?? null,
+    capacity: safeNumber(item.capacity),
+    surface: item.surface ?? null,
+    image: item.image ?? null,
+    raw_payload: item,
+    synced_at: new Date().toISOString(),
+  })).filter((row: any) => row.api_venue_id)
+}
+
+function normalizeVenueFallbackRow(venue: any) {
+  const key = venue.venue_name || venue.city
+  if (!key) return null
+  const syntheticId = -Math.abs(hashText(`${venue.venue_name ?? ''}:${venue.city ?? ''}`))
+  return {
+    api_venue_id: syntheticId,
+    venue_name: venue.venue_name ?? null,
+    city: venue.city ?? null,
+    country: venue.country ?? null,
+    raw_payload: { fallback: true, source: venue },
+    synced_at: new Date().toISOString(),
+  }
+}
+
+function normalizeTopPlayerRows(items: Array<any>, category: string, league: any) {
+  return items.map((item: any, index: number) => ({
+    category,
+    api_league_id: league.api_league_id,
+    season: league.season,
+    rank: index + 1,
+    api_team_id: safeNumber(item.statistics?.[0]?.team?.id),
+    team_name: item.statistics?.[0]?.team?.name ?? null,
+    team_logo: item.statistics?.[0]?.team?.logo ?? null,
+    api_player_id: safeNumber(item.player?.id),
+    player_name: item.player?.name ?? null,
+    player_photo: item.player?.photo ?? null,
+    nationality: item.player?.nationality ?? null,
+    age: safeNumber(item.player?.age),
+    position: item.statistics?.[0]?.games?.position ?? null,
+    goals_total: safeNumber(item.statistics?.[0]?.goals?.total),
+    assists: safeNumber(item.statistics?.[0]?.goals?.assists),
+    yellow_cards: safeNumber(item.statistics?.[0]?.cards?.yellow),
+    red_cards: safeNumber(item.statistics?.[0]?.cards?.red),
+    appearances: safeNumber(item.statistics?.[0]?.games?.appearences ?? item.statistics?.[0]?.games?.appearances),
+    minutes: safeNumber(item.statistics?.[0]?.games?.minutes),
+    rating: safeNumber(item.statistics?.[0]?.games?.rating),
+    raw_payload: item,
+    synced_at: new Date().toISOString(),
+  })).filter((row: any) => row.api_player_id)
+}
+
+async function fetchDistinctApiFootballLeagues() {
+  const result = await supabase
+    .from('football_matches')
+    .select('api_sports_league_id, kickoff_at, raw, league:football_leagues(api_league_id, name, country)')
+    .not('api_sports_league_id', 'is', null)
+    .order('kickoff_at', { ascending: false })
+    .limit(1000)
+  if (result.error) throw result.error
+
+  const map = new Map<string, any>()
+  for (const row of result.data ?? []) {
+    const apiLeagueId = safeNumber(row.api_sports_league_id ?? row.raw?.apiFootball?.league?.id)
+    const season = safeNumber(row.raw?.apiFootball?.league?.season ?? getSeasonFromKickoff(row.kickoff_at))
+    if (!apiLeagueId || !season) continue
+    const key = `${apiLeagueId}:${season}`
+    if (!map.has(key)) {
+      map.set(key, {
+        api_league_id: apiLeagueId,
+        season,
+        league_name: row.league?.name ?? row.raw?.apiFootball?.league?.name ?? null,
+        country_name: row.league?.country ?? row.raw?.apiFootball?.league?.country ?? null,
+      })
+    }
+  }
+  return [...map.values()]
+}
+
+async function fetchDistinctApiFootballTeams() {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      api_sports_home_team_id,
+      api_sports_away_team_id,
+      homeTeam:football_teams!football_matches_home_team_id_fkey(api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(api_team_id, name)
+    `)
+    .limit(1000)
+  if (result.error) throw result.error
+
+  const map = new Map<number, any>()
+  for (const row of result.data ?? []) {
+    const teams = [
+      { api_team_id: safeNumber(row.api_sports_home_team_id ?? row.homeTeam?.api_team_id), team_name: row.homeTeam?.name },
+      { api_team_id: safeNumber(row.api_sports_away_team_id ?? row.awayTeam?.api_team_id), team_name: row.awayTeam?.name },
+    ]
+    for (const team of teams) {
+      if (team.api_team_id && !map.has(team.api_team_id)) map.set(team.api_team_id, team)
+    }
+  }
+  return [...map.values()]
+}
+
+async function fetchDistinctApiFootballVenues() {
+  const result = await supabase
+    .from('football_matches')
+    .select('venue, raw')
+    .order('kickoff_at', { ascending: false })
+    .limit(1000)
+  if (result.error) throw result.error
+
+  const map = new Map<string, any>()
+  for (const row of result.data ?? []) {
+    const rawVenue = row.raw?.apiFootball?.fixture?.venue ?? row.raw?.raw?.apiFootball?.fixture?.venue ?? row.raw?.fixture?.venue ?? {}
+    const venue = {
+      api_venue_id: safeNumber(rawVenue.id),
+      venue_name: rawVenue.name ?? (typeof row.venue === 'string' ? row.venue : row.venue?.name) ?? null,
+      city: rawVenue.city ?? (typeof row.venue === 'object' ? row.venue?.city : null),
+      country: rawVenue.country ?? null,
+    }
+    const key = venue.api_venue_id ? `id:${venue.api_venue_id}` : `text:${venue.venue_name ?? ''}:${venue.city ?? ''}`
+    if ((venue.api_venue_id || venue.venue_name || venue.city) && !map.has(key)) map.set(key, venue)
+  }
+  return [...map.values()]
+}
+
+async function fetchApiFootballFixtureCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      api_sports_league_id,
+      api_sports_home_team_id,
+      api_sports_away_team_id,
+      kickoff_at,
+      status,
+      raw,
+      league:football_leagues(id, api_league_id, name, country),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, final_rank, is_top_pick, ranking_score)
+    `)
+    .gte('kickoff_at', dayRange.startUtc)
+    .lt('kickoff_at', dayRange.endUtc)
+    .not('api_sports_fixture_id', 'is', null)
+    .order('kickoff_at', { ascending: true })
+    .limit(Math.max(limit, 10))
+
+  if (result.error) throw result.error
+  return [...(result.data ?? [])]
+    .sort(compareEnrichCandidatePriority)
+    .slice(0, limit)
+}
+
+async function fetchCoverageForMatch(match: any) {
+  return fetchCoverageForLeague(getMatchLeagueId(match), getMatchSeason(match))
+}
+
+async function fetchCoverageForLeague(apiLeagueId: number | null, season: number | null) {
+  if (!apiLeagueId || !season) return null
+  const result = await supabase
+    .from('api_football_league_coverage')
+    .select('*')
+    .eq('api_league_id', apiLeagueId)
+    .eq('season', season)
+    .maybeSingle()
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return null
+    throw result.error
+  }
+  return result.data
+}
+
+function getMatchFixtureId(match: any) {
+  return safeNumber(match?.api_sports_fixture_id ?? match?.raw?.raw_fixture_id ?? match?.raw?.apiFootball?.fixture?.id)
+}
+
+function getMatchLeagueId(match: any) {
+  return safeNumber(match?.api_sports_league_id ?? match?.league?.api_league_id ?? match?.raw?.apiFootball?.league?.id)
+}
+
+function getMatchSeason(match: any) {
+  return safeNumber(match?.raw?.apiFootball?.league?.season ?? getSeasonFromKickoff(match?.kickoff_at))
+}
+
+function getSeasonFromKickoff(value: unknown) {
+  const date = value ? new Date(String(value)) : new Date()
+  const year = date.getUTCFullYear()
+  const month = date.getUTCMonth() + 1
+  return month >= 7 ? year : year - 1
+}
+
+function hasCoverage(coverage: any, key: string) {
+  if (!coverage) return true
+  if (coverage[key] === null || coverage[key] === undefined) return true
+  return Boolean(coverage[key])
+}
+
+function shouldFetchFixtureEnrichment(match: any, endpoint: string) {
+  const status = String(match?.status ?? match?.raw?.status ?? '').toUpperCase()
+  const kickoffMs = new Date(match?.kickoff_at ?? Date.now()).getTime()
+  const now = Date.now()
+  const minutesToKickoff = (kickoffMs - now) / 60000
+  if (endpoint === '/fixtures/lineups') return minutesToKickoff <= 90
+  if (['FT', 'AET', 'PEN', 'LIVE', '1H', '2H', 'HT', 'ET', 'BT', 'P'].includes(status)) return true
+  return kickoffMs <= now
+}
+
+function safeNumber(value: unknown) {
+  if (value === null || value === undefined || value === '') return null
+  const numeric = Number(String(value).replace('%', '').replace(',', '.'))
+  return Number.isFinite(numeric) ? numeric : null
+}
+
+function parsePercent(value: unknown) {
+  return safeNumber(value)
+}
+
+function getStatValue(stats: Array<any>, type: string) {
+  return safeNumber(firstStatValue(stats, type))
+}
+
+function firstStatValue(stats: Array<any>, type: string) {
+  const target = String(type).toLowerCase()
+  return stats.find((stat: any) => String(stat?.type ?? '').toLowerCase() === target)?.value ?? null
+}
+
+async function logEnrichmentSync(payload: any) {
+  const result = await supabase.from('api_football_enrichment_sync_log').insert({
+    mode: payload.mode,
+    api_fixture_id: payload.api_fixture_id ?? null,
+    api_league_id: payload.api_league_id ?? null,
+    api_team_id: payload.api_team_id ?? null,
+    season: payload.season ?? null,
+    endpoint: payload.endpoint,
+    status: payload.status,
+    results_count: payload.results_count ?? 0,
+    error_message: payload.error_message ?? null,
+    started_at: payload.started_at ?? new Date().toISOString(),
+    finished_at: payload.finished_at ?? new Date().toISOString(),
+  })
+  if (result.error) throw result.error
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function chunk<T>(array: Array<T>, size: number) {
+  const chunks: Array<Array<T>> = []
+  for (let index = 0; index < array.length; index += size) chunks.push(array.slice(index, index + size))
+  return chunks
+}
+
+function addEndpointRowsSaved(context: FootballEnrichmentContext, endpoint: string, rowsSaved: number) {
+  bumpEndpoint(context, endpoint, 'rowsSaved', rowsSaved)
+}
+
+function addEndpointSkipped(context: FootballEnrichmentContext, endpoint: string) {
+  bumpEndpoint(context, endpoint, 'skipped')
+}
+
+function bumpEndpoint(context: FootballEnrichmentContext, endpoint: string, field: FootballEnrichmentEndpointCounterKey, amount = 1) {
+  context.endpoints[endpoint] ??= { called: 0, withData: 0, empty: 0, skipped: 0, failed: 0, rowsSaved: 0 }
+  context.endpoints[endpoint][field] += amount
+}
+
+function rememberSkippedEndpoint(context: FootballEnrichmentContext, endpoint: string, reason: string, meta: any = {}) {
+  context.skippedEndpoints.push({ endpoint, reason, ...meta })
+}
+
+function toSyncMeta(meta: any) {
+  return {
+    api_fixture_id: meta.apiFixtureId ?? null,
+    api_league_id: meta.apiLeagueId ?? null,
+    api_team_id: meta.apiTeamId ?? null,
+    season: meta.season ?? null,
+  }
+}
+
+function hashText(value: string) {
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0
+  }
+  return hash || 1
 }
 
 async function storeOddsSnapshots(match: any, fixtureId: number, response: any) {
@@ -1354,6 +2213,14 @@ async function footballDataApiGet(path: string, params: Record<string, string | 
 
   const text = await response.text()
   const data = text ? JSON.parse(text) : {}
+  console.log('api-football response', {
+    path,
+    params,
+    status: response.status,
+    errors: data?.errors ?? null,
+    results: data?.results ?? null,
+    paging: data?.paging ?? null,
+  })
 
   if (!response.ok) {
     const message = data?.message ?? data?.error ?? text ?? `football-data.org ${response.status}`
@@ -3857,16 +4724,20 @@ function normalizeProviderName(value: string) {
 
 function normalizeSyncMode(value: unknown) {
   const mode = String(value ?? 'manual').toLowerCase()
-  if (['manual', 'enrich', 'recompute', 'learning'].includes(mode)) return mode
+  if (['manual', 'enrich', 'recompute', 'learning', ...footballEnrichmentModes].includes(mode)) return mode
   return 'manual'
 }
 
 function getSyncLimit(value: unknown, mode = 'manual') {
-  const defaultLimit = mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
-  const maxLimit = mode === 'enrich' ? maxEnrichLimit : maxManualLimit
+  const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
+  const maxLimit = isFootballEnrichmentMode(mode) ? maxFootballEnrichmentLimit : mode === 'enrich' ? maxEnrichLimit : maxManualLimit
   const numeric = Number(value ?? defaultLimit)
   if (!Number.isFinite(numeric) || numeric <= 0) return defaultLimit
   return Math.max(1, Math.min(Math.floor(numeric), maxLimit))
+}
+
+function isFootballEnrichmentMode(mode: unknown) {
+  return footballEnrichmentModes.includes(String(mode ?? '').toLowerCase())
 }
 
 function getSyncOffset(value: unknown) {

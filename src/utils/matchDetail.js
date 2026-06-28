@@ -148,7 +148,57 @@ export function normalizeDetailPayload(match) {
     dataIntelligenceItems: getDataIntelligenceItems(dataIntelligence),
     moduleItems: getModuleBreakdownItems(safeMatch),
     dataQuality,
+    footballEnrichment: normalizeFootballEnrichment(safeMatch),
   }
+}
+
+export function normalizeFootballEnrichment(match) {
+  const enrichment = match?.enrichment ?? {}
+  const statistics = enrichment.statistics ?? []
+  const events = enrichment.events ?? []
+  const lineups = enrichment.lineups ?? []
+  const players = enrichment.players ?? []
+  const injuries = enrichment.injuries ?? []
+  const venue = enrichment.venue ?? null
+  const round = enrichment.round ?? null
+  const coverage = enrichment.coverage ?? null
+  const topPlayers = enrichment.topPlayers ?? {}
+
+  return {
+    statistics,
+    events,
+    lineups,
+    players: [...players].sort((a, b) => Number(b.rating ?? 0) - Number(a.rating ?? 0)),
+    injuries,
+    venue,
+    round,
+    coverage,
+    topPlayers: {
+      top_scorers: topPlayers.top_scorers ?? [],
+      top_assists: topPlayers.top_assists ?? [],
+      top_yellow_cards: topPlayers.top_yellow_cards ?? [],
+      top_red_cards: topPlayers.top_red_cards ?? [],
+    },
+    coverageItems: buildEnrichmentCoverageItems({ statistics, events, lineups, players, injuries, venue, round, coverage }),
+  }
+}
+
+export function buildEnrichmentCoverageItems({ statistics = [], events = [], lineups = [], players = [], injuries = [], venue = null, round = null, coverage = null }) {
+  return [
+    coverageItem('สถิติการแข่งขัน', statistics.length > 0, coverage, 'has_fixture_statistics'),
+    coverageItem('เหตุการณ์สำคัญ', events.length > 0, coverage, 'has_events'),
+    coverageItem('รายชื่อผู้เล่น', lineups.length > 0, coverage, 'has_lineups'),
+    coverageItem('สถิตินักเตะ', players.length > 0, coverage, 'has_player_statistics'),
+    coverageItem('เจ็บ/แบน', injuries.length > 0, coverage, 'has_injuries'),
+    { label: 'สนาม', status: venue ? 'ready' : 'empty', text: venue ? 'พร้อมใช้งาน' : 'ยังไม่มีข้อมูล' },
+    { label: 'รอบการแข่งขัน', status: round ? 'ready' : 'empty', text: round ? 'พร้อมใช้งาน' : 'ยังไม่มีข้อมูล' },
+  ]
+}
+
+function coverageItem(label, hasData, coverage, coverageKey) {
+  if (hasData) return { label, status: 'ready', text: 'พร้อมใช้งาน' }
+  if (coverage && coverage[coverageKey] === false) return { label, status: 'unsupported', text: 'ลีกนี้ไม่รองรับ' }
+  return { label, status: 'empty', text: 'ยังไม่มีข้อมูล' }
 }
 
 export function buildAiVerdict(match) {

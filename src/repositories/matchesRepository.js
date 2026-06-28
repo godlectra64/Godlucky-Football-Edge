@@ -182,6 +182,56 @@ export async function fetchMatchById(matchId) {
   return client.from('football_matches').select(legacyMatchSelect).eq('id', matchId).single()
 }
 
+export async function fetchMatchEnrichment(match) {
+  const client = await getSupabaseClient()
+  const apiFixtureId = getApiFixtureId(match)
+  const apiLeagueId = getApiLeagueId(match)
+  const season = getSeason(match)
+  const venueId = getVenueId(match)
+
+  const [
+    statistics,
+    events,
+    lineups,
+    players,
+    injuries,
+    coverage,
+    round,
+    topPlayers,
+    venue,
+  ] = await Promise.all([
+    apiFixtureId ? safeTableSelect(client, 'api_football_fixture_statistics', (query) => query.select('*').eq('api_fixture_id', apiFixtureId).order('team_name')) : Promise.resolve([]),
+    apiFixtureId ? safeTableSelect(client, 'api_football_fixture_events', (query) => query.select('*').eq('api_fixture_id', apiFixtureId).order('elapsed', { ascending: true })) : Promise.resolve([]),
+    apiFixtureId ? safeTableSelect(client, 'api_football_fixture_lineups', (query) => query.select('*').eq('api_fixture_id', apiFixtureId).order('team_name')) : Promise.resolve([]),
+    apiFixtureId ? safeTableSelect(client, 'api_football_fixture_players', (query) => query.select('*').eq('api_fixture_id', apiFixtureId).order('rating', { ascending: false, nullsFirst: false }).limit(50)) : Promise.resolve([]),
+    fetchInjuryRows(client, apiFixtureId, apiLeagueId, season),
+    apiLeagueId && season
+      ? safeTableMaybeSingle(client, 'api_football_league_coverage', (query) => query.select('*').eq('api_league_id', apiLeagueId).eq('season', season))
+      : Promise.resolve(null),
+    apiLeagueId && season && match?.round
+      ? safeTableMaybeSingle(client, 'api_football_rounds', (query) => query.select('*').eq('api_league_id', apiLeagueId).eq('season', season).eq('round_name', match.round))
+      : Promise.resolve(null),
+    apiLeagueId && season
+      ? safeTableSelect(client, 'api_football_top_players', (query) => query.select('*').eq('api_league_id', apiLeagueId).eq('season', season).order('category').order('rank').limit(80))
+      : Promise.resolve([]),
+    venueId
+      ? safeTableMaybeSingle(client, 'api_football_venues', (query) => query.select('*').eq('api_venue_id', venueId))
+      : Promise.resolve(null),
+  ])
+
+  return {
+    statistics,
+    events,
+    lineups,
+    players,
+    injuries,
+    coverage,
+    round,
+    topPlayers,
+    venue,
+  }
+}
+
 async function getSupabaseClient() {
   const { requireSupabase } = await import('../lib/supabaseClient.js')
   return requireSupabase()
@@ -190,10 +240,67 @@ async function getSupabaseClient() {
 function isMissingColumnError(error) {
   if (!error) return false
   const message = String(error.message ?? error.details ?? '')
-  return error.code === '42703' || /column .* does not exist/i.test(message) || /Could not find .* column/i.test(message)
+  return (
+    error.code === '42703' ||
+    error.code === 'PGRST200' ||
+    error.code === 'PGRST205' ||
+    /column .* does not exist/i.test(message) ||
+    /Could not find .* column/i.test(message) ||
+    /Could not find the table .* in the schema cache/i.test(message) ||
+    /relationship .* could not be found/i.test(message)
+  )
 }
 
 function getOptionalBangkokRange(start, end) {
   if (start && end) return { startUtc: start, endUtc: end }
   return getBangkokDayRange()
+}
+
+async function safeTableSelect(client, table, buildQuery) {
+  const keyMissing = tableQueryIsMissingKey(buildQuery)
+  if (keyMissing) return []
+  const result = await buildQuery(client.from(table))
+  if (!result.error) return result.data ?? []
+  if (isMissingColumnError(result.error)) return []
+  throw result.error
+}
+
+async function safeTableMaybeSingle(client, table, buildQuery) {
+  const result = await buildQuery(client.from(table)).maybeSingle()
+  if (!result.error) return result.data ?? null
+  if (isMissingColumnError(result.error)) return null
+  throw result.error
+}
+
+async function fetchInjuryRows(client, apiFixtureId, apiLeagueId, season) {
+  if (apiFixtureId) {
+    const byFixture = await safeTableSelect(client, 'api_football_injuries', (query) => query.select('*').eq('api_fixture_id', apiFixtureId).order('team_name'))
+    if (byFixture.length) return byFixture
+  }
+  if (!apiLeagueId || !season) return []
+  return safeTableSelect(client, 'api_football_injuries', (query) => query.select('*').eq('api_league_id', apiLeagueId).eq('season', season).order('fixture_date', { ascending: true }).limit(50))
+}
+
+function getApiFixtureId(match) {
+  return Number(match?.api_sports_fixture_id ?? match?.raw?.raw_fixture_id ?? match?.raw?.apiFootball?.fixture?.id ?? 0) || null
+}
+
+function getApiLeagueId(match) {
+  return Number(match?.api_sports_league_id ?? match?.league?.api_league_id ?? match?.raw?.apiFootball?.league?.id ?? 0) || null
+}
+
+function getSeason(match) {
+  const rawSeason = Number(match?.raw?.apiFootball?.league?.season ?? 0)
+  if (rawSeason) return rawSeason
+  const date = match?.kickoff_at ? new Date(match.kickoff_at) : new Date()
+  const year = date.getUTCFullYear()
+  return date.getUTCMonth() + 1 >= 7 ? year : year - 1
+}
+
+function getVenueId(match) {
+  return Number(match?.raw?.apiFootball?.fixture?.venue?.id ?? match?.raw?.raw?.apiFootball?.fixture?.venue?.id ?? 0) || null
+}
+
+function tableQueryIsMissingKey(buildQuery) {
+  return typeof buildQuery !== 'function'
 }

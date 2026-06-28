@@ -1,4 +1,5 @@
-import { ArrowLeft, Brain, CalendarClock, Gauge, ListChecks, ShieldAlert, Sparkles, Star, TrendingUp } from 'lucide-react'
+import { useState } from 'react'
+import { Activity, ArrowLeft, Brain, CalendarClock, Clock, Gauge, ListChecks, MapPin, ShieldAlert, Sparkles, Star, TrendingUp, Users } from 'lucide-react'
 import RiskBadge from '../components/RiskBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import {
@@ -73,6 +74,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
       <FinalDecisionSection detail={detail} heroSelection={heroSelection} />
       <AiSelectionBreakdownSection detail={detail} />
       <DataIntelligenceV4Section detail={detail} />
+      <FootballEnrichmentSection detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <ScoreBreakdownSection items={detail.moduleItems} />
       <ExplainableAiSection explanation={explainability} />
@@ -295,6 +297,234 @@ function DataIntelligenceV4Section({ detail }) {
         <DecisionMetric label="Odds Move" value={analysis.odds_movement_summary ?? '-'} muted={!analysis.odds_movement_summary} />
       </div>
       {analysis.enriched_summary ? <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{analysis.enriched_summary}</p> : null}
+    </Section>
+  )
+}
+
+function FootballEnrichmentSection({ detail }) {
+  const data = detail.footballEnrichment
+
+  return (
+    <>
+      <MatchDataCoverageSection items={data.coverageItems} />
+      <MatchStatisticsSection statistics={data.statistics} homeTeam={detail.homeTeam} awayTeam={detail.awayTeam} />
+      <TimelineEventsSection events={data.events} />
+      <LineupsSection lineups={data.lineups} />
+      <PlayerRatingsSection players={data.players} />
+      <InjuriesSection injuries={data.injuries} />
+      <VenueSection venue={data.venue} fallbackVenue={detail.venue} />
+      <LeagueTopPlayersSection topPlayers={data.topPlayers} />
+    </>
+  )
+}
+
+function MatchDataCoverageSection({ items }) {
+  return (
+    <Section title="Match Data Coverage" icon={ListChecks}>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {items.map((item) => (
+          <div key={item.label} className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+            <span className="min-w-0 text-sm font-black text-white">{item.label}</span>
+            <span className={`semantic-badge shrink-0 ${coverageTone(item.status)}`}>{item.text}</span>
+          </div>
+        ))}
+      </div>
+    </Section>
+  )
+}
+
+function MatchStatisticsSection({ statistics, homeTeam, awayTeam }) {
+  const home = findTeamRow(statistics, homeTeam)
+  const away = findTeamRow(statistics, awayTeam)
+  const rows = [
+    ['ยิงตรงกรอบ', 'shots_on_goal'],
+    ['ยิงทั้งหมด', 'total_shots'],
+    ['ครองบอล', 'ball_possession', '%'],
+    ['เตะมุม', 'corner_kicks'],
+    ['ฟาวล์', 'fouls'],
+    ['ใบเหลือง', 'yellow_cards'],
+    ['ใบแดง', 'red_cards'],
+    ['เซฟ', 'goalkeeper_saves'],
+    ['ผ่านบอลทั้งหมด', 'total_passes'],
+    ['ผ่านบอลสำเร็จ', 'passes_accurate'],
+  ]
+
+  return (
+    <Section title="Match Statistics" icon={Activity}>
+      {statistics.length ? (
+        <div className="grid gap-2">
+          {rows.map(([label, key, suffix]) => (
+            <CompareRow key={key} label={label} home={formatStatValue(home?.[key], suffix)} away={formatStatValue(away?.[key], suffix)} />
+          ))}
+        </div>
+      ) : (
+        <EmptyThaiState text="ยังไม่มีข้อมูลสถิติเกมนี้" />
+      )}
+    </Section>
+  )
+}
+
+function TimelineEventsSection({ events }) {
+  return (
+    <Section title="Timeline Events" icon={Clock}>
+      {events.length ? (
+        <div className="grid gap-2">
+          {events.map((event) => (
+            <div key={`${event.elapsed}-${event.event_type}-${event.player_name}-${event.team_name}`} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+              <div className="flex items-start justify-between gap-3">
+                <span className="semantic-badge border-blue-300/25 bg-blue-300/10 text-blue-100">{event.elapsed ?? '-'}{event.extra ? `+${event.extra}` : ''}'</span>
+                <span className="text-right text-xs font-bold text-slate-400">{event.team_name ?? '-'}</span>
+              </div>
+              <p className="mt-2 text-sm font-black text-white">{event.event_type ?? 'เหตุการณ์'} · {event.event_detail ?? '-'}</p>
+              <p className="mt-1 text-sm leading-6 text-slate-300">{event.player_name ?? 'ไม่ระบุนักเตะ'}{event.assist_player_name ? `, assist: ${event.assist_player_name}` : ''}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyThaiState text="ยังไม่มีข้อมูลเหตุการณ์สำคัญของเกมนี้" />
+      )}
+    </Section>
+  )
+}
+
+function LineupsSection({ lineups }) {
+  return (
+    <Section title="Lineups" icon={Users}>
+      {lineups.length ? (
+        <div className="grid gap-2">
+          {lineups.map((lineup) => (
+            <div key={lineup.api_team_id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate font-black text-white">{lineup.team_name ?? 'ทีม'}</p>
+                  <p className="mt-0.5 text-xs font-semibold text-slate-500">Coach: {lineup.coach_name ?? '-'}</p>
+                </div>
+                <span className="semantic-badge border-emerald-300/25 bg-emerald-300/10 text-emerald-100">{lineup.formation ?? '-'}</span>
+              </div>
+              <LineupNames title="Starting XI" players={lineup.start_xi} />
+              <LineupNames title="Substitutes" players={lineup.substitutes} />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyThaiState text="ยังไม่มีข้อมูลรายชื่อผู้เล่นเกมนี้" />
+      )}
+    </Section>
+  )
+}
+
+function PlayerRatingsSection({ players }) {
+  const topPlayers = players.slice(0, 12)
+  return (
+    <Section title="Player Ratings" icon={Star}>
+      {topPlayers.length ? (
+        <div className="grid gap-2">
+          {topPlayers.map((player) => (
+            <div key={`${player.api_team_id}-${player.api_player_id}`} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate font-black text-white">{player.player_name ?? '-'}</p>
+                  <p className="mt-0.5 text-xs font-semibold text-slate-500">{player.team_name ?? '-'} · {player.position ?? '-'}</p>
+                </div>
+                <span className="semantic-badge border-amber-300/25 bg-amber-300/10 text-amber-100">{formatStatValue(player.rating)}</span>
+              </div>
+              <div className="mt-2 grid grid-cols-4 gap-1.5">
+                <MiniStat label="Min" value={player.minutes} />
+                <MiniStat label="G/A" value={`${player.goals_total ?? 0}/${player.assists ?? 0}`} />
+                <MiniStat label="SOT" value={player.shots_on} />
+                <MiniStat label="Pass" value={formatStatValue(player.passes_accuracy, '%')} />
+                <MiniStat label="T+I" value={Number(player.tackles_total ?? 0) + Number(player.tackles_interceptions ?? 0)} />
+                <MiniStat label="YC" value={player.yellow_cards} />
+                <MiniStat label="RC" value={player.red_cards} />
+                <MiniStat label="Saves" value={player.saves} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyThaiState text="ยังไม่มีข้อมูลสถิตินักเตะเกมนี้" />
+      )}
+    </Section>
+  )
+}
+
+function InjuriesSection({ injuries }) {
+  return (
+    <Section title="Injuries / Suspensions" icon={ShieldAlert}>
+      {injuries.length ? (
+        <div className="grid gap-2">
+          {injuries.slice(0, 20).map((item) => (
+            <div key={`${item.api_fixture_id}-${item.api_player_id}-${item.reason}`} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+              <p className="font-black text-white">{item.player_name ?? '-'}</p>
+              <p className="mt-1 text-sm leading-6 text-slate-300">{item.team_name ?? '-'} · {item.reason ?? 'ไม่ระบุสาเหตุ'}</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">{formatDateText(item.fixture_date)}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyThaiState text="ยังไม่มีข้อมูลเจ็บ/แบนของเกมนี้" />
+      )}
+    </Section>
+  )
+}
+
+function VenueSection({ venue, fallbackVenue }) {
+  const display = venue ?? (typeof fallbackVenue === 'object' ? fallbackVenue : fallbackVenue ? { venue_name: fallbackVenue } : null)
+  return (
+    <Section title="Venue" icon={MapPin}>
+      {display ? (
+        <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+          {display.image ? <img src={display.image} alt="" className="mb-3 h-36 w-full rounded-2xl object-cover" /> : null}
+          <p className="text-lg font-black text-white">{display.venue_name ?? display.name ?? 'สนาม'}</p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <Metric label="เมือง" value={display.city ?? '-'} />
+            <Metric label="ประเทศ" value={display.country ?? '-'} />
+            <Metric label="ความจุ" value={display.capacity ? Number(display.capacity).toLocaleString() : '-'} />
+            <Metric label="พื้นสนาม" value={display.surface ?? '-'} />
+          </div>
+        </div>
+      ) : (
+        <EmptyThaiState text="ยังไม่มีข้อมูลสนามของเกมนี้" />
+      )}
+    </Section>
+  )
+}
+
+function LeagueTopPlayersSection({ topPlayers }) {
+  const tabs = [
+    ['top_scorers', 'ดาวซัลโว', 'goals_total'],
+    ['top_assists', 'แอสซิสต์', 'assists'],
+    ['top_yellow_cards', 'ใบเหลือง', 'yellow_cards'],
+    ['top_red_cards', 'ใบแดง', 'red_cards'],
+  ]
+  const [active, setActive] = useState('top_scorers')
+  const activeTab = tabs.find(([key]) => key === active) ?? tabs[0]
+  const rows = topPlayers?.[active] ?? []
+
+  return (
+    <Section title="League Top Players" icon={TrendingUp}>
+      <div className="grid grid-cols-4 gap-1.5">
+        {tabs.map(([key, label]) => (
+          <button key={key} type="button" onClick={() => setActive(key)} className={`rounded-xl border px-2 py-2 text-xs font-black ${active === key ? 'border-blue-300/35 bg-blue-300/15 text-blue-50' : 'border-white/10 bg-white/[0.04] text-slate-300'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {rows.length ? (
+        <div className="mt-3 grid gap-2">
+          {rows.slice(0, 10).map((player) => (
+            <div key={`${active}-${player.api_player_id}`} className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+              <div className="min-w-0">
+                <p className="truncate font-black text-white">#{player.rank ?? '-'} {player.player_name ?? '-'}</p>
+                <p className="mt-0.5 truncate text-xs font-semibold text-slate-500">{player.team_name ?? '-'}</p>
+              </div>
+              <span className="semantic-badge border-cyan-300/25 bg-cyan-300/10 text-cyan-100">{formatStatValue(player[activeTab[2]])}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyThaiState text="ยังไม่มีข้อมูลผู้นำสถิติของลีกนี้" />
+      )}
     </Section>
   )
 }
@@ -667,6 +897,66 @@ function ChipList({ items, muted = false }) {
   )
 }
 
+function CompareRow({ label, home, away }) {
+  return (
+    <div className="grid grid-cols-[72px_minmax(0,1fr)_72px] items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+      <span className="text-left text-sm font-black text-white">{home}</span>
+      <span className="text-center text-xs font-bold leading-5 text-slate-400">{label}</span>
+      <span className="text-right text-sm font-black text-white">{away}</span>
+    </div>
+  )
+}
+
+function EmptyThaiState({ text }) {
+  return <p className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-300">{text}</p>
+}
+
+function LineupNames({ title, players }) {
+  const names = (players ?? [])
+    .map((item) => item.player?.name ?? item.name ?? item.player_name)
+    .filter(Boolean)
+    .slice(0, 14)
+  return (
+    <div className="mt-3">
+      <p className="text-xs font-black uppercase text-slate-500">{title}</p>
+      <p className="mt-1 text-sm leading-6 text-slate-300">{names.length ? names.join(', ') : 'ยังไม่มีข้อมูล'}</p>
+    </div>
+  )
+}
+
+function MiniStat({ label, value }) {
+  return (
+    <div className="min-w-0 rounded-xl border border-white/10 bg-white/[0.04] p-2 text-center">
+      <p className="text-[10px] font-black uppercase text-slate-500">{label}</p>
+      <p className="mt-1 truncate text-xs font-black text-white">{value ?? '-'}</p>
+    </div>
+  )
+}
+
+function findTeamRow(statistics, team) {
+  const teamId = Number(team?.api_team_id)
+  return statistics.find((row) => Number(row.api_team_id) === teamId) ?? statistics.find((row) => row.team_name === team?.name) ?? null
+}
+
+function formatStatValue(value, suffix = '') {
+  if (value === null || value === undefined || value === '') return '-'
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return String(value)
+  const rounded = Math.round(numeric * 10) / 10
+  return `${rounded}${suffix}`
+}
+
+function formatDateText(value) {
+  if (!value) return 'ยังไม่ระบุวันที่'
+  return new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+}
+
+function coverageTone(status) {
+  if (status === 'ready') return 'border-emerald-300/25 bg-emerald-300/10 text-emerald-100'
+  if (status === 'unsupported') return 'border-slate-500/25 bg-slate-500/10 text-slate-300'
+  return 'border-amber-300/25 bg-amber-300/10 text-amber-100'
+}
+
 function getVenueText(detail) {
   const venue = detail.venue ?? detail.raw?.venue ?? detail.raw?.fixture?.venue?.name ?? ''
   if (!venue) return ''
@@ -715,6 +1005,6 @@ function formatContribution(value) {
 
 function formatMarketValue(value) {
   if (value === null || value === undefined || value === '') return '-'
-  if (typeof value === 'object') return JSON.stringify(value)
+  if (typeof value === 'object') return 'พร้อมใช้งาน'
   return String(value)
 }
