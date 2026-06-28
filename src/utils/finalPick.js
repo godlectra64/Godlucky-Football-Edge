@@ -19,7 +19,7 @@ const oneBestPickCopy = {
     title: 'WATCHLIST',
     subtitle: 'มีทรงน่าสนใจ แต่ควรรอข้อมูลเพิ่ม',
     badgeLabel: 'WATCHLIST',
-    note: 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ไม่แนะนำให้เดิมพัน แต่เป็นคู่ที่น่าติดตามที่สุดของวัน',
+    note: 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ให้สถานะ Skip แต่เป็นคู่ที่น่าติดตามที่สุดของวัน',
   },
   NO_CLEAR_PICK: {
     title: 'NO CLEAR PICK',
@@ -159,7 +159,7 @@ function normalizeValueStatus(value, context) {
 function getValueLabel(status) {
   if (status === 'YES') return 'YES'
   if (status === 'NO') return 'NO'
-  if (status === 'NOT_APPLICABLE') return 'ไม่เหมาะเดิมพัน'
+  if (status === 'NOT_APPLICABLE') return 'Skip'
   return 'รอข้อมูลราคา'
 }
 
@@ -167,7 +167,7 @@ function getValueReason(status, storedReason, marketLine, fairLine) {
   if (storedReason) return String(storedReason)
   if (status === 'YES') return 'ราคาตลาดดีกว่า Fair Line จากข้อมูลจริงที่มี'
   if (status === 'NO') return 'มีข้อมูลราคาแล้ว แต่ส่วนต่างยังไม่คุ้มพอ'
-  if (status === 'NOT_APPLICABLE') return 'ไม่ใช่จังหวะเดิมพัน จึงไม่ประเมิน Value เชิงรุก'
+  if (status === 'NOT_APPLICABLE') return 'Data Direction ยังไม่พร้อม จึงไม่ประเมิน Value เชิงรุก'
   if (!marketLine || !fairLine) return 'ยังไม่มีราคาตลาดหรือ Fair Line เพียงพอสำหรับประเมิน Value'
   return 'รอข้อมูลราคาเพิ่มเติม'
 }
@@ -213,7 +213,7 @@ function pickStoredRankOne(items) {
 
 function getNoteForRecommendation(recommendation, fallback) {
   if (recommendation === 'LEAN') return 'อันดับ 1 วันนี้ยังไม่ถึงระดับ BET แต่เป็นคู่ที่ AI ประเมินดีที่สุด'
-  if (recommendation === 'NO BET') return 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ไม่แนะนำให้เดิมพัน แต่เป็นคู่ที่น่าติดตามที่สุดของวัน'
+  if (recommendation === 'NO BET') return 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ให้สถานะ Skip แต่เป็นคู่ที่น่าติดตามที่สุดของวัน'
   if (recommendation === 'WATCH') return 'มีทรงน่าสนใจ แต่ควรรอข้อมูลเพิ่ม'
   return fallback
 }

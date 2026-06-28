@@ -119,7 +119,7 @@ function OneBestPickHero({ oneBestPick }) {
   const pickText = isClearPick && finalPick.canHighlight
     ? `AI แนะนำให้เล่น: ${finalPick.pickTeam}`
     : isClearPick && finalPick.recommendation === recommendationLabels.noBet
-      ? 'ไม่แนะนำเดิมพัน'
+      ? 'Skip'
       : isClearPick
         ? 'ข้อมูลยังไม่พอเลือกฝั่ง'
         : 'วันนี้ AI ยังไม่พบคู่ที่มีคุณภาพพอให้เลือกเป็นตัวหลัก'

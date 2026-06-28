@@ -15,7 +15,7 @@ export function deriveAiPickSide(match = {}) {
   }
 
   if (recommendation === 'NO BET') {
-    return buildPickResult('NONE', homeName, awayName, 'ไม่แนะนำเดิมพัน เพราะระบบประเมินว่ายังไม่มีความคุ้มค่าพอ')
+    return buildPickResult('NONE', homeName, awayName, 'Skip เพราะระบบประเมินว่ายังไม่มีข้อมูลสนับสนุนพอ')
   }
   if (riskLevel === 'HIGH') {
     return buildPickResult('NONE', homeName, awayName, 'ความเสี่ยงสูง จึงไม่แนะนำเลือกฝั่ง')
@@ -46,7 +46,7 @@ export function getAiPickDisplay(match = {}) {
   if (pick.pickSide === 'NONE') {
     return {
       ...pick,
-      label: pick.pickReason.includes('ไม่แนะนำเดิมพัน') ? 'ไม่แนะนำเดิมพัน' : 'ข้อมูลยังไม่พอเลือกฝั่ง',
+      label: pick.pickReason.includes('Skip') ? 'Skip' : 'ข้อมูลยังไม่พอเลือกฝั่ง',
       canHighlight: false,
     }
   }

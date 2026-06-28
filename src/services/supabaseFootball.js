@@ -3,6 +3,7 @@ import { fetchMatchById, fetchMatchEnrichment, fetchMatchesByKickoffRange } from
 import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../repositories/performanceRepository'
 import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../repositories/syncRepository'
 import { getTopMatches } from '../utils/analysisEngine'
+import { normalizeStoredAiFinalPick } from '../utils/aiFinalPickEngine.js'
 import { getBangkokDayRange } from '../utils/bangkokDateRange.js'
 import { normalizePerformanceRows } from '../utils/performanceIntelligence'
 
@@ -143,6 +144,12 @@ export function normalizeMatch(row = {}) {
   const activeAnalysis = analysis ?? fallbackAnalysis
   const raw = source.raw ?? {}
   const calibratedConfidence = activeAnalysis?.calibrated_confidence_score ?? activeAnalysis?.confidence_score
+  const odds = source.odds ?? source.matchOdds ?? source.match_odds ?? source.enrichment?.odds ?? []
+  const aiFinalPick = normalizeStoredAiFinalPick(source.aiFinalPick ?? source.ai_final_pick, {
+    ...source,
+    analysis: activeAnalysis,
+    odds,
+  })
 
   return {
     id: source.id,
@@ -172,6 +179,11 @@ export function normalizeMatch(row = {}) {
     awayForm: activeAnalysis?.raw?.awayForm ?? raw.awayForm ?? null,
     standings: activeAnalysis?.raw?.standings ?? raw.standings ?? [],
     raw,
+    odds,
+    matchOdds: odds,
+    match_odds: odds,
+    aiFinalPick,
+    ai_final_pick: aiFinalPick,
     enrichment: normalizeEnrichment(source.enrichment),
     confidence: calibratedConfidence,
     calibratedConfidence: activeAnalysis?.calibrated_confidence_score,
@@ -263,6 +275,7 @@ function normalizeEnrichment(enrichment = {}) {
       top_yellow_cards: topPlayers.filter((item) => item.category === 'top_yellow_cards'),
       top_red_cards: topPlayers.filter((item) => item.category === 'top_red_cards'),
     },
+    odds: enrichment.odds ?? [],
   }
 }
 
@@ -313,13 +326,13 @@ function createFallbackAnalysis(row) {
     risk_level: 'MEDIUM',
     pick_side: 'NONE',
     pick_team: null,
-    pick_reason: 'ไม่แนะนำเดิมพัน เพราะข้อมูลวิเคราะห์ยังไม่ครบพอให้เลือกฝั่ง',
+    pick_reason: 'Skip เพราะข้อมูลวิเคราะห์ยังไม่ครบพอให้เลือกฝั่ง',
     market_type: null,
     market_line: null,
     fair_line: null,
     model_probability: 59,
     value_status: 'NOT_APPLICABLE',
-    value_reason: 'ไม่ใช่จังหวะเดิมพัน จึงไม่ประเมิน Value เชิงรุก',
+    value_reason: 'Data Direction ยังไม่พร้อม จึงไม่ประเมิน Value เชิงรุก',
     analysis_summary: summary,
     thai_reason: summary,
     raw: {

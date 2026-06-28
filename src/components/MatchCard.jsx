@@ -2,6 +2,7 @@ import { Clock, Gauge, Medal } from 'lucide-react'
 import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
 import { buildAiFinalPick } from '../utils/finalPick'
 import { formatKickoffTime } from '../utils/formatters'
+import AiFinalPickCard from './AiFinalPickCard'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
 
@@ -85,10 +86,10 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
       </div>
 
       <div className="mt-2 grid grid-cols-2 gap-1.5">
-        <MiniInfo label="Market" value={finalPick.marketType ?? 'รอราคา'} muted={!finalPick.marketType} />
-        <MiniInfo label="Line" value={finalPick.marketLine ?? 'ยังไม่มีข้อมูล'} muted={!finalPick.marketLine} />
+        <MiniInfo label="Market Focus" value={match.aiFinalPick?.marketFocus ?? finalPick.marketType ?? 'NONE'} muted={!match.aiFinalPick?.marketFocus && !finalPick.marketType} />
+        <MiniInfo label="Data Direction" value={match.aiFinalPick?.direction ?? finalPick.marketLine ?? 'Pending'} muted={!match.aiFinalPick?.direction && !finalPick.marketLine} />
         <MiniInfo label={finalPick.probabilitySource === 'confidence_estimate' ? 'Model' : 'Win Prob'} value={`${finalPick.modelProbability}%`} />
-        <MiniInfo label="Value" value={finalPick.valueLabel} muted={finalPick.valueStatus !== 'YES'} />
+        <MiniInfo label="Signal" value={match.aiFinalPick?.signal ?? 'Pending'} muted={!match.aiFinalPick?.signal} />
       </div>
       {v4Metrics ? (
         <div className="mt-1.5 grid grid-cols-4 gap-1.5">
@@ -99,7 +100,11 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
         </div>
       ) : null}
 
-      <p className="text-clamp-2 mt-2 min-w-0 text-xs font-bold leading-5 text-slate-200">{recommendation === 'NO BET' ? 'ไม่แนะนำเดิมพัน' : finalPick.pickReason}</p>
+      <div className="mt-2">
+        <AiFinalPickCard match={match} compact />
+      </div>
+
+      <p className="text-clamp-2 mt-2 min-w-0 text-xs font-bold leading-5 text-slate-200">{match.aiFinalPick?.finalSummary ?? finalPick.pickReason}</p>
       <p className="text-clamp-2 mt-1 min-w-0 text-[11px] font-semibold leading-5 text-slate-400">{analysisSummary}</p>
 
       <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">

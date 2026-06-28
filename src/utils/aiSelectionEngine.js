@@ -191,7 +191,7 @@ function getRecommendationTier(recommendation, confidence, risk) {
 
 function buildFinalPickNote(recommendation) {
   if (recommendation === 'LEAN') return 'อันดับ 1 วันนี้ยังไม่ถึงระดับ BET แต่เป็นคู่ที่ AI ประเมินดีที่สุด'
-  if (recommendation === 'WATCH' || recommendation === 'NO BET') return 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ไม่แนะนำให้เดิมพัน แต่เป็นคู่ที่น่าติดตามที่สุดของวัน'
+  if (recommendation === 'WATCH' || recommendation === 'NO BET') return 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ให้สถานะ Skip แต่เป็นคู่ที่น่าติดตามที่สุดของวัน'
   return 'วันนี้ AI เลือกคู่นี้เป็นอันดับ 1 ของวัน'
 }
 
@@ -201,7 +201,7 @@ function buildAnalysisSummary({ recommendation, confidenceScore, riskScore, leag
   }
   if (recommendation === 'LEAN') return `คู่นี้มีแนวโน้มดีแต่ยังไม่ชัดพอสำหรับ BET จึงจัดเป็น LEAN ด้วยความมั่นใจ ${confidenceScore} และความเสี่ยง ${riskScore}`
   if (recommendation === 'WATCH') return `คู่นี้น่าติดตาม แต่ยังมีปัจจัยเสี่ยงหรือข้อมูลไม่ชัดพอ จึงจัดเป็น WATCH ด้วยความมั่นใจ ${confidenceScore}`
-  return `คู่นี้ยังไม่เหมาะสำหรับการเดิมพัน เนื่องจากคะแนนความมั่นใจ ${confidenceScore} หรือความเสี่ยง ${riskScore} ยังไม่ผ่านเกณฑ์`
+  return `คู่นี้ยังเป็นสถานะ Skip เนื่องจากคะแนนความมั่นใจ ${confidenceScore} หรือความเสี่ยง ${riskScore} ยังไม่ผ่านเกณฑ์`
 }
 
 function getAnalysis(match) {

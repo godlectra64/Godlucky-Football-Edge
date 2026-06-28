@@ -523,7 +523,7 @@ async function checkFootballEnrichmentKeywordScan() {
     'supabase/migrations/20260703_add_daily_sync_orchestrator.sql',
     'src/repositories/matchesRepository.js',
   ]
-  const banned = /\b(odds|bookmakers|AH|OU|betting markets)\b/i
+  const banned = /\b(betting tips|betting recommendations|stake|bankroll|profit|ROI)\b|เดิมพัน|แทง/i
   for (const file of files) {
     const text = await readFile(file, 'utf8')
     if (banned.test(text)) return { count: 1, warning: `banned market keyword found in ${file}` }

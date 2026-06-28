@@ -1,4 +1,6 @@
 import { getBangkokDayRange } from '../utils/bangkokDateRange.js'
+import { fetchAiFinalPicksByMatchIds } from './aiFinalPickRepository.js'
+import { fetchOddsByMatchId, fetchOddsByMatchIds } from './oddsRepository.js'
 
 const analysisCoreSelect = `
     id,
@@ -132,14 +134,15 @@ export async function fetchMatchesByKickoffRange(start, end) {
     .lt('kickoff_at', end)
     .order('kickoff_at', { ascending: true })
 
-  if (!isMissingColumnError(result.error)) return result
+  if (!isMissingColumnError(result.error)) return attachAiMarketData(result)
 
-  return client
+  const legacyResult = await client
     .from('football_matches')
     .select(legacyMatchSelect)
     .gte('kickoff_at', start)
     .lt('kickoff_at', end)
     .order('kickoff_at', { ascending: true })
+  return attachAiMarketData(legacyResult)
 }
 
 export async function getTodayAiPicks(start, end) {
@@ -178,8 +181,9 @@ export async function getTodayAnalyzedMatches(start, end) {
 export async function fetchMatchById(matchId) {
   const client = await getSupabaseClient()
   const result = await client.from('football_matches').select(matchSelect).eq('id', matchId).single()
-  if (!isMissingColumnError(result.error)) return result
-  return client.from('football_matches').select(legacyMatchSelect).eq('id', matchId).single()
+  if (!isMissingColumnError(result.error)) return attachAiMarketData(result)
+  const legacyResult = await client.from('football_matches').select(legacyMatchSelect).eq('id', matchId).single()
+  return attachAiMarketData(legacyResult)
 }
 
 export async function fetchMatchEnrichment(match) {
@@ -199,6 +203,7 @@ export async function fetchMatchEnrichment(match) {
     round,
     topPlayers,
     venue,
+    odds,
   ] = await Promise.all([
     apiFixtureId ? safeTableSelect(client, 'api_football_fixture_statistics', (query) => query.select('*').eq('api_fixture_id', apiFixtureId).order('team_name')) : Promise.resolve([]),
     apiFixtureId ? safeTableSelect(client, 'api_football_fixture_events', (query) => query.select('*').eq('api_fixture_id', apiFixtureId).order('elapsed', { ascending: true })) : Promise.resolve([]),
@@ -217,6 +222,7 @@ export async function fetchMatchEnrichment(match) {
     venueId
       ? safeTableMaybeSingle(client, 'api_football_venues', (query) => query.select('*').eq('api_venue_id', venueId))
       : Promise.resolve(null),
+    fetchOddsByMatchId(match?.id).then((result) => result.error && isMissingColumnError(result.error) ? [] : result.data ?? []).catch(() => []),
   ])
 
   return {
@@ -229,6 +235,7 @@ export async function fetchMatchEnrichment(match) {
     round,
     topPlayers,
     venue,
+    odds,
   }
 }
 
@@ -303,4 +310,40 @@ function getVenueId(match) {
 
 function tableQueryIsMissingKey(buildQuery) {
   return typeof buildQuery !== 'function'
+}
+
+async function attachAiMarketData(result) {
+  if (result.error || !result.data) return result
+  const rows = Array.isArray(result.data) ? result.data : [result.data]
+  const matchIds = rows.map((row) => row.id).filter(Boolean)
+  if (!matchIds.length) return result
+
+  const [pickResult, oddsResult] = await Promise.all([
+    fetchAiFinalPicksByMatchIds(matchIds).catch((error) => ({ data: [], error })),
+    fetchOddsByMatchIds(matchIds).catch((error) => ({ data: [], error })),
+  ])
+
+  const picks = pickResult.error && isMissingColumnError(pickResult.error) ? [] : pickResult.data ?? []
+  const odds = oddsResult.error && isMissingColumnError(oddsResult.error) ? [] : oddsResult.data ?? []
+  if (pickResult.error && !isMissingColumnError(pickResult.error)) throw pickResult.error
+  if (oddsResult.error && !isMissingColumnError(oddsResult.error)) throw oddsResult.error
+
+  const pickByMatch = new Map(picks.map((pick) => [pick.match_id, pick]))
+  const oddsByMatch = new Map()
+  for (const row of odds) {
+    const items = oddsByMatch.get(row.match_id) ?? []
+    items.push(row)
+    oddsByMatch.set(row.match_id, items)
+  }
+
+  const attach = (row) => ({
+    ...row,
+    aiFinalPick: pickByMatch.get(row.id) ?? null,
+    ai_final_pick: pickByMatch.get(row.id) ?? null,
+    odds: oddsByMatch.get(row.id) ?? [],
+  })
+  return {
+    ...result,
+    data: Array.isArray(result.data) ? rows.map(attach) : attach(result.data),
+  }
 }

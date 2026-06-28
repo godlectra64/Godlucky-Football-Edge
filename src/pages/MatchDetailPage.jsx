@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Activity, ArrowLeft, Brain, CalendarClock, Clock, Gauge, ListChecks, MapPin, ShieldAlert, Sparkles, Star, TrendingUp, Users } from 'lucide-react'
+import AiFinalPickCard from '../components/AiFinalPickCard'
 import RiskBadge from '../components/RiskBadge'
 import ScoreBadge from '../components/ScoreBadge'
 import {
@@ -72,6 +73,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
       <FinalDecisionSection detail={detail} heroSelection={heroSelection} />
+      <AiFinalPickAnalysisSection detail={detail} />
       <AiSelectionBreakdownSection detail={detail} />
       <DataIntelligenceV4Section detail={detail} />
       <FootballEnrichmentSection detail={detail} />
@@ -155,6 +157,14 @@ function HeroHeader({ detail }) {
         <p className="mt-3 text-clamp-1 text-xs font-semibold text-slate-500">{venue || 'Venue data pending'}</p>
       </div>
     </section>
+  )
+}
+
+function AiFinalPickAnalysisSection({ detail }) {
+  return (
+    <Section title="AI Final Pick Analysis" icon={Brain} accent>
+      <AiFinalPickCard match={detail} defaultOpen />
+    </Section>
   )
 }
 

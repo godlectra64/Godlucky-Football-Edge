@@ -91,6 +91,10 @@ const footballEnrichmentModes = [
   'daily-sync-status',
   'daily-sync-next',
   'daily-sync-auto',
+  'sync-bookmakers',
+  'sync-odds',
+  'sync-fixture-odds',
+  'recompute-ai-final-picks',
 ]
 
 const dailySyncRunMode = 'daily-full-sync-safe'
@@ -811,6 +815,7 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     results.push(await executeFootballEnrichmentMode('rounds', body, dayRange, context))
   } else if (phase === 'fixture-enrichment') {
     results.push(await executeFootballEnrichmentMode('fixture-enrich', body, dayRange, context))
+    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('sync-odds', body, dayRange, context))
   } else if (phase === 'team-enrichment') {
     results.push(await executeFootballEnrichmentMode('injuries', body, dayRange, context))
     if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('squads', body, dayRange, context))
@@ -819,7 +824,7 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
   } else if (phase === 'league-enrichment') {
     results.push(await executeFootballEnrichmentMode('top-players', body, dayRange, context))
   } else if (phase === 'ranking') {
-    results.push(await runDailyRankingStep(dayRange))
+    results.push(await runDailyRankingStep(dayRange, context))
   } else {
     throw new Error(`Unsupported daily sync phase: ${phase}`)
   }
@@ -1210,7 +1215,7 @@ async function runDailyFullSyncMode(mode: string, body: Record<string, unknown>,
     { step: 7, mode: 'coaches', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('coaches', body, dayRange, context) },
     { step: 8, mode: 'venues', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('venues', body, dayRange, context) },
     { step: 9, mode: 'top-players', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('top-players', body, dayRange, context) },
-    { step: 10, mode: 'ai-top10-ranking', limit: 10, worker: () => runDailyRankingStep(dayRange) },
+    { step: 10, mode: 'ai-top10-ranking', limit: 10, worker: () => runDailyRankingStep(dayRange, context) },
   ]
 
   for (const item of dailySteps) {
@@ -1292,13 +1297,15 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
   }
 }
 
-async function runDailyRankingStep(dayRange: ReturnType<typeof getBangkokDayRange>) {
+async function runDailyRankingStep(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  const finalPickRows = await recomputeAiFinalPicks(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks' })
   return {
     processed: rankedSelectionRows,
     totalCandidates: rankedSelectionRows,
-    rowsSaved: rankedSelectionRows,
-    failed: 0,
+    rowsSaved: rankedSelectionRows + Number(finalPickRows.rowsSaved ?? 0),
+    failed: Number(finalPickRows.failed ?? 0),
+    aiFinalPickRows: finalPickRows.rowsSaved ?? 0,
   }
 }
 
@@ -1311,6 +1318,10 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'coaches') return syncApiFootballCoaches(context)
   if (mode === 'venues') return syncApiFootballVenues(context)
   if (mode === 'top-players') return syncApiFootballTopPlayers(context)
+  if (mode === 'sync-bookmakers') return syncApiFootballBookmakers(context)
+  if (mode === 'sync-odds') return syncApiFootballOdds(dayRange, context)
+  if (mode === 'sync-fixture-odds') return syncApiFootballFixtureOdds(body, dayRange, context)
+  if (mode === 'recompute-ai-final-picks') return recomputeAiFinalPicks(dayRange, context)
   return { processed: 0, totalCandidates: 0 }
 }
 
@@ -1540,6 +1551,151 @@ async function syncApiFootballTopPlayers(context: FootballEnrichmentContext) {
     }
   }
   return { processed, totalCandidates: leagues.length }
+}
+
+async function syncApiFootballBookmakers(context: FootballEnrichmentContext) {
+  const response = await trackedApiFootballGet(context, '/odds/bookmakers', {}, {})
+  if (!response.ok) return { processed: 0, totalCandidates: 1, rowsSaved: 0, failed: 1 }
+  const rows = (response.data ?? []).map((item: any) => ({
+    api_bookmaker_id: nullableNumber(item.id),
+    name: String(item.name ?? '').trim(),
+    raw: item,
+    updated_at: new Date().toISOString(),
+  })).filter((item: any) => item.api_bookmaker_id && item.name)
+  await upsertApiFootballData('football_bookmakers', 'api_bookmaker_id', rows)
+  addEndpointRowsSaved(context, '/odds/bookmakers', rows.length)
+  return { processed: rows.length, totalCandidates: rows.length, rowsSaved: rows.length, failed: 0 }
+}
+
+async function syncApiFootballOdds(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const candidates = await fetchDbMatchCandidates(dayRange, context.limit, true)
+  let processed = 0
+  let rowsSaved = 0
+  let failed = 0
+  for (const match of candidates.rows) {
+    if (context.rateLimited) break
+    const result = await syncOddsForMatch(match, context)
+    processed += result.processed
+    rowsSaved += result.rowsSaved
+    failed += result.failed
+  }
+  return { processed, totalCandidates: candidates.totalCandidates, rowsSaved, failed }
+}
+
+async function syncApiFootballFixtureOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const fixtureId = nullableNumber(body.fixtureId ?? body.apiFixtureId ?? body.api_fixture_id)
+  const matchId = typeof body.matchId === 'string' ? body.matchId : typeof body.match_id === 'string' ? body.match_id : ''
+  let query = supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      api_sports_home_team_id,
+      api_sports_away_team_id,
+      kickoff_at,
+      raw,
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, risk_level, ranking_score, final_rank, is_top_pick, raw)
+    `)
+    .limit(context.limit)
+  if (fixtureId) query = query.eq('api_sports_fixture_id', fixtureId)
+  else if (matchId) query = query.eq('id', matchId)
+  else query = query.gte('kickoff_at', dayRange.startUtc).lt('kickoff_at', dayRange.endUtc).not('api_sports_fixture_id', 'is', null)
+
+  const result = await query
+  if (result.error) throw result.error
+  let processed = 0
+  let rowsSaved = 0
+  let failed = 0
+  for (const match of result.data ?? []) {
+    if (context.rateLimited) break
+    const item = await syncOddsForMatch(match, context)
+    processed += item.processed
+    rowsSaved += item.rowsSaved
+    failed += item.failed
+  }
+  return { processed, totalCandidates: result.data?.length ?? 0, rowsSaved, failed }
+}
+
+async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) {
+  const fixtureId = Number(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id ?? 0)
+  if (!fixtureId) return { processed: 0, rowsSaved: 0, failed: 0 }
+  const response = await trackedApiFootballGet(context, '/odds', { fixture: fixtureId }, { apiFixtureId: fixtureId })
+  if (!response.ok) return { processed: 0, rowsSaved: 0, failed: 1 }
+  const normalized = normalizeMatchOddsRows(match, fixtureId, response.data ?? [])
+  await storeFootballBookmakers(normalized.bookmakers)
+  await storeFootballMatchOdds(match.id, normalized.rows)
+  addEndpointRowsSaved(context, '/odds', normalized.rows.length)
+  if (normalized.rows.length) {
+    await supabase.from('football_matches').update({ odds_updated_at: new Date().toISOString() }).eq('id', match.id)
+  }
+  return { processed: 1, rowsSaved: normalized.rows.length, failed: 0 }
+}
+
+async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      api_sports_home_team_id,
+      api_sports_away_team_id,
+      kickoff_at,
+      raw,
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw)
+    `)
+    .gte('kickoff_at', dayRange.startUtc)
+    .lt('kickoff_at', dayRange.endUtc)
+    .limit(200)
+
+  if (result.error) throw result.error
+  const rows = (result.data ?? [])
+    .filter((match: any) => {
+      const analysis = getAnalysis(match)
+      return Boolean(analysis?.is_top_pick || analysis?.final_rank)
+    })
+    .sort((a: any, b: any) => Number(getAnalysis(a)?.final_rank ?? 999) - Number(getAnalysis(b)?.final_rank ?? 999))
+    .slice(0, context.limit || 10)
+
+  let processed = 0
+  let rowsSaved = 0
+  let failed = 0
+  for (const match of rows) {
+    try {
+      const odds = await fetchStoredMatchOdds(match.id)
+      const pick = buildEdgeAiFinalPick({ ...match, odds })
+      const payload = {
+        match_id: match.id,
+        api_fixture_id: nullableNumber(match.api_sports_fixture_id),
+        signal: pick.signal,
+        market_focus: pick.marketFocus,
+        direction: pick.direction,
+        confidence_score: pick.confidenceScore,
+        risk_level: pick.riskLevel,
+        key_reasons: pick.keyReasons,
+        warning_signs: pick.warningSigns,
+        market_signal: pick.marketSignal,
+        final_summary: pick.finalSummary,
+        ah_analysis: pick.ahAnalysis,
+        ou_analysis: pick.ouAnalysis,
+        primary_bookmaker: pick.primaryBookmaker,
+        latest_odds: pick.latestOdds,
+        raw: pick,
+        updated_at: new Date().toISOString(),
+      }
+      const upsert = await supabase.from('football_ai_final_picks').upsert(payload, { onConflict: 'match_id' })
+      if (upsert.error) throw upsert.error
+      processed += 1
+      rowsSaved += 1
+    } catch (error) {
+      failed += 1
+      await logEnrichmentSync({ mode: context.mode, api_fixture_id: match.api_sports_fixture_id, endpoint: 'recompute-ai-final-picks', status: 'error', error_message: error instanceof Error ? error.message : 'ai final pick failed' }).catch(() => {})
+    }
+  }
+  return { processed, totalCandidates: rows.length, rowsSaved, failed }
 }
 
 function compareFixtureSyncPriority(a: any, b: any) {
@@ -2627,7 +2783,80 @@ async function storeOddsSnapshots(match: any, fixtureId: number, response: any) 
       ...row,
     })))
   }
+  if (response?.ok) {
+    const marketRows = normalizeMatchOddsRows(match, fixtureId, response.data ?? [])
+    await storeFootballBookmakers(marketRows.bookmakers)
+    await storeFootballMatchOdds(match.id, marketRows.rows)
+  }
   return normalized
+}
+
+function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<any>) {
+  const rows: Array<any> = []
+  const bookmakers = new Map<number, any>()
+  for (const item of rawRows ?? []) {
+    for (const bookmaker of item.bookmakers ?? []) {
+      const bookmakerId = nullableNumber(bookmaker.id)
+      if (bookmakerId) bookmakers.set(bookmakerId, {
+        api_bookmaker_id: bookmakerId,
+        name: String(bookmaker.name ?? '').trim() || `Bookmaker ${bookmakerId}`,
+        raw: bookmaker,
+        updated_at: new Date().toISOString(),
+      })
+      for (const bet of bookmaker.bets ?? []) {
+        const marketFocus = normalizeMarketFocus(bet.name)
+        if (marketFocus === 'NONE') continue
+        for (const value of bet.values ?? []) {
+          rows.push({
+            match_id: match.id,
+            api_fixture_id: fixtureId,
+            api_bookmaker_id: bookmakerId,
+            bookmaker_name: bookmaker.name ?? null,
+            market_focus: marketFocus,
+            market_name: bet.name ?? null,
+            selection: value.value ?? null,
+            line: parseBetLine(value.value),
+            price: nullableNumber(value.odd),
+            odd_text: value.odd ? String(value.odd) : null,
+            is_opening: rows.length === 0,
+            is_latest: true,
+            snapshot_at: new Date().toISOString(),
+            raw: { bookmaker, bet, value },
+            updated_at: new Date().toISOString(),
+          })
+        }
+      }
+    }
+  }
+  return { rows, bookmakers: [...bookmakers.values()] }
+}
+
+async function storeFootballBookmakers(rows: Array<any>) {
+  if (!rows.length) return { count: 0 }
+  return upsertApiFootballData('football_bookmakers', 'api_bookmaker_id', rows)
+}
+
+async function storeFootballMatchOdds(matchId: string, rows: Array<any>) {
+  if (!rows.length) return { count: 0 }
+  await supabase.from('football_match_odds').update({ is_latest: false }).eq('match_id', matchId)
+  const result = await supabase.from('football_match_odds').insert(rows)
+  if (result.error) throw result.error
+  return { count: rows.length }
+}
+
+async function fetchStoredMatchOdds(matchId: string) {
+  const result = await supabase
+    .from('football_match_odds')
+    .select('*')
+    .eq('match_id', matchId)
+    .order('is_latest', { ascending: false })
+    .order('snapshot_at', { ascending: false })
+    .limit(80)
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return []
+    throw result.error
+  }
+  return result.data ?? []
 }
 
 function normalizeOddsPayload(match: any, response: any) {
@@ -2674,6 +2903,142 @@ function normalizeOddsPayload(match: any, response: any) {
     latest_odds: latest?.odd_text ?? null,
     odds_movement_summary: movement,
   }
+}
+
+function normalizeMarketFocus(value: unknown) {
+  const text = String(value ?? '').toUpperCase()
+  if (text.includes('ASIAN') || text.includes('HANDICAP')) return 'AH'
+  if (text.includes('OVER') || text.includes('UNDER') || text.includes('GOALS') || text.includes('TOTAL')) return 'OU'
+  if (text.includes('MATCH WINNER') || text.includes('1X2') || text.includes('HOME/AWAY')) return 'MATCH_WINNER'
+  if (text.includes('BOTH TEAMS') || text.includes('BTTS')) return 'BTTS'
+  return 'NONE'
+}
+
+function buildEdgeAiFinalPick(match: any) {
+  const analysis = getAnalysis(match)
+  const ahAnalysis = edgeAnalyzeAh(match)
+  const ouAnalysis = edgeAnalyzeOu(match)
+  const selected = chooseEdgeMarket(ahAnalysis, ouAnalysis)
+  const odds = match.odds ?? []
+  const hasOdds = odds.length > 0 && Boolean(selected.hasMarket)
+  const totalAnalysisScore = normalizeScore(analysis.ranking_score ?? analysis.ai_score ?? analysis.confidence_score ?? 0)
+  const selectionScore = normalizeScore(selected.confidenceScore)
+  const confidenceScore = normalizeScore(Math.max(selectionScore, Number(analysis.calibrated_confidence_score ?? analysis.confidence_score ?? selectionScore)))
+  const riskLevel = normalizeRiskLevelText(analysis.risk_level ?? (selected.warnings.length >= 3 ? 'HIGH' : selected.warnings.length ? 'MEDIUM' : 'LOW'))
+  const keyReasons = uniqueText([...(selected.reasons ?? [])]).slice(0, 5)
+  const warningSigns = uniqueText([...(selected.warnings ?? [])]).slice(0, 5)
+  const bookmakerCount = new Set(odds.map((row: any) => row.bookmaker_name).filter(Boolean)).size
+  const movementAgainst = /against/i.test(String(selected.marketSignal ?? ''))
+  let signal: 'STRONG_SIGNAL' | 'WATCH' | 'SKIP' = 'WATCH'
+  if (totalAnalysisScore < 60 || confidenceScore < 55 || riskLevel === 'HIGH' || !hasOdds || movementAgainst || warningSigns.length > 3) signal = 'SKIP'
+  else if (totalAnalysisScore >= 75 && selectionScore >= 70 && confidenceScore >= 70 && bookmakerCount >= 1 && keyReasons.length >= 3) signal = 'STRONG_SIGNAL'
+
+  const marketFocus = signal === 'SKIP' && !hasOdds ? 'NONE' : selected.marketFocus
+  const direction = signal === 'SKIP' && !hasOdds ? 'No market direction' : selected.direction
+  return {
+    signal,
+    marketFocus,
+    direction,
+    confidenceScore: signal === 'SKIP' && !hasOdds ? Math.min(confidenceScore, 54) : confidenceScore,
+    riskLevel,
+    keyReasons,
+    warningSigns,
+    marketSignal: hasOdds ? selected.marketSignal : 'No market data yet',
+    finalSummary: buildEdgeAiFinalSummary(signal, marketFocus, direction, confidenceScore, riskLevel, hasOdds),
+    ahAnalysis,
+    ouAnalysis,
+    primaryBookmaker: odds.find((row: any) => row.bookmaker_name)?.bookmaker_name ?? null,
+    latestOdds: odds.find((row: any) => row.market_focus === selected.marketFocus)?.odd_text ?? null,
+  }
+}
+
+function edgeAnalyzeAh(match: any) {
+  const analysis = getAnalysis(match)
+  const rows = (match.odds ?? []).filter((row: any) => row.market_focus === 'AH')
+  const homeScore = averageNumbers([analysis.home_advantage_score, analysis.home_away_score, analysis.team_strength_score, analysis.form_score], 58)
+  const awayScore = averageNumbers([100 - Number(analysis.home_advantage_score ?? 58), analysis.away_weakness_score, analysis.form_score ? 100 - Number(analysis.form_score) : null], 52)
+  const gap = homeScore - awayScore
+  const direction = `${gap >= 0 ? 'Home' : 'Away'} ${Math.abs(gap) >= 16 ? '-0.75' : Math.abs(gap) >= 10 ? '-0.5' : Math.abs(gap) >= 5 ? '-0.25' : '+0.25'}`
+  const reasons = [
+    Math.abs(gap) >= 8 ? 'Team strength profile supports AH direction' : '',
+    Number(analysis.home_advantage_score ?? 0) >= 62 ? 'Home/away profile is above baseline' : '',
+    rows.length ? 'AH market data is available from API-FOOTBALL' : '',
+  ].filter(Boolean)
+  const warnings = [
+    !rows.length ? 'No AH market data yet' : '',
+    Math.abs(gap) < 5 ? 'Team edge is narrow' : '',
+    normalizeRiskLevelText(analysis.risk_level) === 'HIGH' ? 'Risk level is high' : '',
+  ].filter(Boolean)
+  return {
+    marketFocus: 'AH',
+    direction,
+    confidenceScore: normalizeScore(48 + Math.abs(gap) * 0.55 + (rows.length ? 8 : -10) - warnings.length * 3),
+    reasons: reasons.length ? reasons : ['AH data direction is conservative'],
+    warnings,
+    marketSignal: rows.length ? 'Latest AH market data is available' : 'No AH market data yet',
+    hasMarket: rows.length > 0,
+    bookmakerCount: new Set(rows.map((row: any) => row.bookmaker_name).filter(Boolean)).size,
+  }
+}
+
+function edgeAnalyzeOu(match: any) {
+  const analysis = getAnalysis(match)
+  const rows = (match.odds ?? []).filter((row: any) => row.market_focus === 'OU')
+  const attacking = Number(analysis.goal_scoring_score ?? 58)
+  const defending = Number(analysis.defensive_stability_score ?? 58)
+  const tempo = averageNumbers([attacking, 100 - defending], 58)
+  const line = rows.find((row: any) => row.line)?.line ?? (tempo >= 62 ? '2.75' : tempo >= 52 ? '2.5' : '3.0')
+  const direction = tempo >= 52 ? `Over ${line}` : `Under ${line}`
+  const reasons = [
+    attacking >= 62 ? 'Attacking profile is above baseline' : '',
+    defending <= 52 ? 'Defensive stability leaves room for goals' : '',
+    rows.length ? 'OU market data is available from API-FOOTBALL' : '',
+  ].filter(Boolean)
+  const warnings = [
+    !rows.length ? 'No OU market data yet' : '',
+    tempo > 47 && tempo < 57 ? 'Goal tempo is close to neutral' : '',
+    normalizeRiskLevelText(analysis.risk_level) === 'HIGH' ? 'Risk level is high' : '',
+  ].filter(Boolean)
+  return {
+    marketFocus: 'OU',
+    direction,
+    confidenceScore: normalizeScore(46 + Math.abs(tempo - 52) * 0.58 + (rows.length ? 8 : -10) - warnings.length * 3),
+    reasons: reasons.length ? reasons : ['OU data direction is conservative'],
+    warnings,
+    marketSignal: rows.length ? 'Latest OU market data is available' : 'No OU market data yet',
+    hasMarket: rows.length > 0,
+    bookmakerCount: new Set(rows.map((row: any) => row.bookmaker_name).filter(Boolean)).size,
+  }
+}
+
+function chooseEdgeMarket(ahAnalysis: any, ouAnalysis: any) {
+  const ahScore = Number(ahAnalysis.confidenceScore ?? 0)
+  const ouScore = Number(ouAnalysis.confidenceScore ?? 0)
+  if (ahScore > ouScore + 5) return ahAnalysis
+  if (ouScore > ahScore + 5) return ouAnalysis
+  return (ahAnalysis.warnings?.length ?? 0) <= (ouAnalysis.warnings?.length ?? 0) ? ahAnalysis : ouAnalysis
+}
+
+function buildEdgeAiFinalSummary(signal: string, marketFocus: string, direction: string, confidenceScore: number, riskLevel: string, hasOdds: boolean) {
+  if (!hasOdds) return 'AI Final Pick is limited because market data is not available yet. Highest signal is capped at Watch.'
+  if (signal === 'STRONG_SIGNAL') return `Strong Signal on ${marketFocus} ${direction} with ${confidenceScore}% confidence and ${riskLevel} risk.`
+  if (signal === 'WATCH') return `Watch ${marketFocus} ${direction}. Data direction is useful but still needs confirmation.`
+  return `Skip ${marketFocus} ${direction}. Risk or data conflict is too high for a final signal.`
+}
+
+function normalizeRiskLevelText(value: unknown) {
+  const text = String(value ?? '').toUpperCase()
+  return ['LOW', 'MEDIUM', 'HIGH'].includes(text) ? text : 'MEDIUM'
+}
+
+function averageNumbers(values: Array<unknown>, fallback: number) {
+  const numbers = values.map(Number).filter(Number.isFinite)
+  if (!numbers.length) return fallback
+  return numbers.reduce((total, value) => total + value, 0) / numbers.length
+}
+
+function uniqueText(values: Array<unknown>) {
+  return [...new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean))]
 }
 
 async function storeTeamStatistics(match: any, fixtureId: number, response: any) {
