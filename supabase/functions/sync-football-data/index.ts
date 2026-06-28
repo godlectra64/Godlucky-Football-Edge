@@ -83,6 +83,8 @@ const footballEnrichmentModes = [
   'venues',
   'top-players',
   'enrich-all',
+  'daily-full-sync',
+  'auto-daily-enrichment',
 ]
 
 Deno.serve(async (request) => {
@@ -93,19 +95,46 @@ Deno.serve(async (request) => {
   const startedMs = Date.now()
   const startedAt = new Date(startedMs).toISOString()
   let logId: string | null = null
+  let responseProviderName = requestedProviderName
 
   try {
-    assertRuntimeConfig()
-    const authError = getServiceAuthError(request)
+    const body = await safeJson(request)
+    const mode = normalizeSyncMode(body.mode)
+    responseProviderName = isFootballEnrichmentMode(mode) ? 'api-football' : requestedProviderName
+    assertRuntimeConfig(mode)
+    const authError = await getServiceAuthError(request, mode)
     if (authError) return authError
 
-    const body = await safeJson(request)
     const dayRange = getSyncDateRange(body)
     const { dateKey, dateFrom, dateTo, startUtc, endUtc } = dayRange
-    const mode = normalizeSyncMode(body.mode)
     const syncType = typeof body.mode === 'string' && body.mode ? body.mode : 'manual'
     const limit = getSyncLimit(body.limit, mode)
     const offset = getSyncOffset(body.offset)
+
+    if (isFootballEnrichmentMode(mode)) {
+      const modeResult = await runFootballEnrichmentMode(mode, body, dayRange, limit)
+      return json({
+        ok: true,
+        provider: 'api-football',
+        mode,
+        dateKey,
+        dateFrom,
+        dateTo,
+        startUtc,
+        endUtc,
+        limit,
+        processed: modeResult.processed,
+        totalCandidates: modeResult.totalCandidates,
+        totalFetched: modeResult.totalFetched,
+        endpointCoverage: modeResult.endpointCoverage,
+        steps: modeResult.steps ?? [],
+        limits: modeResult.limits ?? { limit },
+        skippedEndpoints: modeResult.skippedEndpoints,
+        rateLimited: modeResult.rateLimited,
+        durationMs: Date.now() - startedMs,
+      })
+    }
+
     const primaryProvider = getProviderAdapter(requestedProviderName)
 
     const log = await supabase
@@ -127,15 +156,13 @@ Deno.serve(async (request) => {
       await resetMatchesForRange(dayRange)
     }
 
-    const modeResult = isFootballEnrichmentMode(mode)
-      ? await runFootballEnrichmentMode(mode, body, dayRange, limit)
-      : mode === 'enrich'
-        ? await runEnrichMode(dayRange, limit)
-        : mode === 'recompute'
-          ? await runRecomputeMode(dayRange, limit)
-          : mode === 'learning'
-            ? await runLearningMode(dayRange, limit)
-            : await runManualMode(primaryProvider, dayRange, limit, offset)
+    const modeResult = mode === 'enrich'
+      ? await runEnrichMode(dayRange, limit)
+      : mode === 'recompute'
+        ? await runRecomputeMode(dayRange, limit)
+        : mode === 'learning'
+          ? await runLearningMode(dayRange, limit)
+          : await runManualMode(primaryProvider, dayRange, limit, offset)
     const providerResult = modeResult.providerResult
     const processed = modeResult.processed
     const totalCandidates = modeResult.totalCandidates
@@ -246,8 +273,8 @@ Deno.serve(async (request) => {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'sync failed'
-    await finishLog(logId, 'failed', message, { provider: requestedProviderName, fallbackUsed: false, fallbackProvider: null, error: serializeError(error) })
-    return json({ ok: false, provider: requestedProviderName, fallbackUsed: false, fallbackProvider: null, message }, 500)
+    await finishLog(logId, 'failed', message, { provider: responseProviderName, fallbackUsed: false, fallbackProvider: null, error: serializeError(error) })
+    return json({ ok: false, provider: responseProviderName, fallbackUsed: false, fallbackProvider: null, message }, 500)
   }
 })
 
@@ -383,11 +410,27 @@ type FootballEnrichmentEndpointCounter = {
 
 type FootballEnrichmentEndpointCounterKey = keyof FootballEnrichmentEndpointCounter
 
+type DailyFullSyncStepSummary = {
+  step: number
+  mode: string
+  status: 'success' | 'empty' | 'partial_success' | 'error' | 'skipped_not_due'
+  processed: number
+  totalCandidates: number
+  rowsSaved: number
+  failed: number
+  durationMs: number
+  message?: string
+}
+
 async function runFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
   const provider = getProviderAdapter('api-football')
   const providerResult = { provider, fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] }
   const context = createFootballEnrichmentContext(mode, limit, typeof body.date === 'string' ? body.date : dayRange.dateKey)
   const started = Date.now()
+
+  if (mode === 'daily-full-sync' || mode === 'auto-daily-enrichment') {
+    return runDailyFullSyncMode(mode, body, dayRange, context, providerResult, started)
+  }
 
   let processed = 0
   let totalCandidates = 0
@@ -419,6 +462,116 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
     skippedEndpoints: context.skippedEndpoints,
     rateLimited: context.rateLimited,
     durationMs: Date.now() - started,
+    steps: [],
+  }
+}
+
+async function runDailyFullSyncMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, providerResult: any, started: number) {
+  const fixtureLimit = getPositiveLimit(body.limit, defaultFootballEnrichmentLimit, maxFootballEnrichmentLimit)
+  const enrichmentLimit = getPositiveLimit(body.enrichmentLimit, 20, maxFootballEnrichmentLimit)
+  const matchLimit = getPositiveLimit(body.matchLimit, defaultManualLimit, maxManualLimit)
+  const steps: Array<DailyFullSyncStepSummary> = []
+  let processed = 0
+  let totalCandidates = 0
+
+  const dailySteps = [
+    { step: 1, mode: 'daily-fixtures', limit: matchLimit, worker: () => syncApiFootballDailyFixtures(dayRange, matchLimit) },
+    { step: 2, mode: 'coverage', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('coverage', body, dayRange, context) },
+    { step: 3, mode: 'rounds', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('rounds', body, dayRange, context) },
+    { step: 4, mode: 'fixture-enrich', limit: fixtureLimit, worker: () => executeFootballEnrichmentMode('fixture-enrich', body, dayRange, context) },
+    { step: 5, mode: 'injuries', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('injuries', body, dayRange, context) },
+    { step: 6, mode: 'squads', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('squads', body, dayRange, context) },
+    { step: 7, mode: 'coaches', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('coaches', body, dayRange, context) },
+    { step: 8, mode: 'venues', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('venues', body, dayRange, context) },
+    { step: 9, mode: 'top-players', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('top-players', body, dayRange, context) },
+    { step: 10, mode: 'ai-top10-ranking', limit: 10, worker: () => runDailyRankingStep(dayRange) },
+  ]
+
+  for (const item of dailySteps) {
+    if (context.rateLimited && item.mode !== 'ai-top10-ranking') {
+      const skipped = await logDailyStepSkipped(context, item.step, item.mode)
+      steps.push(skipped)
+      continue
+    }
+
+    context.limit = item.limit
+    const before = cloneEndpointCounters(context.endpoints)
+    const summary = await runDailyStep(context, item.step, item.mode, item.worker, before)
+    steps.push(summary)
+    processed += summary.processed
+    totalCandidates += summary.totalCandidates
+  }
+
+  const failed = steps.reduce((total, step) => total + step.failed, 0)
+  return {
+    providerResult,
+    totalCandidates,
+    totalFetched: totalCandidates,
+    processed,
+    skippedByLimit: 0,
+    failures: failed ? steps.filter((step) => step.failed > 0).map((step) => ({ message: `${step.mode}: ${step.message ?? 'failed'}` })) : [],
+    rankedSelectionRows: steps.find((step) => step.mode === 'ai-top10-ranking')?.processed ?? 0,
+    topSelections: await fetchTopSelectionsDebug(dayRange).catch(() => []),
+    endpointCoverage: context.endpoints,
+    enrichedMatches: [],
+    processedMatches: [],
+    skippedEndpoints: context.skippedEndpoints,
+    rateLimited: context.rateLimited,
+    durationMs: Date.now() - started,
+    steps,
+    limits: { fixtureLimit, enrichmentLimit, matchLimit },
+  }
+}
+
+async function runDailyStep(context: FootballEnrichmentContext, step: number, mode: string, worker: () => Promise<any>, before: Record<string, FootballEnrichmentEndpointCounter>) {
+  const startedAt = Date.now()
+  await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'started', started_at: new Date().toISOString(), finished_at: new Date().toISOString() })
+  try {
+    const result = await worker()
+    const endpointDelta = diffEndpointCounters(before, context.endpoints)
+    const processed = Number(result?.processed ?? 0)
+    const totalCandidates = Number(result?.totalCandidates ?? 0)
+    const rowsSaved = Number(result?.rowsSaved ?? endpointDelta.rowsSaved ?? processed)
+    const failed = Number(result?.failed ?? endpointDelta.failed ?? 0)
+    const status = failed > 0 ? 'partial_success' : rowsSaved > 0 || processed > 0 ? 'success' : 'empty'
+    await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: status === 'partial_success' ? 'success' : status, results_count: rowsSaved, finished_at: new Date().toISOString() })
+    await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'finished', results_count: rowsSaved, finished_at: new Date().toISOString() })
+    return { step, mode, status, processed, totalCandidates, rowsSaved, failed, durationMs: Date.now() - startedAt }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `${mode} failed`
+    await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'error', error_message: message, finished_at: new Date().toISOString() }).catch(() => {})
+    await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'finished', error_message: message, finished_at: new Date().toISOString() }).catch(() => {})
+    return { step, mode, status: 'error' as const, processed: 0, totalCandidates: 0, rowsSaved: 0, failed: 1, durationMs: Date.now() - startedAt, message }
+  }
+}
+
+async function logDailyStepSkipped(context: FootballEnrichmentContext, step: number, mode: string) {
+  await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'skipped_not_due', error_message: 'Skipped because API-Football rate limit protection stopped earlier steps', finished_at: new Date().toISOString() })
+  await logEnrichmentSync({ mode: context.mode, endpoint: `daily:${mode}`, status: 'finished', error_message: 'Skipped because API-Football rate limit protection stopped earlier steps', finished_at: new Date().toISOString() })
+  return { step, mode, status: 'skipped_not_due' as const, processed: 0, totalCandidates: 0, rowsSaved: 0, failed: 0, durationMs: 0, message: 'rate limit protection' }
+}
+
+async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+  const matches = [...await fetchApiFootballFixtures(dayRange.dateKey)].sort(compareFixtureSyncPriority)
+  const batch = matches.slice(0, limit)
+  const result = await processInChunks(batch, syncChunkSize, async (footballDataMatch: any) => {
+    return syncMatch(footballDataMatch, { enrichFixtureData: false })
+  }, { provider: 'api-football', dateKey: dayRange.dateKey, totalBatch: batch.length, totalFetched: matches.length })
+  return {
+    processed: result.processed,
+    totalCandidates: matches.length,
+    rowsSaved: result.processed,
+    failed: result.failures.length,
+  }
+}
+
+async function runDailyRankingStep(dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  return {
+    processed: rankedSelectionRows,
+    totalCandidates: rankedSelectionRows,
+    rowsSaved: rankedSelectionRows,
+    failed: 0,
   }
 }
 
@@ -1668,6 +1821,24 @@ function rememberSkippedEndpoint(context: FootballEnrichmentContext, endpoint: s
   context.skippedEndpoints.push({ endpoint, reason, ...meta })
 }
 
+function cloneEndpointCounters(source: Record<string, FootballEnrichmentEndpointCounter>) {
+  return Object.fromEntries(Object.entries(source).map(([key, value]) => [key, { ...value }]))
+}
+
+function diffEndpointCounters(before: Record<string, FootballEnrichmentEndpointCounter>, after: Record<string, FootballEnrichmentEndpointCounter>) {
+  const delta = { called: 0, withData: 0, empty: 0, skipped: 0, failed: 0, rowsSaved: 0 }
+  for (const [endpoint, current] of Object.entries(after)) {
+    const previous = before[endpoint] ?? { called: 0, withData: 0, empty: 0, skipped: 0, failed: 0, rowsSaved: 0 }
+    delta.called += current.called - previous.called
+    delta.withData += current.withData - previous.withData
+    delta.empty += current.empty - previous.empty
+    delta.skipped += current.skipped - previous.skipped
+    delta.failed += current.failed - previous.failed
+    delta.rowsSaved += current.rowsSaved - previous.rowsSaved
+  }
+  return delta
+}
+
 function toSyncMeta(meta: any) {
   return {
     api_fixture_id: meta.apiFixtureId ?? null,
@@ -1683,6 +1854,12 @@ function hashText(value: string) {
     hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0
   }
   return hash || 1
+}
+
+function getPositiveLimit(value: unknown, defaultLimit: number, maxLimit: number) {
+  const numeric = Number(value ?? defaultLimit)
+  if (!Number.isFinite(numeric) || numeric <= 0) return defaultLimit
+  return Math.max(1, Math.min(Math.floor(numeric), maxLimit))
 }
 
 async function storeOddsSnapshots(match: any, fixtureId: number, response: any) {
@@ -4669,31 +4846,63 @@ function buildThaiReason(homeForm: Record<string, number>, awayForm: Record<stri
 
 async function finishLog(logId: string | null, status: string, message: string, raw: unknown) {
   if (!logId) {
-    await supabase.from('sync_logs').insert({ sync_type: requestedProviderName, status, message, finished_at: new Date().toISOString(), raw })
+    const rawProvider = raw && typeof raw === 'object' && 'provider' in raw ? String((raw as any).provider) : requestedProviderName
+    await supabase.from('sync_logs').insert({ sync_type: rawProvider, status, message, finished_at: new Date().toISOString(), raw })
     return
   }
 
   await supabase.from('sync_logs').update({ status, message, finished_at: new Date().toISOString(), raw }).eq('id', logId)
 }
 
-function assertRuntimeConfig() {
-  if (requestedProviderName === 'api-football' && !API_FOOTBALL_KEY) throw new Error('Missing API_FOOTBALL_KEY Supabase secret')
-  if (requestedProviderName === 'api-football' && !API_FOOTBALL_BASE_URL) throw new Error('Missing API_FOOTBALL_BASE_URL Supabase secret')
-  if (!FOOTBALL_DATA_TOKEN) throw new Error('Missing FOOTBALL_API_KEY Supabase secret for football-data.org fallback')
-  if (!FOOTBALL_DATA_BASE_URL) throw new Error('Missing FOOTBALL_API_BASE_URL Supabase secret')
+function assertRuntimeConfig(mode: string) {
+  const needsApiFootball = requestedProviderName === 'api-football' || isFootballEnrichmentMode(mode)
+  const needsFootballDataFallback = !isFootballEnrichmentMode(mode)
+  if (needsApiFootball && !API_FOOTBALL_KEY) throw new Error('Missing API_FOOTBALL_KEY Supabase secret')
+  if (needsApiFootball && !API_FOOTBALL_BASE_URL) throw new Error('Missing API_FOOTBALL_BASE_URL Supabase secret')
+  if (needsFootballDataFallback && !FOOTBALL_DATA_TOKEN) throw new Error('Missing FOOTBALL_API_KEY Supabase secret for football-data.org fallback')
+  if (needsFootballDataFallback && !FOOTBALL_DATA_BASE_URL) throw new Error('Missing FOOTBALL_API_BASE_URL Supabase secret')
   if (!supabaseUrl || !serviceRoleKey) throw new Error('Missing Supabase service credentials')
   if (!secretKeys.length) throw new Error('Missing Supabase secret API keys')
 }
 
-function getServiceAuthError(request: Request) {
+async function getServiceAuthError(request: Request, mode: string) {
   const apiKey = sanitizeHeaderValue(request.headers.get('apikey') ?? '')
+  const authorization = sanitizeHeaderValue(request.headers.get('authorization') ?? '')
+  const bearerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? ''
+  const adminOnlyMessage = isFootballEnrichmentMode(mode)
+    ? 'Unauthorized enrichment request. API-Football enrichment modes are admin-only. Invoke this Edge Function with the Supabase service role key, a configured SUPABASE_SECRET_KEYS admin key, or a valid admin user JWT. Publishable/anon keys are not allowed.'
+    : 'Unauthorized sync request. Invoke this Edge Function with the Supabase service role key, a configured SUPABASE_SECRET_KEYS admin key, or a valid admin user JWT. Publishable/anon keys are not allowed.'
 
-  if (apiKey && secretKeys.includes(apiKey)) return null
+  if (isTrustedAdminToken(apiKey) || isTrustedAdminToken(bearerToken)) return null
+  if (bearerToken && await isAdminJwt(bearerToken)) return null
 
-  return new Response(JSON.stringify({ ok: false, message: 'Unauthorized sync request' }), {
+  return new Response(JSON.stringify({
+    ok: false,
+    message: adminOnlyMessage,
+    code: 'ADMIN_AUTH_REQUIRED',
+    provider: isFootballEnrichmentMode(mode) ? 'api-football' : requestedProviderName,
+  }), {
     status: 401,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
+}
+
+function isTrustedAdminToken(value: string) {
+  if (!value) return false
+  return value === serviceRoleKey || secretKeys.includes(value)
+}
+
+async function isAdminJwt(token: string) {
+  if (!token || isTrustedAdminToken(token)) return false
+  try {
+    const { data, error } = await supabase.auth.getUser(token)
+    if (error || !data?.user) return false
+    const appRole = String(data.user.app_metadata?.role ?? '').toLowerCase()
+    const userRole = String(data.user.user_metadata?.role ?? '').toLowerCase()
+    return appRole === 'admin' || appRole === 'service_role' || userRole === 'admin' || data.user.app_metadata?.is_admin === true
+  } catch {
+    return false
+  }
 }
 
 function parseSupabaseSecretKeys(value: string | undefined | null) {
