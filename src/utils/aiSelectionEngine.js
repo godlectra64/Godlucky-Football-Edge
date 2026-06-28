@@ -1,27 +1,11 @@
+import { getLeagueQualityScore as calculateLeagueQualityScore } from './leagueQualityScoring.js'
+
 const recommendationPriority = {
   BET: 1,
   LEAN: 2,
   WATCH: 3,
   'NO BET': 4,
 }
-
-const leagueQuality = [
-  [/champions league/i, 100],
-  [/premier league/i, 100],
-  [/la liga|primera division/i, 98],
-  [/serie a/i, 96],
-  [/bundesliga/i, 95],
-  [/europa league/i, 95],
-  [/ligue 1/i, 93],
-  [/brazil.*serie a|brasileir/i, 90],
-  [/eredivisie/i, 88],
-  [/primeira liga|portugal/i, 87],
-  [/j league/i, 87],
-  [/argentina.*primera/i, 86],
-  [/k league/i, 84],
-  [/mls|major league soccer/i, 84],
-  [/thai league/i, 72],
-]
 
 export function runAiSelectionEngine(matches = [], options = {}) {
   const rows = (matches ?? []).map((match) => buildSelectionRow(match, options))
@@ -48,10 +32,8 @@ export function runAiSelectionEngine(matches = [], options = {}) {
   })
 }
 
-export function getLeagueQualityScore(leagueName) {
-  const value = String(leagueName ?? '')
-  const found = leagueQuality.find(([pattern]) => pattern.test(value))
-  return found?.[1] ?? 65
+export function getLeagueQualityScore(source) {
+  return calculateLeagueQualityScore(source)
 }
 
 export function sortSelectionRows(a, b) {
@@ -70,8 +52,7 @@ export function getRecommendationPriority(recommendation) {
 function buildSelectionRow(match = {}, options = {}) {
   const analysis = getAnalysis(match)
   const validation = validateMatch(match, analysis, options)
-  const leagueName = getLeagueName(match)
-  const leagueQualityScore = getLeagueQualityScore(leagueName)
+  const leagueQualityScore = getLeagueQualityScore(match)
   const matchQualityScore = getMatchQualityScore(match, analysis)
   const base = getBaseScore(leagueQualityScore, analysis)
   const moduleScores = {

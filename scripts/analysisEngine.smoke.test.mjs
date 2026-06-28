@@ -51,6 +51,11 @@ import {
 } from '../src/utils/dataPlatform.js'
 import { buildExplainableAi } from '../src/utils/explainableAi.js'
 import { getBangkokDayRange, isWithinBangkokDay } from '../src/utils/bangkokDateRange.js'
+import {
+  LEAGUE_QUALITY_SCORING_VERSION,
+  getFixtureSyncPriority,
+  getLeagueQualityScore,
+} from '../src/utils/leagueQualityScoring.js'
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
@@ -97,8 +102,15 @@ assert.ok(syncFootballDataSource.includes('function getLeagueTierScore'), 'leagu
 assert.ok(syncFootballDataSource.includes('apiFootballLeagueTierScores'), 'league scoring should use API-FOOTBALL league id tiers')
 assert.ok(syncFootballDataSource.includes('country: syncPriority.country'), 'processedMatches should include country')
 assert.ok(syncFootballDataSource.includes('leagueId: syncPriority.leagueId'), 'processedMatches should include leagueId')
+assert.ok(syncFootballDataSource.includes('scoringVersion: syncPriority.scoringVersion'), 'processedMatches should include scoringVersion')
 assert.ok(syncFootballDataSource.includes("if (exactCountryLeague.includes('england:premier league')) return 100"), 'England Premier League should be tier A by country and name')
 assert.ok(syncFootballDataSource.includes("if (leagueName.toLowerCase().includes('premier league') && !isHighTierPremierCountry(country.toLowerCase())) cap = Math.min(cap, 72)"), 'foreign Premier League names should be capped')
+assert.ok(syncFootballDataSource.includes("const leagueQualityScoringVersion = 'league-quality-v4.1'"), 'sync-football-data should expose the league scoring version')
+assert.ok(syncFootballDataSource.includes('await recalibrateDailySelectionScores(range)'), 'daily ranking should recalibrate stale league quality before ranking')
+assert.ok(syncFootballDataSource.includes('topSelections,'), 'manual sync response should include top selection debug rows')
+assert.ok(syncFootballDataSource.includes('leagueQualitySource: leagueQualityScoringVersion'), 'match_analysis raw should record the league quality scoring source')
+assert.ok(syncFootballDataSource.includes("update({ is_top_pick: false, is_final_pick: false, final_rank: null, final_pick_note: null })"), 'daily ranking should reset rank flags without deleting rows')
+assert.ok(syncFootballDataSource.includes(".in('match_id', matchIds)"), 'daily ranking reset should be scoped to the current Bangkok date matches')
 assert.ok(syncFootballDataSource.includes('const defaultEnrichLimit = 10'), 'enrich sync should default to a 10 match limit')
 assert.ok(syncFootballDataSource.includes('const maxEnrichLimit = 30'), 'enrich sync should cap limit at 30')
 assert.ok(syncFootballDataSource.includes('const enrichChunkSize = 5'), 'enrich sync should process enrichment in small chunks')
@@ -167,6 +179,56 @@ assert.ok(getFixturePrioritySample({ league: 'MLS Next Pro', country: 'USA', hom
 assert.ok(getFixturePrioritySample({ league: 'USL League Two', country: 'USA', home: 'Little Rock Rangers', away: 'Red River' }).leagueQualityScore <= 55, 'USL League Two should be capped as lower division')
 assert.ok(getFixturePrioritySample({ league: 'Premier League', country: 'England', home: 'Arsenal II', away: 'Chelsea' }).syncPriorityScore < getFixturePrioritySample({ league: 'Premier League', country: 'England', home: 'Arsenal', away: 'Chelsea' }).syncPriorityScore, 'II teams should receive a soft penalty')
 assert.ok(getFixturePrioritySample({ league: 'Premier League Women', country: 'England', home: 'Arsenal W', away: 'Chelsea W' }).leagueQualityScore <= 70, 'Women leagues should be softly capped but retained')
+
+const scoringCases = [
+  [{ league: { name: 'Premier League', country: 'England' }, homeTeam: { name: 'Arsenal' }, awayTeam: { name: 'Chelsea' } }, 95, 100, 'England Premier League'],
+  [{ league: { name: 'La Liga', country: 'Spain' }, homeTeam: { name: 'Barcelona' }, awayTeam: { name: 'Real Madrid' } }, 95, 100, 'Spain La Liga'],
+  [{ league: { name: 'Serie A', country: 'Italy' }, homeTeam: { name: 'Inter' }, awayTeam: { name: 'Milan' } }, 95, 100, 'Italy Serie A'],
+  [{ league: { name: 'Bundesliga', country: 'Germany' }, homeTeam: { name: 'Bayern' }, awayTeam: { name: 'Dortmund' } }, 95, 100, 'Germany Bundesliga'],
+  [{ league: { name: 'Ligue 1', country: 'France' }, homeTeam: { name: 'PSG' }, awayTeam: { name: 'Lyon' } }, 95, 100, 'France Ligue 1'],
+  [{ league: { name: 'Premier League', country: 'Ethiopia' }, homeTeam: { name: 'Adama Kenema' }, awayTeam: { name: 'Welayta Dicha' } }, 0, 72, 'Ethiopia Premier League'],
+  [{ league: { name: 'Premier League', country: 'Mongolia' }, homeTeam: { name: 'Ulaangom City' }, awayTeam: { name: 'Khovd' } }, 0, 72, 'Mongolia Premier League'],
+  [{ league: { name: 'Premier League', country: 'Kazakhstan' }, homeTeam: { name: 'Irtysh' }, awayTeam: { name: 'Kaisar' } }, 0, 72, 'Kazakhstan Premier League'],
+  [{ league: { name: 'Premier League', country: 'Lebanon' }, homeTeam: { name: 'Al Ahed' }, awayTeam: { name: 'Shabab Al Sahel' } }, 0, 72, 'Lebanon Premier League'],
+  [{ league: { name: 'Premier League', country: 'Syria' }, homeTeam: { name: 'Al Jaish' }, awayTeam: { name: 'Al Wahda' } }, 0, 72, 'Syria Premier League'],
+  [{ league: { name: 'Premier League', country: 'Belarus' }, homeTeam: { name: 'Dinamo Minsk' }, awayTeam: { name: 'BATE' } }, 0, 72, 'Belarus Premier League'],
+  [{ league: { name: 'MLS Next Pro', country: 'USA' }, homeTeam: { name: 'Colorado Rapids II' }, awayTeam: { name: 'Vancouver Whitecaps II' } }, 0, 55, 'MLS Next Pro'],
+  [{ league: { name: 'USL League Two', country: 'USA' }, homeTeam: { name: 'Little Rock Rangers' }, awayTeam: { name: 'Red River' } }, 0, 55, 'USL League Two'],
+  [{ league: { name: 'Primeira Divisão', country: 'Macao' }, homeTeam: { name: 'Benfica' }, awayTeam: { name: 'Chiba' } }, 0, 74, 'Macao Primeira Divisao'],
+  [{ league: { name: 'Premier League Women', country: 'England' }, homeTeam: { name: 'Arsenal W' }, awayTeam: { name: 'Chelsea W' } }, 0, 70, 'Women league'],
+]
+
+for (const [fixture, min, max, label] of scoringCases) {
+  const processedScore = getFixtureSyncPriority(fixture).leagueQualityScore
+  const analysisScore = runAiSelectionEngine([{
+    id: label,
+    kickoffAt: '2026-06-28T12:00:00Z',
+    ...fixture,
+    analysis: { recommendation: 'WATCH', confidence_score: 60, risk_score: 40 },
+  }])[0].league_quality_score
+  assert.equal(processedScore, analysisScore, `${label} scorer should match processedMatches and analysis/ranking paths`)
+  assert.ok(processedScore >= min && processedScore <= max, `${label} should score between ${min} and ${max}`)
+}
+
+assert.equal(getFixtureSyncPriority({
+  league: { name: 'Premier League', country: 'England' },
+  homeTeam: { name: 'Arsenal' },
+  awayTeam: { name: 'Chelsea' },
+}).scoringVersion, LEAGUE_QUALITY_SCORING_VERSION, 'processed match scoring should expose the shared scoring version')
+assert.ok(getFixtureSyncPriority({
+  league: { name: 'Premier League', country: 'England' },
+  homeTeam: { name: 'Arsenal II' },
+  awayTeam: { name: 'Chelsea' },
+}).syncPriorityScore < getFixtureSyncPriority({
+  league: { name: 'Premier League', country: 'England' },
+  homeTeam: { name: 'Arsenal' },
+  awayTeam: { name: 'Chelsea' },
+}).syncPriorityScore, 'II teams should receive a sync priority penalty in the shared scorer')
+assert.ok(getLeagueQualityScore({
+  league: { name: 'Academy Development League', country: 'USA' },
+  homeTeam: { name: 'Home Academy' },
+  awayTeam: { name: 'Away Reserve' },
+}) <= 55, 'development/reserve/academy fixtures should be capped in the shared scorer')
 
 const coverageSample = [
   { ok: true, dataCount: 3, rowsSaved: 7 },
@@ -414,7 +476,7 @@ function v2Match(id, moduleScore, riskScore, recommendationHint = 'NO BET') {
     ...baseMatch,
     id,
     kickoffAt: `2026-06-26T${String(8 + Number(id.match(/\d+$/)?.[0] ?? 0)).padStart(2, '0')}:00:00Z`,
-    league: { name: 'Premier League' },
+    league: { name: 'Premier League', country: 'England' },
     analysis: {
       recommendation: recommendationHint,
       confidence_score: moduleScore,

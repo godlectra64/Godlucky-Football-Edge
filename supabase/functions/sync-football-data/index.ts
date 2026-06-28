@@ -19,6 +19,8 @@ const priorityLeagues = new Map<string, number>([
   ['Europa League', 20],
 ])
 
+const leagueQualityScoringVersion = 'league-quality-v4.1'
+
 const apiFootballLeagueTierScores = new Map<number, number>([
   [2, 100], // UEFA Champions League
   [3, 96], // UEFA Europa League
@@ -31,7 +33,7 @@ const apiFootballLeagueTierScores = new Map<number, number>([
   [40, 92], // England Championship
   [88, 90], // Netherlands Eredivisie
   [94, 90], // Portugal Primeira Liga
-  [144, 84], // Belgium Pro League
+  [144, 88], // Belgium Pro League
   [203, 88], // Turkey Super Lig
   [179, 86], // Scotland Premiership
   [207, 86], // Switzerland Super League
@@ -137,6 +139,7 @@ Deno.serve(async (request) => {
     const analyzedCandidateCount = modeResult.analyzedCandidateCount ?? null
     const rankingMayBePartial = Boolean(modeResult.rankingMayBePartial)
     const topPickCount = rankedSelectionRows
+    const topSelections = modeResult.topSelections ?? await fetchTopSelectionsDebug(dayRange)
     const updatedAnalysisCount = recomputeResult.updated + recomputedStoredRows
     const invalidRowsFixed = normalizedAnalysisRows.fixed
     const allFailures = [...failures, ...recomputeResult.failures]
@@ -182,6 +185,7 @@ Deno.serve(async (request) => {
       endpointCoverage,
       enrichedMatches,
       processedMatches,
+      topSelections,
       durationMs: Date.now() - startedMs,
       failures: allFailures,
     })
@@ -219,6 +223,7 @@ Deno.serve(async (request) => {
       endpointCoverage,
       enrichedMatches,
       processedMatches,
+      topSelections,
       durationMs: Date.now() - startedMs,
       failures: allFailures,
     })
@@ -370,6 +375,7 @@ function getFixtureSyncPriority(fixture: any) {
     knownLeagueBonus,
     coverageBonus,
     softPenalty,
+    scoringVersion: leagueQualityScoringVersion,
   }
 }
 
@@ -387,7 +393,14 @@ function getKnownLeagueBonus(league: { name: string; country: string }) {
 
 function getLeagueMeta(source: any) {
   const apiFootballLeague = source?.raw?.apiFootball?.league ?? source?.raw?.raw?.apiFootball?.league
-  const id = getApiFootballLeagueId(firstText(apiFootballLeague?.id, source?.api_sports_league_id, source?.competition?.id, source?.league?.id))
+  const id = getApiFootballLeagueId(firstText(
+    apiFootballLeague?.id,
+    source?.api_sports_league_id,
+    source?.competition?.api_league_id,
+    source?.competition?.id,
+    source?.league?.api_league_id,
+    source?.league?.id,
+  ))
   const rawName = firstText(source?.competition?.name, source?.league?.name, apiFootballLeague?.name)
   const country = normalizeCountry(firstText(source?.competition?.country, source?.competition?.area?.name, source?.league?.country, source?.area?.name, apiFootballLeague?.country))
   return {
@@ -578,7 +591,7 @@ async function fetchEnrichCandidates(dayRange: ReturnType<typeof getBangkokDayRa
       home_goals,
       away_goals,
       raw,
-      league:football_leagues(id, api_league_id, name, priority),
+      league:football_leagues(id, api_league_id, name, country, priority),
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
       analysis:match_analysis(id, match_id, is_top_pick, final_rank, ranking_score, league_quality_score, confidence_score, risk_score, recommendation, value_market, value_side, value_line, calibrated_confidence_score, raw)
@@ -622,7 +635,7 @@ async function fetchDbMatchCandidates(dayRange: ReturnType<typeof getBangkokDayR
       home_goals,
       away_goals,
       raw,
-      league:football_leagues(id, api_league_id, name, priority),
+      league:football_leagues(id, api_league_id, name, country, priority),
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
       analysis:match_analysis(id, match_id, recommendation, confidence_score, risk_score, ranking_score, value_market, value_side, value_line, calibrated_confidence_score, raw)
@@ -1319,6 +1332,7 @@ async function syncMatch(match: any, options: { enrichFixtureData?: boolean } = 
       kickoffAt: match.utcDate ?? null,
       leagueQualityScore: syncPriority.leagueQualityScore,
       syncPriorityScore: syncPriority.syncPriorityScore,
+      scoringVersion: syncPriority.scoringVersion,
     },
   }
 }
@@ -1728,6 +1742,7 @@ function normalizeAnalysisPayload(analysis: any) {
     odds_movement_summary: analysis?.odds_movement_summary ?? null,
     enriched_summary: analysis?.enriched_summary ?? null,
     learning_summary: analysis?.learning_summary ?? null,
+    leagueQualitySource: leagueQualityScoringVersion,
     analysis_summary: summary,
     thai_reason: summary,
   }
@@ -1893,7 +1908,7 @@ async function recomputeStoredAnalysisRows(limit: number) {
     .select(`
       id,
       raw,
-      league:football_leagues(id, api_league_id, name, priority),
+      league:football_leagues(id, api_league_id, name, country, priority),
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
       analysis:match_analysis(raw)
@@ -1913,7 +1928,20 @@ async function recomputeStoredAnalysisRows(limit: number) {
       ...rawMatch,
       id: rawMatch.id ?? row.raw?.id,
       utcDate: rawMatch.utcDate ?? row.raw?.utcDate,
-      competition: rawMatch.competition ?? { id: row.league?.api_league_id, name: row.league?.name },
+      competition: {
+        ...(rawMatch.competition ?? {}),
+        id: rawMatch.competition?.id ?? row.league?.api_league_id,
+        api_league_id: row.league?.api_league_id,
+        name: rawMatch.competition?.name ?? row.league?.name,
+        country: rawMatch.competition?.country ?? row.league?.country,
+      },
+      league: {
+        ...(rawMatch.league ?? {}),
+        id: rawMatch.league?.id ?? row.league?.api_league_id,
+        api_league_id: row.league?.api_league_id,
+        name: rawMatch.league?.name ?? row.league?.name,
+        country: rawMatch.league?.country ?? row.league?.country,
+      },
       homeTeam: rawMatch.homeTeam ?? { id: row.homeTeam?.api_team_id, name: row.homeTeam?.name },
       awayTeam: rawMatch.awayTeam ?? { id: row.awayTeam?.api_team_id, name: row.awayTeam?.name },
     }
@@ -1954,7 +1982,7 @@ async function recomputeProcessedAnalysisRows(matchIds: Array<string>) {
     .select(`
       id,
       raw,
-      league:football_leagues(id, api_league_id, name, priority),
+      league:football_leagues(id, api_league_id, name, country, priority),
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
       analysis:match_analysis(raw)
@@ -1974,7 +2002,20 @@ async function recomputeProcessedAnalysisRows(matchIds: Array<string>) {
         ...rawMatch,
         id: rawMatch.id ?? row.raw?.id,
         utcDate: rawMatch.utcDate ?? row.raw?.utcDate,
-        competition: rawMatch.competition ?? { id: row.league?.api_league_id, name: row.league?.name },
+        competition: {
+          ...(rawMatch.competition ?? {}),
+          id: rawMatch.competition?.id ?? row.league?.api_league_id,
+          api_league_id: row.league?.api_league_id,
+          name: rawMatch.competition?.name ?? row.league?.name,
+          country: rawMatch.competition?.country ?? row.league?.country,
+        },
+        league: {
+          ...(rawMatch.league ?? {}),
+          id: rawMatch.league?.id ?? row.league?.api_league_id,
+          api_league_id: row.league?.api_league_id,
+          name: rawMatch.league?.name ?? row.league?.name,
+          country: rawMatch.league?.country ?? row.league?.country,
+        },
         homeTeam: rawMatch.homeTeam ?? { id: row.homeTeam?.api_team_id, name: row.homeTeam?.name },
         awayTeam: rawMatch.awayTeam ?? { id: row.awayTeam?.api_team_id, name: row.awayTeam?.name },
       }
@@ -2169,6 +2210,8 @@ async function updateMatchAnalysisRow(id: string, payload: Record<string, unknow
 }
 
 async function updateDailySelectionRanks(range: { startUtc: string; endUtc: string }) {
+  await recalibrateDailySelectionScores(range)
+
   const result = await supabase
     .from('football_matches')
     .select(`
@@ -2240,6 +2283,111 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
   return updated
 }
 
+async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc: string }) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_fixture_id,
+      api_provider,
+      api_sports_fixture_id,
+      api_sports_league_id,
+      kickoff_at,
+      status,
+      home_goals,
+      away_goals,
+      raw,
+      league:football_leagues(id, api_league_id, name, country, priority),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name, country),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name, country),
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, risk_score, ranking_score, data_validation_status, match_quality_score, team_strength_score, form_score, goal_scoring_score, defensive_stability_score, tactical_matchup_score, motivation_score, market_reading_score, home_away_score, edge_score, ai_score, raw)
+    `)
+    .gte('kickoff_at', range.startUtc)
+    .lt('kickoff_at', range.endUtc)
+    .limit(1000)
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return 0
+    throw result.error
+  }
+
+  let updated = 0
+  for (const row of result.data ?? []) {
+    const analysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
+    if (!analysis) continue
+    const rawAnalysis = analysis.raw ?? {}
+    const rawMatch = row.raw ?? rawAnalysis.raw_match ?? {}
+    const match = {
+      ...rawMatch,
+      id: rawMatch.id ?? row.api_fixture_id ?? row.id,
+      api_sports_league_id: row.api_sports_league_id,
+      utcDate: rawMatch.utcDate ?? row.kickoff_at,
+      kickoff_at: row.kickoff_at,
+      status: rawMatch.status ?? row.status,
+      competition: {
+        ...(rawMatch.competition ?? {}),
+        id: rawMatch.competition?.id ?? row.league?.api_league_id,
+        api_league_id: row.league?.api_league_id,
+        name: rawMatch.competition?.name ?? row.league?.name,
+        country: rawMatch.competition?.country ?? row.league?.country,
+      },
+      league: {
+        ...(rawMatch.league ?? {}),
+        id: rawMatch.league?.id ?? row.league?.api_league_id,
+        api_league_id: row.league?.api_league_id,
+        name: rawMatch.league?.name ?? row.league?.name,
+        country: rawMatch.league?.country ?? row.league?.country,
+      },
+      homeTeam: rawMatch.homeTeam ?? { id: row.homeTeam?.api_team_id, name: row.homeTeam?.name },
+      awayTeam: rawMatch.awayTeam ?? { id: row.awayTeam?.api_team_id, name: row.awayTeam?.name },
+    }
+    const next = buildSelectionV2Analysis(match, {
+      ...(rawAnalysis ?? {}),
+      ...(analysis ?? {}),
+      recommendation: analysis.recommendation,
+      confidence_score: analysis.confidence_score,
+      risk_score: analysis.risk_score,
+      ranking_score: analysis.ranking_score,
+    })
+    const updateResult = await supabase
+      .from('match_analysis')
+      .update({
+        league_quality_score: next.league_quality_score,
+        match_quality_score: next.match_quality_score,
+        tactical_matchup_score: next.tactical_matchup_score,
+        market_reading_score: next.market_reading_score,
+        home_away_score: next.home_away_score,
+        risk_score: next.risk_score,
+        edge_score: next.edge_score,
+        ai_score: next.ai_score,
+        confidence_score: next.confidence_score,
+        ranking_score: next.ranking_score,
+        recommendation: next.recommendation,
+        recommendation_tier: next.recommendation_tier,
+        data_validation_status: next.data_validation_status,
+        data_validation_notes: next.data_validation_notes,
+        analysis_summary: next.analysis_summary,
+        raw: {
+          ...rawAnalysis,
+          league_quality_score: next.league_quality_score,
+          confidence_score: next.confidence_score,
+          ranking_score: next.ranking_score,
+          recommendation: next.recommendation,
+          leagueQualitySource: leagueQualityScoringVersion,
+        },
+      })
+      .eq('match_id', row.id)
+
+    if (updateResult.error) {
+      if (isMissingColumnError(updateResult.error)) return updated
+      throw updateResult.error
+    }
+    updated += 1
+  }
+
+  return updated
+}
+
 async function countAnalyzedCandidates(range: { startUtc: string; endUtc: string }) {
   const result = await supabase
     .from('football_matches')
@@ -2259,6 +2407,49 @@ async function countAnalyzedCandidates(range: { startUtc: string; endUtc: string
     const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
     return analysis && String(analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID'
   }).length
+}
+
+async function fetchTopSelectionsDebug(range: { startUtc: string; endUtc: string }) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      kickoff_at,
+      league:football_leagues(id, api_league_id, name, country),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, name),
+      analysis:match_analysis(final_rank, recommendation, confidence_score, ranking_score, league_quality_score, raw)
+    `)
+    .gte('kickoff_at', range.startUtc)
+    .lt('kickoff_at', range.endUtc)
+    .limit(1000)
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return []
+    throw result.error
+  }
+
+  return (result.data ?? [])
+    .map((match: any) => {
+      const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
+      if (!analysis?.final_rank) return null
+      return {
+        finalRank: analysis.final_rank,
+        leagueId: match.league?.api_league_id ?? null,
+        country: match.league?.country ?? null,
+        league: match.league?.name ?? null,
+        homeTeam: match.homeTeam?.name ?? null,
+        awayTeam: match.awayTeam?.name ?? null,
+        recommendation: analysis.recommendation ?? null,
+        confidence_score: analysis.confidence_score ?? null,
+        ranking_score: analysis.ranking_score ?? null,
+        league_quality_score: analysis.league_quality_score ?? null,
+        leagueQualitySource: analysis.raw?.leagueQualitySource ?? leagueQualityScoringVersion,
+      }
+    })
+    .filter(Boolean)
+    .sort((a: any, b: any) => Number(a.finalRank ?? 999) - Number(b.finalRank ?? 999))
+    .slice(0, 10)
 }
 
 function isMissingColumnError(error: any) {
