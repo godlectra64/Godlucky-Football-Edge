@@ -3,13 +3,14 @@ import { fetchMatchById, fetchMatchesByKickoffRange } from '../repositories/matc
 import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../repositories/performanceRepository'
 import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../repositories/syncRepository'
 import { getTopMatches } from '../utils/analysisEngine'
+import { getBangkokDayRange } from '../utils/bangkokDateRange.js'
 import { normalizePerformanceRows } from '../utils/performanceIntelligence'
 
 const isSupabaseConfigured = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY)
 
 export async function getTodayMatches() {
-  const { start, end } = todayAndTomorrowRangeBangkok()
-  const { data, error } = await fetchMatchesByKickoffRange(start, end)
+  const { startUtc, endUtc } = getBangkokDayRange()
+  const { data, error } = await fetchMatchesByKickoffRange(startUtc, endUtc)
 
   if (error) {
     logSupabaseReadError('getTodayMatches', error)
@@ -167,24 +168,6 @@ export function normalizeMatch(row = {}) {
     dataValidationStatus: activeAnalysis?.data_validation_status,
     data_validation_status: activeAnalysis?.data_validation_status,
     updatedAt: activeAnalysis?.updated_at ?? source.updated_at ?? source.created_at,
-  }
-}
-
-function todayAndTomorrowRangeBangkok() {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Bangkok',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  })
-  const today = formatter.format(new Date())
-  const start = new Date(`${today}T00:00:00+07:00`)
-  const end = new Date(start)
-  end.setDate(end.getDate() + 2)
-
-  return {
-    start: start.toISOString(),
-    end: end.toISOString(),
   }
 }
 

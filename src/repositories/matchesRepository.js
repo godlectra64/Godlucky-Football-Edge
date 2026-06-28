@@ -1,3 +1,5 @@
+import { getBangkokDayRange } from '../utils/bangkokDateRange.js'
+
 const analysisCoreSelect = `
     id,
     team_strength_score,
@@ -109,7 +111,8 @@ export async function fetchMatchesByKickoffRange(start, end) {
 }
 
 export async function getTodayAiPicks(start, end) {
-  const result = await fetchMatchesByKickoffRange(start, end)
+  const range = getOptionalBangkokRange(start, end)
+  const result = await fetchMatchesByKickoffRange(range.startUtc, range.endUtc)
   if (result.error) return result
   return {
     ...result,
@@ -127,7 +130,8 @@ export async function getTodayAiPicks(start, end) {
 }
 
 export async function getTodayAnalyzedMatches(start, end) {
-  const result = await fetchMatchesByKickoffRange(start, end)
+  const range = getOptionalBangkokRange(start, end)
+  const result = await fetchMatchesByKickoffRange(range.startUtc, range.endUtc)
   if (result.error) return result
   return {
     ...result,
@@ -155,4 +159,9 @@ function isMissingColumnError(error) {
   if (!error) return false
   const message = String(error.message ?? error.details ?? '')
   return error.code === '42703' || /column .* does not exist/i.test(message) || /Could not find .* column/i.test(message)
+}
+
+function getOptionalBangkokRange(start, end) {
+  if (start && end) return { startUtc: start, endUtc: end }
+  return getBangkokDayRange()
 }

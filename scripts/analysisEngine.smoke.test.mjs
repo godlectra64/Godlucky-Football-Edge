@@ -50,6 +50,7 @@ import {
   normalizeDataPlatform,
 } from '../src/utils/dataPlatform.js'
 import { buildExplainableAi } from '../src/utils/explainableAi.js'
+import { getBangkokDayRange, isWithinBangkokDay } from '../src/utils/bangkokDateRange.js'
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
@@ -59,6 +60,17 @@ import { fetchEnabledLeagues, updateLeagueSettingsById } from '../src/repositori
 import { fetchMatchById, fetchMatchesByKickoffRange } from '../src/repositories/matchesRepository.js'
 import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../src/repositories/performanceRepository.js'
 import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../src/repositories/syncRepository.js'
+
+const bangkokRange = getBangkokDayRange('2026-06-28')
+assert.equal(bangkokRange.dateKey, '2026-06-28')
+assert.equal(bangkokRange.dateFrom, '2026-06-28')
+assert.equal(bangkokRange.dateTo, '2026-06-29')
+assert.equal(bangkokRange.startUtc, '2026-06-27T17:00:00.000Z')
+assert.equal(bangkokRange.endUtc, '2026-06-28T17:00:00.000Z')
+assert.equal(isWithinBangkokDay('2026-06-27T16:59:59.000Z', '2026-06-28'), false)
+assert.equal(isWithinBangkokDay('2026-06-27T17:00:00.000Z', '2026-06-28'), true)
+assert.equal(isWithinBangkokDay('2026-06-28T16:59:59.000Z', '2026-06-28'), true)
+assert.equal(isWithinBangkokDay('2026-06-28T17:00:00.000Z', '2026-06-28'), false)
 
 const baseMatch = {
   id: 'match-1',

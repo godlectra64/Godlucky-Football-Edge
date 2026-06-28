@@ -6,6 +6,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
+import { getBangkokDayRange } from '../src/utils/bangkokDateRange.js'
 
 dotenv.config({ path: '.env.local' })
 dotenv.config({ path: '.env' })
@@ -122,7 +123,7 @@ const optionalV2Checks = [
       const countsByDay = new Map()
       for (const row of data ?? []) {
         const kickoff = kickoffByMatchId.map.get(row.match_id)
-        const day = kickoff ? String(kickoff).slice(0, 10) : 'unknown'
+        const day = kickoff ? getBangkokDayRange(kickoff).dateKey : 'unknown'
         countsByDay.set(day, (countsByDay.get(day) ?? 0) + 1)
       }
 
@@ -147,7 +148,7 @@ const optionalV2Checks = [
       let duplicates = 0
       for (const row of data ?? []) {
         const kickoff = kickoffByMatchId.map.get(row.match_id)
-        const day = kickoff ? String(kickoff).slice(0, 10) : 'unknown'
+        const day = kickoff ? getBangkokDayRange(kickoff).dateKey : 'unknown'
         const key = `${day}:${row.final_rank}`
         if (seen.has(key)) duplicates += 1
         seen.add(key)
@@ -212,7 +213,7 @@ async function runLinkedCliVerification() {
     with base as (
       select
         ma.*,
-        fm.kickoff_at::date as match_day
+        (fm.kickoff_at at time zone 'Asia/Bangkok')::date as match_day
       from public.match_analysis ma
       left join public.football_matches fm on fm.id = ma.match_id
     ),

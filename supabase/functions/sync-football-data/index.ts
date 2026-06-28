@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { getBangkokDayRange } from '../_shared/bangkokDateRange.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -44,7 +45,8 @@ Deno.serve(async (request) => {
     if (authError) return authError
 
     const body = await safeJson(request)
-    const { dateFrom, dateTo } = getSyncDateRange(body)
+    const dayRange = getSyncDateRange(body)
+    const { dateKey, dateFrom, dateTo, startUtc, endUtc } = dayRange
     const syncType = body.mode ?? 'manual-football-data'
 
     const log = await supabase
@@ -54,7 +56,7 @@ Deno.serve(async (request) => {
         status: 'running',
         message: `football-data.org sync ${dateFrom} to ${dateTo}`,
         started_at: startedAt,
-        raw: { provider: 'football-data.org', dateFrom, dateTo },
+        raw: { provider: 'football-data.org', dateKey, dateFrom, dateTo, startUtc, endUtc },
       })
       .select('id')
       .single()
@@ -63,7 +65,7 @@ Deno.serve(async (request) => {
     logId = log.data.id
 
     if (body.resetToday) {
-      await resetMatchesForRange(dateFrom, dateTo)
+      await resetMatchesForRange(dayRange)
     }
 
     const competitions = await fetchCompetitions()
@@ -90,7 +92,8 @@ Deno.serve(async (request) => {
     const recomputeResult = await recomputeProcessedAnalysisRows(processedMatchIds)
     const recomputedStoredRows = body.recomputeStoredAnalysisRows ? await recomputeStoredAnalysisRows(Number(body.recomputeStoredLimit ?? 50)) : 0
     const normalizedAnalysisRows = await normalizeLegacyAnalysisRows()
-    const rankedSelectionRows = await updateDailySelectionRanks(dateFrom, dateTo)
+    const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+    const topPickCount = rankedSelectionRows
     const updatedAnalysisCount = recomputeResult.updated + recomputedStoredRows
     const invalidRowsFixed = normalizedAnalysisRows.fixed
     const allFailures = [...failures, ...recomputeResult.failures]
@@ -104,11 +107,15 @@ Deno.serve(async (request) => {
 
     await finishLog(logId, status, message, {
       provider: 'football-data.org',
+      dateKey,
       dateFrom,
       dateTo,
+      startUtc,
+      endUtc,
       competitions: competitions.length,
       total,
       processed,
+      topPickCount,
       updatedAnalysisCount,
       invalidRowsFixed,
       recomputedStoredRows,
@@ -120,10 +127,14 @@ Deno.serve(async (request) => {
     return json({
       ok: true,
       provider: 'football-data.org',
+      dateKey,
       dateFrom,
       dateTo,
+      startUtc,
+      endUtc,
       processed,
       total,
+      topPickCount,
       updatedAnalysisCount,
       invalidRowsFixed,
       recomputedStoredRows,
@@ -898,7 +909,7 @@ async function updateMatchAnalysisRow(id: string, payload: Record<string, unknow
     .eq('id', id)
 }
 
-async function updateDailySelectionRanks(dateFrom: string, dateTo: string) {
+async function updateDailySelectionRanks(range: { startUtc: string; endUtc: string }) {
   const result = await supabase
     .from('football_matches')
     .select(`
@@ -906,13 +917,16 @@ async function updateDailySelectionRanks(dateFrom: string, dateTo: string) {
       kickoff_at,
       analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, risk_score, data_validation_status)
     `)
-    .gte('kickoff_at', `${dateFrom}T00:00:00Z`)
-    .lte('kickoff_at', `${dateTo}T23:59:59Z`)
+    .gte('kickoff_at', range.startUtc)
+    .lt('kickoff_at', range.endUtc)
 
   if (result.error) {
     if (isMissingColumnError(result.error)) return 0
     throw result.error
   }
+
+  const matchIds = (result.data ?? []).map((match: any) => match.id).filter(Boolean)
+  if (!matchIds.length) return 0
 
   const rows = (result.data ?? [])
     .map((match: any) => {
@@ -924,12 +938,14 @@ async function updateDailySelectionRanks(dateFrom: string, dateTo: string) {
   const resetResult = await supabase
     .from('match_analysis')
     .update({ is_top_pick: false, is_final_pick: false, final_rank: null, final_pick_note: null })
-    .in('match_id', rows.map((row: any) => row.matchId))
+    .in('match_id', matchIds)
 
   if (resetResult.error) {
     if (isMissingColumnError(resetResult.error)) return 0
     throw resetResult.error
   }
+
+  if (!rows.length) return 0
 
   const ranked = rows
     .filter((row: any) => String(row.analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID')
@@ -2300,9 +2316,8 @@ function findStanding(standings: Array<any>, teamId: number) {
   return totalTable.find((row: any) => row.team?.id === teamId)
 }
 
-async function resetMatchesForRange(dateFrom: string, dateTo: string) {
-  const range = dateRangeBangkok(dateFrom, dateTo)
-  const resetResult = await supabase.from('football_matches').delete().gte('kickoff_at', range.start).lt('kickoff_at', range.end)
+async function resetMatchesForRange(range: { startUtc: string; endUtc: string }) {
+  const resetResult = await supabase.from('football_matches').delete().gte('kickoff_at', range.startUtc).lt('kickoff_at', range.endUtc)
   if (resetResult.error) throw resetResult.error
 }
 
@@ -2362,43 +2377,14 @@ function sanitizeHeaderValue(value: string) {
   return value.trim().replace(/^["'<]+|[>"']+$/g, '').replace(/[^\x20-\x7E]/g, '')
 }
 
-function todayBangkok() {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Bangkok',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date())
-}
-
-function tomorrowBangkok(date = todayBangkok()) {
-  const tomorrow = new Date(`${date}T00:00:00+07:00`)
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Bangkok',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(tomorrow)
-}
-
 function getSyncDateRange(body: Record<string, unknown>) {
-  const today = todayBangkok()
-  const dateFrom = typeof body.dateFrom === 'string' && body.dateFrom ? body.dateFrom : today
-  const dateTo = typeof body.dateTo === 'string' && body.dateTo ? body.dateTo : tomorrowBangkok(today)
+  const dateInput = typeof body.dateKey === 'string' && body.dateKey
+    ? body.dateKey
+    : typeof body.dateFrom === 'string' && body.dateFrom
+      ? body.dateFrom
+      : new Date()
 
-  return { dateFrom, dateTo }
-}
-
-function dateRangeBangkok(dateFrom: string, dateTo: string) {
-  const start = new Date(`${dateFrom}T00:00:00+07:00`)
-  const end = new Date(`${dateTo}T00:00:00+07:00`)
-  end.setDate(end.getDate() + 1)
-
-  return {
-    start: start.toISOString(),
-    end: end.toISOString(),
-  }
+  return getBangkokDayRange(dateInput)
 }
 
 function clamp(value: number, min: number, max: number) {
