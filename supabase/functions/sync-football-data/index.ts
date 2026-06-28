@@ -109,9 +109,9 @@ Deno.serve(async (request) => {
     const body = await safeJson(request)
     const mode = normalizeSyncMode(body.mode)
     responseProviderName = isFootballEnrichmentMode(mode) ? 'api-football' : requestedProviderName
-    assertRuntimeConfig(mode)
     const authError = await getServiceAuthError(request, mode)
     if (authError) return authError
+    assertRuntimeConfig(mode)
 
     const dayRange = getSyncDateRange(body)
     const { dateKey, dateFrom, dateTo, startUtc, endUtc } = dayRange

@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node scripts/analysisEngine.smoke.test.mjs",
+    "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/dailySyncAuth.unit.test.mjs",
     "verify:analysis": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:daily-sync": "node scripts/verifyAnalysisIntegrity.mjs",
+    "test:daily-sync-auth": "node scripts/dailySyncAuth.unit.test.mjs",
     "test:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "build": "vite build",
     "lint": "eslint .",
