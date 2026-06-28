@@ -95,6 +95,9 @@ const footballEnrichmentModes = [
   'sync-odds',
   'sync-fixture-odds',
   'recompute-ai-final-picks',
+  'lock-daily-top10',
+  'get-daily-top10-status',
+  'refresh-locked-top10-signals',
 ]
 
 const dailySyncRunMode = 'daily-full-sync-safe'
@@ -128,6 +131,7 @@ Deno.serve(async (request) => {
       const modeResult = await runFootballEnrichmentMode(mode, body, dayRange, limit)
       return json({
         ok: true,
+        partial: modeResult.partial ?? false,
         provider: 'api-football',
         mode,
         runId: modeResult.runId ?? null,
@@ -162,7 +166,28 @@ Deno.serve(async (request) => {
         finalSummary: modeResult.finalSummary ?? null,
         nextAction: modeResult.nextAction ?? null,
         nextRequestExample: modeResult.nextRequestExample ?? null,
-      })
+        processedFixtures: modeResult.processedFixtures,
+        savedOdds: modeResult.savedOdds,
+        failedFixtures: modeResult.failedFixtures,
+        emptyFixtures: modeResult.emptyFixtures,
+        processedFixtureIds: modeResult.processedFixtureIds,
+        skippedFixtureIds: modeResult.skippedFixtureIds,
+        failures: modeResult.failures ?? [],
+        nextOffset: modeResult.nextOffset,
+        hasMore: modeResult.hasMore,
+        locked: modeResult.locked,
+        alreadyLocked: modeResult.alreadyLocked,
+        lockedCount: modeResult.lockedCount,
+        selectionDate: modeResult.selectionDate,
+        lockedAt: modeResult.lockedAt,
+        lastUpdated: modeResult.lastUpdated,
+        matchesWithOdds: modeResult.matchesWithOdds,
+        matchesWithoutOdds: modeResult.matchesWithoutOdds,
+        strongSignalCount: modeResult.strongSignalCount,
+        watchCount: modeResult.watchCount,
+        skipCount: modeResult.skipCount,
+        updated: modeResult.updated,
+      }, modeResult.responseStatus ?? 200)
     }
 
     const primaryProvider = getProviderAdapter(requestedProviderName)
@@ -479,6 +504,48 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
     const result = await executeFootballEnrichmentMode(mode, body, dayRange, context)
     processed = result.processed
     totalCandidates = result.totalCandidates
+    return {
+      providerResult,
+      totalCandidates,
+      totalFetched: result.totalFetched ?? totalCandidates,
+      processed,
+      rowsSaved: result.rowsSaved ?? 0,
+      failed: result.failed ?? 0,
+      skipped: result.skipped ?? 0,
+      skippedByLimit: 0,
+      failures: result.failures ?? [],
+      rankedSelectionRows: 0,
+      topSelections: [],
+      endpointCoverage: context.endpoints,
+      enrichedMatches: [],
+      processedMatches: [],
+      skippedEndpoints: context.skippedEndpoints,
+      rateLimited: context.rateLimited,
+      durationMs: Date.now() - started,
+      steps: [],
+      partial: result.partial ?? false,
+      responseStatus: result.responseStatus,
+      processedFixtures: result.processedFixtures,
+      savedOdds: result.savedOdds,
+      failedFixtures: result.failedFixtures,
+      emptyFixtures: result.emptyFixtures,
+      processedFixtureIds: result.processedFixtureIds,
+      skippedFixtureIds: result.skippedFixtureIds,
+      nextOffset: result.nextOffset,
+      hasMore: result.hasMore,
+      locked: result.locked,
+      alreadyLocked: result.alreadyLocked,
+      lockedCount: result.lockedCount,
+      selectionDate: result.selectionDate,
+      lockedAt: result.lockedAt,
+      lastUpdated: result.lastUpdated,
+      matchesWithOdds: result.matchesWithOdds,
+      matchesWithoutOdds: result.matchesWithoutOdds,
+      strongSignalCount: result.strongSignalCount,
+      watchCount: result.watchCount,
+      skipCount: result.skipCount,
+      updated: result.updated,
+    }
   }
 
   return {
@@ -1319,9 +1386,12 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'venues') return syncApiFootballVenues(context)
   if (mode === 'top-players') return syncApiFootballTopPlayers(context)
   if (mode === 'sync-bookmakers') return syncApiFootballBookmakers(context)
-  if (mode === 'sync-odds') return syncApiFootballOdds(dayRange, context)
+  if (mode === 'sync-odds') return syncApiFootballOdds(body, dayRange, context)
   if (mode === 'sync-fixture-odds') return syncApiFootballFixtureOdds(body, dayRange, context)
   if (mode === 'recompute-ai-final-picks') return recomputeAiFinalPicks(dayRange, context)
+  if (mode === 'lock-daily-top10') return lockDailyTop10(dayRange)
+  if (mode === 'get-daily-top10-status') return getDailyTop10Status(dayRange)
+  if (mode === 'refresh-locked-top10-signals') return refreshLockedTop10Signals(dayRange, context)
   return { processed: 0, totalCandidates: 0 }
 }
 
@@ -1567,24 +1637,24 @@ async function syncApiFootballBookmakers(context: FootballEnrichmentContext) {
   return { processed: rows.length, totalCandidates: rows.length, rowsSaved: rows.length, failed: 0 }
 }
 
-async function syncApiFootballOdds(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const candidates = await fetchDbMatchCandidates(dayRange, context.limit, true)
-  let processed = 0
-  let rowsSaved = 0
-  let failed = 0
-  for (const match of candidates.rows) {
-    if (context.rateLimited) break
-    const result = await syncOddsForMatch(match, context)
-    processed += result.processed
-    rowsSaved += result.rowsSaved
-    failed += result.failed
-  }
-  return { processed, totalCandidates: candidates.totalCandidates, rowsSaved, failed }
+async function syncApiFootballOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const offset = getSyncOffset(body.offset)
+  const maxFixturesPerRun = getPositiveLimit(body.maxFixturesPerRun ?? body.limit, 3, 5)
+  const fixtureIds = normalizeFixtureIds(body.fixtureIds)
+  const retryFailedOnly = body.retryFailedOnly === true
+  const candidates = await fetchDbMatchCandidates(dayRange, Math.max(1, maxFixturesPerRun), true, { offset, fixtureIds, retryFailedOnly })
+  return runOddsBatch(candidates.rows, candidates.totalCandidates, context, {
+    offset,
+    batchSize: maxFixturesPerRun,
+    hardStopMs: 18000,
+  })
 }
 
 async function syncApiFootballFixtureOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const fixtureId = nullableNumber(body.fixtureId ?? body.apiFixtureId ?? body.api_fixture_id)
+  const fixtureIds = normalizeFixtureIds(body.fixtureIds)
   const matchId = typeof body.matchId === 'string' ? body.matchId : typeof body.match_id === 'string' ? body.match_id : ''
+  const fixtureLimit = getPositiveLimit(body.maxFixturesPerRun ?? body.limit, 1, 3)
   let query = supabase
     .from('football_matches')
     .select(`
@@ -1598,39 +1668,128 @@ async function syncApiFootballFixtureOdds(body: Record<string, unknown>, dayRang
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
       analysis:match_analysis(id, match_id, recommendation, confidence_score, risk_level, ranking_score, final_rank, is_top_pick, raw)
     `)
-    .limit(context.limit)
+    .limit(fixtureLimit)
   if (fixtureId) query = query.eq('api_sports_fixture_id', fixtureId)
+  else if (fixtureIds.length) query = query.in('api_sports_fixture_id', fixtureIds)
   else if (matchId) query = query.eq('id', matchId)
   else query = query.gte('kickoff_at', dayRange.startUtc).lt('kickoff_at', dayRange.endUtc).not('api_sports_fixture_id', 'is', null)
 
   const result = await query
   if (result.error) throw result.error
-  let processed = 0
-  let rowsSaved = 0
-  let failed = 0
-  for (const match of result.data ?? []) {
-    if (context.rateLimited) break
-    const item = await syncOddsForMatch(match, context)
-    processed += item.processed
-    rowsSaved += item.rowsSaved
-    failed += item.failed
+  return runOddsBatch(result.data ?? [], result.data?.length ?? 0, context, {
+    offset: 0,
+    batchSize: fixtureLimit,
+    hardStopMs: 18000,
+  })
+}
+
+async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: FootballEnrichmentContext, options: { offset: number; batchSize: number; hardStopMs: number }) {
+  const startedAt = Date.now()
+  const processedFixtureIds: Array<number> = []
+  const skippedFixtureIds: Array<number> = []
+  const failures: Array<any> = []
+  let processedFixtures = 0
+  let savedOdds = 0
+  let failedFixtures = 0
+  let emptyFixtures = 0
+  let stoppedEarly = false
+
+  for (const match of rows) {
+    if (context.rateLimited || Date.now() - startedAt > options.hardStopMs) {
+      stoppedEarly = true
+      break
+    }
+
+    try {
+      const result = await syncOddsForMatch(match, context)
+      if (result.fixtureId) {
+        if (result.rowsSaved > 0) processedFixtureIds.push(result.fixtureId)
+        if (result.skipped || result.empty > 0) skippedFixtureIds.push(result.fixtureId)
+      }
+      processedFixtures += result.processed
+      savedOdds += result.rowsSaved
+      failedFixtures += result.failed
+      emptyFixtures += result.empty
+      if (result.failure) failures.push(result.failure)
+    } catch (error) {
+      const fixtureId = Number(match?.api_sports_fixture_id ?? match?.raw?.raw_fixture_id ?? 0) || null
+      failedFixtures += 1
+      if (fixtureId) skippedFixtureIds.push(fixtureId)
+      const message = formatErrorMessage(error, 'odds fixture sync failed')
+      failures.push({ fixtureId, message })
+      await logEnrichmentSync({ mode: context.mode, api_fixture_id: fixtureId, endpoint: '/odds', status: 'partial_success', error_message: message }).catch(() => {})
+    }
   }
-  return { processed, totalCandidates: result.data?.length ?? 0, rowsSaved, failed }
+
+  const attempted = processedFixtures + failedFixtures
+  const nextOffset = options.offset + attempted
+  const hasMore = stoppedEarly || context.rateLimited || nextOffset < totalCandidates
+  const anySuccess = processedFixtures > 0 || savedOdds > 0 || emptyFixtures > 0
+  const allRateLimited = failures.some((failure) => String(failure?.message ?? '').includes('429') || failure?.rateLimited === true) && !anySuccess
+  const responseStatus = allRateLimited ? 429 : 200
+  const partial = failedFixtures > 0 || hasMore || stoppedEarly || context.rateLimited
+
+  return {
+    processed: processedFixtures,
+    totalCandidates,
+    totalFetched: totalCandidates,
+    rowsSaved: savedOdds,
+    failed: failedFixtures,
+    skipped: emptyFixtures,
+    partial,
+    responseStatus,
+    processedFixtures,
+    savedOdds,
+    failedFixtures,
+    emptyFixtures,
+    processedFixtureIds,
+    skippedFixtureIds: [...new Set(skippedFixtureIds)],
+    failures,
+    nextOffset,
+    hasMore,
+  }
 }
 
 async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) {
   const fixtureId = Number(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id ?? 0)
-  if (!fixtureId) return { processed: 0, rowsSaved: 0, failed: 0 }
-  const response = await trackedApiFootballGet(context, '/odds', { fixture: fixtureId }, { apiFixtureId: fixtureId })
-  if (!response.ok) return { processed: 0, rowsSaved: 0, failed: 1 }
+  if (!fixtureId) return { processed: 0, rowsSaved: 0, failed: 0, empty: 0, fixtureId: null, skipped: true, failure: null }
+
+  let response: any = null
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    response = await trackedApiFootballGet(context, '/odds', { fixture: fixtureId }, { apiFixtureId: fixtureId })
+    if (response.ok) break
+    const message = String(response.error ?? '')
+    const retryable = response.rateLimited || message.includes('api-football 429') || /api-football 5\d\d/i.test(message) || /network|fetch|timeout/i.test(message)
+    if (!retryable || message.includes('api-football 403') || attempt >= 2) break
+    await sleep(300 + Math.floor(Math.random() * 501))
+  }
+
+  if (!response?.ok) {
+    return {
+      processed: 0,
+      rowsSaved: 0,
+      failed: 1,
+      empty: 0,
+      fixtureId,
+      skipped: false,
+      failure: {
+        fixtureId,
+        message: response?.error ?? 'odds sync failed',
+        rateLimited: Boolean(response?.rateLimited),
+      },
+    }
+  }
+
   const normalized = normalizeMatchOddsRows(match, fixtureId, response.data ?? [])
+  if (!normalized.rows.length) {
+    return { processed: 1, rowsSaved: 0, failed: 0, empty: 1, fixtureId, skipped: true, failure: null }
+  }
+
   await storeFootballBookmakers(normalized.bookmakers)
   await storeFootballMatchOdds(match.id, normalized.rows)
   addEndpointRowsSaved(context, '/odds', normalized.rows.length)
-  if (normalized.rows.length) {
-    await supabase.from('football_matches').update({ odds_updated_at: new Date().toISOString() }).eq('id', match.id)
-  }
-  return { processed: 1, rowsSaved: normalized.rows.length, failed: 0 }
+  await supabase.from('football_matches').update({ odds_updated_at: new Date().toISOString() }).eq('id', match.id)
+  return { processed: 1, rowsSaved: normalized.rows.length, failed: 0, empty: 0, fixtureId, skipped: false, failure: null }
 }
 
 async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
@@ -1665,29 +1824,7 @@ async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRa
   let failed = 0
   for (const match of rows) {
     try {
-      const odds = await fetchStoredMatchOdds(match.id)
-      const pick = buildEdgeAiFinalPick({ ...match, odds })
-      const payload = {
-        match_id: match.id,
-        api_fixture_id: nullableNumber(match.api_sports_fixture_id),
-        signal: pick.signal,
-        market_focus: pick.marketFocus,
-        direction: pick.direction,
-        confidence_score: pick.confidenceScore,
-        risk_level: pick.riskLevel,
-        key_reasons: pick.keyReasons,
-        warning_signs: pick.warningSigns,
-        market_signal: pick.marketSignal,
-        final_summary: pick.finalSummary,
-        ah_analysis: pick.ahAnalysis,
-        ou_analysis: pick.ouAnalysis,
-        primary_bookmaker: pick.primaryBookmaker,
-        latest_odds: pick.latestOdds,
-        raw: pick,
-        updated_at: new Date().toISOString(),
-      }
-      const upsert = await supabase.from('football_ai_final_picks').upsert(payload, { onConflict: 'match_id' })
-      if (upsert.error) throw upsert.error
+      await upsertAiFinalPickForMatch(match)
       processed += 1
       rowsSaved += 1
     } catch (error) {
@@ -1696,6 +1833,258 @@ async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRa
     }
   }
   return { processed, totalCandidates: rows.length, rowsSaved, failed }
+}
+
+async function upsertAiFinalPickForMatch(match: any) {
+  const odds = await fetchStoredMatchOdds(match.id)
+  const pick = buildEdgeAiFinalPick({ ...match, odds })
+  const payload = {
+    match_id: match.id,
+    api_fixture_id: nullableNumber(match.api_sports_fixture_id),
+    signal: pick.signal,
+    market_focus: pick.marketFocus,
+    direction: pick.direction,
+    confidence_score: pick.confidenceScore,
+    risk_level: pick.riskLevel,
+    key_reasons: pick.keyReasons,
+    warning_signs: pick.warningSigns,
+    market_signal: pick.marketSignal,
+    final_summary: pick.finalSummary,
+    ah_analysis: pick.ahAnalysis,
+    ou_analysis: pick.ouAnalysis,
+    primary_bookmaker: pick.primaryBookmaker,
+    latest_odds: pick.latestOdds,
+    raw: pick,
+    updated_at: new Date().toISOString(),
+  }
+  const upsert = await supabase.from('football_ai_final_picks').upsert(payload, { onConflict: 'match_id' }).select('id, signal, market_focus, confidence_score, risk_level').single()
+  if (upsert.error) throw upsert.error
+  return upsert.data
+}
+
+async function lockDailyTop10(dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const selectionDate = dayRange.dateKey
+  const existing = await supabase
+    .from('daily_top10_selections')
+    .select('*')
+    .eq('selection_date', selectionDate)
+    .order('rank', { ascending: true })
+  if (existing.error) throw existing.error
+  if ((existing.data ?? []).length) {
+    const status = summarizeDailyTop10(selectionDate, existing.data ?? [])
+    return { processed: status.lockedCount, totalCandidates: status.lockedCount, rowsSaved: 0, failed: 0, locked: true, alreadyLocked: true, ...status }
+  }
+
+  const matches = await fetchDailyTop10LockCandidates(dayRange)
+  const matchIds = matches.map((match: any) => match.id).filter(Boolean)
+  const picks = await fetchAiFinalPicksForMatches(matchIds)
+  const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
+  const selected = matches
+    .map((match: any) => ({ match, analysis: getAnalysis(match), pick: pickByMatch.get(match.id) ?? null }))
+    .sort(compareDailyTop10LockCandidate)
+    .slice(0, 10)
+
+  for (const item of selected) {
+    if (!item.pick) {
+      try {
+        item.pick = await upsertAiFinalPickForMatch(item.match)
+      } catch (error) {
+        console.warn('lock-daily-top10 ai final pick fallback failed', { matchId: item.match?.id, error: formatErrorMessage(error, 'ai final pick failed') })
+      }
+    }
+  }
+
+  const rows = selected.map((item: any, index: number) => ({
+    selection_date: selectionDate,
+    match_id: item.match.id,
+    api_fixture_id: nullableNumber(item.match.api_sports_fixture_id),
+    rank: index + 1,
+    selection_score: nullableNumber(item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
+    ai_final_pick_id: item.pick?.id ?? null,
+    signal: item.pick?.signal ?? 'SKIP',
+    market_focus: item.pick?.market_focus ?? 'NONE',
+    confidence_score: nullableNumber(item.pick?.confidence_score ?? item.analysis?.confidence_score),
+    risk_level: normalizeRiskLevelText(item.pick?.risk_level ?? item.analysis?.risk_level ?? 'MEDIUM'),
+    updated_at: new Date().toISOString(),
+  }))
+
+  if (rows.length) {
+    const insert = await supabase.from('daily_top10_selections').insert(rows)
+    if (insert.error) throw insert.error
+  }
+  const status = summarizeDailyTop10(selectionDate, rows)
+  return { processed: rows.length, totalCandidates: matches.length, rowsSaved: rows.length, failed: 0, partial: rows.length < 10, locked: true, alreadyLocked: false, ...status }
+}
+
+async function getDailyTop10Status(dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const selectionDate = dayRange.dateKey
+  const result = await supabase
+    .from('daily_top10_selections')
+    .select('*')
+    .eq('selection_date', selectionDate)
+    .order('rank', { ascending: true })
+  if (result.error) throw result.error
+  const rows = result.data ?? []
+  const status = summarizeDailyTop10(selectionDate, rows)
+  const matchIds = rows.map((row: any) => row.match_id).filter(Boolean)
+  const oddsMatchIds = await fetchMatchIdsWithOdds(matchIds)
+  return {
+    processed: rows.length,
+    totalCandidates: rows.length,
+    rowsSaved: 0,
+    failed: 0,
+    locked: rows.length > 0,
+    ...status,
+    matchesWithOdds: oddsMatchIds.size,
+    matchesWithoutOdds: Math.max(0, rows.length - oddsMatchIds.size),
+  }
+}
+
+async function refreshLockedTop10Signals(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const selectionDate = dayRange.dateKey
+  const locked = await supabase
+    .from('daily_top10_selections')
+    .select('*')
+    .eq('selection_date', selectionDate)
+    .order('rank', { ascending: true })
+  if (locked.error) throw locked.error
+
+  let processed = 0
+  let updated = 0
+  let failed = 0
+  const failures: Array<any> = []
+  for (const row of locked.data ?? []) {
+    try {
+      const match = await fetchMatchForAiFinalPick(row.match_id)
+      if (!match) throw new Error('locked match not found')
+      try {
+        await syncOddsForMatch(match, context)
+      } catch (error) {
+        failures.push({ matchId: row.match_id, rank: row.rank, stage: 'odds', message: formatErrorMessage(error, 'odds refresh failed') })
+      }
+      const pick = await upsertAiFinalPickForMatch(match)
+      const patch = await supabase
+        .from('daily_top10_selections')
+        .update({
+          ai_final_pick_id: pick.id,
+          signal: pick.signal,
+          market_focus: pick.market_focus,
+          confidence_score: pick.confidence_score,
+          risk_level: pick.risk_level,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', row.id)
+      if (patch.error) throw patch.error
+      processed += 1
+      updated += 1
+    } catch (error) {
+      failed += 1
+      failures.push({ matchId: row.match_id, rank: row.rank, message: formatErrorMessage(error, 'refresh failed') })
+    }
+  }
+  return { processed, totalCandidates: locked.data?.length ?? 0, rowsSaved: updated, failed, updated, failures, selectionDate }
+}
+
+async function fetchDailyTop10LockCandidates(dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      kickoff_at,
+      raw,
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw)
+    `)
+    .gte('kickoff_at', dayRange.startUtc)
+    .lt('kickoff_at', dayRange.endUtc)
+    .limit(200)
+  if (result.error) throw result.error
+  return result.data ?? []
+}
+
+async function fetchMatchForAiFinalPick(matchId: string) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      kickoff_at,
+      raw,
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw)
+    `)
+    .eq('id', matchId)
+    .maybeSingle()
+  if (result.error) throw result.error
+  return result.data
+}
+
+async function fetchAiFinalPicksForMatches(matchIds: Array<string>) {
+  if (!matchIds.length) return []
+  const result = await supabase
+    .from('football_ai_final_picks')
+    .select('id, match_id, signal, market_focus, confidence_score, risk_level')
+    .in('match_id', matchIds)
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return []
+    throw result.error
+  }
+  return result.data ?? []
+}
+
+async function fetchMatchIdsWithOdds(matchIds: Array<string>) {
+  if (!matchIds.length) return new Set<string>()
+  const result = await supabase
+    .from('football_match_odds')
+    .select('match_id')
+    .in('match_id', matchIds)
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return new Set<string>()
+    throw result.error
+  }
+  return new Set((result.data ?? []).map((row: any) => row.match_id).filter(Boolean))
+}
+
+function compareDailyTop10LockCandidate(a: any, b: any) {
+  const hasPickDiff = Number(Boolean(b.pick)) - Number(Boolean(a.pick))
+  const scoreDiff = dailySelectionScore(b) - dailySelectionScore(a)
+  const confidenceDiff = dailyConfidenceScore(b) - dailyConfidenceScore(a)
+  const riskDiff = riskSortValue(a.pick?.risk_level ?? a.analysis?.risk_level) - riskSortValue(b.pick?.risk_level ?? b.analysis?.risk_level)
+  const kickoffDiff = new Date(a.match?.kickoff_at ?? 0).getTime() - new Date(b.match?.kickoff_at ?? 0).getTime()
+  return hasPickDiff || scoreDiff || confidenceDiff || riskDiff || kickoffDiff
+}
+
+function dailySelectionScore(item: any) {
+  return Number(item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score ?? 0)
+}
+
+function dailyConfidenceScore(item: any) {
+  return Number(item.pick?.confidence_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score ?? 0)
+}
+
+function riskSortValue(value: unknown) {
+  const risk = normalizeRiskLevelText(value)
+  if (risk === 'LOW') return 0
+  if (risk === 'MEDIUM') return 1
+  return 2
+}
+
+function summarizeDailyTop10(selectionDate: string, rows: Array<any>) {
+  const lockedAtValues = rows.map((row) => row.locked_at).filter(Boolean).sort()
+  const updatedAtValues = rows.map((row) => row.updated_at ?? row.created_at).filter(Boolean).sort()
+  return {
+    selectionDate,
+    locked: rows.length > 0,
+    lockedCount: rows.length,
+    lockedAt: lockedAtValues[0] ?? null,
+    lastUpdated: updatedAtValues.at(-1) ?? null,
+    strongSignalCount: rows.filter((row) => row.signal === 'STRONG_SIGNAL').length,
+    watchCount: rows.filter((row) => row.signal === 'WATCH').length,
+    skipCount: rows.filter((row) => row.signal === 'SKIP').length,
+  }
 }
 
 function compareFixtureSyncPriority(a: any, b: any) {
@@ -1972,7 +2361,8 @@ function compareEnrichCandidatePriority(a: any, b: any) {
   return topPickDiff || finalRankDiff || rankingDiff || leagueQualityDiff || confidenceDiff || kickoffA - kickoffB
 }
 
-async function fetchDbMatchCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number, requireApiFootballFixture: boolean) {
+async function fetchDbMatchCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number, requireApiFootballFixture: boolean, options: { offset?: number; fixtureIds?: Array<number>; retryFailedOnly?: boolean } = {}) {
+  const offset = Math.max(0, Number(options.offset ?? 0))
   let query = supabase
     .from('football_matches')
     .select(`
@@ -1995,9 +2385,11 @@ async function fetchDbMatchCandidates(dayRange: ReturnType<typeof getBangkokDayR
     .gte('kickoff_at', dayRange.startUtc)
     .lt('kickoff_at', dayRange.endUtc)
     .order('kickoff_at', { ascending: true })
-    .limit(limit)
+    .range(offset, offset + Math.max(1, limit) - 1)
 
   if (requireApiFootballFixture) query = query.not('api_sports_fixture_id', 'is', null)
+  if (options.fixtureIds?.length) query = query.in('api_sports_fixture_id', options.fixtureIds)
+  if (options.retryFailedOnly) query = query.is('odds_updated_at', null)
 
   const result = await query
   if (result.error) throw result.error
@@ -6114,6 +6506,8 @@ function normalizeSyncMode(value: unknown) {
 }
 
 function getSyncLimit(value: unknown, mode = 'manual') {
+  if (mode === 'sync-odds') return getPositiveLimit(value, 3, 5)
+  if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
   const maxLimit = isFootballEnrichmentMode(mode) ? maxFootballEnrichmentLimit : mode === 'enrich' ? maxEnrichLimit : maxManualLimit
   const numeric = Number(value ?? defaultLimit)
@@ -6144,8 +6538,15 @@ function getSyncOffset(value: unknown) {
   return Math.floor(numeric)
 }
 
+function normalizeFixtureIds(value: unknown) {
+  const items = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : []
+  return [...new Set(items.map((item) => Number(item)).filter((item) => Number.isFinite(item) && item > 0).map((item) => Math.floor(item)))]
+}
+
 function getSyncDateRange(body: Record<string, unknown>) {
-  const dateInput = typeof body.dateKey === 'string' && body.dateKey
+  const dateInput = typeof body.date === 'string' && body.date
+    ? body.date
+    : typeof body.dateKey === 'string' && body.dateKey
     ? body.dateKey
     : typeof body.dateFrom === 'string' && body.dateFrom
       ? body.dateFrom
@@ -6161,6 +6562,15 @@ function clamp(value: number, min: number, max: number) {
 function serializeError(error: unknown) {
   if (error instanceof Error) return { name: error.name, message: error.message, stack: error.stack }
   return error
+}
+
+function formatErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message
+  if (error && typeof error === 'object') {
+    const item = error as any
+    return String(item.message ?? item.details ?? item.hint ?? fallback)
+  }
+  return String(error ?? fallback)
 }
 
 async function safeJson(request: Request) {

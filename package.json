@@ -12,6 +12,7 @@
     "verify:daily-sync-orchestrator": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:odds": "node scripts/verifyAiFinalPickIntegrity.mjs",
     "verify:ai-final-pick": "node scripts/verifyAiFinalPickIntegrity.mjs",
+    "verify:daily-top10": "node scripts/verifyDailyTop10Lock.mjs",
     "test:daily-sync-auth": "node scripts/dailySyncAuth.unit.test.mjs",
     "test:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "build": "vite build",

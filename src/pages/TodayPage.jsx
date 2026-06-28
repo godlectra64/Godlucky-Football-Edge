@@ -1,14 +1,14 @@
-import { CheckCircle2, RefreshCcw, Sparkles, Zap } from 'lucide-react'
+import { CheckCircle2, Lock, RefreshCcw, Sparkles, Unlock, Zap } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import MatchCard from '../components/MatchCard'
 import { getConfidence, recommendationLabels } from '../utils/analysisEngine'
 import { buildAiFinalPick, getOneBestPickOfDay } from '../utils/finalPick'
-import { formatThaiDate } from '../utils/formatters'
+import { formatThaiDate, formatUpdatedAt } from '../utils/formatters'
 
 const allFilter = 'ALL'
 const filters = [allFilter, recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.watch, recommendationLabels.noBet]
 
-export default function TodayPage({ matches, oneBestPick: providedOneBestPick = null, totalMatchCount = matches.length, loading, error, notice, onRefresh, onOpenMatch }) {
+export default function TodayPage({ matches, oneBestPick: providedOneBestPick = null, totalMatchCount = matches.length, top10Status = null, top10Locked = false, loading, error, notice, onRefresh, onOpenMatch }) {
   const [filter, setFilter] = useState(allFilter)
   const visibleMatches = useMemo(() => {
     if (filter === allFilter) return matches
@@ -65,6 +65,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
               {notice ? 'Synced' : 'Ready'}
             </span>
           </div>
+          <Top10LockBadge status={top10Status} locked={top10Locked} />
           {notice ? <p className="mt-2 text-clamp-1 text-[11px] font-semibold text-slate-500">{notice}</p> : null}
           {!loading && matches.length && !matches.some((match) => match.recommendation === recommendationLabels.bet) ? (
             <p className="mt-2 rounded-xl border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-[11px] font-bold leading-5 text-amber-100">
@@ -109,6 +110,24 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
         ))}
       </div>
     </main>
+  )
+}
+
+function Top10LockBadge({ status, locked }) {
+  const Icon = locked ? Lock : Unlock
+  const lockedAt = status?.lockedAt ? formatUpdatedAt(status.lockedAt) : '-'
+  const lastUpdated = status?.lastUpdated ? formatUpdatedAt(status.lastUpdated) : '-'
+  return (
+    <div className={`mt-3 rounded-2xl border p-2.5 ${locked ? 'border-emerald-300/30 bg-emerald-300/10' : 'border-amber-300/25 bg-amber-300/10'}`}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="flex min-w-0 items-center gap-1.5 text-xs font-black text-white">
+          <Icon size={14} />
+          {locked ? 'Top10 วันนี้ล็อกแล้ว' : 'ยังไม่ได้ล็อก Top10 วันนี้'}
+        </p>
+        <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{status?.lockedCount ?? 0}/10</span>
+      </div>
+      <p className="mt-1 text-[11px] font-semibold leading-5 text-slate-400">Locked {lockedAt} · Updated {lastUpdated}</p>
+    </div>
   )
 }
 

@@ -12,16 +12,21 @@ dotenv.config({ path: '.env' })
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
+const currentDatabase = process.env.SUPABASE_DB_NAME || process.env.PGDATABASE || 'postgres'
+const currentSchema = process.env.SUPABASE_DB_SCHEMA || process.env.SUPABASE_SCHEMA || 'public'
 
 if (!supabaseUrl || !supabaseKey) {
   console.error('Missing Supabase environment variables for AI Final Pick verification.')
   process.exit(1)
 }
 
+logSupabaseConnectionDebug()
+
 const supabase = createClient(supabaseUrl, supabaseKey)
 const execAsync = promisify(exec)
 let failed = false
 
+await logVerificationTableCounts()
 await checkAiFinalPickTables()
 await checkTop10Coverage()
 await checkAiFinalPickIntegrity()
@@ -30,6 +35,30 @@ await checkForbiddenUiWords()
 
 if (failed) process.exit(1)
 console.log('AI Final Pick integrity checks passed')
+
+function logSupabaseConnectionDebug() {
+  const sanitizedUrl = sanitizeSupabaseUrl(supabaseUrl)
+  console.log(`[verify:connection] SUPABASE_URL=${sanitizedUrl}`)
+  console.log(`[verify:connection] project_ref=${getSupabaseProjectRef(supabaseUrl)}`)
+  console.log(`[verify:connection] current_database=${currentDatabase}`)
+  console.log(`[verify:connection] current_schema=${currentSchema}`)
+}
+
+async function logVerificationTableCounts() {
+  const tables = ['football_matches', 'football_bookmakers', 'football_match_odds', 'football_ai_final_picks']
+  for (const table of tables) {
+    const { count, error } = await supabase
+      .from(table)
+      .select('id', { count: 'exact', head: true })
+
+    if (error) {
+      console.log(`[verify:row-count] ${table}: error (${formatSupabaseError(error)})`)
+      continue
+    }
+
+    console.log(`[verify:row-count] ${table}: success rows=${count ?? 0}`)
+  }
+}
 
 async function checkAiFinalPickTables() {
   const tables = ['football_bookmakers', 'football_match_odds', 'football_ai_final_picks']
@@ -53,7 +82,10 @@ async function checkTop10Coverage() {
   }
 
   const matchIds = (data ?? []).map((row) => row.match_id).filter(Boolean)
-  if (!matchIds.length) return report('top 10 aiFinalPick coverage', 0, 'no Top 10 rows yet')
+  if (!matchIds.length) {
+    console.log('[verify:row-count] top10_ai_final_pick_coverage: success rows=0 top10=0')
+    return report('top 10 aiFinalPick coverage', 0, 'no Top 10 rows yet')
+  }
 
   const { data: picks, error: pickError } = await supabase
     .from('football_ai_final_picks')
@@ -63,6 +95,7 @@ async function checkTop10Coverage() {
 
   const found = new Set((picks ?? []).map((row) => row.match_id))
   const missing = matchIds.filter((id) => !found.has(id))
+  console.log(`[verify:row-count] top10_ai_final_pick_coverage: success rows=${found.size} top10=${matchIds.length}`)
   report('top 10 aiFinalPick coverage', missing.length, missing.length ? `missing ${missing.length}` : '')
 }
 
@@ -89,6 +122,7 @@ async function checkTop10CoverageViaCli() {
     const row = payload.rows?.[0] ?? {}
     const missing = Number(row.missing_count ?? 0)
     const topCount = Number(row.top_count ?? 0)
+    console.log(`[verify:row-count] top10_ai_final_pick_coverage: success rows=${Math.max(0, topCount - missing)} top10=${topCount}`)
     report('top 10 aiFinalPick coverage', missing, topCount ? `top ${topCount}` : 'no Top 10 rows yet')
   } catch (error) {
     report('top 10 aiFinalPick coverage', 1, error.message)
@@ -116,6 +150,7 @@ async function checkAiFinalPickIntegrity() {
 async function checkOddsIntegrity() {
   const checks = [
     ['invalid odds marketFocus', () => supabase.from('football_match_odds').select('id', { count: 'exact', head: true }).not('market_focus', 'in', '("AH","OU","MATCH_WINNER","BTTS","NONE")')],
+    ['null odds price', () => supabase.from('football_match_odds').select('id', { count: 'exact', head: true }).is('price', null)],
     ['invalid odds price', () => supabase.from('football_match_odds').select('id', { count: 'exact', head: true }).not('price', 'is', null).lte('price', 0)],
   ]
 
@@ -123,6 +158,26 @@ async function checkOddsIntegrity() {
     const { count, error } = await query()
     report(label, error ? 1 : count ?? 0, error?.message)
   }
+
+  await checkDuplicateLatestOdds()
+}
+
+async function checkDuplicateLatestOdds() {
+  const { data, error } = await supabase
+    .from('football_match_odds')
+    .select('match_id, api_bookmaker_id, market_focus, market_name, selection, line, is_latest')
+    .eq('is_latest', true)
+    .limit(10000)
+  if (error) return report('duplicate latest odds', 1, error.message)
+
+  const seen = new Set()
+  let duplicates = 0
+  for (const row of data ?? []) {
+    const key = [row.match_id, row.api_bookmaker_id, row.market_focus, row.market_name, row.selection, row.line].join('|')
+    if (seen.has(key)) duplicates += 1
+    else seen.add(key)
+  }
+  report('duplicate latest odds', duplicates)
 }
 
 async function checkForbiddenUiWords() {
@@ -150,6 +205,33 @@ async function listFiles(dir) {
 function report(label, count, message = '') {
   console.log(`${label}: ${count}${message ? ` (${message})` : ''}`)
   if (count > 0) failed = true
+}
+
+function sanitizeSupabaseUrl(value) {
+  try {
+    const url = new URL(value)
+    return `${url.protocol}//${url.host}`
+  } catch {
+    return 'invalid_supabase_url'
+  }
+}
+
+function getSupabaseProjectRef(value) {
+  try {
+    const host = new URL(value).host
+    return host.endsWith('.supabase.co') ? host.split('.')[0] : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+function formatSupabaseError(error) {
+  return [
+    error.code,
+    error.message,
+    error.details,
+    error.hint,
+  ].filter(Boolean).join(' | ')
 }
 
 function isRestSchemaMissing(error) {

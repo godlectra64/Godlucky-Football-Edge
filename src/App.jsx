@@ -3,6 +3,7 @@ import BottomNav from './components/BottomNav'
 import MobileHeader from './components/MobileHeader'
 import TodayPage from './pages/TodayPage'
 import { getAiPerformanceData, getConnectionState, getLatestSyncLog, getMatchDetail, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
+import { getTodayTop10OrFallback } from './repositories/dailyTop10Repository'
 import { getTopMatches } from './utils/analysisEngine'
 import { getOneBestPickOfDay } from './utils/finalPick'
 import { formatUpdatedAt } from './utils/formatters'
@@ -22,6 +23,9 @@ function App() {
   const connection = getConnectionState()
   const initialRoute = getRouteState(window.location.pathname)
   const [matches, setMatches] = useState([])
+  const [totalAvailableMatches, setTotalAvailableMatches] = useState(0)
+  const [top10Status, setTop10Status] = useState(null)
+  const [top10Locked, setTop10Locked] = useState(false)
   const [activePage, setActivePage] = useState(() => initialRoute.activePage)
   const [selectedMatchId, setSelectedMatchId] = useState(() => initialRoute.selectedMatchId)
   const [detailMatch, setDetailMatch] = useState(null)
@@ -41,14 +45,21 @@ function App() {
 
     try {
       const data = connection.configured ? await getTodayMatches() : await loadDevFallbackMatches()
+      const board = connection.configured ? await getTodayTop10OrFallback(data) : { matches: data, status: null, locked: false }
       const latestSyncLog = connection.configured ? await getLatestSyncLog().catch(() => null) : null
-      setMatches(data)
+      setMatches(board.matches)
+      setTotalAvailableMatches(data.length)
+      setTop10Status(board.status)
+      setTop10Locked(Boolean(board.locked))
       setNotice(connection.configured ? 'ข้อมูลล่าสุดจาก Supabase' : 'ข้อมูล dev fallback เท่านั้น')
       setSelectedMatchId((current) => current || data[0]?.id || '')
       if (connection.configured) setNotice(buildLatestSyncNotice(latestSyncLog))
     } catch (err) {
       const fallbackData = await loadDevFallbackMatches().catch(() => [])
       setMatches(fallbackData)
+      setTotalAvailableMatches(fallbackData.length)
+      setTop10Status(null)
+      setTop10Locked(false)
       setError(err.message || 'โหลดข้อมูลไม่สำเร็จ')
       setNotice(fallbackData.length ? 'ใช้ข้อมูล fallback ล่าสุดหลัง Supabase query fail' : 'Supabase query fail และยังไม่มี fallback data')
     } finally {
@@ -104,10 +115,10 @@ function App() {
   }, [])
 
   const visibleMatches = useMemo(
-    () => [...matches].sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt)),
-    [matches],
+    () => top10Locked ? matches : [...matches].sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt)),
+    [matches, top10Locked],
   )
-  const topMatches = useMemo(() => getTopMatches(visibleMatches, 10), [visibleMatches])
+  const topMatches = useMemo(() => top10Locked ? visibleMatches : getTopMatches(visibleMatches, 10), [top10Locked, visibleMatches])
   const oneBestPick = useMemo(() => getOneBestPickOfDay(topMatches), [topMatches])
   const selectedMatch = detailMatch ?? matches.find((match) => match.id === selectedMatchId) ?? null
   const performanceContext = useMemo(() => {
@@ -174,7 +185,11 @@ function App() {
     try {
       await triggerManualSync()
       const data = await getTodayMatches()
-      setMatches(data)
+      const board = await getTodayTop10OrFallback(data)
+      setMatches(board.matches)
+      setTotalAvailableMatches(data.length)
+      setTop10Status(board.status)
+      setTop10Locked(Boolean(board.locked))
       setNotice('sync สำเร็จและโหลดข้อมูลล่าสุดแล้ว')
     } catch (err) {
       setError(err.message || 'sync ไม่สำเร็จ')
@@ -191,7 +206,11 @@ function App() {
     try {
       await resetTodayData()
       const data = await getTodayMatches()
-      setMatches(data)
+      const board = await getTodayTop10OrFallback(data)
+      setMatches(board.matches)
+      setTotalAvailableMatches(data.length)
+      setTop10Status(board.status)
+      setTop10Locked(Boolean(board.locked))
       setNotice('รีเซ็ตและ sync ข้อมูลวันนี้สำเร็จ')
     } catch (err) {
       setError(err.message || 'รีเซ็ตข้อมูลวันนี้ไม่สำเร็จ')
@@ -228,7 +247,9 @@ function App() {
           <TodayPage
             matches={topMatches}
             oneBestPick={oneBestPick}
-            totalMatchCount={visibleMatches.length}
+            totalMatchCount={totalAvailableMatches || visibleMatches.length}
+            top10Status={top10Status}
+            top10Locked={top10Locked}
             loading={loading}
             error={error}
             notice={notice}
