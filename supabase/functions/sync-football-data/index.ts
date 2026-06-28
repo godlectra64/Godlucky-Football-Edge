@@ -19,8 +19,11 @@ const priorityLeagues = new Map<string, number>([
   ['Europa League', 20],
 ])
 
-const BASE_URL = sanitizeUrl(Deno.env.get('FOOTBALL_API_BASE_URL') ?? 'https://api.football-data.org/v4')
-const TOKEN = sanitizeHeaderValue(Deno.env.get('FOOTBALL_API_KEY') ?? '')
+const requestedProviderName = normalizeProviderName(Deno.env.get('FOOTBALL_PROVIDER') ?? 'football-data.org')
+const FOOTBALL_DATA_BASE_URL = sanitizeUrl(Deno.env.get('FOOTBALL_API_BASE_URL') ?? 'https://api.football-data.org/v4')
+const FOOTBALL_DATA_TOKEN = sanitizeHeaderValue(Deno.env.get('FOOTBALL_API_KEY') ?? '')
+const API_FOOTBALL_BASE_URL = sanitizeUrl(Deno.env.get('API_FOOTBALL_BASE_URL') ?? 'https://v3.football.api-sports.io')
+const API_FOOTBALL_KEY = sanitizeHeaderValue(Deno.env.get('API_FOOTBALL_KEY') ?? '')
 const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
 const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const secretKeys = parseSupabaseSecretKeys(Deno.env.get('SUPABASE_SECRET_KEYS'))
@@ -48,15 +51,16 @@ Deno.serve(async (request) => {
     const dayRange = getSyncDateRange(body)
     const { dateKey, dateFrom, dateTo, startUtc, endUtc } = dayRange
     const syncType = body.mode ?? 'manual-football-data'
+    const primaryProvider = getProviderAdapter(requestedProviderName)
 
     const log = await supabase
       .from('sync_logs')
       .insert({
         sync_type: syncType,
         status: 'running',
-        message: `football-data.org sync ${dateFrom} to ${dateTo}`,
+        message: `${primaryProvider.name} sync ${dateFrom} to ${dateTo}`,
         started_at: startedAt,
-        raw: { provider: 'football-data.org', dateKey, dateFrom, dateTo, startUtc, endUtc },
+        raw: { provider: primaryProvider.name, fallbackUsed: false, dateKey, dateFrom, dateTo, startUtc, endUtc },
       })
       .select('id')
       .single()
@@ -68,17 +72,16 @@ Deno.serve(async (request) => {
       await resetMatchesForRange(dayRange)
     }
 
-    const competitions = await fetchCompetitions()
-    await upsertCompetitions(competitions)
-
-    const matches = await fetchFixturesByRange(dateFrom, dateTo)
+    const providerResult = await fetchProviderFixtures(primaryProvider, dayRange)
+    const activeProvider = providerResult.provider
+    const matches = providerResult.matches
     let processed = 0
     const processedMatchIds: Array<string> = []
     const failures: Array<{ matchId?: number; message: string }> = []
 
     for (const footballDataMatch of matches) {
       try {
-        const synced = await syncMatch(footballDataMatch)
+        const synced = await syncMatch(footballDataMatch, { enrichFixtureData: activeProvider.supportsFixtureEnrichment })
         if (synced?.matchId) processedMatchIds.push(synced.matchId)
         processed += 1
       } catch (error) {
@@ -106,13 +109,15 @@ Deno.serve(async (request) => {
       : `บันทึกข้อมูล ${processed} คู่ และอัปเดตวิเคราะห์ ${updatedAnalysisCount} รายการ`
 
     await finishLog(logId, status, message, {
-      provider: 'football-data.org',
+      provider: activeProvider.name,
+      fallbackUsed: providerResult.fallbackUsed,
+      fallbackError: providerResult.fallbackError,
       dateKey,
       dateFrom,
       dateTo,
       startUtc,
       endUtc,
-      competitions: competitions.length,
+      competitions: providerResult.competitions,
       total,
       processed,
       topPickCount,
@@ -126,7 +131,8 @@ Deno.serve(async (request) => {
 
     return json({
       ok: true,
-      provider: 'football-data.org',
+      provider: activeProvider.name,
+      fallbackUsed: providerResult.fallbackUsed,
       dateKey,
       dateFrom,
       dateTo,
@@ -144,12 +150,64 @@ Deno.serve(async (request) => {
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'sync failed'
-    await finishLog(logId, 'failed', message, { provider: 'football-data.org', error: serializeError(error) })
-    return json({ ok: false, provider: 'football-data.org', message }, 500)
+    await finishLog(logId, 'failed', message, { provider: requestedProviderName, fallbackUsed: false, error: serializeError(error) })
+    return json({ ok: false, provider: requestedProviderName, fallbackUsed: false, message }, 500)
   }
 })
 
-async function syncMatch(match: any) {
+type ProviderAdapter = {
+  name: 'api-football' | 'football-data.org'
+  supportsFixtureEnrichment: boolean
+  fetchFixtures: (range: ReturnType<typeof getBangkokDayRange>) => Promise<Array<any>>
+  syncCompetitions?: () => Promise<number>
+}
+
+async function fetchProviderFixtures(provider: ProviderAdapter, range: ReturnType<typeof getBangkokDayRange>) {
+  try {
+    const competitions = provider.syncCompetitions ? await provider.syncCompetitions() : 0
+    const matches = await provider.fetchFixtures(range)
+    return { provider, fallbackUsed: false, fallbackError: null, competitions, matches }
+  } catch (error) {
+    if (provider.name === 'football-data.org') throw error
+
+    console.warn(`${provider.name} failed; falling back to football-data.org`, error)
+    const fallbackProvider = getProviderAdapter('football-data.org')
+    const competitions = fallbackProvider.syncCompetitions ? await fallbackProvider.syncCompetitions() : 0
+    const matches = await fallbackProvider.fetchFixtures(range)
+    return {
+      provider: fallbackProvider,
+      fallbackUsed: true,
+      fallbackError: serializeError(error),
+      competitions,
+      matches,
+    }
+  }
+}
+
+function getProviderAdapter(name: string): ProviderAdapter {
+  if (name === 'api-football') {
+    return {
+      name: 'api-football',
+      supportsFixtureEnrichment: false,
+      fetchFixtures: ({ dateKey }) => fetchApiFootballFixtures(dateKey),
+    }
+  }
+
+  return {
+    name: 'football-data.org',
+    supportsFixtureEnrichment: true,
+    syncCompetitions: syncFootballDataCompetitions,
+    fetchFixtures: ({ dateFrom, dateTo }) => fetchFootballDataFixturesByRange(dateFrom, dateTo),
+  }
+}
+
+async function syncFootballDataCompetitions() {
+  const competitions = await fetchFootballDataCompetitions()
+  await upsertCompetitions(competitions)
+  return competitions.length
+}
+
+async function syncMatch(match: any, options: { enrichFixtureData?: boolean } = {}) {
   const league = await upsertLeague(match.competition, match.area)
   const homeTeam = await upsertTeam(match.homeTeam, match.area?.name)
   const awayTeam = await upsertTeam(match.awayTeam, match.area?.name)
@@ -177,11 +235,13 @@ async function syncMatch(match: any) {
 
   if (matchResult.error) throw matchResult.error
 
-  const [standings, homeLast, awayLast] = await Promise.all([
-    fetchStandings(match.competition?.id),
-    fetchTeamLastMatches(match.homeTeam?.id, 5),
-    fetchTeamLastMatches(match.awayTeam?.id, 5),
-  ])
+  const [standings, homeLast, awayLast] = options.enrichFixtureData === false
+    ? [[], [], []]
+    : await Promise.all([
+      fetchStandings(match.competition?.id),
+      fetchTeamLastMatches(match.homeTeam?.id, 5),
+      fetchTeamLastMatches(match.awayTeam?.id, 5),
+    ])
 
   const homeForm = summarizeRecentForm(homeLast, match.homeTeam?.id)
   const awayForm = summarizeRecentForm(awayLast, match.awayTeam?.id)
@@ -213,8 +273,8 @@ async function syncMatch(match: any) {
   return { matchId: matchResult.data.id }
 }
 
-async function apiGet(path: string, params: Record<string, string | number | undefined> = {}) {
-  const url = new URL(`${BASE_URL}${path}`)
+async function footballDataApiGet(path: string, params: Record<string, string | number | undefined> = {}) {
+  const url = new URL(`${FOOTBALL_DATA_BASE_URL}${path}`)
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') {
       url.searchParams.set(key, String(value))
@@ -223,7 +283,7 @@ async function apiGet(path: string, params: Record<string, string | number | und
 
   const response = await fetch(url, {
     headers: {
-      'X-Auth-Token': TOKEN ?? '',
+      'X-Auth-Token': FOOTBALL_DATA_TOKEN ?? '',
       Accept: 'application/json',
     },
   })
@@ -239,21 +299,127 @@ async function apiGet(path: string, params: Record<string, string | number | und
   return data
 }
 
-async function fetchFixturesByRange(dateFrom: string, dateTo: string) {
-  const data = await apiGet('/matches', { dateFrom, dateTo })
+async function fetchFootballDataFixturesByRange(dateFrom: string, dateTo: string) {
+  const data = await footballDataApiGet('/matches', { dateFrom, dateTo })
   return data.matches ?? []
 }
 
-async function fetchCompetitions() {
-  const data = await apiGet('/competitions')
+async function fetchFootballDataCompetitions() {
+  const data = await footballDataApiGet('/competitions')
   return data.competitions ?? []
+}
+
+async function apiFootballGet(path: string, params: Record<string, string | number | undefined> = {}) {
+  const url = new URL(`${API_FOOTBALL_BASE_URL}${path}`)
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      url.searchParams.set(key, String(value))
+    }
+  })
+
+  const response = await fetch(url, {
+    headers: {
+      'x-apisports-key': API_FOOTBALL_KEY ?? '',
+      Accept: 'application/json',
+    },
+  })
+
+  const text = await response.text()
+  const data = text ? JSON.parse(text) : {}
+
+  if (!response.ok) {
+    const message = data?.message ?? data?.error ?? text ?? `api-football ${response.status}`
+    throw new Error(`api-football ${response.status}: ${message}`)
+  }
+
+  const apiErrors = data?.errors
+  const hasApiErrors = Array.isArray(apiErrors) ? apiErrors.length > 0 : apiErrors && typeof apiErrors === 'object' ? Object.keys(apiErrors).length > 0 : Boolean(apiErrors)
+  if (hasApiErrors) throw new Error(`api-football error: ${JSON.stringify(apiErrors)}`)
+
+  return data
+}
+
+async function fetchApiFootballFixtures(dateKey: string) {
+  const data = await apiFootballGet('/fixtures', { date: dateKey })
+  return (data.response ?? []).map(normalizeApiFootballFixture)
+}
+
+function normalizeApiFootballFixture(row: any) {
+  const fixture = row?.fixture ?? {}
+  const league = row?.league ?? {}
+  const teams = row?.teams ?? {}
+  const goals = row?.goals ?? {}
+  const score = row?.score ?? {}
+  const homeGoals = nullableNumber(score?.fulltime?.home ?? goals?.home)
+  const awayGoals = nullableNumber(score?.fulltime?.away ?? goals?.away)
+
+  return {
+    id: namespaceApiFootballId(fixture.id),
+    provider: 'api-football',
+    utcDate: fixture.date ?? null,
+    status: normalizeApiFootballStatus(fixture.status?.short ?? fixture.status?.long),
+    stage: league.round ?? null,
+    group: null,
+    matchday: null,
+    area: {
+      id: null,
+      name: league.country ?? null,
+    },
+    competition: {
+      id: namespaceApiFootballId(league.id),
+      name: league.name ?? 'Unknown Competition',
+      code: league.id ? String(league.id) : null,
+      emblem: league.logo ?? null,
+      area: { name: league.country ?? null },
+    },
+    homeTeam: {
+      id: namespaceApiFootballId(teams.home?.id),
+      name: teams.home?.name ?? 'Unknown Home Team',
+      shortName: teams.home?.name ?? 'Unknown Home Team',
+      crest: teams.home?.logo ?? null,
+    },
+    awayTeam: {
+      id: namespaceApiFootballId(teams.away?.id),
+      name: teams.away?.name ?? 'Unknown Away Team',
+      shortName: teams.away?.name ?? 'Unknown Away Team',
+      crest: teams.away?.logo ?? null,
+    },
+    score: {
+      fullTime: {
+        home: homeGoals,
+        away: awayGoals,
+      },
+    },
+    raw_provider: 'api-football',
+    raw_fixture_id: fixture.id ?? null,
+    raw: {
+      provider: 'api-football',
+      apiFootball: row,
+    },
+  }
+}
+
+function namespaceApiFootballId(value: unknown) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) return null
+  return -Math.trunc(numeric)
+}
+
+function normalizeApiFootballStatus(value: unknown) {
+  const status = String(value ?? '').toUpperCase()
+  if (['FT', 'AET', 'PEN'].includes(status)) return 'FINISHED'
+  if (['NS', 'TBD'].includes(status)) return 'SCHEDULED'
+  if (status === 'PST') return 'POSTPONED'
+  if (status === 'CANC') return 'CANCELLED'
+  if (status === 'ABD') return 'ABANDONED'
+  return status || 'SCHEDULED'
 }
 
 async function fetchStandings(competitionId: number) {
   if (!competitionId) return []
 
   try {
-    const data = await apiGet(`/competitions/${competitionId}/standings`)
+    const data = await footballDataApiGet(`/competitions/${competitionId}/standings`)
     return data.standings ?? []
   } catch (error) {
     console.warn(`standings unavailable for competition ${competitionId}`, error)
@@ -265,7 +431,7 @@ async function fetchTeamLastMatches(teamId: number, limit: number) {
   if (!teamId) return []
 
   try {
-    const data = await apiGet(`/teams/${teamId}/matches`, { limit, status: 'FINISHED' })
+    const data = await footballDataApiGet(`/teams/${teamId}/matches`, { limit, status: 'FINISHED' })
     return data.matches ?? []
   } catch (error) {
     console.warn(`last matches unavailable for team ${teamId}`, error)
@@ -2332,7 +2498,7 @@ function buildThaiReason(homeForm: Record<string, number>, awayForm: Record<stri
 
 async function finishLog(logId: string | null, status: string, message: string, raw: unknown) {
   if (!logId) {
-    await supabase.from('sync_logs').insert({ sync_type: 'football-data.org', status, message, finished_at: new Date().toISOString(), raw })
+    await supabase.from('sync_logs').insert({ sync_type: requestedProviderName, status, message, finished_at: new Date().toISOString(), raw })
     return
   }
 
@@ -2340,8 +2506,10 @@ async function finishLog(logId: string | null, status: string, message: string, 
 }
 
 function assertRuntimeConfig() {
-  if (!TOKEN) throw new Error('Missing FOOTBALL_API_KEY Supabase secret')
-  if (!BASE_URL) throw new Error('Missing FOOTBALL_API_BASE_URL Supabase secret')
+  if (requestedProviderName === 'api-football' && !API_FOOTBALL_KEY) throw new Error('Missing API_FOOTBALL_KEY Supabase secret')
+  if (requestedProviderName === 'api-football' && !API_FOOTBALL_BASE_URL) throw new Error('Missing API_FOOTBALL_BASE_URL Supabase secret')
+  if (!FOOTBALL_DATA_TOKEN) throw new Error('Missing FOOTBALL_API_KEY Supabase secret for football-data.org fallback')
+  if (!FOOTBALL_DATA_BASE_URL) throw new Error('Missing FOOTBALL_API_BASE_URL Supabase secret')
   if (!supabaseUrl || !serviceRoleKey) throw new Error('Missing Supabase service credentials')
   if (!secretKeys.length) throw new Error('Missing Supabase secret API keys')
 }
@@ -2375,6 +2543,12 @@ function sanitizeUrl(value: string) {
 
 function sanitizeHeaderValue(value: string) {
   return value.trim().replace(/^["'<]+|[>"']+$/g, '').replace(/[^\x20-\x7E]/g, '')
+}
+
+function normalizeProviderName(value: string) {
+  const normalized = sanitizeHeaderValue(value).toLowerCase()
+  if (['api-football', 'api_football', 'apisports', 'api-sports'].includes(normalized)) return 'api-football'
+  return 'football-data.org'
 }
 
 function getSyncDateRange(body: Record<string, unknown>) {
