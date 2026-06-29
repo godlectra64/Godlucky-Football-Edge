@@ -7,23 +7,26 @@ dotenv.config({ path: '.env' })
 const source = await readFile('supabase/functions/sync-football-data/index.ts', 'utf8')
 
 assertIncludes(source, "'daily-sync-start'", 'daily-sync-start must be registered as an enrichment/admin mode')
-assertIncludes(source, 'const authError = await getServiceAuthError(request, mode)', 'handler must call the shared authorize helper')
+assertIncludes(source, 'const authError = await getServiceAuthError(request, mode, body)', 'handler must call the shared authorize helper with parsed body')
 assertIncludes(source, 'value === serviceRoleKey', 'shared auth helper must accept the Supabase service role key')
-assertIncludes(source, 'secretKeys.includes(value)', 'shared auth helper must accept configured SUPABASE_SECRET_KEYS')
+assertIncludes(source, "Deno.env.get('EDGE_ADMIN_SECRET_KEYS')", 'shared auth helper must read EDGE_ADMIN_SECRET_KEYS')
+assertIncludes(source, "Deno.env.get('SUPABASE_SECRET_KEYS')", 'shared auth helper must keep SUPABASE_SECRET_KEYS compatibility')
+assertIncludes(source, 'secretKeys.includes(value)', 'shared auth helper must accept configured admin secret keys')
+assertIncludes(source, 'body.sb_secret', 'shared auth helper must accept sb_secret from request body')
 assertIncludes(source, 'await isAdminJwt(bearerToken)', 'shared auth helper must accept admin JWT bearer tokens')
 assertIncludes(source, "token.startsWith('sb_secret_')", 'admin auth debug must classify sb_secret tokens without logging the key')
 assertIncludes(source, "passedPath: 'admin_jwt'", 'admin auth debug must log the admin_jwt pass path')
 assertIncludes(source, "passedPath: 'denied'", 'admin auth debug must log denied auth attempts')
-assertIncludes(source, 'splitSupabaseSecretKeys(trimmed)', 'SUPABASE_SECRET_KEYS must support single or comma-separated sb_secret values')
-assertIncludes(source, 'normalizeSupabaseSecretKeyList(parsed)', 'SUPABASE_SECRET_KEYS must support JSON object/array values')
+assertIncludes(source, 'splitSupabaseSecretKeys(trimmed)', 'admin secret keys must support single or comma-separated sb_secret values')
+assertIncludes(source, 'normalizeSupabaseSecretKeyList(parsed)', 'admin secret keys must support JSON object/array values')
 
-const authIndex = source.indexOf('const authError = await getServiceAuthError(request, mode)')
+const authIndex = source.indexOf('const authError = await getServiceAuthError(request, mode, body)')
 const configIndex = source.indexOf('assertRuntimeConfig(mode)')
 if (authIndex === -1 || configIndex === -1 || authIndex > configIndex) {
   throw new Error('daily sync auth order must be: parse body -> shared authorize helper -> assertRuntimeConfig')
 }
 
-const authCallCount = source.match(/getServiceAuthError\(request, mode\)/g)?.length ?? 0
+const authCallCount = source.match(/getServiceAuthError\(request, mode, body\)/g)?.length ?? 0
 if (authCallCount !== 1) {
   throw new Error(`expected exactly one shared request auth call, found ${authCallCount}`)
 }

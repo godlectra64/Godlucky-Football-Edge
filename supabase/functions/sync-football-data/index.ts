@@ -56,7 +56,10 @@ const API_FOOTBALL_BASE_URL = sanitizeUrl(Deno.env.get('API_FOOTBALL_BASE_URL') 
 const API_FOOTBALL_KEY = sanitizeHeaderValue(Deno.env.get('API_FOOTBALL_KEY') ?? '')
 const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
 const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-const secretKeys = parseSupabaseSecretKeys(Deno.env.get('SUPABASE_SECRET_KEYS'))
+const secretKeys = parseSupabaseSecretKeys([
+  Deno.env.get('EDGE_ADMIN_SECRET_KEYS'),
+  Deno.env.get('SUPABASE_SECRET_KEYS'),
+])
 
 const supabase = createClient(supabaseUrl, serviceRoleKey)
 const legacyAnalysisSelect = 'id, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, motivation_score, market_risk_score, confidence_score, recommendation, risk_level, analysis_summary, thai_reason, raw'
@@ -123,7 +126,7 @@ Deno.serve(async (request) => {
     const body = await safeJson(request)
     const mode = normalizeSyncMode(body.mode)
     responseProviderName = isFootballEnrichmentMode(mode) ? 'api-football' : requestedProviderName
-    const authError = await getServiceAuthError(request, mode)
+    const authError = await getServiceAuthError(request, mode, body)
     if (authError) return authError
     assertRuntimeConfig(mode)
 
@@ -6773,18 +6776,20 @@ function assertRuntimeConfig(mode: string) {
   if (!secretKeys.length) throw new Error('Missing Supabase secret API keys')
 }
 
-async function getServiceAuthError(request: Request, mode: string) {
+async function getServiceAuthError(request: Request, mode: string, body: Record<string, unknown> = {}) {
   const apiKey = sanitizeHeaderValue(request.headers.get('apikey') ?? '')
   const authorization = sanitizeHeaderValue(request.headers.get('authorization') ?? '')
   const bearerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? ''
+  const bodySecret = sanitizeHeaderValue(typeof body.sb_secret === 'string' ? body.sb_secret : '')
   const authDebug = {
     mode,
     authorizationPrefix: getSafeAuthPrefix(bearerToken || authorization),
     apiKeyPrefix: getSafeAuthPrefix(apiKey),
+    bodySecretPrefix: getSafeAuthPrefix(bodySecret),
   }
   const adminOnlyMessage = isFootballEnrichmentMode(mode)
-    ? 'Unauthorized enrichment request. API-Football enrichment modes are admin-only. Invoke this Edge Function with the Supabase service role key, a configured SUPABASE_SECRET_KEYS admin key, or a valid admin user JWT. Publishable/anon keys are not allowed.'
-    : 'Unauthorized sync request. Invoke this Edge Function with the Supabase service role key, a configured SUPABASE_SECRET_KEYS admin key, or a valid admin user JWT. Publishable/anon keys are not allowed.'
+    ? 'Unauthorized enrichment request. API-Football enrichment modes are admin-only. Invoke this Edge Function with the Supabase service role key, a configured EDGE_ADMIN_SECRET_KEYS admin key, or a valid admin user JWT. Publishable/anon keys are not allowed.'
+    : 'Unauthorized sync request. Invoke this Edge Function with the Supabase service role key, a configured EDGE_ADMIN_SECRET_KEYS admin key, or a valid admin user JWT. Publishable/anon keys are not allowed.'
 
   const apiKeyPath = getTrustedAdminTokenPath(apiKey)
   if (apiKeyPath) {
@@ -6795,6 +6800,12 @@ async function getServiceAuthError(request: Request, mode: string) {
   const bearerPath = getTrustedAdminTokenPath(bearerToken)
   if (bearerPath) {
     logAdminAuthDebug({ ...authDebug, passedPath: bearerPath })
+    return null
+  }
+
+  const bodySecretPath = getTrustedAdminTokenPath(bodySecret)
+  if (bodySecretPath) {
+    logAdminAuthDebug({ ...authDebug, passedPath: bodySecretPath })
     return null
   }
 
@@ -6823,7 +6834,7 @@ function isTrustedAdminToken(value: string) {
 function getTrustedAdminTokenPath(value: string) {
   if (!value) return false
   if (value === serviceRoleKey) return 'service_role'
-  if (secretKeys.includes(value)) return 'SUPABASE_SECRET_KEYS'
+  if (secretKeys.includes(value)) return 'EDGE_ADMIN_SECRET_KEYS'
   return null
 }
 
@@ -6840,7 +6851,8 @@ async function isAdminJwt(token: string) {
   }
 }
 
-function parseSupabaseSecretKeys(value: string | undefined | null) {
+function parseSupabaseSecretKeys(value: string | undefined | null | Array<string | undefined | null>) {
+  if (Array.isArray(value)) return [...new Set(value.flatMap(parseSupabaseSecretKeys))]
   const trimmed = sanitizeHeaderValue(String(value ?? ''))
   if (!trimmed) return []
 
@@ -6876,7 +6888,7 @@ function getSafeAuthPrefix(value: string) {
   return 'other'
 }
 
-function logAdminAuthDebug(payload: { mode: string; authorizationPrefix: string; apiKeyPrefix: string; passedPath: string }) {
+function logAdminAuthDebug(payload: { mode: string; authorizationPrefix: string; apiKeyPrefix: string; bodySecretPrefix: string; passedPath: string }) {
   console.log('admin auth debug', payload)
 }
 
