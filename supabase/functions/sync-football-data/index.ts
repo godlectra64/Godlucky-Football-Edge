@@ -202,6 +202,13 @@ Deno.serve(async (request) => {
         checks: modeResult.checks,
         ready: modeResult.ready,
         recommendedFix: modeResult.recommendedFix,
+        normalizedFixtureId: modeResult.normalizedFixtureId,
+        matchedBy: modeResult.matchedBy,
+        sourceMatchApiFixtureId: modeResult.sourceMatchApiFixtureId,
+        resultApiFixtureId: modeResult.resultApiFixtureId,
+        scoreUpdatedRows: modeResult.scoreUpdatedRows,
+        settledRows: modeResult.settledRows,
+        fixtureDiagnostics: modeResult.fixtureDiagnostics,
       }, modeResult.responseStatus ?? 200)
     }
 
@@ -1433,10 +1440,13 @@ async function resultRefresh(body: Record<string, unknown>, dayRange: ReturnType
     finishedMatches: sync.finishedMatches ?? 0,
     voidMatches: sync.voidMatches ?? 0,
     pendingMatches: sync.pendingMatches ?? 0,
+    scoreUpdatedRows: sync.scoreUpdatedRows ?? 0,
     resultRowsInserted: backfill.inserted ?? 0,
     resultRowsUpdated: backfill.updated ?? 0,
     resultRowsSettled: settle.settled ?? 0,
     resultRowsVoid: settle.voided ?? 0,
+    settledRows: settle.settledRows ?? 0,
+    fixtureDiagnostics: sync.fixtureDiagnostics ?? [],
     backfill,
     sync,
     settle,
@@ -1451,12 +1461,23 @@ async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: Re
   let voidMatches = 0
   let pendingMatches = 0
   let failed = 0
+  let scoreUpdatedRows = 0
+  const fixtureDiagnostics: Array<Record<string, unknown>> = []
   const failures: Array<Record<string, unknown>> = []
 
   for (const candidate of candidates.rows) {
     if (context.rateLimited) break
-    const fixtureId = Number(candidate.api_fixture_id ?? candidate.api_sports_fixture_id ?? 0)
+    const sourceMatchApiFixtureId = candidate.api_fixture_id ?? candidate.api_sports_fixture_id ?? null
+    const fixtureId = normalizeResultFixtureId(sourceMatchApiFixtureId)
     if (!fixtureId) continue
+    const diagnostic = {
+      matchId: candidate.id,
+      normalizedFixtureId: fixtureId,
+      matchedBy: candidate.matchedBy ?? 'football_matches',
+      sourceMatchApiFixtureId,
+      resultApiFixtureId: candidate.result_api_fixture_id ?? null,
+    }
+    fixtureDiagnostics.push(diagnostic)
     const response = await withResultStage('fetch api-football fixture', 'RESULT_SYNC_API_FETCH_FAILED', () => trackedApiFootballGet(context, '/fixtures', { id: fixtureId }, { apiFixtureId: fixtureId }), 'api-football')
     if (!response.ok) {
       failed += 1
@@ -1467,6 +1488,7 @@ async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: Re
     if (!rawFixture) {
       pendingMatches += 1
       await withResultStage('update football_matches score', 'RESULT_SYNC_UPDATE_MATCH_FAILED', () => markFixtureChecked(candidate.id, fixtureId, null))
+      scoreUpdatedRows += 1
       continue
     }
     const patch = normalizeResultFixturePatch(rawFixture)
@@ -1475,6 +1497,7 @@ async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: Re
       if (update.error) throw update.error
       return update
     })
+    scoreUpdatedRows += 1
     syncedFixtures += 1
     if (isResultFinishedStatus(patch.status_short)) finishedMatches += 1
     else if (isResultVoidStatus(patch.status_short)) voidMatches += 1
@@ -1493,7 +1516,13 @@ async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: Re
     finishedMatches,
     voidMatches,
     pendingMatches,
-    processedFixtureIds: candidates.rows.map((row: any) => row.api_fixture_id ?? row.api_sports_fixture_id).filter(Boolean),
+    scoreUpdatedRows,
+    fixtureDiagnostics,
+    normalizedFixtureId: fixtureDiagnostics[0]?.normalizedFixtureId ?? null,
+    matchedBy: fixtureDiagnostics[0]?.matchedBy ?? null,
+    sourceMatchApiFixtureId: fixtureDiagnostics[0]?.sourceMatchApiFixtureId ?? null,
+    resultApiFixtureId: fixtureDiagnostics[0]?.resultApiFixtureId ?? null,
+    processedFixtureIds: candidates.rows.map((row: any) => normalizeResultFixtureId(row.api_fixture_id ?? row.api_sports_fixture_id)).filter(Boolean),
   }
 }
 
@@ -1502,13 +1531,15 @@ async function fetchCompletedFixtureCandidates(body: Record<string, unknown>, da
   const nowIso = new Date().toISOString()
   const matchIds = new Set<string>()
   const fixtureIds = new Set<number>()
+  const resultFixtureByMatch = new Map<string, number>()
 
   const addRows = (rows: Array<any>) => {
     for (const row of rows) {
       const matchId = row.match_id ?? row.match?.id ?? row.id
-      const fixtureId = Number(row.api_fixture_id ?? row.match?.api_fixture_id ?? row.match?.api_sports_fixture_id ?? row.api_sports_fixture_id ?? 0)
+      const fixtureId = normalizeResultFixtureId(row.api_fixture_id ?? row.match?.api_fixture_id ?? row.match?.api_sports_fixture_id ?? row.api_sports_fixture_id)
       if (matchId) matchIds.add(String(matchId))
-      if (fixtureId) fixtureIds.add(Math.trunc(fixtureId))
+      if (matchId && fixtureId) resultFixtureByMatch.set(String(matchId), fixtureId)
+      if (fixtureId) fixtureIds.add(fixtureId)
     }
   }
 
@@ -1545,7 +1576,12 @@ async function fetchCompletedFixtureCandidates(body: Record<string, unknown>, da
     .limit(Math.max(1, limit))
 
   if (matchIds.size) query = query.in('id', [...matchIds])
-  else if (fixtureIds.size) query = query.or([...fixtureIds].map((id) => `api_fixture_id.eq.${id},api_sports_fixture_id.eq.${id}`).join(','))
+  else if (fixtureIds.size) query = query.or([...fixtureIds].flatMap((id) => [
+    `api_fixture_id.eq.${id}`,
+    `api_fixture_id.eq.${-id}`,
+    `api_sports_fixture_id.eq.${id}`,
+    `api_sports_fixture_id.eq.${-id}`,
+  ]).join(','))
   else query = query.gte('kickoff_at', dayRange.startUtc).lt('kickoff_at', dayRange.endUtc)
 
   const matches = await withResultStage('query football_matches', 'RESULT_CANDIDATES_MATCHES_FAILED', async () => {
@@ -1554,7 +1590,20 @@ async function fetchCompletedFixtureCandidates(body: Record<string, unknown>, da
     return result
   })
   const rows = (matches.data ?? [])
-    .filter((row: any) => Number(row.api_fixture_id ?? row.api_sports_fixture_id ?? 0))
+    .filter((row: any) => normalizeResultFixtureId(row.api_fixture_id ?? row.api_sports_fixture_id))
+    .map((row: any) => {
+      const normalizedFixtureId = normalizeResultFixtureId(row.api_fixture_id ?? row.api_sports_fixture_id)
+      return {
+        ...row,
+        normalized_fixture_id: normalizedFixtureId,
+        result_api_fixture_id: resultFixtureByMatch.get(String(row.id)) ?? null,
+        matchedBy: resultFixtureByMatch.has(String(row.id))
+          ? 'match_id'
+          : normalizedFixtureId && fixtureIds.has(normalizedFixtureId)
+          ? 'api_fixture_id_or_negative'
+          : 'date_range',
+      }
+    })
     .slice(0, Math.max(1, limit))
   return { rows, totalCandidates: matches.count ?? rows.length }
 }
@@ -1582,7 +1631,7 @@ async function backfillAiPickResults(body: Record<string, unknown>, dayRange: Re
     return {
       selection_date: row.selection_date ?? selectionDate,
       match_id: row.match_id,
-      api_fixture_id: nullableNumber(row.api_fixture_id ?? pick.api_fixture_id),
+      api_fixture_id: normalizeResultFixtureId(row.api_fixture_id ?? pick.api_fixture_id),
       ai_final_pick_id: row.ai_final_pick_id ?? pick.id ?? null,
       signal: pick.signal ?? row.signal ?? null,
       market_focus: pick.market_focus ?? row.market_focus ?? null,
@@ -1609,10 +1658,11 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
       id,
       selection_date,
       match_id,
+      api_fixture_id,
       market_focus,
       direction,
       settlement_status,
-      match:football_matches(id, status_short, status_long, status, home_score, away_score, home_goals, away_goals)
+      match:football_matches(id, api_fixture_id, api_sports_fixture_id, status_short, status_long, status, home_score, away_score, home_goals, away_goals)
     `)
     .eq('settlement_status', 'PENDING')
     .limit(Math.max(1, Math.min(Number(body.limit ?? dayRange ? 20 : 20), 20)))
@@ -1626,6 +1676,7 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
     return rows
   })
 
+  let settledRows = 0
   let settled = 0
   let voided = 0
   let pending = 0
@@ -1653,6 +1704,7 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
     const update = await withResultStage('settle result rows', 'RESULT_SETTLE_UPDATE_FAILED', () => supabase
       .from('football_ai_pick_results')
       .update({
+        api_fixture_id: normalizeResultFixtureId(row.api_fixture_id ?? match.api_fixture_id ?? match.api_sports_fixture_id),
         home_score: nullableNumber(match.home_score ?? match.home_goals),
         away_score: nullableNumber(match.away_score ?? match.away_goals),
         status_short: normalizeResultStatusShort(match.status_short ?? match.status),
@@ -1664,11 +1716,12 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
       })
       .eq('id', row.id))
     if (update.error) throw update.error
+    settledRows += 1
     if (outcome.settlement_status === 'VOID') voided += 1
     else settled += 1
   }
 
-  return { processed: settled + voided, provider: 'supabase', totalCandidates: (result.data ?? []).length, rowsSaved: settled + voided, settled, voided, pending, failed, failures }
+  return { processed: settled + voided, provider: 'supabase', totalCandidates: (result.data ?? []).length, rowsSaved: settled + voided, settled, voided, pending, failed, failures, settledRows }
 }
 
 async function recomputePerformanceDaily(_body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
@@ -1890,6 +1943,12 @@ function normalizeResultStatusShort(value: unknown) {
   if (status === 'CANCELLED') return 'CANC'
   if (status === 'ABANDONED') return 'ABD'
   return status || 'NS'
+}
+
+function normalizeResultFixtureId(value: unknown) {
+  const numeric = nullableNumber(value)
+  if (numeric === null || numeric === 0) return null
+  return Math.abs(Math.trunc(numeric))
 }
 
 function isResultFinishedStatus(value: unknown) {

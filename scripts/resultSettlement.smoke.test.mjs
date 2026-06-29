@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { settleAiPickResult } from '../src/utils/resultSettlement.js'
 
 const cases = [
@@ -21,5 +22,17 @@ for (const [name, input, expectedOutcome, expectedStatus] of cases) {
   assert.equal(actual.simulation_outcome, expectedOutcome, `${name}: simulation_outcome`)
   assert.equal(actual.settlement_status, expectedStatus, `${name}: settlement_status`)
 }
+
+const edgeSource = readFileSync('supabase/functions/sync-football-data/index.ts', 'utf8')
+assert.match(edgeSource, /function normalizeResultFixtureId[\s\S]*Math\.abs/, 'edge result pipeline must normalize fixture ids to positive values')
+assert.match(edgeSource, /trackedApiFootballGet\(context, '\/fixtures', \{ id: fixtureId \}/, 'API-Football fixture fetch must use normalized fixtureId')
+assert.match(edgeSource, /api_fixture_id\.eq\.\$\{-id\}/, 'candidate lookup must support legacy negative football_matches.api_fixture_id')
+assert.match(edgeSource, /api_fixture_id: normalizeResultFixtureId\(row\.api_fixture_id \?\? pick\.api_fixture_id\)/, 'backfill must store positive result api_fixture_id')
+assert.match(edgeSource, /api_fixture_id: normalizeResultFixtureId\(row\.api_fixture_id \?\? match\.api_fixture_id \?\? match\.api_sports_fixture_id\)/, 'settlement must normalize copied result api_fixture_id')
+assert.match(edgeSource, /home_score: nullableNumber\(match\.home_score \?\? match\.home_goals\)/, 'settlement must copy home score into result rows')
+assert.match(edgeSource, /away_score: nullableNumber\(match\.away_score \?\? match\.away_goals\)/, 'settlement must copy away score into result rows')
+assert.match(edgeSource, /settlement_status: outcome\.settlement_status/, 'settlement must update settlement_status')
+assert.match(edgeSource, /settledRows/, 'result pipeline response must include settledRows diagnostic')
+assert.match(edgeSource, /scoreUpdatedRows/, 'result pipeline response must include scoreUpdatedRows diagnostic')
 
 console.log(`result settlement smoke tests passed (${cases.length})`)
