@@ -46,6 +46,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
   background:
     linear-gradient(180deg, rgba(var(--page-accent-rgb), 0.08), transparent 20rem),
@@ -53,6 +54,11 @@ body {
     linear-gradient(180deg, #06101a 0%, #030609 52%, #020305 100%);
   color: var(--text-main);
   font-family: Inter, "Noto Sans Thai", system-ui, sans-serif;
+}
+
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 button,
@@ -141,11 +147,11 @@ svg {
 .app-page-wide {
   width: 100%;
   margin: 0 auto;
-  padding: 12px 14px calc(var(--safe-bottom) + 108px);
+  padding: 12px 14px calc(var(--safe-bottom) + 118px);
 }
 
 .app-page {
-  max-width: 430px;
+  max-width: 480px;
 }
 
 .app-page-wide {
@@ -153,7 +159,11 @@ svg {
 }
 
 .bottom-safe-area {
-  padding-bottom: calc(var(--safe-bottom) + 108px);
+  padding-bottom: calc(var(--safe-bottom) + 118px);
+}
+
+.android-top-panel {
+  border-radius: 20px;
 }
 
 .premium-surface,
@@ -285,7 +295,7 @@ svg {
 }
 
 .premium-button {
-  min-height: 42px;
+  min-height: 44px;
   border: 1px solid rgba(var(--page-accent-rgb), 0.36);
   border-radius: 14px;
   background: rgba(var(--page-accent-rgb), 0.12);
@@ -315,14 +325,14 @@ svg {
 .semantic-badge,
 .badge-premium {
   display: inline-flex;
-  min-height: 25px;
+  min-height: 27px;
   align-items: center;
   justify-content: center;
   gap: 5px;
   border-radius: 999px;
   border: 1px solid transparent;
   padding: 0 9px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 900;
   letter-spacing: 0;
   line-height: 1;
@@ -362,7 +372,7 @@ svg {
   border: 1px solid rgba(255, 255, 255, 0.095);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.045);
-  padding: 10px;
+  padding: 9px;
 }
 
 .metric-card-emphasis,

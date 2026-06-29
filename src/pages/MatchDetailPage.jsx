@@ -96,7 +96,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
 
 function BackButton({ onBack }) {
   return (
-    <button type="button" onClick={onBack} className="premium-button premium-focus mb-3 flex min-h-10 items-center gap-2 px-3 text-sm">
+    <button type="button" onClick={onBack} className="premium-button premium-focus mb-3 flex min-h-11 items-center gap-2 px-3 text-sm">
       <ArrowLeft size={18} />
       Today
     </button>
@@ -716,7 +716,7 @@ function SummarySection({ detail }) {
 
 function Section({ title, icon: Icon, children, accent = false }) {
   return (
-    <section className={`mt-3 rounded-[20px] border p-3.5 ${accent ? 'border-blue-300/25 bg-blue-300/10' : 'border-white/10 bg-white/[0.035]'}`}>
+    <section className={`mt-3.5 rounded-[20px] border p-3.5 ${accent ? 'border-blue-300/25 bg-blue-300/10 shadow-[0_16px_42px_rgba(0,0,0,0.22)]' : 'border-white/10 bg-white/[0.035]'}`}>
       <h3 className="section-title flex items-center gap-2">
         <Icon size={18} className="text-[var(--page-accent)]" />
         {title}

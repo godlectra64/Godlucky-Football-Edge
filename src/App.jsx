@@ -241,7 +241,7 @@ function App() {
 
   return (
     <div className={`min-h-screen bg-[var(--bg-app)] text-slate-100 ${themeClass}`}>
-      <MobileHeader title={titles[activePage]} subtitle="Supabase live data + Edge Function sync" connectionText={connection.message} activePage={activePage} />
+      <MobileHeader title={titles[activePage]} subtitle="Supabase live data + AI analysis" connectionText={connection.message} activePage={activePage} />
       <div>
         {activePage === 'today' ? (
           <TodayPage

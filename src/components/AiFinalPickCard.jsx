@@ -1,64 +1,66 @@
-import { Brain, ChevronDown, Gauge } from 'lucide-react'
+import { Brain, ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 import { generateAiFinalPick } from '../utils/aiFinalPickEngine.js'
 import { normalizeOddsRows } from '../utils/oddsUtils.js'
 import MarketDirectionBadge from './MarketDirectionBadge'
 import MarketOddsCard from './MarketOddsCard'
+import RiskBadge from './RiskBadge'
 
 export default function AiFinalPickCard({ match, compact = false, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen)
   const pick = match?.aiFinalPick ?? generateAiFinalPick(match)
   const odds = normalizeOddsRows(match)
-  const reasons = (pick.keyReasons ?? []).slice(0, compact ? 3 : 5)
-  const warnings = (pick.warningSigns ?? []).slice(0, compact ? 2 : 5)
+  const reasons = (pick.keyReasons ?? []).slice(0, compact ? 2 : 5)
+  const warnings = (pick.warningSigns ?? []).slice(0, compact ? 1 : 5)
+  const confidence = Math.round(pick.confidenceScore ?? 0)
 
   return (
-    <section className={`rounded-2xl border p-3 ${cardTone(pick.signal)}`}>
+    <section className={`rounded-2xl border p-3 ${cardTone(pick.signal, compact)}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-400">
             <Brain size={14} className="text-[var(--page-accent)]" />
             AI Final Pick
           </p>
-          <p className="mt-1 text-clamp-2 text-lg font-black leading-6 text-white">{pick.direction}</p>
-          <p className="mt-1 text-xs font-semibold leading-5 text-slate-300">{pick.marketSignal}</p>
+          <p className={`${compact ? 'text-[1.05rem] leading-6' : 'text-lg leading-6'} mt-1 text-clamp-2 font-black text-white`}>{pick.direction}</p>
+          <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{pick.marketSignal}</p>
         </div>
         <MarketDirectionBadge signal={pick.signal} />
       </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-1.5">
-        <MiniMetric label="Market Focus" value={pick.marketFocus} />
-        <MiniMetric label="Confidence" value={`${Math.round(pick.confidenceScore ?? 0)}%`} />
-        <MiniMetric label="Risk Level" value={pick.riskLevel} muted={pick.riskLevel === 'HIGH'} />
+      <div className="mt-3 grid grid-cols-[minmax(0,1fr)_84px] items-end gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap gap-1.5">
+            <MiniChip label="Focus" value={pick.marketFocus} />
+            <MiniChip label="Direction" value={pick.direction} wide />
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-[10px] font-black uppercase text-slate-500">Confidence</p>
+          <p className="text-[1.7rem] font-black leading-8 text-white">{confidence}%</p>
+        </div>
       </div>
 
-      <div className="mt-3">
-        <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-slate-400">
-          <span className="inline-flex items-center gap-1">
-            <Gauge size={13} />
-            Confidence
-          </span>
-          <span className="text-white">{Math.round(pick.confidenceScore ?? 0)}%</span>
-        </div>
-        <div className="progress-bar mt-1.5">
-          <span className={barTone(pick.signal)} style={{ width: `${Math.max(4, Math.min(100, pick.confidenceScore ?? 0))}%` }} />
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <RiskBadge level={pick.riskLevel} />
+        <div className="min-w-0 flex-1">
+          <div className="progress-bar">
+            <span className={barTone(pick.signal)} style={{ width: `${Math.max(4, Math.min(100, confidence))}%` }} />
+          </div>
         </div>
       </div>
 
       {reasons.length ? (
-        <div className="mt-3">
-          <p className="text-xs font-black text-white">Key Reasons</p>
-          <div className="mt-2 grid gap-1.5">
-            {reasons.map((reason) => (
-              <p key={reason} className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs leading-5 text-emerald-50">{reason}</p>
-            ))}
-          </div>
+        <div className="mt-3 grid gap-1.5">
+          {reasons.map((reason) => (
+            <p key={reason} className="text-clamp-2 rounded-xl border border-emerald-300/18 bg-emerald-300/10 px-3 py-2 text-xs leading-5 text-emerald-50">{reason}</p>
+          ))}
         </div>
       ) : null}
 
       {!compact ? (
         <>
-          <button type="button" onClick={() => setOpen((value) => !value)} className="mt-3 flex min-h-10 w-full items-center justify-between rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-black text-white">
+          <button type="button" onClick={() => setOpen((value) => !value)} className="premium-focus mt-3 flex min-h-11 w-full items-center justify-between rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-black text-white">
             Full Analysis
             <ChevronDown size={16} className={`transition ${open ? 'rotate-180' : ''}`} />
           </button>
@@ -94,7 +96,7 @@ function AnalysisBlock({ title, analysis }) {
 }
 
 function ListBlock({ title, items = [], tone = 'positive' }) {
-  const safeItems = items.length ? items : ['No major signal']
+  const safeItems = items.length ? items : ['ยังไม่มีสัญญาณสำคัญเพิ่มเติม']
   return (
     <div className="mt-2">
       <p className="text-xs font-black text-white">{title}</p>
@@ -107,19 +109,20 @@ function ListBlock({ title, items = [], tone = 'positive' }) {
   )
 }
 
-function MiniMetric({ label, value, muted = false }) {
+function MiniChip({ label, value, wide = false }) {
   return (
-    <div className="min-w-0 rounded-xl border border-white/10 bg-black/18 px-2 py-1.5">
-      <p className="text-[9px] font-black uppercase text-slate-500">{label}</p>
-      <p className={`truncate text-[11px] font-black leading-4 ${muted ? 'text-slate-400' : 'text-white'}`}>{value || '-'}</p>
-    </div>
+    <span className={`inline-flex min-h-8 min-w-0 items-center gap-1 rounded-full border border-white/10 bg-black/20 px-2.5 text-[11px] font-black text-white ${wide ? 'max-w-full' : ''}`}>
+      <span className="shrink-0 text-slate-500">{label}</span>
+      <span className="truncate">{value || '-'}</span>
+    </span>
   )
 }
 
-function cardTone(signal) {
-  if (signal === 'STRONG_SIGNAL') return 'border-emerald-300/30 bg-emerald-300/10'
-  if (signal === 'WATCH') return 'border-amber-300/30 bg-amber-300/10'
-  return 'border-slate-400/25 bg-slate-400/10'
+function cardTone(signal, compact) {
+  const inset = compact ? 'shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]' : ''
+  if (signal === 'STRONG_SIGNAL') return `border-emerald-300/35 bg-emerald-300/12 ${inset}`
+  if (signal === 'WATCH') return `border-amber-300/35 bg-amber-300/12 ${inset}`
+  return `border-slate-400/25 bg-slate-400/10 ${inset}`
 }
 
 function barTone(signal) {
