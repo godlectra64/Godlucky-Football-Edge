@@ -81,6 +81,10 @@ create index if not exists football_ai_pick_results_match_id_idx on public.footb
 create index if not exists football_ai_pick_results_fixture_idx on public.football_ai_pick_results(api_fixture_id);
 create index if not exists football_ai_pick_results_selection_date_idx on public.football_ai_pick_results(selection_date);
 create index if not exists football_ai_pick_results_settlement_status_idx on public.football_ai_pick_results(settlement_status);
+create unique index if not exists football_ai_pick_results_match_selection_uidx
+on public.football_ai_pick_results (match_id, selection_date);
+create unique index if not exists football_ai_pick_results_ai_final_pick_uidx
+on public.football_ai_pick_results (ai_final_pick_id);
 create unique index if not exists football_ai_pick_results_ai_final_pick_uidx
 on public.football_ai_pick_results(ai_final_pick_id)
 where ai_final_pick_id is not null;
