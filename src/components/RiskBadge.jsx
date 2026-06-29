@@ -14,7 +14,7 @@ export default function RiskBadge({ level }) {
   const normalized = ['low', 'medium', 'high'].includes(String(level).toLowerCase()) ? String(level).toLowerCase() : 'medium'
 
   return (
-    <span className={`semantic-badge ${styles[normalized]}`} title={normalized.toUpperCase()} aria-label={`Risk ${normalized.toUpperCase()}`}>
+    <span className={`semantic-badge ${styles[normalized]}`} title={labels[normalized]} aria-label={`ระดับความเสี่ยง ${labels[normalized]}`}>
       {labels[normalized]}
     </span>
   )

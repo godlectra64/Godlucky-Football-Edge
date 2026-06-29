@@ -38,7 +38,7 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
             {formatKickoffTime(match.kickoffAt)}
           </span>
           <span className="semantic-badge min-w-0 max-w-[172px] border-[rgba(var(--page-accent-rgb),0.28)] bg-[rgba(var(--page-accent-rgb),0.1)] text-[var(--page-accent)]">
-            <span className="truncate">{match.league?.name ?? 'Unknown league'}</span>
+            <span className="truncate">{match.league?.name ?? 'ไม่ทราบลีก'}</span>
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -51,9 +51,9 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
 
       <div className="mt-3 rounded-2xl border border-white/10 bg-black/18 p-3">
         <div className="grid grid-cols-[minmax(0,1fr)_34px_minmax(0,1fr)] items-center gap-2">
-          <TeamName name={match.homeTeam?.name ?? 'Unknown team'} active={finalPick.pickSide === 'HOME'} />
+          <TeamName name={match.homeTeam?.name ?? 'ไม่ทราบทีม'} active={finalPick.pickSide === 'HOME'} />
           <span className="text-center text-xs font-black uppercase text-slate-500">vs</span>
-          <TeamName name={match.awayTeam?.name ?? 'Unknown team'} active={finalPick.pickSide === 'AWAY'} align="right" />
+          <TeamName name={match.awayTeam?.name ?? 'ไม่ทราบทีม'} active={finalPick.pickSide === 'AWAY'} align="right" />
         </div>
       </div>
 
@@ -66,13 +66,13 @@ export default function MatchCard({ match, oneBestPick = null, onOpen }) {
       </div>
 
       <div className="mt-3 grid grid-cols-3 gap-2">
-        <MiniInfo label="Ranking" value={rankingScore || '-'} />
+        <MiniInfo label="คะแนนอันดับ" value={rankingScore || '-'} />
         <div className="min-w-0 rounded-xl border border-white/10 bg-black/18 px-2 py-2">
-          <p className="text-[10px] font-black uppercase text-slate-500">Rec</p>
+          <p className="text-[10px] font-black uppercase text-slate-500">สัญญาณ</p>
           <div className="mt-1"><ScoreBadge recommendation={recommendation} /></div>
         </div>
         <div className="min-w-0 rounded-xl border border-white/10 bg-black/18 px-2 py-2">
-          <p className="text-[10px] font-black uppercase text-slate-500">Risk</p>
+          <p className="text-[10px] font-black uppercase text-slate-500">ความเสี่ยง</p>
           <div className="mt-1"><RiskBadge level={riskLevel} /></div>
         </div>
       </div>

@@ -1,12 +1,12 @@
 import { Activity, BarChart3, CalendarDays, ClipboardList, SlidersHorizontal, Trophy } from 'lucide-react'
 
 const items = [
-  { key: 'today', label: 'Today', icon: CalendarDays, className: 'theme-today' },
-  { key: 'analysis', label: 'Analysis', icon: ClipboardList, className: 'theme-analysis' },
-  { key: 'admin', label: 'Admin', icon: SlidersHorizontal, className: 'theme-admin' },
-  { key: 'results', label: 'Results', icon: Trophy, className: 'theme-results' },
-  { key: 'stats', label: 'Stats', icon: BarChart3, className: 'theme-stats' },
-  { key: 'performance', label: 'AI', icon: Activity, className: 'theme-performance' },
+  { key: 'today', label: 'วันนี้', icon: CalendarDays, className: 'theme-today' },
+  { key: 'analysis', label: 'วิเคราะห์', icon: ClipboardList, className: 'theme-analysis' },
+  { key: 'admin', label: 'จัดการ', icon: SlidersHorizontal, className: 'theme-admin' },
+  { key: 'results', label: 'ผลย้อนหลัง', icon: Trophy, className: 'theme-results' },
+  { key: 'stats', label: 'สถิติ', icon: BarChart3, className: 'theme-stats' },
+  { key: 'performance', label: 'ผลงาน AI', icon: Activity, className: 'theme-performance' },
 ]
 
 export default function BottomNav({ activePage, onNavigate }) {

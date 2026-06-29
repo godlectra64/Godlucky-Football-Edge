@@ -8,7 +8,7 @@ const styles = {
 export default function ScoreBadge({ recommendation }) {
   const value = recommendation || 'NO BET'
   return (
-    <span className={`semantic-badge ${styles[value] ?? styles['NO BET']}`} title={value} aria-label={`Recommendation ${value}`}>
+    <span className={`semantic-badge ${styles[value] ?? styles['NO BET']}`} title={value} aria-label={`สัญญาณ ${value}`}>
       {value}
     </span>
   )

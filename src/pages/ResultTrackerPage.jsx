@@ -12,15 +12,15 @@ export default function ResultTrackerPage({ matches }) {
         <div className="relative z-10">
           <p className="eyebrow flex items-center gap-1.5">
             <Radio size={14} />
-            Live Score Monitor
+            ติดตามผลย้อนหลัง
           </p>
           <div className="mt-2 flex items-end justify-between gap-3">
             <div>
-              <h2 className="text-3xl font-black leading-9 text-white">Match Results</h2>
-              <p className="mt-1 text-sm font-semibold text-slate-400">Fixture status, score, and prediction result in one scan.</p>
+              <h2 className="text-3xl font-black leading-9 text-white">ผลล่าสุด</h2>
+              <p className="mt-1 text-sm font-semibold text-slate-400">ดูสถานะแข่งขัน สกอร์ และผลประเมินของระบบในหน้าเดียว</p>
             </div>
             <div className="metric-display min-w-[82px] text-right">
-              <p className="text-[10px] font-black uppercase text-slate-500">Active</p>
+              <p className="text-[10px] font-black uppercase text-slate-500">กำลังแข่ง</p>
               <p className="text-2xl font-black leading-7 text-white">{liveLike}</p>
             </div>
           </div>
@@ -31,8 +31,8 @@ export default function ResultTrackerPage({ matches }) {
         {!matches.length ? (
           <div className="empty-state">
             <Trophy size={28} className="mx-auto text-[var(--page-accent)]" />
-            <p className="mt-3 font-black text-white">No result data yet</p>
-            <p className="mt-1 text-sm text-slate-400">Sync fixtures from Admin to populate the monitor.</p>
+            <p className="mt-3 font-black text-white">ยังไม่มีผลย้อนหลัง</p>
+            <p className="mt-1 text-sm text-slate-400">ซิงก์ข้อมูลคู่แข่งขันจากหน้าจัดการก่อน เพื่อเริ่มติดตามผล</p>
           </div>
         ) : null}
         {matches.map((match) => (
@@ -46,7 +46,7 @@ export default function ResultTrackerPage({ matches }) {
               </div>
             </div>
             <div className="flex min-w-[72px] flex-col items-end gap-1">
-              <span className={statusClass(match.status)}>{match.status || 'PENDING'}</span>
+              <span className={statusClass(match.status)}>{formatMatchStatus(match.status)}</span>
               <ScoreBadge recommendation={getRecommendation(match)} />
             </div>
           </article>
@@ -54,6 +54,14 @@ export default function ResultTrackerPage({ matches }) {
       </div>
     </main>
   )
+}
+
+function formatMatchStatus(status) {
+  const normalized = String(status || 'PENDING').toUpperCase()
+  if (normalized === 'PENDING' || normalized === 'NS' || normalized === 'TBD') return 'PENDING · รอผล'
+  if (['FT', 'AET', 'PEN', 'FINISHED'].includes(normalized)) return 'จบการแข่งขัน'
+  if (['1H', '2H', 'HT', 'LIVE', 'ET'].includes(normalized)) return `${normalized} · กำลังแข่ง`
+  return normalized
 }
 
 function statusClass(status) {

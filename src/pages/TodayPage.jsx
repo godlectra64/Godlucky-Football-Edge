@@ -28,7 +28,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             <div className="min-w-0">
               <p className="eyebrow flex items-center gap-1.5">
                 <Sparkles size={14} />
-                Daily Top10 Board
+                บอร์ด Top10 วันนี้
               </p>
               <h2 className="mt-1 text-[1.45rem] font-black leading-7 text-white">คู่เด็ดวันนี้</h2>
               <p className="mt-1 text-xs font-bold leading-5 text-slate-300">{formatThaiDate()}</p>
@@ -46,7 +46,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             <HeroMetric label="Top10" value={matches.length || 0} suffix="คู่" />
             <HeroMetric label="ทั้งหมด" value={totalMatchCount || 0} suffix="คู่" />
             <div className="metric-display is-emphasis min-w-[76px] text-right">
-              <p className="text-[10px] font-black uppercase text-slate-400">Avg</p>
+              <p className="text-[10px] font-black uppercase text-slate-400">เฉลี่ย</p>
               <p className="text-2xl font-black leading-7 text-white">{avgConfidence}%</p>
             </div>
           </div>
@@ -64,7 +64,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             </div>
             <span className="semantic-badge badge-positive">
               <CheckCircle2 size={12} />
-              Ready
+              พร้อม
             </span>
           </div>
 
@@ -158,7 +158,7 @@ function OneBestPickHero({ oneBestPick }) {
         <div className="min-w-0">
           <p className="eyebrow flex items-center gap-1.5">
             <Sparkles size={14} />
-            One Best Pick
+            คู่หลักของวันนี้
           </p>
           <h1 className="mt-1 text-[1.15rem] font-black leading-6 text-white">ถ้าเลือกได้แค่ 1 คู่วันนี้</h1>
           <p className="mt-1 text-xs font-bold leading-5 text-slate-300">{oneBestPick?.subtitle ?? 'กำลังสะสมข้อมูลเพื่อเลือกคู่หลัก'}</p>
@@ -173,9 +173,9 @@ function OneBestPickHero({ oneBestPick }) {
             <p className="mt-1 text-clamp-1 text-xs font-bold text-slate-400">{finalPick.matchLabel}</p>
             <p className="mt-0.5 text-clamp-1 text-[11px] font-bold text-slate-500">{finalPick.leagueName} · {finalPick.kickoffAt ? formatKickoffShort(finalPick.kickoffAt) : '-'}</p>
             <div className="mt-3 grid grid-cols-3 gap-1.5">
-              <FinalPickInfo label="Rec" value={finalPick.recommendation} muted={finalPick.recommendation === recommendationLabels.noBet} />
-              <FinalPickInfo label="Confidence" value={`${finalPick.confidence}%`} />
-              <FinalPickInfo label="Risk" value={finalPick.riskLevel} muted={finalPick.riskLevel === 'HIGH'} />
+              <FinalPickInfo label="สัญญาณ" value={finalPick.recommendation} muted={finalPick.recommendation === recommendationLabels.noBet} />
+              <FinalPickInfo label="ความมั่นใจ" value={`${finalPick.confidence}%`} />
+              <FinalPickInfo label="ความเสี่ยง" value={finalPick.riskLevel} muted={finalPick.riskLevel === 'HIGH'} />
             </div>
             <p className="text-clamp-2 mt-2 text-xs font-bold leading-5 text-slate-200">{finalPick.pickReason}</p>
           </>
@@ -240,7 +240,7 @@ function filterActiveClass(item) {
 
 function LoadingSkeleton() {
   return (
-    <div className="mt-3 grid gap-3" aria-label="Loading Top10 picks">
+    <div className="mt-3 grid gap-3" aria-label="กำลังโหลด Top10">
       {[0, 1, 2].map((item) => (
         <div key={item} className="rounded-[20px] border border-white/10 bg-white/[0.04] p-3.5">
           <div className="h-4 w-32 rounded-full bg-white/10" />

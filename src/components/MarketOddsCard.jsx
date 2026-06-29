@@ -1,4 +1,5 @@
 import { LineChart } from 'lucide-react'
+import { formatMarketFocus } from '../utils/uiLabels'
 
 const compactMarkets = ['AH', 'OU']
 const expandedMarkets = ['AH', 'OU', 'MATCH_WINNER', 'BTTS']
@@ -15,9 +16,9 @@ export default function MarketOddsCard({ odds = [], compact = false }) {
       <div className="flex items-center justify-between gap-3">
         <p className="flex min-w-0 items-center gap-2 text-sm font-black text-white">
           <LineChart size={16} className="shrink-0 text-[var(--page-accent)]" />
-          <span className="truncate">AI Market Signal</span>
+          <span className="truncate">สัญญาณตลาดจาก AI</span>
         </p>
-        <span className="semantic-badge border-white/10 bg-white/[0.05] text-slate-200">{rows.length ? `${rows.length} lines` : 'No data'}</span>
+        <span className="semantic-badge border-white/10 bg-white/[0.05] text-slate-200">{rows.length ? `${rows.length} ราคา` : 'ยังไม่มีข้อมูล'}</span>
       </div>
 
       {rows.length ? (
@@ -28,7 +29,7 @@ export default function MarketOddsCard({ odds = [], compact = false }) {
             ))}
           </div>
           <p className="mt-2 text-clamp-1 text-[11px] font-semibold text-slate-500">
-            Bookmaker: {bookmaker} · อัปเดต {latestAt ? formatOddsTime(latestAt) : '-'}
+            เจ้ามือ: {bookmaker} · อัปเดต {latestAt ? formatOddsTime(latestAt) : '-'}
           </p>
         </>
       ) : (
@@ -97,11 +98,7 @@ function formatMarketLine(row) {
 }
 
 function marketLabel(market) {
-  if (market === 'AH') return 'AH'
-  if (market === 'OU') return 'O/U'
-  if (market === 'MATCH_WINNER') return '1X2'
-  if (market === 'BTTS') return 'BTTS'
-  return market
+  return formatMarketFocus(market)
 }
 
 function formatOddsTime(value) {

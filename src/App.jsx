@@ -86,7 +86,7 @@ function App() {
     try {
       setPerformanceRows(await getAiPerformanceData())
     } catch (err) {
-      setPerformanceError(err.message || 'โหลดข้อมูล AI Performance ไม่สำเร็จ')
+      setPerformanceError(err.message || 'โหลดข้อมูลผลงาน AI ไม่สำเร็จ')
     } finally {
       setPerformanceLoading(false)
     }
@@ -221,13 +221,13 @@ function App() {
   }
 
   const titles = {
-    today: 'Today Edge Board',
-    analysis: 'Match Analysis',
-    admin: 'Data Control',
-    results: 'Live Results',
-    stats: 'Analytics',
-    performance: 'Premium AI Lab',
-    notFound: 'Page Not Found',
+    today: 'คู่เด่นวันนี้',
+    analysis: 'วิเคราะห์คู่แข่งขัน',
+    admin: 'จัดการข้อมูล',
+    results: 'ติดตามผลย้อนหลัง',
+    stats: 'สถิติภาพรวม',
+    performance: 'ผลงาน AI',
+    notFound: 'ไม่พบหน้านี้',
   }
 
   const themeClass = {
@@ -241,7 +241,7 @@ function App() {
 
   return (
     <div className={`min-h-screen bg-[var(--bg-app)] text-slate-100 ${themeClass}`}>
-      <MobileHeader title={titles[activePage]} subtitle="Supabase live data + AI analysis" connectionText={connection.message} activePage={activePage} />
+      <MobileHeader title={titles[activePage]} subtitle="ข้อมูลสดจาก Supabase + วิเคราะห์ด้วย AI" connectionText={connection.message} activePage={activePage} />
       <div>
         {activePage === 'today' ? (
           <TodayPage
@@ -287,8 +287,8 @@ function PageFallback() {
   return (
     <main className="app-page">
       <div className="empty-state">
-        <p className="font-black text-white">Loading screen</p>
-        <p className="mt-1 text-sm leading-6 text-slate-300">Preparing football intelligence data.</p>
+        <p className="font-black text-white">กำลังโหลดหน้า</p>
+        <p className="mt-1 text-sm leading-6 text-slate-300">กำลังเตรียมข้อมูลวิเคราะห์ฟุตบอล</p>
       </div>
     </main>
   )
@@ -298,10 +298,10 @@ function NotFoundPage({ onGoToday }) {
   return (
     <main className="app-page theme-today">
       <section className="empty-state">
-        <p className="text-lg font-black text-white">Page not found</p>
-        <p className="mt-2 text-sm leading-6 text-slate-300">This route is unavailable. The app is still ready.</p>
+        <p className="text-lg font-black text-white">ไม่พบหน้านี้</p>
+        <p className="mt-2 text-sm leading-6 text-slate-300">ลิงก์นี้ยังไม่พร้อมใช้งาน แต่แอปยังใช้งานได้ตามปกติ</p>
         <button type="button" onClick={onGoToday} className="premium-button mt-4 px-5">
-          Back to Today
+          กลับไปหน้าวันนี้
         </button>
       </section>
     </main>

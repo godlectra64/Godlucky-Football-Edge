@@ -16,23 +16,23 @@ import { buildExplainableAi } from '../utils/explainableAi'
 import { normalizeMarketIntelligence } from '../utils/marketIntelligence'
 
 const moduleSubtitles = {
-  'Team Strength': 'Squad quality',
-  'Recent Form': 'Current run',
-  'Goal Scoring': 'Chance creation',
-  'Defensive Stability': 'Resistance',
-  'Home Advantage': 'Venue edge',
-  'Away Weakness': 'Opponent vulnerability',
-  'Motivation & Context': 'Match context',
-  'Market Risk': 'Price movement',
-  'Overall Risk': 'Total volatility',
+  'Team Strength': 'คุณภาพทีม',
+  'Recent Form': 'ฟอร์มช่วงหลัง',
+  'Goal Scoring': 'โอกาสทำประตู',
+  'Defensive Stability': 'ความแน่นเกมรับ',
+  'Home Advantage': 'ความได้เปรียบเจ้าบ้าน',
+  'Away Weakness': 'จุดอ่อนทีมเยือน',
+  'Motivation & Context': 'บริบทการแข่งขัน',
+  'Market Risk': 'ความผันผวนราคา',
+  'Overall Risk': 'ความเสี่ยงรวม',
 }
 
-export default function MatchDetailPage({ match, oneBestPick = null, loading = false, error = '', performanceContext = 'Collecting data', predictionReliability = null, onBack, onGoToday }) {
+export default function MatchDetailPage({ match, oneBestPick = null, loading = false, error = '', performanceContext = 'กำลังเก็บข้อมูล', predictionReliability = null, onBack, onGoToday }) {
   if (loading) {
     return (
       <main className="app-page theme-analysis">
         <BackButton onBack={onBack} />
-        <StatePanel title="Loading match intelligence" message="Reading fixture, analysis modules, and reliability context." icon={Brain} />
+        <StatePanel title="กำลังโหลดบทวิเคราะห์" message="กำลังอ่านข้อมูลคู่แข่งขัน โมดูลวิเคราะห์ และความน่าเชื่อถือของโมเดล" icon={Brain} />
       </main>
     )
   }
@@ -41,7 +41,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
     return (
       <main className="app-page theme-analysis">
         <BackButton onBack={onBack} />
-        <StatePanel title="Unable to load analysis" message={error} tone="error" icon={ShieldAlert} />
+        <StatePanel title="โหลดบทวิเคราะห์ไม่สำเร็จ" message={error} tone="error" icon={ShieldAlert} />
       </main>
     )
   }
@@ -49,9 +49,9 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
   if (!match) {
     return (
       <main className="app-page theme-analysis">
-        <StatePanel title="No match selected" message="Choose a fixture from Today to open the professional analysis board." icon={Sparkles}>
+        <StatePanel title="ยังไม่ได้เลือกคู่แข่งขัน" message="เลือกคู่จากหน้าวันนี้เพื่อเปิดบอร์ดวิเคราะห์" icon={Sparkles}>
           <button type="button" onClick={onGoToday} className="premium-button mt-4 px-5">
-            Back to Today
+            กลับไปหน้าวันนี้
           </button>
         </StatePanel>
       </main>
@@ -82,7 +82,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
       <ExplainableAiSection explanation={explainability} />
       <FootballIntelligenceSection intelligence={detail.footballIntelligence} />
       <FootballDataIntelligenceSection items={detail.dataIntelligenceItems} />
-      <ContextSection title="AI Performance Context" icon={Star} body={performanceContext || 'Collecting data'} />
+      <ContextSection title="บริบทผลงาน AI" icon={Star} body={performanceContext || 'กำลังเก็บข้อมูล'} />
       <PredictionReliabilitySection reliability={predictionReliability} />
       <RiskAnalysisSection detail={detail} riskLabel={riskLabel} riskFactors={riskFactors} />
       <RankingSection detail={detail} />
@@ -98,13 +98,13 @@ function BackButton({ onBack }) {
   return (
     <button type="button" onClick={onBack} className="premium-button premium-focus mb-3 flex min-h-11 items-center gap-2 px-3 text-sm">
       <ArrowLeft size={18} />
-      Today
+      วันนี้
     </button>
   )
 }
 
 function HeroHeader({ detail }) {
-  const rankContext = detail.aiPickLabel ?? (detail.rank ? `AI PICK #${detail.rank}` : detail.rankingScore ? 'Top board match' : 'Analysis board')
+  const rankContext = detail.aiPickLabel ?? (detail.rank ? `AI PICK #${detail.rank}` : detail.rankingScore ? 'คู่เด่นบนบอร์ด' : 'บอร์ดวิเคราะห์')
   const venue = getVenueText(detail)
 
   return (
@@ -114,7 +114,7 @@ function HeroHeader({ detail }) {
           <div className="min-w-0">
             <p className="eyebrow flex items-center gap-1.5">
               <Brain size={14} />
-              Match Analysis Board
+              บอร์ดวิเคราะห์คู่แข่งขัน
             </p>
             <p className="mt-1 flex min-w-0 items-center gap-1.5 text-xs font-bold text-slate-400">
               <CalendarClock size={14} className="shrink-0" />
@@ -133,14 +133,14 @@ function HeroHeader({ detail }) {
         <div className="mt-4 rounded-2xl border border-blue-300/25 bg-blue-300/10 p-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-[10px] font-black uppercase text-blue-200/80">AI Decision</p>
+              <p className="text-[10px] font-black uppercase text-blue-200/80">ผลประเมิน AI</p>
               <div className="mt-1 flex items-center gap-2">
                 <ScoreBadge recommendation={detail.recommendation} />
                 <RiskBadge level={detail.riskLevel} />
               </div>
             </div>
             <div className="text-right">
-              <p className="text-[10px] font-black uppercase text-slate-400">Confidence</p>
+              <p className="text-[10px] font-black uppercase text-slate-400">ความมั่นใจ</p>
               <p className="text-3xl font-black leading-8 text-white">{detail.confidence}%</p>
             </div>
           </div>
@@ -150,9 +150,9 @@ function HeroHeader({ detail }) {
         </div>
 
         <div className="mt-3 grid grid-cols-3 gap-2">
-          <Metric label="Edge" value={detail.rankingScore ? `${detail.rankingScore}` : '-'} />
-          <Metric label="Status" value={detail.status ?? '-'} />
-          <Metric label="Score" value={formatScore(detail.homeGoals, detail.awayGoals)} />
+          <Metric label="คะแนนเด่น" value={detail.rankingScore ? `${detail.rankingScore}` : '-'} />
+          <Metric label="สถานะ" value={detail.status ?? '-'} />
+          <Metric label="สกอร์" value={formatScore(detail.homeGoals, detail.awayGoals)} />
         </div>
         <p className="mt-3 text-clamp-1 text-xs font-semibold text-slate-500">{venue || 'Venue data pending'}</p>
       </div>
@@ -162,7 +162,7 @@ function HeroHeader({ detail }) {
 
 function AiFinalPickAnalysisSection({ detail }) {
   return (
-    <Section title="AI Final Pick Analysis" icon={Brain} accent>
+    <Section title="บทวิเคราะห์ตัวเลือกสุดท้ายของ AI" icon={Brain} accent>
       <AiFinalPickCard match={detail} defaultOpen />
     </Section>
   )
@@ -170,15 +170,15 @@ function AiFinalPickAnalysisSection({ detail }) {
 
 function AiVerdictSection({ detail, verdict }) {
   return (
-    <Section title="AI Decision" icon={Sparkles} accent>
+    <Section title="ผลประเมิน AI" icon={Sparkles} accent>
       <div className="rounded-2xl border border-blue-300/25 bg-blue-300/10 p-3">
         <div className="flex items-center justify-between gap-3">
           <ScoreBadge recommendation={verdict.verdict} />
-          <span className="text-sm font-black text-blue-100">{detail.confidence}% confidence</span>
+          <span className="text-sm font-black text-blue-100">ความมั่นใจ {detail.confidence}%</span>
         </div>
         <p className="mt-2 text-sm leading-6 text-slate-200">{detail.rankReason}</p>
       </div>
-      <TwoColumnLists leftTitle="Reasons" leftItems={verdict.reasons} rightTitle="Cautions" rightItems={verdict.cautions} />
+      <TwoColumnLists leftTitle="เหตุผลสนับสนุน" leftItems={verdict.reasons} rightTitle="ข้อควรระวัง" rightItems={verdict.cautions} />
       <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{verdict.playable}</p>
     </Section>
   )
@@ -188,7 +188,7 @@ function FinalDecisionSection({ detail, heroSelection }) {
   const finalPick = detail.finalPick
 
   return (
-    <Section title="AI FINAL DECISION" icon={Sparkles} accent>
+    <Section title="บทสรุปสุดท้ายของ AI" icon={Sparkles} accent>
       <div className={`rounded-2xl border p-3 ${finalDecisionClass(finalPick)}`}>
         {heroSelection ? (
           <div className="mb-3 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-2.5">
@@ -211,12 +211,12 @@ function FinalDecisionSection({ detail, heroSelection }) {
           </div>
         </div>
         <div className="mt-3 grid grid-cols-2 gap-2">
-          <DecisionMetric label="Market" value={finalPick.marketTypeLabel} muted={!finalPick.marketType} />
-          <DecisionMetric label="Line" value={finalPick.marketLineLabel} muted={!finalPick.marketLine} />
-          <DecisionMetric label={finalPick.probabilitySource === 'confidence_estimate' ? 'Model Probability' : 'Win Probability'} value={finalPick.probabilityLabel} />
-          <DecisionMetric label="Fair Line" value={finalPick.fairLineLabel} muted={!finalPick.fairLine} />
-          <DecisionMetric label="Value" value={finalPick.valueStatusLabel} muted={finalPick.valueStatus !== 'YES'} />
-          <DecisionMetric label="Reason" value={finalPick.valueReason} muted={finalPick.valueStatus !== 'YES'} />
+          <DecisionMetric label="ตลาดที่ระบบโฟกัส" value={finalPick.marketTypeLabel} muted={!finalPick.marketType} />
+          <DecisionMetric label="ราคา/ไลน์" value={finalPick.marketLineLabel} muted={!finalPick.marketLine} />
+          <DecisionMetric label={finalPick.probabilitySource === 'confidence_estimate' ? 'โอกาสจากโมเดล' : 'โอกาสชนะ'} value={finalPick.probabilityLabel} />
+          <DecisionMetric label="เส้นประเมินกลาง" value={finalPick.fairLineLabel} muted={!finalPick.fairLine} />
+          <DecisionMetric label="สถานะ Value" value={finalPick.valueStatusLabel} muted={finalPick.valueStatus !== 'YES'} />
+          <DecisionMetric label="เหตุผลการสรุปผล" value={finalPick.valueReason} muted={finalPick.valueStatus !== 'YES'} />
         </div>
         <p className="text-clamp-2 mt-2 text-sm leading-6 text-slate-300">{detail.analysisSummary || 'ข้อมูลวิเคราะห์ยังจำกัด'}</p>
       </div>
@@ -246,26 +246,26 @@ function finalDecisionClass(finalPick) {
 function AiSelectionBreakdownSection({ detail }) {
   const analysis = detail.analysis ?? {}
   const items = [
-    ['League Quality', analysis.league_quality_score],
-    ['Match Quality', analysis.match_quality_score],
-    ['Team Strength', analysis.team_strength_score],
-    ['Form', analysis.form_score],
-    ['Goal Scoring', analysis.goal_scoring_score],
-    ['Defensive Stability', analysis.defensive_stability_score],
-    ['Tactical Matchup', analysis.tactical_matchup_score],
-    ['Motivation', analysis.motivation_score],
-    ['Market Reading', analysis.market_reading_score],
-    ['Home/Away', analysis.home_away_score ?? analysis.home_advantage_score],
-    ['Edge Score', analysis.edge_score],
-    ['Risk Score', analysis.risk_score],
-    ['AI Score', analysis.ai_score],
-    ['Confidence', analysis.confidence_score ?? detail.confidence],
-    ['Ranking Score', analysis.ranking_score ?? detail.rankingScore],
-    ['Final Rank', analysis.final_rank ?? detail.finalRank ?? detail.rank],
+    ['คุณภาพลีก', analysis.league_quality_score],
+    ['คุณภาพคู่แข่งขัน', analysis.match_quality_score],
+    ['ความแข็งแกร่งทีม', analysis.team_strength_score],
+    ['ฟอร์ม', analysis.form_score],
+    ['เกมรุก', analysis.goal_scoring_score],
+    ['เกมรับ', analysis.defensive_stability_score],
+    ['แท็กติก', analysis.tactical_matchup_score],
+    ['แรงจูงใจ', analysis.motivation_score],
+    ['การอ่านตลาด', analysis.market_reading_score],
+    ['เหย้า/เยือน', analysis.home_away_score ?? analysis.home_advantage_score],
+    ['คะแนนความได้เปรียบ', analysis.edge_score],
+    ['คะแนนความเสี่ยง', analysis.risk_score],
+    ['คะแนน AI', analysis.ai_score],
+    ['ความมั่นใจ', analysis.confidence_score ?? detail.confidence],
+    ['คะแนนอันดับ', analysis.ranking_score ?? detail.rankingScore],
+    ['อันดับสุดท้าย', analysis.final_rank ?? detail.finalRank ?? detail.rank],
   ]
 
   return (
-    <Section title="Selection Engine v2" icon={ListChecks}>
+    <Section title="ระบบคัดเลือก v2" icon={ListChecks}>
       <div className="grid grid-cols-2 gap-2">
         {items.map(([label, value]) => (
           <Metric key={label} label={label} value={formatSelectionValue(value)} />
@@ -281,30 +281,30 @@ function AiSelectionBreakdownSection({ detail }) {
 function DataIntelligenceV4Section({ detail }) {
   const analysis = detail.analysis ?? {}
   const items = [
-    ['Calibrated', analysis.calibrated_confidence_score ?? detail.calibratedConfidence ?? detail.confidence],
-    ['Market Edge', analysis.market_edge_score ?? detail.marketEdgeScore],
-    ['Odds Conf', analysis.odds_confidence_score ?? detail.oddsConfidenceScore],
-    ['Movement', analysis.odds_movement_score ?? detail.oddsMovementScore],
-    ['Team Stats', analysis.team_stats_score ?? detail.teamStatsScore],
-    ['Injuries', analysis.injuries_score ?? detail.injuriesScore],
-    ['Lineups', analysis.lineups_score ?? detail.lineupsScore],
-    ['Data Depth', analysis.data_depth_score ?? detail.dataDepthScore],
+    ['ปรับเทียบแล้ว', analysis.calibrated_confidence_score ?? detail.calibratedConfidence ?? detail.confidence],
+    ['ความได้เปรียบตลาด', analysis.market_edge_score ?? detail.marketEdgeScore],
+    ['ความมั่นใจจากราคา', analysis.odds_confidence_score ?? detail.oddsConfidenceScore],
+    ['การขยับราคา', analysis.odds_movement_score ?? detail.oddsMovementScore],
+    ['สถิติทีม', analysis.team_stats_score ?? detail.teamStatsScore],
+    ['ตัวเจ็บ', analysis.injuries_score ?? detail.injuriesScore],
+    ['รายชื่อผู้เล่น', analysis.lineups_score ?? detail.lineupsScore],
+    ['ความลึกของข้อมูล', analysis.data_depth_score ?? detail.dataDepthScore],
   ]
   const hasV4 = items.some(([, value]) => value !== null && value !== undefined)
   if (!hasV4 && !analysis.enriched_summary && !analysis.odds_movement_summary) return null
 
   return (
-    <Section title="Data Intelligence v4" icon={TrendingUp}>
+    <Section title="ข้อมูลเชิงลึก v4" icon={TrendingUp}>
       <div className="grid grid-cols-2 gap-2">
         {items.map(([label, value]) => (
           <Metric key={label} label={label} value={formatSelectionValue(value)} />
         ))}
       </div>
       <div className="mt-3 grid gap-2">
-        <DecisionMetric label="Value Market" value={analysis.value_market ?? '-'} muted={!analysis.value_market} />
-        <DecisionMetric label="Value Side" value={analysis.value_side ?? '-'} muted={!analysis.value_side} />
-        <DecisionMetric label="Line" value={analysis.value_line ?? analysis.latest_line ?? '-'} muted={!analysis.value_line && !analysis.latest_line} />
-        <DecisionMetric label="Odds Move" value={analysis.odds_movement_summary ?? '-'} muted={!analysis.odds_movement_summary} />
+        <DecisionMetric label="ตลาด Value" value={analysis.value_market ?? '-'} muted={!analysis.value_market} />
+        <DecisionMetric label="ฝั่งที่มี Value" value={analysis.value_side ?? '-'} muted={!analysis.value_side} />
+        <DecisionMetric label="ราคา/ไลน์" value={analysis.value_line ?? analysis.latest_line ?? '-'} muted={!analysis.value_line && !analysis.latest_line} />
+        <DecisionMetric label="การขยับราคา" value={analysis.odds_movement_summary ?? '-'} muted={!analysis.odds_movement_summary} />
       </div>
       {analysis.enriched_summary ? <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{analysis.enriched_summary}</p> : null}
     </Section>
@@ -330,7 +330,7 @@ function FootballEnrichmentSection({ detail }) {
 
 function MatchDataCoverageSection({ items }) {
   return (
-    <Section title="Match Data Coverage" icon={ListChecks}>
+    <Section title="ความครบถ้วนข้อมูลการแข่งขัน" icon={ListChecks}>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {items.map((item) => (
           <div key={item.label} className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3">
@@ -360,7 +360,7 @@ function MatchStatisticsSection({ statistics, homeTeam, awayTeam }) {
   ]
 
   return (
-    <Section title="Match Statistics" icon={Activity}>
+    <Section title="สถิติการแข่งขัน" icon={Activity}>
       {statistics.length ? (
         <div className="grid gap-2">
           {rows.map(([label, key, suffix]) => (
@@ -376,7 +376,7 @@ function MatchStatisticsSection({ statistics, homeTeam, awayTeam }) {
 
 function TimelineEventsSection({ events }) {
   return (
-    <Section title="Timeline Events" icon={Clock}>
+    <Section title="เหตุการณ์สำคัญ" icon={Clock}>
       {events.length ? (
         <div className="grid gap-2">
           {events.map((event) => (
@@ -399,7 +399,7 @@ function TimelineEventsSection({ events }) {
 
 function LineupsSection({ lineups }) {
   return (
-    <Section title="Lineups" icon={Users}>
+    <Section title="รายชื่อผู้เล่น" icon={Users}>
       {lineups.length ? (
         <div className="grid gap-2">
           {lineups.map((lineup) => (
@@ -407,12 +407,12 @@ function LineupsSection({ lineups }) {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="truncate font-black text-white">{lineup.team_name ?? 'ทีม'}</p>
-                  <p className="mt-0.5 text-xs font-semibold text-slate-500">Coach: {lineup.coach_name ?? '-'}</p>
+                  <p className="mt-0.5 text-xs font-semibold text-slate-500">โค้ช: {lineup.coach_name ?? '-'}</p>
                 </div>
                 <span className="semantic-badge border-emerald-300/25 bg-emerald-300/10 text-emerald-100">{lineup.formation ?? '-'}</span>
               </div>
-              <LineupNames title="Starting XI" players={lineup.start_xi} />
-              <LineupNames title="Substitutes" players={lineup.substitutes} />
+              <LineupNames title="ตัวจริง" players={lineup.start_xi} />
+              <LineupNames title="ตัวสำรอง" players={lineup.substitutes} />
             </div>
           ))}
         </div>
@@ -426,7 +426,7 @@ function LineupsSection({ lineups }) {
 function PlayerRatingsSection({ players }) {
   const topPlayers = players.slice(0, 12)
   return (
-    <Section title="Player Ratings" icon={Star}>
+    <Section title="คะแนนผู้เล่น" icon={Star}>
       {topPlayers.length ? (
         <div className="grid gap-2">
           {topPlayers.map((player) => (
@@ -439,14 +439,14 @@ function PlayerRatingsSection({ players }) {
                 <span className="semantic-badge border-amber-300/25 bg-amber-300/10 text-amber-100">{formatStatValue(player.rating)}</span>
               </div>
               <div className="mt-2 grid grid-cols-4 gap-1.5">
-                <MiniStat label="Min" value={player.minutes} />
+                <MiniStat label="นาที" value={player.minutes} />
                 <MiniStat label="G/A" value={`${player.goals_total ?? 0}/${player.assists ?? 0}`} />
                 <MiniStat label="SOT" value={player.shots_on} />
-                <MiniStat label="Pass" value={formatStatValue(player.passes_accuracy, '%')} />
+                <MiniStat label="ผ่านบอล" value={formatStatValue(player.passes_accuracy, '%')} />
                 <MiniStat label="T+I" value={Number(player.tackles_total ?? 0) + Number(player.tackles_interceptions ?? 0)} />
                 <MiniStat label="YC" value={player.yellow_cards} />
                 <MiniStat label="RC" value={player.red_cards} />
-                <MiniStat label="Saves" value={player.saves} />
+                <MiniStat label="เซฟ" value={player.saves} />
               </div>
             </div>
           ))}
@@ -460,7 +460,7 @@ function PlayerRatingsSection({ players }) {
 
 function InjuriesSection({ injuries }) {
   return (
-    <Section title="Injuries / Suspensions" icon={ShieldAlert}>
+    <Section title="เจ็บ / ติดโทษแบน" icon={ShieldAlert}>
       {injuries.length ? (
         <div className="grid gap-2">
           {injuries.slice(0, 20).map((item) => (
@@ -481,7 +481,7 @@ function InjuriesSection({ injuries }) {
 function VenueSection({ venue, fallbackVenue }) {
   const display = venue ?? (typeof fallbackVenue === 'object' ? fallbackVenue : fallbackVenue ? { venue_name: fallbackVenue } : null)
   return (
-    <Section title="Venue" icon={MapPin}>
+    <Section title="สนามแข่งขัน" icon={MapPin}>
       {display ? (
         <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
           {display.image ? <img src={display.image} alt="" className="mb-3 h-36 w-full rounded-2xl object-cover" /> : null}
@@ -512,7 +512,7 @@ function LeagueTopPlayersSection({ topPlayers }) {
   const rows = topPlayers?.[active] ?? []
 
   return (
-    <Section title="League Top Players" icon={TrendingUp}>
+    <Section title="ผู้นำสถิติของลีก" icon={TrendingUp}>
       <div className="grid grid-cols-4 gap-1.5">
         {tabs.map(([key, label]) => (
           <button key={key} type="button" onClick={() => setActive(key)} className={`rounded-xl border px-2 py-2 text-xs font-black ${active === key ? 'border-blue-300/35 bg-blue-300/15 text-blue-50' : 'border-white/10 bg-white/[0.04] text-slate-300'}`}>
@@ -547,7 +547,7 @@ function formatSelectionValue(value) {
 
 function ScoreBreakdownSection({ items }) {
   return (
-    <Section title="Module Breakdown" icon={Gauge}>
+    <Section title="คะแนนแยกตามโมดูล" icon={Gauge}>
       <div className="space-y-2.5">
         {items.map((item) => (
           <ScoreRow key={item.key} item={item} />
@@ -559,17 +559,17 @@ function ScoreBreakdownSection({ items }) {
 
 function ExplainableAiSection({ explanation }) {
   return (
-    <Section title="Explainable AI" icon={Brain}>
+    <Section title="คำอธิบายจาก AI" icon={Brain}>
       <div className="grid grid-cols-2 gap-2">
-        <Metric label="Base" value={`${explanation.baseConfidence}%`} />
-        <Metric label="Final" value={`${explanation.finalConfidence}%`} />
-        <Metric label="Risk Impact" value={formatContribution(explanation.riskImpact?.value)} />
-        <Metric label="Data Impact" value={formatContribution(explanation.dataConfidenceImpact?.value)} />
+        <Metric label="เริ่มต้น" value={`${explanation.baseConfidence}%`} />
+        <Metric label="สุดท้าย" value={`${explanation.finalConfidence}%`} />
+        <Metric label="ผลกระทบความเสี่ยง" value={formatContribution(explanation.riskImpact?.value)} />
+        <Metric label="ผลกระทบข้อมูล" value={formatContribution(explanation.dataConfidenceImpact?.value)} />
       </div>
       <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{explanation.summary}</p>
-      <ContributionList title="Positive Factors" items={explanation.positive} tone="positive" />
-      <ContributionList title="Negative Factors" items={explanation.negative} tone="negative" />
-      <ContributionList title="Neutral Factors" items={explanation.neutral} />
+      <ContributionList title="ปัจจัยบวก" items={explanation.positive} tone="positive" />
+      <ContributionList title="ปัจจัยลบ" items={explanation.negative} tone="negative" />
+      <ContributionList title="ปัจจัยกลาง" items={explanation.neutral} />
     </Section>
   )
 }
@@ -586,7 +586,7 @@ function FootballIntelligenceSection({ intelligence }) {
   ]
 
   return (
-    <Section title="Strength / Weakness" icon={TrendingUp}>
+    <Section title="จุดแข็ง / จุดอ่อน" icon={TrendingUp}>
       <div className="grid gap-2.5">
         {cards.map((card) => (
           <IntelligenceCard key={card.title} card={card} />
@@ -598,7 +598,7 @@ function FootballIntelligenceSection({ intelligence }) {
 
 function FootballDataIntelligenceSection({ items }) {
   return (
-    <Section title="Data Intelligence" icon={ListChecks}>
+    <Section title="ข้อมูลเชิงลึก" icon={ListChecks}>
       <div className="grid gap-2.5">
         {(items ?? []).map((item) => (
           <DataIntelligenceCard key={item.key} item={item} />
@@ -620,41 +620,41 @@ function ContextSection({ title, icon, body }) {
 function PredictionReliabilitySection({ reliability }) {
   const data = reliability ?? {}
   return (
-    <Section title="Prediction Reliability" icon={Gauge}>
+    <Section title="ความน่าเชื่อถือของผลประเมิน" icon={Gauge}>
       <div className="grid grid-cols-2 gap-2">
-        <Metric label="Calibration" value={`${Math.round(data.confidenceCalibration ?? 0)}%`} />
-        <Metric label="Historical" value={`${Math.round(data.historicalAccuracy ?? 0)}%`} />
-        <Metric label="League" value={`${Math.round(data.leagueAccuracy ?? 0)}%`} />
-        <Metric label="Data" value={`${Math.round(data.dataConfidence ?? 0)}%`} />
+        <Metric label="การปรับเทียบ" value={`${Math.round(data.confidenceCalibration ?? 0)}%`} />
+        <Metric label="ผลงานย้อนหลัง" value={`${Math.round(data.historicalAccuracy ?? 0)}%`} />
+        <Metric label="ลีก" value={`${Math.round(data.leagueAccuracy ?? 0)}%`} />
+        <Metric label="ข้อมูล" value={`${Math.round(data.dataConfidence ?? 0)}%`} />
       </div>
-      <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{data.label || 'Collecting evaluation history'}</p>
+      <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{data.label || 'กำลังเก็บผลย้อนหลัง'}</p>
     </Section>
   )
 }
 
 function RiskAnalysisSection({ detail, riskLabel, riskFactors }) {
   return (
-    <Section title="Risk Control" icon={ShieldAlert}>
+    <Section title="ควบคุมความเสี่ยง" icon={ShieldAlert}>
       <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-        <p className="text-sm font-bold text-slate-400">Risk Level</p>
+        <p className="text-sm font-bold text-slate-400">ระดับความเสี่ยง</p>
         <div className="flex items-center gap-2">
           <RiskBadge level={detail.riskLevel} />
           <span className="text-sm font-black text-white">{riskLabel.label}</span>
         </div>
       </div>
-      <BulletList title="Risk factors" items={riskFactors} tone={String(detail.riskLevel).toLowerCase() === 'high' ? 'danger' : 'warning'} />
+      <BulletList title="ปัจจัยเสี่ยง" items={riskFactors} tone={String(detail.riskLevel).toLowerCase() === 'high' ? 'danger' : 'warning'} />
     </Section>
   )
 }
 
 function RankingSection({ detail }) {
   return (
-    <Section title="Ranking Explanation" icon={Star}>
+    <Section title="เหตุผลการจัดอันดับ" icon={Star}>
       <div className="grid grid-cols-2 gap-2">
-        <Metric label="Rank" value={detail.rank ? `#${detail.rank}` : '-'} />
-        <Metric label="Ranking" value={`${detail.rankingScore}/100`} />
-        <Metric label="Data Quality" value={`${detail.dataQuality.score}%`} />
-        <Metric label="Badges" value={`${detail.rankBadges.length}`} />
+        <Metric label="อันดับ" value={detail.rank ? `#${detail.rank}` : '-'} />
+        <Metric label="คะแนนอันดับ" value={`${detail.rankingScore}/100`} />
+        <Metric label="คุณภาพข้อมูล" value={`${detail.dataQuality.score}%`} />
+        <Metric label="ป้ายกำกับ" value={`${detail.rankBadges.length}`} />
       </div>
       <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{detail.rankReason}</p>
       {detail.rankBadges.length ? <ChipList items={detail.rankBadges} /> : null}
@@ -664,34 +664,34 @@ function RankingSection({ detail }) {
 
 function DataQualitySection({ dataQuality }) {
   return (
-    <Section title="Data Quality" icon={ListChecks}>
-      <ProgressPanel label="Completeness" value={dataQuality.score} tone={dataQuality.score >= 70 ? 'good' : dataQuality.score >= 45 ? 'medium' : 'risk'} />
-      <QualityList title="Available" items={dataQuality.available} />
-      <QualityList title="Missing" items={dataQuality.missing} muted />
+    <Section title="คุณภาพข้อมูล" icon={ListChecks}>
+      <ProgressPanel label="ความครบถ้วน" value={dataQuality.score} tone={dataQuality.score >= 70 ? 'good' : dataQuality.score >= 45 ? 'medium' : 'risk'} />
+      <QualityList title="มีข้อมูลแล้ว" items={dataQuality.available} />
+      <QualityList title="ข้อมูลที่ยังขาด" items={dataQuality.missing} muted />
     </Section>
   )
 }
 
 function DataPlatformCoverageSection({ coverage }) {
   return (
-    <Section title="Data Coverage" icon={ListChecks}>
+    <Section title="ความครอบคลุมข้อมูล" icon={ListChecks}>
       <ProgressPanel label={`Coverage · ${coverage.level}`} value={coverage.score} tone={coverage.score >= 75 ? 'good' : coverage.score >= 45 ? 'medium' : 'risk'} />
       <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{coverage.reason}</p>
-      <QualityList title="Available" items={coverage.available} />
-      <QualityList title="Missing" items={coverage.missing} muted />
+      <QualityList title="มีข้อมูลแล้ว" items={coverage.available} />
+      <QualityList title="ข้อมูลที่ยังขาด" items={coverage.missing} muted />
     </Section>
   )
 }
 
 function MarketIntelligenceSection({ market }) {
   return (
-    <Section title="Market Intelligence" icon={TrendingUp}>
+    <Section title="ข้อมูลตลาด" icon={TrendingUp}>
       <p className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{market.reason}</p>
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <Metric label="Asian" value={formatMarketValue(market.asian_handicap)} />
+        <Metric label="AH · ราคาต่อรอง" value={formatMarketValue(market.asian_handicap)} />
         <Metric label="O/U" value={formatMarketValue(market.over_under)} />
         <Metric label="1X2" value={formatMarketValue(market.one_x_two)} />
-        <Metric label="Value" value={formatMarketValue(market.value_rating)} />
+        <Metric label="สถานะ Value" value={formatMarketValue(market.value_rating)} />
       </div>
     </Section>
   )
@@ -704,7 +704,7 @@ function SummarySection({ detail }) {
   ].filter(Boolean)
 
   return (
-    <Section title="Full AI Summary" icon={Brain}>
+    <Section title="สรุป AI แบบเต็ม" icon={Brain}>
       <div className="space-y-3">
         {paragraphs.map((paragraph, index) => (
           <p key={`${paragraph}-${index}`} className="text-sm leading-6 text-slate-300">{paragraph}</p>
@@ -738,7 +738,7 @@ function ScoreRow({ item }) {
         <span className={`semantic-badge shrink-0 ${toneClass(item.tone)}`}>{Math.round(item.score ?? 0)}/100</span>
       </div>
       <ProgressBar value={item.score} tone={item.tone} />
-      <p className="text-clamp-1 mt-2 text-xs leading-5 text-slate-400">{item.reason || 'Limited data'}</p>
+      <p className="text-clamp-1 mt-2 text-xs leading-5 text-slate-400">{item.reason || 'ข้อมูลยังจำกัด'}</p>
     </div>
   )
 }
@@ -749,11 +749,11 @@ function IntelligenceCard({ card }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate font-black text-white">{card.title}</p>
-          <p className="mt-0.5 text-xs font-semibold text-slate-500">{card.meta || 'Limited data'}</p>
+          <p className="mt-0.5 text-xs font-semibold text-slate-500">{card.meta || 'ข้อมูลยังจำกัด'}</p>
         </div>
         <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{Math.round(card.score ?? 0)}</span>
       </div>
-      <p className="mt-2 text-sm leading-6 text-slate-300">{card.reason || 'Limited data'}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-300">{card.reason || 'ข้อมูลยังจำกัด'}</p>
       {card.signals?.length ? <ChipList items={card.signals.slice(0, 4)} /> : null}
     </div>
   )
@@ -765,12 +765,12 @@ function DataIntelligenceCard({ item }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate font-black text-white">{item.label}</p>
-          <p className="mt-0.5 text-xs font-semibold text-slate-500">confidence {item.confidence ?? 'low'}</p>
+          <p className="mt-0.5 text-xs font-semibold text-slate-500">ความมั่นใจ {item.confidence ?? 'ต่ำ'}</p>
         </div>
         <span className={`semantic-badge shrink-0 ${toneClass(item.tone)}`}>{Math.round(item.score ?? 0)}/100</span>
       </div>
       <ProgressBar value={item.score} tone={item.tone} />
-      <p className="mt-2 text-sm leading-6 text-slate-300">{item.reason || 'Limited data'}</p>
+      <p className="mt-2 text-sm leading-6 text-slate-300">{item.reason || 'ข้อมูลยังจำกัด'}</p>
       {item.key === 'data_confidence' ? (
         <div className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
           <QualityInline title="Available" items={item.available} />
@@ -845,7 +845,7 @@ function TwoColumnLists({ leftTitle, leftItems, rightTitle, rightItems }) {
 }
 
 function BulletList({ title, items, tone = 'default' }) {
-  const safeItems = items?.length ? items : ['Limited data']
+  const safeItems = items?.length ? items : ['ข้อมูลยังจำกัด']
   return (
     <div>
       <p className="text-sm font-black text-white">{title}</p>
@@ -859,7 +859,7 @@ function BulletList({ title, items, tone = 'default' }) {
 }
 
 function ContributionList({ title, items, tone = 'neutral' }) {
-  const safeItems = items?.length ? items : [{ key: `${title}-empty`, label: 'Limited data', value: 0, reason: 'Collecting data' }]
+  const safeItems = items?.length ? items : [{ key: `${title}-empty`, label: 'ข้อมูลยังจำกัด', value: 0, reason: 'กำลังเก็บข้อมูล' }]
   return (
     <div className="mt-3">
       <p className="text-sm font-black text-white">{title}</p>
@@ -888,7 +888,7 @@ function QualityList({ title, items, muted = false }) {
 }
 
 function QualityInline({ title, items = [], muted = false }) {
-  const safeItems = items.length ? items : ['Limited data']
+  const safeItems = items.length ? items : ['ข้อมูลยังจำกัด']
   return (
     <div className={`rounded-xl border p-2 ${muted ? 'border-slate-500/20 bg-slate-500/10' : 'border-cyan-300/20 bg-cyan-300/10'}`}>
       <p className="font-black text-white">{title}</p>

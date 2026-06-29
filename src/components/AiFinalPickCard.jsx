@@ -2,6 +2,7 @@ import { Brain, ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 import { generateAiFinalPick } from '../utils/aiFinalPickEngine.js'
 import { normalizeOddsRows } from '../utils/oddsUtils.js'
+import { formatMarketFocus } from '../utils/uiLabels.js'
 import MarketDirectionBadge from './MarketDirectionBadge'
 import MarketOddsCard from './MarketOddsCard'
 import RiskBadge from './RiskBadge'
@@ -20,7 +21,7 @@ export default function AiFinalPickCard({ match, compact = false, defaultOpen = 
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-400">
             <Brain size={14} className="text-[var(--page-accent)]" />
-            AI Final Pick
+            บทสรุป AI
           </p>
           <p className={`${compact ? 'text-[1.05rem] leading-6' : 'text-lg leading-6'} mt-1 text-clamp-2 font-black text-white`}>{pick.direction}</p>
           <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{pick.marketSignal}</p>
@@ -31,12 +32,12 @@ export default function AiFinalPickCard({ match, compact = false, defaultOpen = 
       <div className="mt-3 grid grid-cols-[minmax(0,1fr)_84px] items-end gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap gap-1.5">
-            <MiniChip label="Focus" value={pick.marketFocus} />
-            <MiniChip label="Direction" value={pick.direction} wide />
+            <MiniChip label="ตลาด" value={formatMarketFocus(pick.marketFocus)} />
+            <MiniChip label="ทิศทาง" value={pick.direction} wide />
           </div>
         </div>
         <div className="text-right">
-          <p className="text-[10px] font-black uppercase text-slate-500">Confidence</p>
+          <p className="text-[10px] font-black uppercase text-slate-500">ความมั่นใจ</p>
           <p className="text-[1.7rem] font-black leading-8 text-white">{confidence}%</p>
         </div>
       </div>
@@ -61,15 +62,15 @@ export default function AiFinalPickCard({ match, compact = false, defaultOpen = 
       {!compact ? (
         <>
           <button type="button" onClick={() => setOpen((value) => !value)} className="premium-focus mt-3 flex min-h-11 w-full items-center justify-between rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-black text-white">
-            Full Analysis
+            ดูบทวิเคราะห์เต็ม
             <ChevronDown size={16} className={`transition ${open ? 'rotate-180' : ''}`} />
           </button>
           {open ? (
             <div className="mt-3 grid gap-3">
               <MarketOddsCard odds={odds} />
-              <AnalysisBlock title="AH Analysis" analysis={pick.ahAnalysis} />
-              <AnalysisBlock title="OU Analysis" analysis={pick.ouAnalysis} />
-              <ListBlock title="Warning Signs" items={warnings} tone="warning" />
+              <AnalysisBlock title="วิเคราะห์ AH · ราคาต่อรอง" analysis={pick.ahAnalysis} />
+              <AnalysisBlock title="วิเคราะห์ OU · สูง/ต่ำ" analysis={pick.ouAnalysis} />
+              <ListBlock title="สัญญาณเตือน" items={warnings} tone="warning" />
               <p className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{pick.finalSummary}</p>
             </div>
           ) : null}
@@ -90,18 +91,18 @@ function AnalysisBlock({ title, analysis }) {
         </div>
         <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{Math.round(analysis.confidenceScore ?? 0)}%</span>
       </div>
-      <ListBlock title="Data Direction" items={(analysis.reasons ?? []).slice(0, 3)} />
+      <ListBlock title="ทิศทางจากข้อมูล" items={(analysis.reasons ?? []).slice(0, 3)} />
     </div>
   )
 }
 
 function ListBlock({ title, items = [], tone = 'positive' }) {
-  const safeItems = items.length ? items : ['ยังไม่มีสัญญาณสำคัญเพิ่มเติม']
+  const displayItems = items.length ? items : ['ยังไม่มีสัญญาณสำคัญเพิ่มเติม']
   return (
     <div className="mt-2">
       <p className="text-xs font-black text-white">{title}</p>
       <div className="mt-2 grid gap-1.5">
-        {safeItems.map((item) => (
+        {displayItems.map((item) => (
           <p key={item} className={`rounded-xl border px-3 py-2 text-xs leading-5 ${tone === 'warning' ? 'border-amber-300/20 bg-amber-300/10 text-amber-50' : 'border-cyan-300/20 bg-cyan-300/10 text-cyan-50'}`}>{item}</p>
         ))}
       </div>
