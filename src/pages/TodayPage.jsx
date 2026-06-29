@@ -8,7 +8,7 @@ import { formatThaiDate, formatUpdatedAt } from '../utils/formatters'
 const allFilter = 'ALL'
 const filters = [allFilter, recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.watch, recommendationLabels.noBet]
 
-export default function TodayPage({ matches, oneBestPick: providedOneBestPick = null, totalMatchCount = matches.length, top10Status = null, top10Locked = false, loading, error, notice, onRefresh, onOpenMatch }) {
+export default function TodayPage({ matches, oneBestPick: providedOneBestPick = null, totalMatchCount = matches.length, top10Status = null, top10Locked = false, loading, error, onRefresh, onOpenMatch }) {
   const [filter, setFilter] = useState(allFilter)
   const visibleMatches = useMemo(() => {
     if (filter === allFilter) return matches
@@ -22,75 +22,62 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
 
   return (
     <main className="app-page theme-today">
-      <section className="premium-hero android-top-panel p-3.5">
+      <section className="premium-hero android-top-panel p-3">
         <div className="relative z-10">
-          <div className="flex items-start justify-between gap-2.5">
+          <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="eyebrow flex items-center gap-1.5">
-                <Sparkles size={14} />
+                <Sparkles size={13} />
                 บอร์ด Top10 วันนี้
               </p>
-              <h2 className="mt-1 text-[1.45rem] font-black leading-7 text-white">คู่เด็ดวันนี้</h2>
-              <p className="mt-1 text-xs font-bold leading-5 text-slate-300">{formatThaiDate()}</p>
-              <p className="text-[11px] font-semibold leading-4 text-slate-500">คัดเฉพาะคู่ที่ AI จัดอันดับไว้ดีที่สุดของวัน</p>
+              <h2 className="mt-0.5 text-[1.18rem] font-black leading-6 text-white">คู่เด็ดวันนี้</h2>
+              <p className="text-clamp-1 mt-0.5 text-[11px] font-bold leading-4 text-slate-400">{formatThaiDate()}</p>
             </div>
-            <button type="button" onClick={onRefresh} className="premium-button premium-focus flex min-h-11 shrink-0 items-center justify-center gap-1.5 px-3 text-xs" aria-label="Refresh matches">
-              <RefreshCcw size={15} />
+            <button type="button" onClick={onRefresh} className="premium-button premium-focus flex min-h-10 shrink-0 items-center justify-center gap-1.5 px-3 text-xs" aria-label="Refresh matches">
+              <RefreshCcw size={14} />
               รีเฟรช
             </button>
           </div>
 
-          <Top10LockBadge status={top10Status} locked={top10Locked} />
-
-          <div className="mt-3 grid grid-cols-3 gap-2">
-            <HeroMetric label="Top10" value={matches.length || 0} suffix="คู่" />
-            <HeroMetric label="ทั้งหมด" value={totalMatchCount || 0} suffix="คู่" />
-            <div className="metric-display is-emphasis min-w-[76px] text-right">
-              <p className="text-[10px] font-black uppercase text-slate-400">เฉลี่ย</p>
-              <p className="text-2xl font-black leading-7 text-white">{avgConfidence}%</p>
-            </div>
+          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
+            <Top10LockBadge status={top10Status} locked={top10Locked} />
+            <CompactMetric label="Top10" value={`${matches.length || 0}/${totalMatchCount || 0}`} />
+            <CompactMetric label="เฉลี่ย" value={`${avgConfidence}%`} />
+            <CompactMetric label="พร้อม" value={`${playableCount}/${matches.length || 0}`} />
           </div>
 
-          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-white/10 bg-black/20 p-2.5">
-            <div className="min-w-0">
-              <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-slate-400">
-                <span>ความพร้อมของบอร์ด</span>
-                <span className="text-emerald-100">{playableCount}/{matches.length || 0} น่าติดตาม</span>
-              </div>
-              <div className="progress-bar mt-1.5">
-                <span style={{ width: `${matches.length ? Math.max(6, Math.round((playableCount / matches.length) * 100)) : 4}%` }} />
-              </div>
-              <p className="mt-1 text-[11px] font-semibold text-slate-500">V4 {v4ReadyCount}/{matches.length || 0} · อัปเดตล่าสุด {lastUpdated ? formatUpdatedAt(lastUpdated) : '-'}</p>
-            </div>
-            <span className="semantic-badge badge-positive">
+          <div className="mt-2 flex min-w-0 items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/20 px-2.5 py-1.5">
+            <p className="text-clamp-1 text-[11px] font-semibold text-slate-400">
+              V4 {v4ReadyCount}/{matches.length || 0} · อัปเดต {lastUpdated ? formatUpdatedAt(lastUpdated) : '-'}
+            </p>
+            <span className="flex shrink-0 items-center gap-1 text-[11px] font-black text-emerald-100">
               <CheckCircle2 size={12} />
               พร้อม
             </span>
           </div>
 
-          {notice ? <p className="mt-2 text-clamp-1 text-[11px] font-semibold text-slate-500">{formatNotice(notice)}</p> : null}
           {!loading && matches.length && !matches.some((match) => match.recommendation === recommendationLabels.bet) ? (
-            <p className="mt-2 rounded-xl border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs font-bold leading-5 text-amber-100">
-              วันนี้ยังไม่มีคู่ระดับ BET แต่ AI ยังจัดอันดับคู่ที่น่าติดตามที่สุดให้ครบตามข้อมูลที่มี
+            <p className="mt-1.5 text-clamp-1 rounded-lg border border-amber-300/20 bg-amber-300/10 px-2.5 py-1.5 text-[11px] font-bold leading-4 text-amber-100">
+              วันนี้ยังไม่มีคู่ระดับ BET แต่ยังจัดอันดับคู่ที่น่าติดตามให้ครบ
             </p>
           ) : null}
           {!loading && matches.length < 10 ? (
-            <p className="mt-1 text-clamp-1 text-[11px] font-semibold text-slate-500">
+            <p className="mt-1 text-clamp-1 text-[10.5px] font-semibold text-slate-500">
               วันนี้มี AI Picks {matches.length} คู่จากข้อมูลที่พร้อมใช้งาน
             </p>
           ) : null}
         </div>
       </section>
 
-      <OneBestPickHero oneBestPick={oneBestPick} />
+      <OneBestPickSummary oneBestPick={oneBestPick} />
 
-      <div className="mobile-scroll mt-3 flex gap-2 overflow-x-auto pb-1">
+      <div className="mobile-scroll mt-1.5 flex gap-1.5 overflow-x-auto pb-0.5">
         {filters.map((item) => (
           <button
             key={item}
             type="button"
             onClick={() => setFilter(item)}
-            className={`min-h-10 shrink-0 rounded-full border px-3 text-xs font-black transition ${
+            className={`min-h-8 shrink-0 rounded-full border px-3 text-[11px] font-black transition ${
               filter === item ? filterActiveClass(item) : 'border-white/10 bg-white/[0.04] text-slate-400 hover:text-white'
             }`}
           >
@@ -100,7 +87,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
       </div>
 
       {loading ? <LoadingSkeleton /> : null}
-      {error && !loading ? <StateBox title="โหลดข้อมูลไม่สำเร็จ" message="ระบบกำลังแสดงข้อมูลล่าสุดที่มีอยู่" detail={error} tone="error" onRetry={onRefresh} /> : null}
+      {error && !loading && !matches.length ? <StateBox title="โหลดข้อมูลไม่สำเร็จ" message="ระบบกำลังแสดงข้อมูลล่าสุดที่มีอยู่" detail={error} tone="error" onRetry={onRefresh} /> : null}
       {!loading && !error && !visibleMatches.length ? (
         <StateBox
           title={matches.length ? 'ไม่มีคู่ในตัวกรองนี้' : 'ยังไม่มีคู่สำหรับวันนี้'}
@@ -109,9 +96,9 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
         />
       ) : null}
 
-      <div className="mt-3 grid gap-3.5">
+      <div className="mt-1.5 grid gap-2.5">
         {visibleMatches.map((match) => (
-          <MatchCard key={match.id} match={match} oneBestPick={oneBestPick} onOpen={onOpenMatch} />
+          <MatchCard key={match.id} match={match} onOpen={onOpenMatch} />
         ))}
       </div>
     </main>
@@ -123,79 +110,57 @@ function Top10LockBadge({ status, locked }) {
   const lockedAt = status?.lockedAt ? formatUpdatedAt(status.lockedAt) : '-'
   const lastUpdated = status?.lastUpdated ? formatUpdatedAt(status.lastUpdated) : '-'
   return (
-    <div className={`mt-3 rounded-2xl border p-2.5 ${locked ? 'border-emerald-300/35 bg-emerald-300/12' : 'border-amber-300/30 bg-amber-300/12'}`}>
-      <div className="flex items-center justify-between gap-2">
-        <p className="flex min-w-0 items-center gap-1.5 text-[12px] font-black text-white">
-          <Icon size={14} />
-          {locked ? 'Top10 วันนี้ล็อกแล้ว' : 'ยังไม่ได้ล็อก Top10 วันนี้'}
-        </p>
-        <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{status?.lockedCount ?? 0}/10</span>
-      </div>
-      <p className="mt-1 text-[11px] font-semibold leading-5 text-slate-400">ล็อก {lockedAt} · อัปเดตล่าสุด {lastUpdated}</p>
-    </div>
+    <span
+      className={`semantic-badge max-w-full ${locked ? 'border-emerald-300/35 bg-emerald-300/12 text-emerald-50' : 'border-amber-300/30 bg-amber-300/12 text-amber-100'}`}
+      title={`ล็อก ${lockedAt} · อัปเดตล่าสุด ${lastUpdated}`}
+    >
+      <Icon size={12} />
+      {locked ? 'ล็อก Top10' : 'ยังไม่ล็อก'} {status?.lockedCount ?? 0}/10
+    </span>
   )
 }
 
-function formatNotice(notice) {
-  return String(notice ?? '').replaceAll('sync', 'อัปเดต').replaceAll('Sync', 'อัปเดต')
+function CompactMetric({ label, value }) {
+  return (
+    <span className="inline-flex min-h-7 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-2 text-[11px] font-black text-white">
+      <span className="text-slate-500">{label}</span>
+      {value}
+    </span>
+  )
 }
 
-function OneBestPickHero({ oneBestPick }) {
+function OneBestPickSummary({ oneBestPick }) {
   const match = oneBestPick?.match ?? null
   const finalPick = match ? buildAiFinalPick(match) : null
   const isClearPick = Boolean(match && oneBestPick?.heroType !== 'NO_CLEAR_PICK')
   const pickText = isClearPick && finalPick.canHighlight
-    ? `AI แนะนำให้เล่น: ${finalPick.pickTeam}`
+    ? finalPick.pickTeam
     : isClearPick && finalPick.recommendation === recommendationLabels.noBet
       ? 'Skip'
       : isClearPick
         ? 'ข้อมูลยังไม่พอเลือกฝั่ง'
-        : 'วันนี้ AI ยังไม่พบคู่ที่มีคุณภาพพอให้เลือกเป็นตัวหลัก'
+        : 'ยังไม่พบคู่หลักที่ชัดเจน'
 
   return (
-    <section className={`mt-3 rounded-[20px] border p-3 shadow-[0_18px_48px_rgba(0,0,0,0.28)] ${oneBestHeroClass(oneBestPick?.heroType)}`}>
-      <div className="flex items-start justify-between gap-3">
+    <section className={`mt-1.5 rounded-[16px] border p-2.5 ${oneBestHeroClass(oneBestPick?.heroType)}`}>
+      <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="eyebrow flex items-center gap-1.5">
-            <Sparkles size={14} />
-            คู่หลักของวันนี้
+            <Sparkles size={12} />
+            คู่หลักวันนี้
           </p>
-          <h1 className="mt-1 text-[1.15rem] font-black leading-6 text-white">ถ้าเลือกได้แค่ 1 คู่วันนี้</h1>
-          <p className="mt-1 text-xs font-bold leading-5 text-slate-300">{oneBestPick?.subtitle ?? 'กำลังสะสมข้อมูลเพื่อเลือกคู่หลัก'}</p>
+          <p className={`mt-0.5 text-clamp-1 text-base font-black leading-5 ${finalPick?.canHighlight ? 'text-white' : 'text-slate-300'}`}>{pickText}</p>
+          {isClearPick ? (
+            <p className="text-clamp-1 mt-0.5 text-[11px] font-bold text-slate-400">
+              {finalPick.matchLabel} · {finalPick.confidence}% · {finalPick.riskLevel}
+            </p>
+          ) : (
+            <p className="text-clamp-1 mt-0.5 text-[11px] font-bold text-slate-400">{oneBestPick?.note ?? 'กำลังสะสมข้อมูล'}</p>
+          )}
         </div>
         <span className={`semantic-badge shrink-0 ${oneBestBadgeClass(oneBestPick?.heroType)}`}>{oneBestPick?.title ?? 'NO CLEAR PICK'}</span>
       </div>
-
-      <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3">
-        <p className={`text-clamp-2 text-lg font-black leading-6 ${finalPick?.canHighlight ? 'text-white' : 'text-slate-300'}`}>{pickText}</p>
-        {isClearPick ? (
-          <>
-            <p className="mt-1 text-clamp-1 text-xs font-bold text-slate-400">{finalPick.matchLabel}</p>
-            <p className="mt-0.5 text-clamp-1 text-[11px] font-bold text-slate-500">{finalPick.leagueName} · {finalPick.kickoffAt ? formatKickoffShort(finalPick.kickoffAt) : '-'}</p>
-            <div className="mt-3 grid grid-cols-3 gap-1.5">
-              <FinalPickInfo label="สัญญาณ" value={finalPick.recommendation} muted={finalPick.recommendation === recommendationLabels.noBet} />
-              <FinalPickInfo label="ความมั่นใจ" value={`${finalPick.confidence}%`} />
-              <FinalPickInfo label="ความเสี่ยง" value={finalPick.riskLevel} muted={finalPick.riskLevel === 'HIGH'} />
-            </div>
-            <p className="text-clamp-2 mt-2 text-xs font-bold leading-5 text-slate-200">{finalPick.pickReason}</p>
-          </>
-        ) : (
-          <p className="mt-2 text-sm font-semibold leading-6 text-slate-300">{oneBestPick?.note ?? 'วันนี้ AI ยังไม่พบคู่ที่มีคุณภาพเพียงพอ'}</p>
-        )}
-      </div>
     </section>
-  )
-}
-
-function HeroMetric({ label, value, suffix }) {
-  return (
-    <div className="metric-display">
-      <p className="text-[10px] font-black uppercase text-slate-500">{label}</p>
-      <div className="mt-0.5 flex items-end gap-1">
-        <p className="text-2xl font-black leading-7 text-white">{value}</p>
-        <p className="pb-0.5 text-[10px] font-bold text-slate-500">{suffix}</p>
-      </div>
-    </div>
   )
 }
 
@@ -213,23 +178,6 @@ function oneBestBadgeClass(heroType) {
   return 'border-slate-400/25 bg-slate-400/10 text-slate-200'
 }
 
-function FinalPickInfo({ label, value, muted = false }) {
-  return (
-    <div className="min-w-0 rounded-xl border border-white/10 bg-black/20 px-2 py-1.5">
-      <p className="text-[9px] font-black uppercase text-slate-500">{label}</p>
-      <p className={`text-clamp-1 text-[11px] font-black leading-4 ${muted ? 'text-slate-400' : 'text-white'}`}>{value}</p>
-    </div>
-  )
-}
-
-function formatKickoffShort(value) {
-  return new Intl.DateTimeFormat('th-TH', {
-    timeZone: 'Asia/Bangkok',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value))
-}
-
 function filterActiveClass(item) {
   if (item === recommendationLabels.bet) return 'border-emerald-300/45 bg-emerald-300/15 text-emerald-50 shadow-[0_0_18px_rgba(52,211,153,0.16)]'
   if (item === recommendationLabels.lean) return 'border-amber-300/45 bg-amber-300/15 text-amber-50 shadow-[0_0_18px_rgba(245,158,11,0.14)]'
@@ -240,16 +188,12 @@ function filterActiveClass(item) {
 
 function LoadingSkeleton() {
   return (
-    <div className="mt-3 grid gap-3" aria-label="กำลังโหลด Top10">
+    <div className="mt-3 grid gap-2.5" aria-label="กำลังโหลด Top10">
       {[0, 1, 2].map((item) => (
-        <div key={item} className="rounded-[20px] border border-white/10 bg-white/[0.04] p-3.5">
+        <div key={item} className="rounded-[18px] border border-white/10 bg-white/[0.04] p-3">
           <div className="h-4 w-32 rounded-full bg-white/10" />
           <div className="mt-3 h-6 w-10/12 rounded-full bg-white/10" />
-          <div className="mt-3 grid grid-cols-3 gap-2">
-            <div className="h-12 rounded-2xl bg-white/10" />
-            <div className="h-12 rounded-2xl bg-white/10" />
-            <div className="h-12 rounded-2xl bg-white/10" />
-          </div>
+          <div className="mt-3 h-10 rounded-2xl bg-white/10" />
         </div>
       ))}
     </div>

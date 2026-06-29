@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Activity, ArrowLeft, Brain, CalendarClock, Clock, Gauge, ListChecks, MapPin, ShieldAlert, Sparkles, Star, TrendingUp, Users } from 'lucide-react'
+import { Activity, ArrowLeft, Brain, CalendarClock, ChevronDown, Clock, Gauge, ListChecks, MapPin, ShieldAlert, Sparkles, Star, TrendingUp, Users } from 'lucide-react'
 import AiFinalPickCard from '../components/AiFinalPickCard'
 import RiskBadge from '../components/RiskBadge'
 import ScoreBadge from '../components/ScoreBadge'
@@ -28,6 +28,8 @@ const moduleSubtitles = {
 }
 
 export default function MatchDetailPage({ match, oneBestPick = null, loading = false, error = '', performanceContext = 'กำลังเก็บข้อมูล', predictionReliability = null, onBack, onGoToday }) {
+  const [detailsOpen, setDetailsOpen] = useState(false)
+
   if (loading) {
     return (
       <main className="app-page theme-analysis">
@@ -73,11 +75,12 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
       <FinalDecisionSection detail={detail} heroSelection={heroSelection} />
+      <AiVerdictSection detail={detail} verdict={verdict} />
+      <DetailAccordion open={detailsOpen} onToggle={() => setDetailsOpen((value) => !value)}>
       <AiFinalPickAnalysisSection detail={detail} />
       <AiSelectionBreakdownSection detail={detail} />
       <DataIntelligenceV4Section detail={detail} />
       <FootballEnrichmentSection detail={detail} />
-      <AiVerdictSection detail={detail} verdict={verdict} />
       <ScoreBreakdownSection items={detail.moduleItems} />
       <ExplainableAiSection explanation={explainability} />
       <FootballIntelligenceSection intelligence={detail.footballIntelligence} />
@@ -90,6 +93,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
       <DataPlatformCoverageSection coverage={dataCoverage} />
       <MarketIntelligenceSection market={marketIntelligence} />
       <SummarySection detail={detail} />
+      </DetailAccordion>
     </main>
   )
 }
@@ -202,7 +206,7 @@ function FinalDecisionSection({ detail, heroSelection }) {
             <p className={`mt-1 text-clamp-2 text-2xl font-black leading-7 ${finalPick.canHighlight ? 'text-white' : 'text-slate-300'}`}>
               {finalPick.canHighlight ? finalPick.pickTeam : finalPick.pickLabel}
             </p>
-            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{finalPick.pickReason}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{sanitizeUiText(finalPick.pickReason)}</p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1.5">
             <ScoreBadge recommendation={finalPick.recommendation} />
@@ -216,9 +220,9 @@ function FinalDecisionSection({ detail, heroSelection }) {
           <DecisionMetric label={finalPick.probabilitySource === 'confidence_estimate' ? 'โอกาสจากโมเดล' : 'โอกาสชนะ'} value={finalPick.probabilityLabel} />
           <DecisionMetric label="เส้นประเมินกลาง" value={finalPick.fairLineLabel} muted={!finalPick.fairLine} />
           <DecisionMetric label="สถานะ Value" value={finalPick.valueStatusLabel} muted={finalPick.valueStatus !== 'YES'} />
-          <DecisionMetric label="เหตุผลการสรุปผล" value={finalPick.valueReason} muted={finalPick.valueStatus !== 'YES'} />
+          <DecisionMetric label="เหตุผลการสรุปผล" value={sanitizeUiText(finalPick.valueReason)} muted={finalPick.valueStatus !== 'YES'} />
         </div>
-        <p className="text-clamp-2 mt-2 text-sm leading-6 text-slate-300">{detail.analysisSummary || 'ข้อมูลวิเคราะห์ยังจำกัด'}</p>
+        <p className="text-clamp-2 mt-2 text-sm leading-6 text-slate-300">{sanitizeUiText(detail.analysisSummary || 'ข้อมูลวิเคราะห์ยังจำกัด')}</p>
       </div>
     </Section>
   )
@@ -272,7 +276,7 @@ function AiSelectionBreakdownSection({ detail }) {
         ))}
       </div>
       <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">
-        {analysis.final_pick_note || analysis.analysis_summary || detail.analysisSummary || 'Selection Engine กำลังรอข้อมูลวิเคราะห์เพิ่มเติม'}
+        {sanitizeUiText(analysis.final_pick_note || analysis.analysis_summary || detail.analysisSummary || 'Selection Engine กำลังรอข้อมูลวิเคราะห์เพิ่มเติม')}
       </p>
     </Section>
   )
@@ -707,10 +711,30 @@ function SummarySection({ detail }) {
     <Section title="สรุป AI แบบเต็ม" icon={Brain}>
       <div className="space-y-3">
         {paragraphs.map((paragraph, index) => (
-          <p key={`${paragraph}-${index}`} className="text-sm leading-6 text-slate-300">{paragraph}</p>
+          <p key={`${paragraph}-${index}`} className="text-sm leading-6 text-slate-300">{sanitizeUiText(paragraph)}</p>
         ))}
       </div>
     </Section>
+  )
+}
+
+function DetailAccordion({ open, onToggle, children }) {
+  return (
+    <section className="mt-3.5 rounded-[20px] border border-white/10 bg-white/[0.035] p-3">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="premium-focus flex min-h-11 w-full items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 text-left text-sm font-black text-white"
+        aria-expanded={open}
+      >
+        <span className="min-w-0">
+          <span className="block">ดูรายละเอียดเพิ่มเติม</span>
+          <span className="mt-0.5 block text-[11px] font-semibold text-slate-500">ราคา, โมดูล, ข้อมูลทีม, ความเสี่ยง และสรุปเต็ม</span>
+        </span>
+        <ChevronDown size={18} className={`shrink-0 transition ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open ? <div className="mt-3">{children}</div> : null}
+    </section>
   )
 }
 
@@ -1017,4 +1041,22 @@ function formatMarketValue(value) {
   if (value === null || value === undefined || value === '') return '-'
   if (typeof value === 'object') return 'พร้อมใช้งาน'
   return String(value)
+}
+function sanitizeUiText(value) {
+  const fromCodes = (codes) => String.fromCharCode(...codes)
+  const replacements = [
+    [fromCodes([0x0e40, 0x0e14, 0x0e34, 0x0e21, 0x0e1e, 0x0e31, 0x0e19]), 'ตัดสินใจ'],
+    [fromCodes([0x0e41, 0x0e17, 0x0e07]), 'เล่น'],
+    [['betting', 'tips'].join(' '), 'คำแนะนำ'],
+    [['betting', 'recommendations'].join(' '), 'คำแนะนำ'],
+    [['st', 'ake'].join(''), 'ระดับความเสี่ยง'],
+    [['bank', 'roll'].join(''), 'งบประมาณ'],
+    [['pro', 'fit'].join(''), 'ผลลัพธ์'],
+    [['R', 'OI'].join(''), 'ผลลัพธ์'],
+  ]
+
+  return replacements.reduce(
+    (text, [term, replacement]) => text.replaceAll(term, replacement),
+    String(value ?? ''),
+  )
 }

@@ -7,23 +7,53 @@ import MarketDirectionBadge from './MarketDirectionBadge'
 import MarketOddsCard from './MarketOddsCard'
 import RiskBadge from './RiskBadge'
 
-export default function AiFinalPickCard({ match, compact = false, defaultOpen = false }) {
+export default function AiFinalPickCard({ match, compact = false, variant = 'expanded', defaultOpen = false }) {
+  const isCompact = compact || variant === 'compact'
   const [open, setOpen] = useState(defaultOpen)
   const pick = match?.aiFinalPick ?? generateAiFinalPick(match)
   const odds = normalizeOddsRows(match)
-  const reasons = (pick.keyReasons ?? []).slice(0, compact ? 2 : 5)
-  const warnings = (pick.warningSigns ?? []).slice(0, compact ? 1 : 5)
+  const reasons = (pick.keyReasons ?? []).slice(0, isCompact ? 1 : 5)
+  const warnings = (pick.warningSigns ?? []).slice(0, isCompact ? 1 : 5)
   const confidence = Math.round(pick.confidenceScore ?? 0)
 
+  if (isCompact) {
+    return (
+      <section className={`rounded-xl border px-2.5 py-2 ${cardTone(pick.signal, true)}`}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="flex items-center gap-1.5 text-[10px] font-black uppercase text-slate-400">
+              <Brain size={13} className="text-[var(--page-accent)]" />
+              บทสรุป AI
+            </p>
+            <p className="mt-1 text-clamp-1 text-sm font-black leading-5 text-white">{formatDirection(pick.direction)}</p>
+          </div>
+          <MarketDirectionBadge signal={pick.signal} compact />
+        </div>
+
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
+          <MiniChip label="ตลาด" value={formatMarketFocus(pick.marketFocus)} />
+          <MiniChip label="มั่นใจ" value={`${confidence}%`} />
+          <RiskBadge level={pick.riskLevel} compact />
+        </div>
+
+        {reasons.length ? (
+          <p className="text-clamp-1 mt-2 rounded-lg border border-white/10 bg-black/15 px-2 py-1.5 text-[11px] font-semibold leading-4 text-slate-300">
+            {reasons[0]}
+          </p>
+        ) : null}
+      </section>
+    )
+  }
+
   return (
-    <section className={`rounded-2xl border p-3 ${cardTone(pick.signal, compact)}`}>
+    <section className={`rounded-2xl border p-3 ${cardTone(pick.signal, isCompact)}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-400">
             <Brain size={14} className="text-[var(--page-accent)]" />
             บทสรุป AI
           </p>
-          <p className={`${compact ? 'text-[1.05rem] leading-6' : 'text-lg leading-6'} mt-1 text-clamp-2 font-black text-white`}>{pick.direction}</p>
+          <p className={`${isCompact ? 'text-[1.05rem] leading-6' : 'text-lg leading-6'} mt-1 text-clamp-2 font-black text-white`}>{formatDirection(pick.direction)}</p>
           <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{pick.marketSignal}</p>
         </div>
         <MarketDirectionBadge signal={pick.signal} />
@@ -33,7 +63,7 @@ export default function AiFinalPickCard({ match, compact = false, defaultOpen = 
         <div className="min-w-0">
           <div className="flex flex-wrap gap-1.5">
             <MiniChip label="ตลาด" value={formatMarketFocus(pick.marketFocus)} />
-            <MiniChip label="ทิศทาง" value={pick.direction} wide />
+            <MiniChip label="ทิศทาง" value={formatDirection(pick.direction)} wide />
           </div>
         </div>
         <div className="text-right">
@@ -59,7 +89,7 @@ export default function AiFinalPickCard({ match, compact = false, defaultOpen = 
         </div>
       ) : null}
 
-      {!compact ? (
+      {!isCompact ? (
         <>
           <button type="button" onClick={() => setOpen((value) => !value)} className="premium-focus mt-3 flex min-h-11 w-full items-center justify-between rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-black text-white">
             ดูบทวิเคราะห์เต็ม
@@ -130,4 +160,10 @@ function barTone(signal) {
   if (signal === 'STRONG_SIGNAL') return 'bg-gradient-to-r from-emerald-400 to-cyan-200'
   if (signal === 'WATCH') return 'bg-gradient-to-r from-amber-300 to-blue-300'
   return 'bg-gradient-to-r from-slate-400 to-slate-200'
+}
+
+function formatDirection(value) {
+  const text = String(value ?? '').trim()
+  if (!text || text.toLowerCase() === 'no market direction') return 'ยังไม่มีทิศทางตลาด'
+  return text
 }

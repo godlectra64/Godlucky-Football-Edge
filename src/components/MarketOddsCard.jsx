@@ -11,6 +11,18 @@ export default function MarketOddsCard({ odds = [], compact = false }) {
   const markets = compact ? compactMarkets : expandedMarkets
   const grouped = markets.map((market) => ({ market, rows: getRowsForMarket(rows, market) }))
 
+  if (compact) {
+    return (
+      <div className="flex min-h-9 items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-[11px] font-bold text-slate-300">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <LineChart size={13} className="shrink-0 text-[var(--page-accent)]" />
+          <span className="truncate">{rows.length ? 'มีข้อมูลตลาดราคา' : 'ยังไม่มีข้อมูลตลาดราคา'}</span>
+        </span>
+        {rows.length ? <span className="shrink-0 text-[var(--page-accent)]">{rows.length} ราคา</span> : null}
+      </div>
+    )
+  }
+
   return (
     <div className={`rounded-2xl border border-white/10 bg-white/[0.04] ${compact ? 'p-2.5' : 'p-3'}`}>
       <div className="flex items-center justify-between gap-3">
