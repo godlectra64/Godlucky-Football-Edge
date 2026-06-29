@@ -61,10 +61,14 @@ async function logVerificationTableCounts() {
 }
 
 async function checkAiFinalPickTables() {
-  const tables = ['football_bookmakers', 'football_match_odds', 'football_ai_final_picks']
-  for (const table of tables) {
+  const tables = [
+    ['football_bookmakers', 'invalid football_bookmakers rows'],
+    ['football_match_odds', 'invalid football_match_odds rows'],
+    ['football_ai_final_picks', 'invalid football_ai_final_pick rows'],
+  ]
+  for (const [table, label] of tables) {
     const { error } = await supabase.from(table).select('id', { count: 'exact', head: true })
-    report(`table ${table}`, error ? 1 : 0, error?.message)
+    report(label, error ? 1 : 0, error?.message)
   }
 }
 
@@ -84,19 +88,19 @@ async function checkTop10Coverage() {
   const matchIds = (data ?? []).map((row) => row.match_id).filter(Boolean)
   if (!matchIds.length) {
     console.log('[verify:row-count] top10_ai_final_pick_coverage: success rows=0 top10=0')
-    return report('top 10 aiFinalPick coverage', 0, 'no Top 10 rows yet')
+    return report('missing top10 aiFinalPick coverage', 0, 'no Top 10 rows yet')
   }
 
   const { data: picks, error: pickError } = await supabase
     .from('football_ai_final_picks')
     .select('match_id')
     .in('match_id', matchIds)
-  if (pickError) return report('top 10 aiFinalPick coverage', 1, pickError.message)
+  if (pickError) return report('missing top10 aiFinalPick coverage', 1, pickError.message)
 
   const found = new Set((picks ?? []).map((row) => row.match_id))
   const missing = matchIds.filter((id) => !found.has(id))
   console.log(`[verify:row-count] top10_ai_final_pick_coverage: success rows=${found.size} top10=${matchIds.length}`)
-  report('top 10 aiFinalPick coverage', missing.length, missing.length ? `missing ${missing.length}` : '')
+  report('missing top10 aiFinalPick coverage', missing.length, missing.length ? `missing ${missing.length}` : '')
 }
 
 async function checkTop10CoverageViaCli() {
@@ -123,9 +127,9 @@ async function checkTop10CoverageViaCli() {
     const missing = Number(row.missing_count ?? 0)
     const topCount = Number(row.top_count ?? 0)
     console.log(`[verify:row-count] top10_ai_final_pick_coverage: success rows=${Math.max(0, topCount - missing)} top10=${topCount}`)
-    report('top 10 aiFinalPick coverage', missing, topCount ? `top ${topCount}` : 'no Top 10 rows yet')
+    report('missing top10 aiFinalPick coverage', missing, topCount ? `top ${topCount}` : 'no Top 10 rows yet')
   } catch (error) {
-    report('top 10 aiFinalPick coverage', 1, error.message)
+    report('missing top10 aiFinalPick coverage', 1, error.message)
   } finally {
     await import('node:fs/promises').then((fs) => fs.unlink(sqlPath).catch(() => {}))
   }
