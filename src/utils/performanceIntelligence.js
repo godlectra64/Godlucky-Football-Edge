@@ -112,6 +112,8 @@ export function calculatePerformanceMetrics(rows = []) {
   const totalNoBet = rows.filter((row) => row.recommendation === 'NO BET').length
   const correct = rows.filter((row) => row.evaluation?.evaluation_status === 'correct').length
   const incorrect = rows.filter((row) => row.evaluation?.evaluation_status === 'incorrect').length
+  const push = rows.filter((row) => String(row.result?.result ?? row.simulation_outcome ?? '').toUpperCase() === 'PUSH').length
+  const voided = rows.filter((row) => String(row.result?.result ?? row.simulation_outcome ?? '').toUpperCase() === 'VOID').length
   const evaluated = correct + incorrect
   const pending = rows.filter((row) => row.result?.status !== 'finished' || row.evaluation?.evaluation_status === 'pending').length
 
@@ -123,6 +125,8 @@ export function calculatePerformanceMetrics(rows = []) {
     correct,
     incorrect,
     pending,
+    push,
+    voided,
     winRate: evaluated ? Math.round((correct / evaluated) * 100) : 0,
     accuracy: evaluated ? Math.round((correct / evaluated) * 100) : 0,
     averageConfidence: average(rows.map((row) => row.confidence_score)),

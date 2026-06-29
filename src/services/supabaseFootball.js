@@ -1,6 +1,7 @@
 import { fetchEnabledLeagues, updateLeagueSettingsById } from '../repositories/analysisRepository'
 import { fetchMatchById, fetchMatchEnrichment, fetchMatchesByKickoffRange } from '../repositories/matchesRepository'
-import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../repositories/performanceRepository'
+import { fetchAiPickResultPerformanceRows, fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../repositories/performanceRepository'
+import { fetchResultTrackerRows } from '../repositories/resultTrackerRepository.js'
 import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../repositories/syncRepository'
 import { getTopMatches } from '../utils/analysisEngine'
 import { normalizeStoredAiFinalPick } from '../utils/aiFinalPickEngine.js'
@@ -93,10 +94,10 @@ export async function getAiPerformanceData(limit = 500) {
 
   if (error) {
     logSupabaseReadError('getAiPerformanceData.snapshots', error)
-    return []
+    return getAiPerformanceFromResultRows(limit)
   }
   const ids = (snapshots ?? []).map((item) => item.id)
-  if (!ids.length) return []
+  if (!ids.length) return getAiPerformanceFromResultRows(limit)
 
   const [{ data: results, error: resultsError }, { data: evaluations, error: evaluationsError }] = await Promise.all([
     fetchPredictionResults(ids),
@@ -112,6 +113,57 @@ export async function getAiPerformanceData(limit = 500) {
     return []
   }
   return normalizePerformanceRows(snapshots ?? [], results ?? [], evaluations ?? [])
+}
+
+async function getAiPerformanceFromResultRows(limit) {
+  const { data, error } = await fetchAiPickResultPerformanceRows(limit)
+  if (error) {
+    logSupabaseReadError('getAiPerformanceData.pickResults', error)
+    return []
+  }
+  return (data ?? []).map((row) => {
+    const match = row.match ?? {}
+    const outcome = String(row.simulation_outcome ?? 'PENDING').toUpperCase()
+    return {
+      id: row.id,
+      match_id: row.match_id,
+      fixture_id: row.api_fixture_id ? String(row.api_fixture_id) : '',
+      home_team: match.homeTeam?.name ?? null,
+      away_team: match.awayTeam?.name ?? null,
+      league: match.league?.name ?? null,
+      kickoff: match.kickoff_at ?? row.selection_date,
+      recommendation: row.signal === 'STRONG_SIGNAL' ? 'BET' : row.signal === 'WATCH' ? 'LEAN' : 'NO BET',
+      confidence_score: row.confidence_score,
+      ranking_score: row.confidence_score,
+      risk_level: row.risk_level,
+      analysis_version: 'ai-final-pick-results',
+      predicted_outcome: row.direction,
+      created_at: row.created_at,
+      result: {
+        status: ['HIT', 'MISS', 'PUSH', 'VOID'].includes(outcome) ? 'finished' : 'pending',
+        home_goals: row.home_score,
+        away_goals: row.away_score,
+        result: outcome,
+        finished_at: row.settled_at,
+        updated_at: row.updated_at,
+      },
+      evaluation: {
+        evaluation_status: outcome === 'HIT' ? 'correct' : outcome === 'MISS' ? 'incorrect' : outcome === 'PUSH' || outcome === 'VOID' ? 'no_evaluation' : 'pending',
+        evaluation_reason: row.settlement_reason,
+        evaluated_at: row.settled_at,
+        updated_at: row.updated_at,
+      },
+    }
+  })
+}
+
+export async function getResultTrackerData(limit = 80) {
+  try {
+    return await fetchResultTrackerRows(limit)
+  } catch (error) {
+    logSupabaseReadError('getResultTrackerData', error)
+    return []
+  }
 }
 
 export async function triggerManualSync() {
@@ -166,11 +218,15 @@ export function normalizeMatch(row = {}) {
     injuriesUpdatedAt: source.injuries_updated_at,
     lineupsUpdatedAt: source.lineups_updated_at,
     kickoffAt: source.kickoff_at,
-    status: source.status,
+    status: source.status_short ?? source.match_status ?? source.status,
+    statusShort: source.status_short ?? source.match_status ?? source.status,
+    status_short: source.status_short ?? source.match_status ?? source.status,
+    statusLong: source.status_long,
+    status_long: source.status_long,
     venue: source.venue,
     round: source.round,
-    homeGoals: source.home_goals,
-    awayGoals: source.away_goals,
+    homeGoals: source.home_score ?? source.home_goals,
+    awayGoals: source.away_score ?? source.away_goals,
     league: source.league,
     homeTeam: source.homeTeam,
     awayTeam: source.awayTeam,

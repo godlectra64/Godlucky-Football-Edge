@@ -98,6 +98,12 @@ const footballEnrichmentModes = [
   'lock-daily-top10',
   'get-daily-top10-status',
   'refresh-locked-top10-signals',
+  'sync-completed-fixtures',
+  'backfill-ai-pick-results',
+  'settle-ai-pick-results',
+  'settle-ai-pick-results-date',
+  'recompute-performance-daily',
+  'result-refresh',
 ]
 
 const dailySyncRunMode = 'daily-full-sync-safe'
@@ -1392,7 +1398,396 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'lock-daily-top10') return lockDailyTop10(dayRange)
   if (mode === 'get-daily-top10-status') return getDailyTop10Status(dayRange)
   if (mode === 'refresh-locked-top10-signals') return refreshLockedTop10Signals(dayRange, context)
+  if (mode === 'sync-completed-fixtures') return syncCompletedFixtures(body, dayRange, context)
+  if (mode === 'backfill-ai-pick-results') return backfillAiPickResults(body, dayRange)
+  if (mode === 'settle-ai-pick-results') return settleAiPickResults(body, dayRange)
+  if (mode === 'settle-ai-pick-results-date') return settleAiPickResults({ ...body, selectionDate: body.selectionDate ?? dayRange.dateKey }, dayRange)
+  if (mode === 'recompute-performance-daily') return recomputePerformanceDaily(body, dayRange)
+  if (mode === 'result-refresh') return resultRefresh(body, dayRange, context)
   return { processed: 0, totalCandidates: 0 }
+}
+
+async function resultRefresh(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const backfill = await backfillAiPickResults(body, dayRange)
+  const sync = await syncCompletedFixtures(body, dayRange, context)
+  const settle = await settleAiPickResults(body, dayRange)
+  const performance = await recomputePerformanceDaily(body, dayRange)
+  return {
+    processed: Number(backfill.processed ?? 0) + Number(sync.processed ?? 0) + Number(settle.processed ?? 0),
+    totalCandidates: Number(sync.totalCandidates ?? 0),
+    rowsSaved: Number(backfill.rowsSaved ?? 0) + Number(sync.rowsSaved ?? 0) + Number(settle.rowsSaved ?? 0),
+    failed: Number(sync.failed ?? 0) + Number(settle.failed ?? 0),
+    candidates: sync.candidates ?? 0,
+    syncedFixtures: sync.syncedFixtures ?? 0,
+    finishedMatches: sync.finishedMatches ?? 0,
+    voidMatches: sync.voidMatches ?? 0,
+    pendingMatches: sync.pendingMatches ?? 0,
+    resultRowsInserted: backfill.inserted ?? 0,
+    resultRowsUpdated: backfill.updated ?? 0,
+    resultRowsSettled: settle.settled ?? 0,
+    resultRowsVoid: settle.voided ?? 0,
+    backfill,
+    sync,
+    settle,
+    performance,
+  }
+}
+
+async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const candidates = await fetchCompletedFixtureCandidates(body, dayRange, context.limit)
+  let syncedFixtures = 0
+  let finishedMatches = 0
+  let voidMatches = 0
+  let pendingMatches = 0
+  let failed = 0
+  const failures: Array<Record<string, unknown>> = []
+
+  for (const candidate of candidates.rows) {
+    if (context.rateLimited) break
+    const fixtureId = Number(candidate.api_fixture_id ?? candidate.api_sports_fixture_id ?? 0)
+    if (!fixtureId) continue
+    const response = await trackedApiFootballGet(context, '/fixtures', { id: fixtureId }, { apiFixtureId: fixtureId })
+    if (!response.ok) {
+      failed += 1
+      failures.push({ fixtureId, error: response.error ?? 'api-football request failed' })
+      continue
+    }
+    const rawFixture = Array.isArray(response.data) ? response.data[0] : null
+    if (!rawFixture) {
+      pendingMatches += 1
+      await markFixtureChecked(candidate.id, fixtureId, null)
+      continue
+    }
+    const patch = normalizeResultFixturePatch(rawFixture)
+    const update = await supabase.from('football_matches').update(patch).eq('id', candidate.id)
+    if (update.error) throw update.error
+    syncedFixtures += 1
+    if (isResultFinishedStatus(patch.status_short)) finishedMatches += 1
+    else if (isResultVoidStatus(patch.status_short)) voidMatches += 1
+    else pendingMatches += 1
+  }
+
+  return {
+    processed: syncedFixtures,
+    totalCandidates: candidates.totalCandidates,
+    candidates: candidates.totalCandidates,
+    rowsSaved: syncedFixtures,
+    failed,
+    failures,
+    syncedFixtures,
+    finishedMatches,
+    voidMatches,
+    pendingMatches,
+    processedFixtureIds: candidates.rows.map((row: any) => row.api_fixture_id ?? row.api_sports_fixture_id).filter(Boolean),
+  }
+}
+
+async function fetchCompletedFixtureCandidates(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+  const selectionDate = typeof body.selectionDate === 'string' ? body.selectionDate : null
+  const nowIso = new Date().toISOString()
+  const matchIds = new Set<string>()
+  const fixtureIds = new Set<number>()
+
+  const addRows = (rows: Array<any>) => {
+    for (const row of rows) {
+      const matchId = row.match_id ?? row.match?.id ?? row.id
+      const fixtureId = Number(row.api_fixture_id ?? row.match?.api_fixture_id ?? row.match?.api_sports_fixture_id ?? row.api_sports_fixture_id ?? 0)
+      if (matchId) matchIds.add(String(matchId))
+      if (fixtureId) fixtureIds.add(Math.trunc(fixtureId))
+    }
+  }
+
+  const top10 = await supabase
+    .from('daily_top10_selections')
+    .select('match_id, api_fixture_id, selection_date')
+    .gte('selection_date', selectionDate ?? dayRange.dateFrom)
+    .lte('selection_date', selectionDate ?? dayRange.dateTo)
+    .limit(50)
+  if (!top10.error) addRows(top10.data ?? [])
+
+  const results = await supabase
+    .from('football_ai_pick_results')
+    .select('match_id, api_fixture_id, selection_date')
+    .gte('selection_date', selectionDate ?? dayRange.dateFrom)
+    .lte('selection_date', selectionDate ?? dayRange.dateTo)
+    .limit(50)
+  if (!results.error) addRows(results.data ?? [])
+
+  const finalPicks = await supabase
+    .from('football_ai_final_picks')
+    .select('match_id, api_fixture_id, match:football_matches(id, api_fixture_id, api_sports_fixture_id, kickoff_at)')
+    .limit(50)
+  if (!finalPicks.error) addRows((finalPicks.data ?? []).filter((row: any) => {
+    const kickoffAt = row.match?.kickoff_at
+    return kickoffAt ? kickoffAt <= nowIso : true
+  }))
+
+  let query = supabase
+    .from('football_matches')
+    .select('id, api_fixture_id, api_sports_fixture_id, kickoff_at, status, status_short, api_fixture_last_checked_at', { count: 'exact' })
+    .lte('kickoff_at', nowIso)
+    .order('kickoff_at', { ascending: false })
+    .limit(Math.max(1, limit))
+
+  if (matchIds.size) query = query.in('id', [...matchIds])
+  else if (fixtureIds.size) query = query.or([...fixtureIds].map((id) => `api_fixture_id.eq.${id},api_sports_fixture_id.eq.${id}`).join(','))
+  else query = query.gte('kickoff_at', dayRange.startUtc).lt('kickoff_at', dayRange.endUtc)
+
+  const matches = await query
+  if (matches.error) throw matches.error
+  const rows = (matches.data ?? [])
+    .filter((row: any) => Number(row.api_fixture_id ?? row.api_sports_fixture_id ?? 0))
+    .slice(0, Math.max(1, limit))
+  return { rows, totalCandidates: matches.count ?? rows.length }
+}
+
+async function backfillAiPickResults(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const selectionDate = String(body.selectionDate ?? dayRange.dateKey)
+  const top10 = await supabase
+    .from('daily_top10_selections')
+    .select('selection_date, match_id, api_fixture_id, ai_final_pick_id, signal, market_focus, confidence_score, risk_level')
+    .eq('selection_date', selectionDate)
+  if (top10.error) throw top10.error
+
+  const matchIds = [...new Set((top10.data ?? []).map((row: any) => row.match_id).filter(Boolean))]
+  const finalPicks = matchIds.length
+    ? await supabase
+      .from('football_ai_final_picks')
+      .select('id, match_id, api_fixture_id, signal, market_focus, direction, confidence_score, risk_level')
+      .in('match_id', matchIds)
+    : { data: [], error: null }
+  if (finalPicks.error) throw finalPicks.error
+  const pickByMatch = new Map((finalPicks.data ?? []).map((pick: any) => [pick.match_id, pick]))
+
+  const rows = (top10.data ?? []).map((row: any) => {
+    const pick = pickByMatch.get(row.match_id) ?? {}
+    return {
+      selection_date: row.selection_date ?? selectionDate,
+      match_id: row.match_id,
+      api_fixture_id: nullableNumber(row.api_fixture_id ?? pick.api_fixture_id),
+      ai_final_pick_id: row.ai_final_pick_id ?? pick.id ?? null,
+      signal: pick.signal ?? row.signal ?? null,
+      market_focus: pick.market_focus ?? row.market_focus ?? null,
+      direction: pick.direction ?? null,
+      confidence_score: pick.confidence_score ?? row.confidence_score ?? null,
+      risk_level: pick.risk_level ?? row.risk_level ?? null,
+    }
+  })
+
+  if (!rows.length) return { processed: 0, totalCandidates: 0, rowsSaved: 0, inserted: 0, updated: 0, selectionDate }
+  const upsert = await supabase
+    .from('football_ai_pick_results')
+    .upsert(rows, { onConflict: 'match_id,selection_date' })
+    .select('id')
+  if (upsert.error) throw upsert.error
+  return { processed: rows.length, totalCandidates: rows.length, rowsSaved: rows.length, inserted: rows.length, updated: 0, selectionDate }
+}
+
+async function settleAiPickResults(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const selectionDate = typeof body.selectionDate === 'string' ? body.selectionDate : null
+  let query = supabase
+    .from('football_ai_pick_results')
+    .select(`
+      id,
+      selection_date,
+      match_id,
+      market_focus,
+      direction,
+      settlement_status,
+      match:football_matches(id, status_short, status_long, status, home_score, away_score, home_goals, away_goals)
+    `)
+    .eq('settlement_status', 'PENDING')
+    .limit(Math.max(1, Math.min(Number(body.limit ?? dayRange ? 20 : 20), 20)))
+
+  if (selectionDate) query = query.eq('selection_date', selectionDate)
+  else query = query.gte('selection_date', dayRange.dateFrom).lte('selection_date', dayRange.dateTo)
+
+  const result = await query
+  if (result.error) throw result.error
+
+  let settled = 0
+  let voided = 0
+  let pending = 0
+  let failed = 0
+  const failures: Array<Record<string, unknown>> = []
+
+  for (const row of result.data ?? []) {
+    const match = Array.isArray(row.match) ? row.match[0] : row.match
+    if (!match) {
+      failed += 1
+      failures.push({ id: row.id, reason: 'match join not found' })
+      continue
+    }
+    const outcome = settleResultRow({
+      market_focus: row.market_focus,
+      direction: row.direction,
+      status_short: match.status_short ?? match.status,
+      home_score: match.home_score ?? match.home_goals,
+      away_score: match.away_score ?? match.away_goals,
+    })
+    if (outcome.settlement_status === 'PENDING') {
+      pending += 1
+      continue
+    }
+    const update = await supabase
+      .from('football_ai_pick_results')
+      .update({
+        home_score: nullableNumber(match.home_score ?? match.home_goals),
+        away_score: nullableNumber(match.away_score ?? match.away_goals),
+        status_short: normalizeResultStatusShort(match.status_short ?? match.status),
+        status_long: match.status_long ?? null,
+        settlement_status: outcome.settlement_status,
+        simulation_outcome: outcome.simulation_outcome,
+        settlement_reason: outcome.settlement_reason,
+        settled_at: new Date().toISOString(),
+      })
+      .eq('id', row.id)
+    if (update.error) throw update.error
+    if (outcome.settlement_status === 'VOID') voided += 1
+    else settled += 1
+  }
+
+  return { processed: settled + voided, totalCandidates: (result.data ?? []).length, rowsSaved: settled + voided, settled, voided, pending, failed, failures }
+}
+
+async function recomputePerformanceDaily(_body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const count = await supabase
+    .from('football_ai_pick_results')
+    .select('id', { count: 'exact', head: true })
+    .gte('selection_date', dayRange.dateFrom)
+    .lte('selection_date', dayRange.dateTo)
+  if (count.error) return { processed: 0, totalCandidates: 0, rowsSaved: 0, skipped: 1, reason: count.error.message }
+  return { processed: 0, totalCandidates: count.count ?? 0, rowsSaved: 0, skipped: 1, reason: 'no performance daily table configured' }
+}
+
+async function markFixtureChecked(matchId: string, fixtureId: number, rawFixture: unknown) {
+  const update = await supabase.from('football_matches').update({
+    api_fixture_last_checked_at: new Date().toISOString(),
+    api_fixture_payload: rawFixture ? compactFixturePayload(rawFixture) : null,
+  }).eq('id', matchId)
+  if (update.error) throw update.error
+}
+
+function normalizeResultFixturePatch(row: any) {
+  const fixture = row?.fixture ?? {}
+  const goals = row?.goals ?? {}
+  const score = row?.score ?? {}
+  const statusShort = normalizeResultStatusShort(fixture.status?.short)
+  const homeScore = nullableNumber(score?.fulltime?.home ?? goals?.home)
+  const awayScore = nullableNumber(score?.fulltime?.away ?? goals?.away)
+  const now = new Date().toISOString()
+  return {
+    status: statusShort,
+    status_short: statusShort,
+    status_long: fixture.status?.long ?? null,
+    match_status: statusShort,
+    elapsed: nullableNumber(fixture.status?.elapsed),
+    home_goals: homeScore,
+    away_goals: awayScore,
+    home_score: homeScore,
+    away_score: awayScore,
+    halftime_home_score: nullableNumber(score?.halftime?.home),
+    halftime_away_score: nullableNumber(score?.halftime?.away),
+    fulltime_home_score: homeScore,
+    fulltime_away_score: awayScore,
+    extra_home_score: nullableNumber(score?.extratime?.home),
+    extra_away_score: nullableNumber(score?.extratime?.away),
+    penalty_home_score: nullableNumber(score?.penalty?.home),
+    penalty_away_score: nullableNumber(score?.penalty?.away),
+    finished_at: isResultFinishedStatus(statusShort) ? now : null,
+    score_synced_at: now,
+    api_fixture_last_checked_at: now,
+    api_fixture_payload: compactFixturePayload(row),
+  }
+}
+
+function compactFixturePayload(row: any) {
+  return {
+    fixture: {
+      id: row?.fixture?.id ?? null,
+      date: row?.fixture?.date ?? null,
+      status: row?.fixture?.status ?? null,
+    },
+    goals: row?.goals ?? null,
+    score: row?.score ?? null,
+    teams: row?.teams ? {
+      home: { id: row.teams.home?.id ?? null, name: row.teams.home?.name ?? null },
+      away: { id: row.teams.away?.id ?? null, name: row.teams.away?.name ?? null },
+    } : null,
+  }
+}
+
+function settleResultRow(input: any) {
+  const statusShort = normalizeResultStatusShort(input.status_short ?? input.status)
+  const homeScore = nullableNumber(input.home_score)
+  const awayScore = nullableNumber(input.away_score)
+  if (isResultVoidStatus(statusShort)) return { settlement_status: 'VOID', simulation_outcome: 'VOID', settlement_reason: `void match status ${statusShort}` }
+  if (!isResultFinishedStatus(statusShort)) return { settlement_status: 'PENDING', simulation_outcome: 'PENDING', settlement_reason: `match status ${statusShort} is not finished` }
+  if (homeScore === null || awayScore === null) return { settlement_status: 'PENDING', simulation_outcome: 'PENDING', settlement_reason: 'finished match is missing score' }
+  const market = String(input.market_focus ?? '').toUpperCase()
+  const direction = normalizeResultDirection(input.direction)
+  const line = extractResultLine(input.direction)
+  if (market === 'MATCH_WINNER') {
+    const result = homeScore > awayScore ? 'HOME' : homeScore < awayScore ? 'AWAY' : 'DRAW'
+    if (!['HOME', 'AWAY', 'DRAW'].includes(direction)) return resultVoid('match winner pick is missing direction')
+    return resultSettled(direction === result ? 'HIT' : 'MISS', `MATCH_WINNER ${direction} vs result ${result}`)
+  }
+  if (market === 'OU') {
+    if (line === null) return resultVoid('finished OU pick is missing line')
+    const total = homeScore + awayScore
+    if (total === line) return resultSettled('PUSH', `OU ${direction} ${line} total ${total}`)
+    const hit = direction === 'OVER' ? total > line : total < line
+    return ['OVER', 'UNDER'].includes(direction) ? resultSettled(hit ? 'HIT' : 'MISS', `OU ${direction} ${line} total ${total}`) : resultVoid('OU pick is missing OVER/UNDER direction')
+  }
+  if (market === 'AH') {
+    if (line === null) return resultVoid('finished AH pick is missing line')
+    if (!['HOME', 'AWAY'].includes(direction)) return resultVoid('AH pick is missing HOME/AWAY direction')
+    const margin = direction === 'HOME' ? homeScore - awayScore : awayScore - homeScore
+    const adjusted = margin + line
+    if (adjusted === 0) return resultSettled('PUSH', `AH ${direction} ${line} margin ${margin}`)
+    return resultSettled(adjusted > 0 ? 'HIT' : 'MISS', `AH ${direction} ${line} margin ${margin}`)
+  }
+  return resultVoid(`unsupported market ${market || 'UNKNOWN'}`)
+}
+
+function resultSettled(simulation_outcome: string, settlement_reason: string) {
+  return { settlement_status: 'SETTLED', simulation_outcome, settlement_reason }
+}
+
+function resultVoid(settlement_reason: string) {
+  return { settlement_status: 'VOID', simulation_outcome: 'VOID', settlement_reason }
+}
+
+function normalizeResultDirection(value: unknown) {
+  const text = String(value ?? '').toUpperCase()
+  if (text.includes('OVER')) return 'OVER'
+  if (text.includes('UNDER')) return 'UNDER'
+  if (text.includes('HOME')) return 'HOME'
+  if (text.includes('AWAY')) return 'AWAY'
+  if (text.includes('DRAW')) return 'DRAW'
+  return text.trim()
+}
+
+function extractResultLine(value: unknown) {
+  const match = String(value ?? '').match(/[+-]?\d+(?:\.\d+)?/)
+  return match ? nullableNumber(match[0]) : null
+}
+
+function normalizeResultStatusShort(value: unknown) {
+  const status = String(value ?? '').toUpperCase()
+  if (status === 'FINISHED') return 'FT'
+  if (status === 'POSTPONED') return 'PST'
+  if (status === 'CANCELLED') return 'CANC'
+  if (status === 'ABANDONED') return 'ABD'
+  return status || 'NS'
+}
+
+function isResultFinishedStatus(value: unknown) {
+  return ['FT', 'AET', 'PEN'].includes(normalizeResultStatusShort(value))
+}
+
+function isResultVoidStatus(value: unknown) {
+  return ['PST', 'CANC', 'ABD', 'AWD', 'WO'].includes(normalizeResultStatusShort(value))
 }
 
 function createFootballEnrichmentContext(mode: string, limit: number, dateKey: string): FootballEnrichmentContext {
@@ -6508,6 +6903,7 @@ function normalizeSyncMode(value: unknown) {
 function getSyncLimit(value: unknown, mode = 'manual') {
   if (mode === 'sync-odds') return getPositiveLimit(value, 3, 5)
   if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
+  if (['sync-completed-fixtures', 'backfill-ai-pick-results', 'settle-ai-pick-results', 'settle-ai-pick-results-date', 'recompute-performance-daily', 'result-refresh'].includes(mode)) return getPositiveLimit(value, 10, 20)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
   const maxLimit = isFootballEnrichmentMode(mode) ? maxFootballEnrichmentLimit : mode === 'enrich' ? maxEnrichLimit : maxManualLimit
   const numeric = Number(value ?? defaultLimit)

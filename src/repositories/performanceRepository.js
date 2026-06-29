@@ -23,6 +23,40 @@ export async function fetchPredictionEvaluations(snapshotIds) {
     .in('snapshot_id', snapshotIds)
 }
 
+export async function fetchAiPickResultPerformanceRows(limit = 500) {
+  const client = await getSupabaseClient()
+  return client
+    .from('football_ai_pick_results')
+    .select(`
+      id,
+      selection_date,
+      match_id,
+      api_fixture_id,
+      signal,
+      market_focus,
+      direction,
+      confidence_score,
+      risk_level,
+      home_score,
+      away_score,
+      settlement_status,
+      simulation_outcome,
+      settlement_reason,
+      settled_at,
+      created_at,
+      updated_at,
+      match:football_matches(
+        id,
+        kickoff_at,
+        league:football_leagues(name),
+        homeTeam:football_teams!football_matches_home_team_id_fkey(name),
+        awayTeam:football_teams!football_matches_away_team_id_fkey(name)
+      )
+    `)
+    .order('selection_date', { ascending: false })
+    .limit(Math.max(1, Math.min(limit, 1000)))
+}
+
 async function getSupabaseClient() {
   const { requireSupabase } = await import('../lib/supabaseClient.js')
   return requireSupabase()

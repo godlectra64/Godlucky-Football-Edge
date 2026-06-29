@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/dailySyncAuth.unit.test.mjs",
+    "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/dailySyncAuth.unit.test.mjs && node scripts/resultSettlement.smoke.test.mjs",
     "verify:analysis": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:daily-sync": "node scripts/verifyAnalysisIntegrity.mjs",
@@ -13,6 +13,7 @@
     "verify:odds": "node scripts/verifyAiFinalPickIntegrity.mjs",
     "verify:ai-final-pick": "node scripts/verifyAiFinalPickIntegrity.mjs",
     "verify:daily-top10": "node scripts/verifyDailyTop10Lock.mjs",
+    "verify:results": "node scripts/verifyResultSettlementIntegrity.mjs",
     "test:daily-sync-auth": "node scripts/dailySyncAuth.unit.test.mjs",
     "test:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "build": "vite build",

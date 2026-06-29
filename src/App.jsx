@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react
 import BottomNav from './components/BottomNav'
 import MobileHeader from './components/MobileHeader'
 import TodayPage from './pages/TodayPage'
-import { getAiPerformanceData, getConnectionState, getLatestSyncLog, getMatchDetail, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
+import { getAiPerformanceData, getConnectionState, getLatestSyncLog, getMatchDetail, getResultTrackerData, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
 import { getTodayTop10OrFallback } from './repositories/dailyTop10Repository'
 import { getTopMatches } from './utils/analysisEngine'
 import { getOneBestPickOfDay } from './utils/finalPick'
@@ -36,6 +36,7 @@ function App() {
   const [syncing, setSyncing] = useState(false)
   const [notice, setNotice] = useState('')
   const [performanceRows, setPerformanceRows] = useState([])
+  const [resultRows, setResultRows] = useState([])
   const [performanceLoading, setPerformanceLoading] = useState(false)
   const [performanceError, setPerformanceError] = useState('')
 
@@ -46,8 +47,10 @@ function App() {
     try {
       const data = connection.configured ? await getTodayMatches() : await loadDevFallbackMatches()
       const board = connection.configured ? await getTodayTop10OrFallback(data) : { matches: data, status: null, locked: false }
+      const trackerRows = connection.configured ? await getResultTrackerData() : []
       const latestSyncLog = connection.configured ? await getLatestSyncLog().catch(() => null) : null
       setMatches(board.matches)
+      setResultRows(trackerRows)
       setTotalAvailableMatches(data.length)
       setTop10Status(board.status)
       setTop10Locked(Boolean(board.locked))
@@ -57,6 +60,7 @@ function App() {
     } catch (err) {
       const fallbackData = await loadDevFallbackMatches().catch(() => [])
       setMatches(fallbackData)
+      setResultRows([])
       setTotalAvailableMatches(fallbackData.length)
       setTop10Status(null)
       setTop10Locked(false)
@@ -224,7 +228,7 @@ function App() {
     today: 'คู่เด่นวันนี้',
     analysis: 'วิเคราะห์คู่แข่งขัน',
     admin: 'จัดการข้อมูล',
-    results: 'ติดตามผลย้อนหลัง',
+    results: 'ผลย้อนหลัง',
     stats: 'สถิติภาพรวม',
     performance: 'ผลงาน AI',
     notFound: 'ไม่พบหน้านี้',
@@ -272,7 +276,7 @@ function App() {
               onRefresh={loadToday}
             />
           ) : null}
-          {activePage === 'results' ? <ResultTrackerPage matches={matches} /> : null}
+          {activePage === 'results' ? <ResultTrackerPage matches={resultRows.length ? resultRows : matches} /> : null}
           {activePage === 'stats' ? <StatsPage matches={matches} /> : null}
           {activePage === 'performance' ? <AiPerformancePage rows={performanceRows} loading={performanceLoading} error={performanceError} onRefresh={loadPerformance} onOpenMatch={openMatch} /> : null}
         </Suspense>
