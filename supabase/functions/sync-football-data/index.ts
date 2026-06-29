@@ -107,6 +107,7 @@ const footballEnrichmentModes = [
   'settle-ai-pick-results-date',
   'recompute-performance-daily',
   'result-refresh',
+  'diagnose-result-pipeline',
 ]
 
 const dailySyncRunMode = 'daily-full-sync-safe'
@@ -121,10 +122,12 @@ Deno.serve(async (request) => {
   const startedAt = new Date(startedMs).toISOString()
   let logId: string | null = null
   let responseProviderName = requestedProviderName
+  let responseMode = 'manual'
 
   try {
     const body = await safeJson(request)
     const mode = normalizeSyncMode(body.mode)
+    responseMode = mode
     responseProviderName = isFootballEnrichmentMode(mode) ? 'api-football' : requestedProviderName
     const authError = await getServiceAuthError(request, mode, body)
     if (authError) return authError
@@ -141,7 +144,7 @@ Deno.serve(async (request) => {
       return json({
         ok: true,
         partial: modeResult.partial ?? false,
-        provider: 'api-football',
+        provider: modeResult.provider ?? (isResultPipelineMode(mode) ? 'supabase' : 'api-football'),
         mode,
         runId: modeResult.runId ?? null,
         phase: modeResult.phase ?? null,
@@ -196,6 +199,9 @@ Deno.serve(async (request) => {
         watchCount: modeResult.watchCount,
         skipCount: modeResult.skipCount,
         updated: modeResult.updated,
+        checks: modeResult.checks,
+        ready: modeResult.ready,
+        recommendedFix: modeResult.recommendedFix,
       }, modeResult.responseStatus ?? 200)
     }
 
@@ -336,9 +342,9 @@ Deno.serve(async (request) => {
       failures: allFailures,
     })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'sync failed'
-    await finishLog(logId, 'failed', message, { provider: responseProviderName, fallbackUsed: false, fallbackProvider: null, error: serializeError(error) })
-    return json({ ok: false, provider: responseProviderName, fallbackUsed: false, fallbackProvider: null, message }, 500)
+    const errorResponse = buildSyncErrorResponse(error, responseMode, responseProviderName)
+    await finishLog(logId, 'failed', errorResponse.errorMessage, { provider: errorResponse.provider, fallbackUsed: false, fallbackProvider: null, error: errorResponse.errorDetails })
+    return json(errorResponse, 500)
   }
 })
 
@@ -1407,16 +1413,18 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'settle-ai-pick-results-date') return settleAiPickResults({ ...body, selectionDate: body.selectionDate ?? dayRange.dateKey }, dayRange)
   if (mode === 'recompute-performance-daily') return recomputePerformanceDaily(body, dayRange)
   if (mode === 'result-refresh') return resultRefresh(body, dayRange, context)
+  if (mode === 'diagnose-result-pipeline') return diagnoseResultPipeline(body, dayRange, context)
   return { processed: 0, totalCandidates: 0 }
 }
 
 async function resultRefresh(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const backfill = await backfillAiPickResults(body, dayRange)
-  const sync = await syncCompletedFixtures(body, dayRange, context)
-  const settle = await settleAiPickResults(body, dayRange)
-  const performance = await recomputePerformanceDaily(body, dayRange)
+  const backfill = await withResultStage('result-refresh backfill-ai-pick-results', 'RESULT_REFRESH_BACKFILL_FAILED', () => backfillAiPickResults(body, dayRange))
+  const sync = await withResultStage('result-refresh sync-completed-fixtures', 'RESULT_REFRESH_SYNC_FAILED', () => syncCompletedFixtures(body, dayRange, context), 'api-football')
+  const settle = await withResultStage('result-refresh settle-ai-pick-results', 'RESULT_REFRESH_SETTLE_FAILED', () => settleAiPickResults(body, dayRange))
+  const performance = await withResultStage('result-refresh recompute-performance-daily', 'RESULT_REFRESH_PERFORMANCE_FAILED', () => recomputePerformanceDaily(body, dayRange))
   return {
     processed: Number(backfill.processed ?? 0) + Number(sync.processed ?? 0) + Number(settle.processed ?? 0),
+    provider: 'supabase',
     totalCandidates: Number(sync.totalCandidates ?? 0),
     rowsSaved: Number(backfill.rowsSaved ?? 0) + Number(sync.rowsSaved ?? 0) + Number(settle.rowsSaved ?? 0),
     failed: Number(sync.failed ?? 0) + Number(settle.failed ?? 0),
@@ -1437,7 +1445,7 @@ async function resultRefresh(body: Record<string, unknown>, dayRange: ReturnType
 }
 
 async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const candidates = await fetchCompletedFixtureCandidates(body, dayRange, context.limit)
+  const candidates = await withResultStage('load result candidates', 'RESULT_SYNC_CANDIDATES_FAILED', () => fetchCompletedFixtureCandidates(body, dayRange, context.limit))
   let syncedFixtures = 0
   let finishedMatches = 0
   let voidMatches = 0
@@ -1449,7 +1457,7 @@ async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: Re
     if (context.rateLimited) break
     const fixtureId = Number(candidate.api_fixture_id ?? candidate.api_sports_fixture_id ?? 0)
     if (!fixtureId) continue
-    const response = await trackedApiFootballGet(context, '/fixtures', { id: fixtureId }, { apiFixtureId: fixtureId })
+    const response = await withResultStage('fetch api-football fixture', 'RESULT_SYNC_API_FETCH_FAILED', () => trackedApiFootballGet(context, '/fixtures', { id: fixtureId }, { apiFixtureId: fixtureId }), 'api-football')
     if (!response.ok) {
       failed += 1
       failures.push({ fixtureId, error: response.error ?? 'api-football request failed' })
@@ -1458,12 +1466,15 @@ async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: Re
     const rawFixture = Array.isArray(response.data) ? response.data[0] : null
     if (!rawFixture) {
       pendingMatches += 1
-      await markFixtureChecked(candidate.id, fixtureId, null)
+      await withResultStage('update football_matches score', 'RESULT_SYNC_UPDATE_MATCH_FAILED', () => markFixtureChecked(candidate.id, fixtureId, null))
       continue
     }
     const patch = normalizeResultFixturePatch(rawFixture)
-    const update = await supabase.from('football_matches').update(patch).eq('id', candidate.id)
-    if (update.error) throw update.error
+    await withResultStage('update football_matches score', 'RESULT_SYNC_UPDATE_MATCH_FAILED', async () => {
+      const update = await supabase.from('football_matches').update(patch).eq('id', candidate.id)
+      if (update.error) throw update.error
+      return update
+    })
     syncedFixtures += 1
     if (isResultFinishedStatus(patch.status_short)) finishedMatches += 1
     else if (isResultVoidStatus(patch.status_short)) voidMatches += 1
@@ -1472,6 +1483,7 @@ async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: Re
 
   return {
     processed: syncedFixtures,
+    provider: 'api-football',
     totalCandidates: candidates.totalCandidates,
     candidates: candidates.totalCandidates,
     rowsSaved: syncedFixtures,
@@ -1500,26 +1512,26 @@ async function fetchCompletedFixtureCandidates(body: Record<string, unknown>, da
     }
   }
 
-  const top10 = await supabase
+  const top10 = await withResultStage('query daily_top10_selections', 'RESULT_CANDIDATES_TOP10_FAILED', () => supabase
     .from('daily_top10_selections')
     .select('match_id, api_fixture_id, selection_date')
     .gte('selection_date', selectionDate ?? dayRange.dateFrom)
     .lte('selection_date', selectionDate ?? dayRange.dateTo)
-    .limit(50)
+    .limit(50))
   if (!top10.error) addRows(top10.data ?? [])
 
-  const results = await supabase
+  const results = await withResultStage('query football_ai_pick_results', 'RESULT_CANDIDATES_RESULTS_FAILED', () => supabase
     .from('football_ai_pick_results')
     .select('match_id, api_fixture_id, selection_date')
     .gte('selection_date', selectionDate ?? dayRange.dateFrom)
     .lte('selection_date', selectionDate ?? dayRange.dateTo)
-    .limit(50)
+    .limit(50))
   if (!results.error) addRows(results.data ?? [])
 
-  const finalPicks = await supabase
+  const finalPicks = await withResultStage('query football_ai_final_picks', 'RESULT_CANDIDATES_FINAL_PICKS_FAILED', () => supabase
     .from('football_ai_final_picks')
     .select('match_id, api_fixture_id, match:football_matches(id, api_fixture_id, api_sports_fixture_id, kickoff_at)')
-    .limit(50)
+    .limit(50))
   if (!finalPicks.error) addRows((finalPicks.data ?? []).filter((row: any) => {
     const kickoffAt = row.match?.kickoff_at
     return kickoffAt ? kickoffAt <= nowIso : true
@@ -1536,8 +1548,11 @@ async function fetchCompletedFixtureCandidates(body: Record<string, unknown>, da
   else if (fixtureIds.size) query = query.or([...fixtureIds].map((id) => `api_fixture_id.eq.${id},api_sports_fixture_id.eq.${id}`).join(','))
   else query = query.gte('kickoff_at', dayRange.startUtc).lt('kickoff_at', dayRange.endUtc)
 
-  const matches = await query
-  if (matches.error) throw matches.error
+  const matches = await withResultStage('query football_matches', 'RESULT_CANDIDATES_MATCHES_FAILED', async () => {
+    const result = await query
+    if (result.error) throw result.error
+    return result
+  })
   const rows = (matches.data ?? [])
     .filter((row: any) => Number(row.api_fixture_id ?? row.api_sports_fixture_id ?? 0))
     .slice(0, Math.max(1, limit))
@@ -1546,18 +1561,18 @@ async function fetchCompletedFixtureCandidates(body: Record<string, unknown>, da
 
 async function backfillAiPickResults(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
   const selectionDate = String(body.selectionDate ?? dayRange.dateKey)
-  const top10 = await supabase
+  const top10 = await withResultStage('query daily_top10_selections', 'RESULT_BACKFILL_TOP10_FAILED', () => supabase
     .from('daily_top10_selections')
     .select('selection_date, match_id, api_fixture_id, ai_final_pick_id, signal, market_focus, confidence_score, risk_level')
-    .eq('selection_date', selectionDate)
+    .eq('selection_date', selectionDate))
   if (top10.error) throw top10.error
 
   const matchIds = [...new Set((top10.data ?? []).map((row: any) => row.match_id).filter(Boolean))]
   const finalPicks = matchIds.length
-    ? await supabase
+    ? await withResultStage('query football_ai_final_picks', 'RESULT_BACKFILL_FINAL_PICKS_FAILED', () => supabase
       .from('football_ai_final_picks')
       .select('id, match_id, api_fixture_id, signal, market_focus, direction, confidence_score, risk_level')
-      .in('match_id', matchIds)
+      .in('match_id', matchIds))
     : { data: [], error: null }
   if (finalPicks.error) throw finalPicks.error
   const pickByMatch = new Map((finalPicks.data ?? []).map((pick: any) => [pick.match_id, pick]))
@@ -1577,13 +1592,13 @@ async function backfillAiPickResults(body: Record<string, unknown>, dayRange: Re
     }
   })
 
-  if (!rows.length) return { processed: 0, totalCandidates: 0, rowsSaved: 0, inserted: 0, updated: 0, selectionDate }
-  const upsert = await supabase
+  if (!rows.length) return { processed: 0, provider: 'supabase', totalCandidates: 0, rowsSaved: 0, inserted: 0, updated: 0, selectionDate }
+  const upsert = await withResultStage('upsert football_ai_pick_results', 'RESULT_BACKFILL_UPSERT_FAILED', () => supabase
     .from('football_ai_pick_results')
     .upsert(rows, { onConflict: 'match_id,selection_date' })
-    .select('id')
+    .select('id'))
   if (upsert.error) throw upsert.error
-  return { processed: rows.length, totalCandidates: rows.length, rowsSaved: rows.length, inserted: rows.length, updated: 0, selectionDate }
+  return { processed: rows.length, provider: 'supabase', totalCandidates: rows.length, rowsSaved: rows.length, inserted: rows.length, updated: 0, selectionDate }
 }
 
 async function settleAiPickResults(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
@@ -1605,8 +1620,11 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
   if (selectionDate) query = query.eq('selection_date', selectionDate)
   else query = query.gte('selection_date', dayRange.dateFrom).lte('selection_date', dayRange.dateTo)
 
-  const result = await query
-  if (result.error) throw result.error
+  const result = await withResultStage('query football_ai_pick_results', 'RESULT_SETTLE_QUERY_FAILED', async () => {
+    const rows = await query
+    if (rows.error) throw rows.error
+    return rows
+  })
 
   let settled = 0
   let voided = 0
@@ -1632,7 +1650,7 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
       pending += 1
       continue
     }
-    const update = await supabase
+    const update = await withResultStage('settle result rows', 'RESULT_SETTLE_UPDATE_FAILED', () => supabase
       .from('football_ai_pick_results')
       .update({
         home_score: nullableNumber(match.home_score ?? match.home_goals),
@@ -1644,23 +1662,112 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
         settlement_reason: outcome.settlement_reason,
         settled_at: new Date().toISOString(),
       })
-      .eq('id', row.id)
+      .eq('id', row.id))
     if (update.error) throw update.error
     if (outcome.settlement_status === 'VOID') voided += 1
     else settled += 1
   }
 
-  return { processed: settled + voided, totalCandidates: (result.data ?? []).length, rowsSaved: settled + voided, settled, voided, pending, failed, failures }
+  return { processed: settled + voided, provider: 'supabase', totalCandidates: (result.data ?? []).length, rowsSaved: settled + voided, settled, voided, pending, failed, failures }
 }
 
 async function recomputePerformanceDaily(_body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
-  const count = await supabase
+  const count = await withResultStage('recompute performance daily', 'RESULT_PERFORMANCE_DAILY_FAILED', () => supabase
     .from('football_ai_pick_results')
     .select('id', { count: 'exact', head: true })
     .gte('selection_date', dayRange.dateFrom)
-    .lte('selection_date', dayRange.dateTo)
-  if (count.error) return { processed: 0, totalCandidates: 0, rowsSaved: 0, skipped: 1, reason: count.error.message }
-  return { processed: 0, totalCandidates: count.count ?? 0, rowsSaved: 0, skipped: 1, reason: 'no performance daily table configured' }
+    .lte('selection_date', dayRange.dateTo))
+  if (count.error) return { processed: 0, provider: 'supabase', totalCandidates: 0, rowsSaved: 0, skipped: 1, reason: sanitizeText(count.error.message) }
+  return { processed: 0, provider: 'supabase', totalCandidates: count.count ?? 0, rowsSaved: 0, skipped: 1, reason: 'no performance daily table configured' }
+}
+
+async function diagnoseResultPipeline(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const selectionDate = typeof body.selectionDate === 'string' ? body.selectionDate : null
+  const limit = Math.max(1, Math.min(Number(body.limit ?? context.limit ?? 10), 20))
+  const checks: Record<string, unknown> = {}
+
+  checks.football_matches = await runDiagnosticCheck('football_matches', async () => {
+    const query = supabase
+      .from('football_matches')
+      .select('id, api_fixture_id, kickoff_at, status_short, home_score, away_score', { count: 'exact' })
+      .gte('kickoff_at', dayRange.startUtc)
+      .lt('kickoff_at', dayRange.endUtc)
+      .limit(limit)
+    return query
+  })
+
+  checks.daily_top10_selections = await runDiagnosticCheck('daily_top10_selections', async () => {
+    let query = supabase
+      .from('daily_top10_selections')
+      .select('id, selection_date, match_id, api_fixture_id, ai_final_pick_id', { count: 'exact' })
+      .gte('selection_date', selectionDate ?? dayRange.dateFrom)
+      .lte('selection_date', selectionDate ?? dayRange.dateTo)
+      .limit(limit)
+    return query
+  })
+
+  checks.football_ai_final_picks = await runDiagnosticCheck('football_ai_final_picks', async () => {
+    const query = supabase
+      .from('football_ai_final_picks')
+      .select('id, match_id, api_fixture_id, signal, market_focus', { count: 'exact' })
+      .limit(limit)
+    return query
+  })
+
+  checks.football_ai_pick_results = await runDiagnosticCheck('football_ai_pick_results', async () => {
+    let query = supabase
+      .from('football_ai_pick_results')
+      .select('id, match_id, api_fixture_id, selection_date, settlement_status, simulation_outcome', { count: 'exact' })
+      .limit(limit)
+    if (selectionDate) query = query.eq('selection_date', selectionDate)
+    else query = query.gte('selection_date', dayRange.dateFrom).lte('selection_date', dayRange.dateTo)
+    return query
+  })
+
+  const ready = Object.values(checks).every((check: any) => check?.ok === true)
+  const resultRowsCheck = checks.football_ai_pick_results as any
+  const recommendedFix = ready
+    ? null
+    : resultRowsCheck?.schemaCacheError || resultRowsCheck?.missingTable
+    ? 'apply migration or reload schema cache'
+    : 'inspect failed checks and rerun result-refresh after fixing schema/data readiness'
+
+  return {
+    processed: 0,
+    totalCandidates: Number((checks.daily_top10_selections as any)?.rows ?? 0),
+    rowsSaved: 0,
+    provider: 'supabase',
+    checks,
+    ready,
+    recommendedFix,
+    selectionDate,
+    dateFrom: dayRange.dateFrom,
+    dateTo: dayRange.dateTo,
+  }
+}
+
+async function runDiagnosticCheck(name: string, queryFn: () => PromiseLike<any>) {
+  try {
+    const result = await queryFn()
+    if (result.error) throw result.error
+    return {
+      ok: true,
+      rows: Array.isArray(result.data) ? result.data.length : 0,
+      count: result.count ?? null,
+      sample: Array.isArray(result.data) ? result.data.slice(0, 3) : [],
+    }
+  } catch (error) {
+    const details = sanitizeErrorDetails(error)
+    return {
+      ok: false,
+      errorCode: details.code ?? 'DIAGNOSTIC_CHECK_FAILED',
+      errorMessage: details.message,
+      errorDetails: details,
+      missingTable: isMissingRelationError(error),
+      schemaCacheError: isSchemaCacheError(error),
+      check: name,
+    }
+  }
 }
 
 async function markFixtureChecked(matchId: string, fixtureId: number, rawFixture: unknown) {
@@ -1791,6 +1898,126 @@ function isResultFinishedStatus(value: unknown) {
 
 function isResultVoidStatus(value: unknown) {
   return ['PST', 'CANC', 'ABD', 'AWD', 'WO'].includes(normalizeResultStatusShort(value))
+}
+
+class ResultPipelineError extends Error {
+  errorCode: string
+  errorStage: string
+  provider: string
+  errorDetails: Record<string, unknown>
+  failures: Array<unknown>
+
+  constructor(errorCode: string, errorStage: string, error: unknown, provider = 'supabase') {
+    const details = sanitizeErrorDetails(error)
+    super(details.message)
+    this.name = 'ResultPipelineError'
+    this.errorCode = errorCode
+    this.errorStage = errorStage
+    this.provider = provider
+    this.errorDetails = details
+    this.failures = Array.isArray((error as any)?.failures) ? (error as any).failures.map(sanitizeDiagnosticValue) : []
+  }
+}
+
+async function withResultStage<T>(errorStage: string, errorCode: string, worker: () => PromiseLike<T>, provider = 'supabase'): Promise<T> {
+  try {
+    const result = await worker()
+    if ((result as any)?.error) throw (result as any).error
+    return result
+  } catch (error) {
+    if (error instanceof ResultPipelineError) throw error
+    throw new ResultPipelineError(errorCode, errorStage, error, provider)
+  }
+}
+
+function buildSyncErrorResponse(error: unknown, mode: string, fallbackProvider: string) {
+  const resultError = error instanceof ResultPipelineError
+    ? error
+    : new ResultPipelineError(getDefaultErrorCode(mode), getDefaultErrorStage(mode), error, isResultPipelineMode(mode) ? 'supabase' : fallbackProvider)
+  const provider = sanitizeProviderName(resultError.provider || fallbackProvider)
+  return {
+    ok: false,
+    provider,
+    fallbackUsed: false,
+    fallbackProvider: null,
+    mode,
+    message: 'sync failed',
+    errorCode: resultError.errorCode,
+    errorStage: resultError.errorStage,
+    errorMessage: sanitizeText(resultError.message || 'sync failed'),
+    errorDetails: resultError.errorDetails,
+    failures: resultError.failures,
+  }
+}
+
+function getDefaultErrorCode(mode: string) {
+  if (mode === 'backfill-ai-pick-results') return 'RESULT_BACKFILL_FAILED'
+  if (mode === 'sync-completed-fixtures') return 'RESULT_SYNC_FAILED'
+  if (mode === 'settle-ai-pick-results' || mode === 'settle-ai-pick-results-date') return 'RESULT_SETTLE_FAILED'
+  if (mode === 'recompute-performance-daily') return 'RESULT_PERFORMANCE_DAILY_FAILED'
+  if (mode === 'result-refresh') return 'RESULT_REFRESH_FAILED'
+  if (mode === 'diagnose-result-pipeline') return 'RESULT_DIAGNOSE_FAILED'
+  return 'SYNC_FAILED'
+}
+
+function getDefaultErrorStage(mode: string) {
+  if (isResultPipelineMode(mode)) return mode
+  return 'sync'
+}
+
+function sanitizeErrorDetails(error: unknown): Record<string, unknown> {
+  const raw = error as any
+  return {
+    message: sanitizeText(raw?.message ?? String(error ?? 'sync failed')),
+    details: raw?.details ? sanitizeText(raw.details) : null,
+    hint: raw?.hint ? sanitizeText(raw.hint) : null,
+    code: raw?.code ? sanitizeText(raw.code) : null,
+    status: raw?.status ?? raw?.statusCode ?? null,
+    name: raw?.name ? sanitizeText(raw.name) : null,
+  }
+}
+
+function sanitizeDiagnosticValue(value: unknown): unknown {
+  if (typeof value === 'string') return sanitizeText(value)
+  if (Array.isArray(value)) return value.map(sanitizeDiagnosticValue)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !/authorization|apikey|sb_secret|secret|token|key/i.test(key))
+      .map(([key, item]) => [key, sanitizeDiagnosticValue(item)]))
+  }
+  return value
+}
+
+function sanitizeText(value: unknown) {
+  let text = String(value ?? '')
+  const secretValues = [serviceRoleKey, API_FOOTBALL_KEY, FOOTBALL_DATA_TOKEN, ...secretKeys].filter(Boolean)
+  for (const secret of secretValues) {
+    text = text.split(secret).join('[masked]')
+  }
+  return text
+    .replace(/sb_secret_[A-Za-z0-9._-]+/g, 'sb_secret_[masked]')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [masked]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, 'jwt_[masked]')
+    .replace(/(api[_-]?key|apikey|secret|token)=([^&\s]+)/gi, '$1=[masked]')
+}
+
+function sanitizeProviderName(value: string) {
+  if (value === 'supabase') return 'supabase'
+  if (value === 'api-football') return 'api-football'
+  if (value === 'football-data.org') return 'football-data.org'
+  return isResultPipelineMode(value) ? 'supabase' : requestedProviderName
+}
+
+function isMissingRelationError(error: unknown) {
+  const details = sanitizeErrorDetails(error)
+  const text = `${details.message ?? ''} ${details.details ?? ''}`.toLowerCase()
+  return details.code === '42P01' || text.includes('does not exist') || text.includes('could not find the table')
+}
+
+function isSchemaCacheError(error: unknown) {
+  const details = sanitizeErrorDetails(error)
+  const text = `${details.message ?? ''} ${details.details ?? ''}`.toLowerCase()
+  return details.code === 'PGRST205' || text.includes('schema cache')
 }
 
 function createFootballEnrichmentContext(mode: string, limit: number, dateKey: string): FootballEnrichmentContext {
@@ -6915,7 +7142,7 @@ function normalizeSyncMode(value: unknown) {
 function getSyncLimit(value: unknown, mode = 'manual') {
   if (mode === 'sync-odds') return getPositiveLimit(value, 3, 5)
   if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
-  if (['sync-completed-fixtures', 'backfill-ai-pick-results', 'settle-ai-pick-results', 'settle-ai-pick-results-date', 'recompute-performance-daily', 'result-refresh'].includes(mode)) return getPositiveLimit(value, 10, 20)
+  if (isResultPipelineMode(mode)) return getPositiveLimit(value, 10, 20)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
   const maxLimit = isFootballEnrichmentMode(mode) ? maxFootballEnrichmentLimit : mode === 'enrich' ? maxEnrichLimit : maxManualLimit
   const numeric = Number(value ?? defaultLimit)
@@ -6925,6 +7152,18 @@ function getSyncLimit(value: unknown, mode = 'manual') {
 
 function isFootballEnrichmentMode(mode: unknown) {
   return footballEnrichmentModes.includes(String(mode ?? '').toLowerCase())
+}
+
+function isResultPipelineMode(mode: unknown) {
+  return [
+    'sync-completed-fixtures',
+    'backfill-ai-pick-results',
+    'settle-ai-pick-results',
+    'settle-ai-pick-results-date',
+    'recompute-performance-daily',
+    'result-refresh',
+    'diagnose-result-pipeline',
+  ].includes(String(mode ?? '').toLowerCase())
 }
 
 function isDailySyncOrchestratorMode(mode: unknown) {
