@@ -139,7 +139,7 @@ function checkUiFiles() {
   else ok('ResultTracker heading', 'single')
 
   const uiText = resultPage + readText('src/utils/matchStatus.js')
-  for (const text of ['ยังไม่มีสกอร์', 'รอซิงก์สกอร์', 'รอสรุปผลจำลอง']) {
+  for (const text of ['จบแล้ว', 'รอผล', 'ไม่ประเมิน', 'เข้าทาง', 'ไม่เข้าทาง', 'ไม่มีสัญญาณ']) {
     if (!uiText.includes(text)) warn('ResultTracker Thai copy', `missing ${text}`)
   }
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { settleAiPickResult } from '../src/utils/resultSettlement.js'
+import { getResultTrackerStatusLabel } from '../src/utils/matchStatus.js'
 
 const cases = [
   ['FT + MATCH_WINNER HOME hit', { statusShort: 'FT', homeScore: 2, awayScore: 1, marketFocus: 'MATCH_WINNER', direction: 'HOME' }, 'HIT', 'SETTLED'],
@@ -22,6 +23,14 @@ for (const [name, input, expectedOutcome, expectedStatus] of cases) {
   assert.equal(actual.simulation_outcome, expectedOutcome, `${name}: simulation_outcome`)
   assert.equal(actual.settlement_status, expectedStatus, `${name}: settlement_status`)
 }
+
+assert.equal(
+  getResultTrackerStatusLabel({ statusShort: 'FT', homeScore: 2, awayScore: 1, settlementStatus: 'PENDING' }),
+  'จบแล้ว',
+  'Result Tracker must show finished matches with scores as จบแล้ว even before settlement catches up',
+)
+assert.equal(getResultTrackerStatusLabel({ statusShort: 'NS', settlementStatus: 'PENDING' }), 'รอผล', 'scheduled Result Tracker rows should show รอผล')
+assert.equal(getResultTrackerStatusLabel({ statusShort: 'CANC', settlementStatus: 'VOID' }), 'ไม่ประเมิน', 'void Result Tracker rows should show ไม่ประเมิน')
 
 const edgeSource = readFileSync('supabase/functions/sync-football-data/index.ts', 'utf8')
 assert.match(edgeSource, /function normalizeResultFixtureId[\s\S]*Math\.abs/, 'edge result pipeline must normalize fixture ids to positive values')

@@ -1,11 +1,9 @@
 import { Radio, Trophy } from 'lucide-react'
-import ScoreBadge from '../components/ScoreBadge'
-import { getRecommendation } from '../utils/analysisEngine'
 import { formatKickoffTime, formatShortDate } from '../utils/formatters'
-import { getResultTrackerStatusLabel, getScoreDisplay, isFinishedStatus, isLiveStatus, normalizeStatusCode } from '../utils/matchStatus.js'
+import { getResultTrackerStatusLabel, getScoreDisplay, hasMatchScore, isFinishedStatus, isLiveStatus, normalizeStatusCode } from '../utils/matchStatus.js'
 
 export default function ResultTrackerPage({ matches }) {
-  const liveLike = matches.filter((match) => isLiveStatus(match.statusShort ?? match.status)).length
+  const summary = buildResultSummary(matches)
 
   return (
     <main className="app-page theme-results">
@@ -21,11 +19,18 @@ export default function ResultTrackerPage({ matches }) {
               <p className="mt-1 text-sm font-semibold text-slate-400">ดูสถานะแข่งขัน สกอร์ และผลประเมินของระบบในหน้าเดียว</p>
             </div>
             <div className="metric-display min-w-[82px] text-right">
-              <p className="text-[10px] font-black uppercase text-slate-500">กำลังแข่ง</p>
-              <p className="text-2xl font-black leading-7 text-white">{liveLike}</p>
+              <p className="text-[10px] font-black uppercase text-slate-500">รวม</p>
+              <p className="text-2xl font-black leading-7 text-white">{summary.totalResults}</p>
             </div>
           </div>
         </div>
+      </section>
+
+      <section className="mt-3 grid grid-cols-2 gap-1.5">
+        <SummaryPill label="จบแล้ว" value={summary.finishedRows} />
+        <SummaryPill label="รอผล" value={summary.pendingRows} />
+        <SummaryPill label="ประเมินแล้ว" value={summary.settledRows} />
+        <SummaryPill label="ไม่ประเมิน" value={summary.noEvaluationRows} />
       </section>
 
       <div className="mt-3 grid gap-1.5">
@@ -47,13 +52,13 @@ export default function ResultTrackerPage({ matches }) {
               </div>
               {match.marketFocus || match.simulationOutcome ? (
                 <p className="mt-1 truncate text-[11px] font-bold text-slate-500">
-                  {formatMarket(match.marketFocus)} {match.direction ? `· ${match.direction}` : ''} · {formatSimulationOutcome(match.simulationOutcome)}
+                  {formatMarket(match.marketFocus)} {formatDirection(match.direction) ? `· ${formatDirection(match.direction)}` : ''}
                 </p>
               ) : null}
             </div>
-            <div className="flex min-w-[72px] flex-col items-end gap-1">
+            <div className="flex min-w-[78px] flex-col items-end gap-1">
               <span className={statusClass(match)}>{formatMatchStatus(match)}</span>
-              <ScoreBadge recommendation={getRecommendation(match)} />
+              <span className={outcomeClass(match)}>{formatSimulationOutcome(match.simulationOutcome ?? match.signal)}</span>
             </div>
           </article>
         ))}
@@ -68,9 +73,18 @@ function formatMatchStatus(match) {
 
 function statusClass(match) {
   const normalized = normalizeStatusCode(match.statusShort ?? match.status)
+  if (String(match.settlementStatus ?? '').toUpperCase() === 'VOID') return 'semantic-badge border-slate-300/20 bg-slate-300/10 text-slate-200'
   if (isFinishedStatus(normalized)) return 'semantic-badge border-emerald-300/30 bg-emerald-300/10 text-emerald-100'
   if (isLiveStatus(normalized)) return 'semantic-badge border-red-300/35 bg-red-400/10 text-red-100'
-  if (String(match.settlementStatus ?? '').toUpperCase() === 'VOID') return 'semantic-badge border-slate-300/20 bg-slate-300/10 text-slate-200'
+  return 'semantic-badge border-white/10 bg-white/[0.05] text-slate-300'
+}
+
+function outcomeClass(match) {
+  const normalized = String(match.simulationOutcome ?? match.simulation_outcome ?? match.signal ?? '').toUpperCase()
+  if (normalized === 'HIT') return 'semantic-badge border-emerald-300/30 bg-emerald-300/10 text-emerald-100'
+  if (normalized === 'MISS') return 'semantic-badge border-rose-300/30 bg-rose-300/10 text-rose-100'
+  if (normalized === 'PUSH') return 'semantic-badge border-sky-300/25 bg-sky-300/10 text-sky-100'
+  if (['VOID', 'SKIP', 'NO BET'].includes(normalized)) return 'semantic-badge border-slate-300/20 bg-slate-300/10 text-slate-200'
   return 'semantic-badge border-white/10 bg-white/[0.05] text-slate-300'
 }
 
@@ -90,18 +104,66 @@ function toTrackerShape(match) {
 
 function formatSimulationOutcome(value) {
   const normalized = String(value ?? 'PENDING').toUpperCase()
-  if (normalized === 'HIT') return 'เข้าเป้า'
-  if (normalized === 'MISS') return 'ไม่เข้าเป้า'
-  if (normalized === 'PUSH') return 'เจ๊า'
-  if (normalized === 'VOID') return 'ไม่นับผล'
+  if (normalized === 'HIT') return 'เข้าทาง'
+  if (normalized === 'MISS') return 'ไม่เข้าทาง'
+  if (normalized === 'PUSH') return 'เสมอ'
+  if (['VOID', 'SKIP', 'NO BET'].includes(normalized)) return 'ไม่ประเมิน'
   return 'รอผล'
 }
 
 function formatMarket(value) {
   const normalized = String(value ?? '').toUpperCase()
-  if (normalized === 'MATCH_WINNER') return 'ผลแพ้ชนะ'
-  if (normalized === 'OU') return 'สูงต่ำ'
-  if (normalized === 'AH') return 'แฮนดิแคป'
+  if (normalized === 'MATCH_WINNER') return 'ผู้ชนะ'
+  if (normalized === 'OU') return 'จำนวนประตู'
+  if (normalized === 'AH') return 'แนวโน้มฝั่ง'
   if (normalized === 'BTTS') return 'ทั้งสองทีมยิง'
-  return normalized || 'ผลจำลอง'
+  if (normalized === 'NONE' || normalized === 'SKIP') return 'ไม่มีสัญญาณ'
+  return normalized || 'ไม่มีสัญญาณ'
+}
+
+function formatDirection(value) {
+  const normalized = String(value ?? '').toUpperCase()
+  if (!normalized || normalized === 'NONE' || normalized === 'NO MARKET DIRECTION') return ''
+  if (normalized.includes('OVER')) return 'ประตูมาก'
+  if (normalized.includes('UNDER')) return 'ประตูน้อย'
+  if (normalized.includes('HOME')) return 'เจ้าบ้าน'
+  if (normalized.includes('AWAY')) return 'ทีมเยือน'
+  if (normalized.includes('DRAW')) return 'เสมอ'
+  return ''
+}
+
+function SummaryPill({ label, value }) {
+  return (
+    <div className="metric-card px-3 py-2">
+      <p className="text-[10px] font-black uppercase text-slate-500">{label}</p>
+      <p className="mt-0.5 text-xl font-black leading-6 text-white">{value}</p>
+    </div>
+  )
+}
+
+function buildResultSummary(rows = []) {
+  return rows.reduce((summary, row) => {
+    const shaped = toTrackerShape(row)
+    const status = normalizeStatusCode(shaped.statusShort ?? shaped.status)
+    const settlementStatus = String(shaped.settlementStatus ?? shaped.settlement_status ?? '').toUpperCase()
+    const outcome = String(shaped.simulationOutcome ?? shaped.simulation_outcome ?? '').toUpperCase()
+    const signal = String(shaped.signal ?? shaped.recommendation ?? '').toUpperCase()
+    const finished = isFinishedStatus(status)
+    const noEvaluation = settlementStatus === 'VOID' || outcome === 'VOID' || ['SKIP', 'NO BET'].includes(signal)
+
+    summary.totalResults += 1
+    if (finished) summary.finishedRows += 1
+    if (!finished && !noEvaluation) summary.pendingRows += 1
+    if (settlementStatus === 'SETTLED' || ['HIT', 'MISS', 'PUSH'].includes(outcome)) summary.settledRows += 1
+    if (noEvaluation) summary.noEvaluationRows += 1
+    if (finished && hasMatchScore(shaped) && settlementStatus === 'PENDING') summary.finishedRowsWithPendingSettlement += 1
+    return summary
+  }, {
+    totalResults: 0,
+    finishedRows: 0,
+    pendingRows: 0,
+    settledRows: 0,
+    noEvaluationRows: 0,
+    finishedRowsWithPendingSettlement: 0,
+  })
 }

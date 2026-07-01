@@ -87,13 +87,9 @@ export function getMatchStatusLabel(statusShort) {
 export function getResultTrackerStatusLabel(row = {}) {
   const status = normalizeStatusCode(row.statusShort ?? row.status_short ?? row.status)
   const settlementStatus = String(row.settlementStatus ?? row.settlement_status ?? '').toUpperCase()
-  const hasScore = hasMatchScore(row)
-  if (isVoidStatus(status) || settlementStatus === 'VOID') return 'ไม่นับผล'
-  if (isFinishedStatus(status) && hasScore && settlementStatus === 'PENDING') return 'รอสรุปผลจำลอง'
-  if (isFinishedStatus(status)) return getMatchStatusLabel(status)
-  if (isLiveStatus(status)) return 'กำลังแข่ง'
-  if (isScheduledStatus(status)) return 'ยังไม่เริ่ม'
-  return getMatchStatusLabel(status)
+  if (isVoidStatus(status) || settlementStatus === 'VOID') return 'ไม่ประเมิน'
+  if (isFinishedStatus(status)) return 'จบแล้ว'
+  return 'รอผล'
 }
 
 export function hasMatchScore(row = {}) {
@@ -103,7 +99,6 @@ export function hasMatchScore(row = {}) {
 export function getScoreDisplay(row = {}) {
   if (hasMatchScore(row)) return `${row.homeScore}-${row.awayScore}`
   const status = normalizeStatusCode(row.statusShort ?? row.status_short ?? row.status)
-  if (isFinishedStatus(status)) return 'รอซิงก์สกอร์'
-  if (isScheduledStatus(status)) return 'ยังไม่มีสกอร์'
-  return 'รออัปเดตสกอร์'
+  if (isFinishedStatus(status) || isScheduledStatus(status)) return 'รอผล'
+  return 'รอผล'
 }
