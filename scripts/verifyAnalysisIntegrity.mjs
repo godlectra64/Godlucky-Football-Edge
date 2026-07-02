@@ -247,6 +247,10 @@ const footballEnrichmentChecks = [
     label: 'daily sync retry migration',
     query: checkDailySyncRetryMigration,
   },
+  {
+    label: 'today data coverage snapshot',
+    query: checkTodayDataCoverage,
+  },
 ]
 
 let failed = false
@@ -508,6 +512,49 @@ async function checkTopFixtureEnrichment() {
     enrichedRows += count ?? 0
   }
   return enrichedRows > 0 ? { count: 0 } : { count: 0, warning: 'top 10 exists, but enrichment rows are still empty' }
+}
+
+async function checkTodayDataCoverage() {
+  const { startUtc, endUtc, dateKey } = getBangkokDayRange()
+  const { data: matches, error } = await supabase
+    .from('football_matches')
+    .select('id, odds_updated_at, enrichment_status, data_readiness_status, analysis:match_analysis(recommendation)')
+    .gte('kickoff_at', startUtc)
+    .lt('kickoff_at', endUtc)
+  if (error) {
+    if (isOptionalV2Missing(error)) return { count: 0, warning: error.message }
+    return { error }
+  }
+
+  const matchIds = (matches ?? []).map((row) => row.id).filter(Boolean)
+  const oddsRows = matchIds.length
+    ? await supabase.from('football_match_odds').select('id', { count: 'exact', head: true }).in('match_id', matchIds)
+    : { count: 0, error: null }
+  if (oddsRows.error) {
+    if (isOptionalV2Missing(oddsRows.error)) return { count: 0, warning: oddsRows.error.message }
+    return { error: oddsRows.error }
+  }
+
+  const enrichment = countBy(matches ?? [], (row) => row.enrichment_status ?? 'NULL')
+  const readiness = countBy(matches ?? [], (row) => row.data_readiness_status ?? 'UNKNOWN')
+  const recommendation = countBy(matches ?? [], (row) => {
+    const analysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
+    return analysis?.recommendation ?? 'NO_ANALYSIS'
+  })
+  const oddsUpdatedNull = (matches ?? []).filter((row) => !row.odds_updated_at).length
+  const allNoBet = (matches ?? []).length > 0 && Object.keys(recommendation).every((key) => ['NO BET', 'NO_ANALYSIS'].includes(key))
+  const warning = allNoBet && Number(oddsRows.count ?? 0) === 0
+    ? `coverage issue on ${dateKey}: fixtures=${matches.length}, oddsRows=0, oddsUpdatedAtNull=${oddsUpdatedNull}, enrichment=${JSON.stringify(enrichment)}, readiness=${JSON.stringify(readiness)}, recommendation=${JSON.stringify(recommendation)}; this is a data coverage issue, not a model issue`
+    : `coverage ${dateKey}: fixtures=${matches.length}, oddsRows=${oddsRows.count ?? 0}, oddsUpdatedAtNull=${oddsUpdatedNull}, enrichment=${JSON.stringify(enrichment)}, readiness=${JSON.stringify(readiness)}, recommendation=${JSON.stringify(recommendation)}`
+  return { count: 0, warning }
+}
+
+function countBy(rows, getKey) {
+  return rows.reduce((acc, row) => {
+    const key = getKey(row)
+    acc[key] = (acc[key] ?? 0) + 1
+    return acc
+  }, {})
 }
 
 async function checkFrontendEmptyEnrichment() {

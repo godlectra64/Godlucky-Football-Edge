@@ -164,12 +164,36 @@ export default function AdminPage({ connection, syncing, error, onSync, onResetT
                   <p className="shrink-0 text-[11px] font-semibold text-slate-500">{formatUpdatedAt(log.started_at)}</p>
                 </div>
                 <p className="mt-1 text-clamp-2 text-sm leading-6 text-slate-300">{log.message || '-'}</p>
+                <SyncDebugSummary raw={log.raw} />
               </div>
             </article>
           ))}
         </div>
       </section>
     </main>
+  )
+}
+
+function SyncDebugSummary({ raw }) {
+  const summary = raw?.finalSummary ?? raw?.latest?.finalSummary ?? raw?.summary?.finalSummary ?? raw
+  const readiness = summary?.rankingReadiness ?? raw?.rankingReadiness
+  const fixture = summary?.fixtureEnrichment ?? raw?.fixtureEnrichment
+  const odds = fixture?.odds ?? raw?.endpointCoverage?.odds
+  if (!readiness && !odds) return null
+
+  return (
+    <div className="mt-2 grid gap-1 text-[11px] font-bold text-slate-400">
+      {readiness ? (
+        <p>
+          Ready {readiness.ready ?? 0}/{readiness.totalFixtures ?? 0} · Partial {readiness.partial ?? 0} · No Market {readiness.noMarketData ?? 0} · Pending {readiness.pending ?? 0} · Failed {readiness.failed ?? 0}
+        </p>
+      ) : null}
+      {odds ? (
+        <p>
+          Odds rows {odds.rowsSaved ?? raw?.oddsRowsSaved ?? 0} · Empty {odds.empty ?? raw?.oddsEmptyFixtures ?? 0} · Failed {odds.error ?? odds.failed ?? raw?.oddsFailedFixtures ?? 0}
+        </p>
+      ) : null}
+    </div>
   )
 }
 

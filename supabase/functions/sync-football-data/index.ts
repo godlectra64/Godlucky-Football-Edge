@@ -499,8 +499,10 @@ type DailyFullSyncStepSummary = {
   rateLimited: boolean
   durationMs: number
   message?: string
+  partial?: boolean
   endpointBreakdown?: Record<string, FootballEnrichmentEndpointCounter>
   details?: Record<string, unknown>
+  rankingReadiness?: Record<string, number>
 }
 
 async function runFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
@@ -925,7 +927,8 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
   const rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
   const failed = sumResultField(results, 'failed') + endpointDelta.failed
   const skipped = sumResultField(results, 'skipped') + endpointDelta.skipped
-  const status = failed > 0 ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
+  const partial = results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
+  const status = failed > 0 || partial ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
   await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: status === 'partial_success' ? 'success' : status, results_count: rowsSaved, finished_at: new Date().toISOString() })
   await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'finished', results_count: rowsSaved, finished_at: new Date().toISOString() })
 
@@ -940,8 +943,10 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     skipped,
     rateLimited: context.rateLimited,
     durationMs: Date.now() - startedAt,
+    partial,
     endpointBreakdown,
     details: buildDailyPhaseDetails(phase, results),
+    rankingReadiness: phase === 'ranking' ? results[0]?.rankingReadiness : undefined,
   }
 }
 
@@ -1025,6 +1030,7 @@ function buildDailySyncStepResponse(mode: string, result: any, providerResult: a
     enrichedMatches: [],
     processedMatches: [],
     skippedEndpoints: [],
+    rankingReadiness: summary.rankingReadiness ?? summary.details?.rankingReadiness ?? null,
     rateLimited: summary.rateLimited,
     durationMs,
     steps: stepResults.length ? stepResults : [summary],
@@ -1061,6 +1067,7 @@ function buildDailySyncSafeResponse(payload: any) {
     enrichedMatches: [],
     processedMatches: [],
     skippedEndpoints: [],
+    rankingReadiness: payload.rankingReadiness ?? payload.summary?.rankingReadiness ?? null,
     rateLimited: Boolean(payload.rateLimited),
     durationMs: payload.durationMs ?? 0,
     steps: payload.steps ?? [],
@@ -1202,6 +1209,7 @@ function calculateRunProgress(steps: Array<any>) {
 function buildFinalDailySummary(steps: Array<any>) {
   const endpointRows = aggregateEndpointRows(steps)
   const core = findStepSummary(steps, 'core')
+  const fixtureEnrichment = findStepSummary(steps, 'fixture-enrichment')
   const ranking = findStepSummary(steps, 'ranking')
   return {
     fixtures: Number(core?.details?.fixturesProcessed ?? 0),
@@ -1221,6 +1229,8 @@ function buildFinalDailySummary(steps: Array<any>) {
     topRedCards: endpointRows['/players/topredcards'] ?? 0,
     topPlayers: (endpointRows['/players/topscorers'] ?? 0) + (endpointRows['/players/topassists'] ?? 0) + (endpointRows['/players/topyellowcards'] ?? 0) + (endpointRows['/players/topredcards'] ?? 0),
     ranking: ranking?.status === 'success' || ranking?.status === 'empty' ? 'success' : ranking?.status ?? 'pending',
+    rankingReadiness: ranking?.rankingReadiness ?? ranking?.details?.rankingReadiness ?? null,
+    fixtureEnrichment: fixtureEnrichment?.details ?? null,
     totalDurationMs: (steps ?? []).reduce((total, step) => total + Number(step.duration_ms ?? step.summary?.durationMs ?? 0), 0),
     failedEndpoints: aggregateEndpointNames(steps, 'failed'),
     skippedEndpoints: aggregateEndpointNames(steps, 'skipped'),
@@ -1387,13 +1397,20 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
 }
 
 async function runDailyRankingStep(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const readinessBeforeRanking = await getRankingReadinessSummary(dayRange)
   const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  const rankingReadiness = await getRankingReadinessSummary(dayRange)
   const finalPickRows = await recomputeAiFinalPicks(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks' })
+  const totalFixtures = Number(rankingReadiness.totalFixtures ?? readinessBeforeRanking.totalFixtures ?? rankedSelectionRows)
+  const readyFixtures = Number(rankingReadiness.ready ?? 0)
+  const partial = totalFixtures > 0 && readyFixtures === 0
   return {
     processed: rankedSelectionRows,
     totalCandidates: rankedSelectionRows,
     rowsSaved: rankedSelectionRows + Number(finalPickRows.rowsSaved ?? 0),
     failed: Number(finalPickRows.failed ?? 0),
+    partial,
+    rankingReadiness,
     aiFinalPickRows: finalPickRows.rowsSaved ?? 0,
   }
 }
@@ -2133,21 +2150,47 @@ async function syncApiFootballRounds(context: FootballEnrichmentContext) {
 async function syncApiFootballFixtureEnrichment(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const fixtures = await fetchApiFootballFixtureCandidates(dayRange, context.limit)
   let processed = 0
+  let rowsSaved = 0
+  let emptyFixtures = 0
+  let failedFixtures = 0
   for (const group of chunk(fixtures, footballEnrichmentChunkSize)) {
     for (const match of group) {
       if (context.rateLimited) break
-      processed += await enrichOneApiFootballFixture(match, context)
+      const result = await enrichOneApiFootballFixture(match, context)
+      processed += result.processed
+      rowsSaved += result.rowsSaved
+      emptyFixtures += result.empty
+      failedFixtures += result.failed
     }
     if (context.rateLimited) break
   }
-  return { processed, totalCandidates: fixtures.length }
+  return {
+    processed,
+    totalCandidates: fixtures.length,
+    rowsSaved,
+    failed: failedFixtures,
+    skipped: emptyFixtures,
+    partial: fixtures.length > 0 && rowsSaved === 0,
+    fixtureDetail: {
+      attempted: processed + emptyFixtures + failedFixtures,
+      success: processed,
+      rowsSaved,
+      empty: emptyFixtures,
+      error: failedFixtures,
+    },
+  }
 }
 
 async function enrichOneApiFootballFixture(match: any, context: FootballEnrichmentContext) {
   const fixtureId = getMatchFixtureId(match)
-  if (!fixtureId) return 0
+  if (!fixtureId) return { processed: 0, rowsSaved: 0, empty: 0, failed: 0 }
   const coverage = await fetchCoverageForMatch(match)
   let saved = 0
+  let attempted = 0
+  let success = 0
+  let empty = 0
+  let error = 0
+  let skippedNoCoverage = 0
   const calls = [
     { endpoint: '/fixtures/statistics', coverageKey: 'has_fixture_statistics', normalizer: normalizeFixtureStatisticsRows, table: 'api_football_fixture_statistics', conflict: 'api_fixture_id,api_team_id' },
     { endpoint: '/fixtures/events', coverageKey: 'has_events', normalizer: normalizeFixtureEventRows, table: 'api_football_fixture_events', conflict: '' },
@@ -2166,10 +2209,15 @@ async function enrichOneApiFootballFixture(match: any, context: FootballEnrichme
       await logEnrichmentSync({ mode: context.mode, api_fixture_id: fixtureId, api_league_id: getMatchLeagueId(match), season: getMatchSeason(match), endpoint: call.endpoint, status: 'skipped_no_coverage' })
       rememberSkippedEndpoint(context, call.endpoint, 'skipped_no_coverage', { apiFixtureId: fixtureId, apiLeagueId: getMatchLeagueId(match), season: getMatchSeason(match) })
       addEndpointSkipped(context, call.endpoint)
+      skippedNoCoverage += 1
       continue
     }
+    attempted += 1
     const response = await trackedApiFootballGet(context, call.endpoint, { fixture: fixtureId }, { apiFixtureId: fixtureId, apiLeagueId: getMatchLeagueId(match), season: getMatchSeason(match) })
-    if (!response.ok) continue
+    if (!response.ok) {
+      error += 1
+      continue
+    }
     const rows = call.normalizer(response.data ?? [], fixtureId)
     if (call.table === 'api_football_fixture_events') {
       await replaceApiFootballRows(call.table, { api_fixture_id: fixtureId }, rows)
@@ -2177,9 +2225,20 @@ async function enrichOneApiFootballFixture(match: any, context: FootballEnrichme
       await upsertApiFootballData(call.table, call.conflict, rows)
     }
     addEndpointRowsSaved(context, call.endpoint, rows.length)
+    success += 1
+    if (!rows.length) empty += 1
     saved += rows.length
   }
-  return saved > 0 ? 1 : 0
+  const hasFixtureDetail = saved > 0
+  const status = error > 0 && !hasFixtureDetail ? 'FAILED' : skippedNoCoverage > 0 && attempted === 0 ? 'SKIPPED_NO_COVERAGE' : hasFixtureDetail ? 'PARTIAL' : 'PENDING'
+  await updateMatchReadinessMetadata(match.id, {
+    fixtureId,
+    fixtureDetail: endpointAttemptSummary({ attempted, success, rowsSaved: saved, empty, error }),
+    hasFixtureDetail,
+    status,
+    error: error > 0 ? 'fixture detail enrichment failed' : null,
+  })
+  return { processed: hasFixtureDetail ? 1 : 0, rowsSaved: saved, empty: hasFixtureDetail ? 0 : 1, failed: error > 0 && !hasFixtureDetail ? 1 : 0 }
 }
 
 async function syncApiFootballInjuries(dateKey: string, context: FootballEnrichmentContext) {
@@ -2323,7 +2382,7 @@ async function syncApiFootballBookmakers(context: FootballEnrichmentContext) {
 
 async function syncApiFootballOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const offset = getSyncOffset(body.offset)
-  const maxFixturesPerRun = getPositiveLimit(body.maxFixturesPerRun ?? body.limit, 3, 5)
+  const maxFixturesPerRun = getPositiveLimit(body.maxFixturesPerRun ?? body.limit ?? context.limit, 10, maxFootballEnrichmentLimit)
   const fixtureIds = normalizeFixtureIds(body.fixtureIds)
   const retryFailedOnly = body.retryFailedOnly === true
   const candidates = await fetchDbMatchCandidates(dayRange, Math.max(1, maxFixturesPerRun), true, { offset, fixtureIds, retryFailedOnly })
@@ -2401,6 +2460,13 @@ async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: 
       if (fixtureId) skippedFixtureIds.push(fixtureId)
       const message = formatErrorMessage(error, 'odds fixture sync failed')
       failures.push({ fixtureId, message })
+      await updateMatchReadinessMetadata(match.id, {
+        fixtureId,
+        odds: endpointAttemptSummary({ attempted: 1, success: 0, rowsSaved: 0, empty: 0, error: 1, message }),
+        hasMarketData: false,
+        status: 'FAILED',
+        error: message,
+      }).catch(() => {})
       await logEnrichmentSync({ mode: context.mode, api_fixture_id: fixtureId, endpoint: '/odds', status: 'partial_success', error_message: message }).catch(() => {})
     }
   }
@@ -2411,7 +2477,11 @@ async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: 
   const anySuccess = processedFixtures > 0 || savedOdds > 0 || emptyFixtures > 0
   const allRateLimited = failures.some((failure) => String(failure?.message ?? '').includes('429') || failure?.rateLimited === true) && !anySuccess
   const responseStatus = allRateLimited ? 429 : 200
-  const partial = failedFixtures > 0 || hasMore || stoppedEarly || context.rateLimited
+  const oddsAttempted = attempted
+  const oddsRowsSaved = savedOdds
+  const oddsEmptyFixtures = emptyFixtures
+  const oddsFailedFixtures = failedFixtures
+  const partial = failedFixtures > 0 || hasMore || stoppedEarly || context.rateLimited || (oddsAttempted > 0 && oddsRowsSaved === 0)
 
   return {
     processed: processedFixtures,
@@ -2421,6 +2491,10 @@ async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: 
     failed: failedFixtures,
     skipped: emptyFixtures,
     partial,
+    oddsAttempted,
+    oddsRowsSaved,
+    oddsEmptyFixtures,
+    oddsFailedFixtures,
     responseStatus,
     processedFixtures,
     savedOdds,
@@ -2449,6 +2523,13 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) 
   }
 
   if (!response?.ok) {
+    await updateMatchReadinessMetadata(match.id, {
+      fixtureId,
+      odds: endpointAttemptSummary({ attempted: 1, success: 0, rowsSaved: 0, empty: 0, error: 1, message: response?.error ?? 'odds sync failed' }),
+      hasMarketData: false,
+      status: 'FAILED',
+      error: response?.error ?? 'odds sync failed',
+    })
     return {
       processed: 0,
       rowsSaved: 0,
@@ -2466,13 +2547,24 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) 
 
   const normalized = normalizeMatchOddsRows(match, fixtureId, response.data ?? [])
   if (!normalized.rows.length) {
+    await updateMatchReadinessMetadata(match.id, {
+      fixtureId,
+      odds: endpointAttemptSummary({ attempted: 1, success: 1, rowsSaved: 0, empty: 1, error: 0 }),
+      hasMarketData: false,
+      status: 'NO_MARKET_DATA',
+    })
     return { processed: 1, rowsSaved: 0, failed: 0, empty: 1, fixtureId, skipped: true, failure: null }
   }
 
   await storeFootballBookmakers(normalized.bookmakers)
   await storeFootballMatchOdds(match.id, normalized.rows)
   addEndpointRowsSaved(context, '/odds', normalized.rows.length)
-  await supabase.from('football_matches').update({ odds_updated_at: new Date().toISOString() }).eq('id', match.id)
+  await updateMatchReadinessMetadata(match.id, {
+    fixtureId,
+    odds: endpointAttemptSummary({ attempted: 1, success: 1, rowsSaved: normalized.rows.length, empty: 0, error: 0 }),
+    hasMarketData: true,
+    status: 'READY',
+  })
   return { processed: 1, rowsSaved: normalized.rows.length, failed: 0, empty: 0, fixtureId, skipped: false, failure: null }
 }
 
@@ -3145,6 +3237,27 @@ async function enrichMatchData(row: any) {
       lineups_updated_at: lineupsResult.available ? new Date().toISOString() : null,
     })
     .eq('id', row.id)
+  await updateMatchReadinessMetadata(row.id, {
+    fixtureId,
+    odds: endpointAttemptSummary({ attempted: 1, success: odds?.ok ? 1 : 0, rowsSaved: oddsResult.rows.length, empty: odds?.ok && !oddsResult.rows.length ? 1 : 0, error: odds?.ok ? 0 : 1, message: odds?.error ?? null }),
+    fixtureDetail: endpointAttemptSummary({
+      attempted: 3,
+      success: [statsResult, injuriesResult, lineupsResult].filter((item) => item.available).length,
+      rowsSaved: statsResult.rows.length + injuriesResult.rows.length + lineupsResult.rows.length,
+      empty: [statsResult, injuriesResult, lineupsResult].filter((item) => !item.available).length,
+      error: [stats, injuries, lineups].filter((item) => !item?.ok).length,
+    }),
+    hasMarketData: oddsResult.available,
+    hasFixtureDetail: statsResult.available || injuriesResult.available || lineupsResult.available,
+    status: getDataReadinessStatus({
+      hasMarketData: oddsResult.available,
+      hasFixtureDetail: statsResult.available || injuriesResult.available || lineupsResult.available,
+      failed: [odds, stats, injuries, lineups].some((item) => !item?.ok),
+      skippedNoCoverage: false,
+      attempted: true,
+    }),
+    error: [odds, stats, injuries, lineups].find((item) => !item?.ok)?.error ?? null,
+  })
 
   return {
     matchId: row.id,
@@ -3222,6 +3335,93 @@ function getEnrichmentStatus(endpointCoverage: any) {
   if (oddsRows > 0 && totalRowsSaved === oddsRows) return 'ENRICHED_ODDS_ONLY'
   if (['odds', 'statistics', 'injuries', 'lineups'].every((endpoint) => Number(endpointCoverage?.[endpoint]?.rowsSaved ?? 0) > 0)) return 'ENRICHED_FULL'
   return 'ENRICHED_PARTIAL'
+}
+
+function endpointAttemptSummary({ attempted = 0, success = 0, rowsSaved = 0, empty = 0, error = 0, message = null }: Record<string, unknown>) {
+  return {
+    attempted: Number(attempted ?? 0),
+    success: Number(success ?? 0),
+    rowsSaved: Number(rowsSaved ?? 0),
+    empty: Number(empty ?? 0),
+    error: Number(error ?? 0),
+    message: message ? String(message) : null,
+  }
+}
+
+async function updateMatchReadinessMetadata(matchId: string, patch: Record<string, unknown>) {
+  if (!matchId) return
+
+  const now = new Date().toISOString()
+  const existing = await supabase
+    .from('football_matches')
+    .select('enrichment_breakdown, has_market_data, has_fixture_detail')
+    .eq('id', matchId)
+    .maybeSingle()
+  if (existing.error) {
+    if (isMissingColumnError(existing.error)) return
+    throw existing.error
+  }
+
+  const currentBreakdown = existing.data?.enrichment_breakdown && typeof existing.data.enrichment_breakdown === 'object'
+    ? existing.data.enrichment_breakdown
+    : {}
+  const attemptCount = Number(currentBreakdown.attemptCount ?? 0) + 1
+  const hasMarketData = Boolean(patch.hasMarketData ?? existing.data?.has_market_data)
+  const hasFixtureDetail = Boolean(patch.hasFixtureDetail ?? existing.data?.has_fixture_detail)
+  const failed = String(patch.status ?? '') === 'FAILED'
+  const skippedNoCoverage = String(patch.status ?? '') === 'SKIPPED_NO_COVERAGE'
+  const dataReadinessStatus = getDataReadinessStatus({
+    hasMarketData,
+    hasFixtureDetail,
+    failed,
+    skippedNoCoverage,
+    attempted: true,
+  })
+  const nextBreakdown = {
+    ...currentBreakdown,
+    ...(patch.odds ? { odds: patch.odds } : {}),
+    ...(patch.fixtureDetail ? { fixtureDetail: patch.fixtureDetail } : {}),
+    ...(patch.standings ? { standings: patch.standings } : {}),
+    ...(patch.form ? { form: patch.form } : {}),
+    fixtureId: patch.fixtureId ?? currentBreakdown.fixtureId ?? null,
+    attemptCount,
+    updatedAt: now,
+  }
+  const updateResult = await supabase
+    .from('football_matches')
+    .update({
+      enrichment_attempt_count: attemptCount,
+      enrichment_last_attempt_at: now,
+      enrichment_next_retry_at: dataReadinessStatus === 'READY' ? null : new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      enrichment_error: patch.error ? String(patch.error) : null,
+      enrichment_breakdown: nextBreakdown,
+      enrichment_updated_at: now,
+      odds_updated_at: hasMarketData ? now : null,
+      has_market_data: hasMarketData,
+      has_fixture_detail: hasFixtureDetail,
+      data_readiness_score: calculateDataReadinessScore({ hasMarketData, hasFixtureDetail, failed, skippedNoCoverage }),
+      data_readiness_status: dataReadinessStatus,
+    })
+    .eq('id', matchId)
+  if (updateResult.error) {
+    if (isMissingColumnError(updateResult.error)) return
+    throw updateResult.error
+  }
+}
+
+function getDataReadinessStatus({ hasMarketData, hasFixtureDetail, failed = false, skippedNoCoverage = false, attempted = false }: Record<string, unknown>) {
+  if (failed) return 'FAILED'
+  if (skippedNoCoverage) return 'SKIPPED_NO_COVERAGE'
+  if (hasMarketData && hasFixtureDetail) return 'READY'
+  if (hasMarketData) return 'PARTIAL'
+  if (attempted) return 'NO_MARKET_DATA'
+  return 'PENDING'
+}
+
+function calculateDataReadinessScore({ hasMarketData, hasFixtureDetail, failed = false, skippedNoCoverage = false }: Record<string, unknown>) {
+  if (failed) return 0
+  if (skippedNoCoverage) return 15
+  return (hasMarketData ? 70 : 0) + (hasFixtureDetail ? 30 : 0)
 }
 
 async function fetchApiFootballOdds(fixtureId: number) {
@@ -3823,8 +4023,46 @@ function buildDailyPhaseDetails(phase: string, results: Array<any>) {
       roundsProcessed: Number(results[2]?.processed ?? 0),
     }
   }
-  if (phase === 'ranking') return { rankingStatus: Number(results[0]?.failed ?? 0) > 0 ? 'failed' : 'success' }
+  if (phase === 'fixture-enrichment') {
+    const fixtureDetail = results[0]?.fixtureDetail ?? {}
+    const odds = results[1] ?? {}
+    return {
+      fixtureDetail: {
+        attempted: Number(fixtureDetail.attempted ?? 0),
+        success: Number(fixtureDetail.success ?? 0),
+        rowsSaved: Number(fixtureDetail.rowsSaved ?? 0),
+        empty: Number(fixtureDetail.empty ?? 0),
+        error: Number(fixtureDetail.error ?? 0),
+      },
+      odds: {
+        attempted: Number(odds.oddsAttempted ?? odds.processedFixtures ?? 0),
+        success: Number(odds.processedFixtureIds?.length ?? 0),
+        rowsSaved: Number(odds.oddsRowsSaved ?? odds.rowsSaved ?? 0),
+        empty: Number(odds.oddsEmptyFixtures ?? odds.emptyFixtures ?? 0),
+        error: Number(odds.oddsFailedFixtures ?? odds.failedFixtures ?? 0),
+      },
+      oddsAttempted: Number(odds.oddsAttempted ?? odds.processedFixtures ?? 0),
+      oddsRowsSaved: Number(odds.oddsRowsSaved ?? odds.rowsSaved ?? 0),
+      oddsEmptyFixtures: Number(odds.oddsEmptyFixtures ?? odds.emptyFixtures ?? 0),
+      oddsFailedFixtures: Number(odds.oddsFailedFixtures ?? odds.failedFixtures ?? 0),
+      partial: isFixtureEnrichmentPartial(results, {}),
+    }
+  }
+  if (phase === 'ranking') {
+    return {
+      rankingStatus: Number(results[0]?.failed ?? 0) > 0 ? 'failed' : results[0]?.partial ? 'partial' : 'success',
+      rankingReadiness: results[0]?.rankingReadiness ?? null,
+    }
+  }
   return {}
+}
+
+function isFixtureEnrichmentPartial(results: Array<any>, endpointBreakdown: Record<string, FootballEnrichmentEndpointCounter>) {
+  const oddsResult = results[1] ?? {}
+  const oddsAttempted = Number(oddsResult.oddsAttempted ?? oddsResult.processedFixtures ?? endpointBreakdown?.['/odds']?.called ?? 0)
+  const oddsRowsSaved = Number(oddsResult.oddsRowsSaved ?? oddsResult.rowsSaved ?? endpointBreakdown?.['/odds']?.rowsSaved ?? 0)
+  const fixtureRowsSaved = Number(results[0]?.rowsSaved ?? 0)
+  return (oddsAttempted > 0 && oddsRowsSaved === 0) || (Number(results[0]?.totalCandidates ?? 0) > 0 && fixtureRowsSaved === 0)
 }
 
 function toSyncMeta(meta: any) {
@@ -5458,7 +5696,13 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
     .select(`
       id,
       kickoff_at,
-      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_score, data_validation_status)
+      api_sports_fixture_id,
+      enrichment_status,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
+      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_score, data_validation_status, data_validation_notes, raw)
     `)
     .gte('kickoff_at', range.startUtc)
     .lt('kickoff_at', range.endUtc)
@@ -5470,11 +5714,14 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
 
   const matchIds = (result.data ?? []).map((match: any) => match.id).filter(Boolean)
   if (!matchIds.length) return 0
+  const oddsMatchIds = await fetchMatchIdsWithOdds(matchIds)
 
   const rows = (result.data ?? [])
     .map((match: any) => {
       const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
-      return analysis ? { matchId: match.id, analysis } : null
+      if (!analysis) return null
+      const readiness = classifyRankingReadiness(match, oddsMatchIds)
+      return { matchId: match.id, analysis, readiness }
     })
     .filter(Boolean)
 
@@ -5489,21 +5736,23 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
   }
 
   if (!rows.length) return 0
+  await markInsufficientMarketDataRows(rows)
 
   const ranked = rows
     .filter((row: any) => String(row.analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID')
     .sort((a: any, b: any) => {
-      const recommendationDiff = recommendationPriority(a.analysis.recommendation) - recommendationPriority(b.analysis.recommendation)
+      const readinessDiff = rankingReadinessPriority(a.readiness) - rankingReadinessPriority(b.readiness)
+      const recommendationDiff = recommendationPriority(getCoverageAwareRecommendation(a)) - recommendationPriority(getCoverageAwareRecommendation(b))
       const rankingDiff = Number(b.analysis.ranking_score ?? 0) - Number(a.analysis.ranking_score ?? 0)
       const confidenceDiff = Number(b.analysis.calibrated_confidence_score ?? b.analysis.confidence_score ?? 0) - Number(a.analysis.calibrated_confidence_score ?? a.analysis.confidence_score ?? 0)
       const riskDiff = Number(a.analysis.risk_score ?? 100) - Number(b.analysis.risk_score ?? 100)
-      return recommendationDiff || rankingDiff || confidenceDiff || riskDiff
+      return readinessDiff || recommendationDiff || rankingDiff || confidenceDiff || riskDiff
     })
     .slice(0, 10)
 
   let updated = 0
   for (const [index, row] of ranked.entries()) {
-    const recommendation = String(row.analysis.recommendation ?? 'NO BET').toUpperCase()
+    const recommendation = getCoverageAwareRecommendation(row)
     const updateResult = await supabase
       .from('match_analysis')
       .update({
@@ -5522,6 +5771,74 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
   }
 
   return updated
+}
+
+function classifyRankingReadiness(match: any, oddsMatchIds: Set<string>) {
+  const hasStoredOdds = oddsMatchIds.has(match.id)
+  const hasMarketData = Boolean(match.has_market_data || match.odds_updated_at || hasStoredOdds)
+  const status = String(match.data_readiness_status ?? '').toUpperCase()
+  if (status === 'FAILED') return 'FAILED'
+  if (status === 'SKIPPED_NO_COVERAGE') return 'SKIPPED_NO_COVERAGE'
+  if (status === 'PENDING' && !hasMarketData) return 'PENDING'
+  if (status === 'NO_MARKET_DATA' && !hasMarketData) return 'NO_MARKET_DATA'
+  if (hasMarketData && Boolean(match.has_fixture_detail)) return 'READY'
+  if (hasMarketData) return 'PARTIAL'
+  if (match.enrichment_status && match.enrichment_status !== 'PENDING') return 'NO_MARKET_DATA'
+  return 'PENDING'
+}
+
+function rankingReadinessPriority(status: string) {
+  if (status === 'READY') return 1
+  if (status === 'PARTIAL') return 2
+  if (status === 'NO_MARKET_DATA') return 3
+  if (status === 'SKIPPED_NO_COVERAGE') return 4
+  if (status === 'PENDING') return 5
+  if (status === 'FAILED') return 6
+  return 5
+}
+
+function getCoverageAwareRecommendation(row: any) {
+  const readiness = String(row?.readiness ?? '').toUpperCase()
+  if (!['READY', 'PARTIAL'].includes(readiness)) return 'NO BET'
+  return String(row?.analysis?.recommendation ?? 'NO BET').toUpperCase()
+}
+
+async function markInsufficientMarketDataRows(rows: Array<any>) {
+  for (const row of rows) {
+    if (['READY', 'PARTIAL'].includes(String(row.readiness ?? '').toUpperCase())) continue
+    const raw = row.analysis.raw && typeof row.analysis.raw === 'object' ? row.analysis.raw : {}
+    const updateResult = await supabase
+      .from('match_analysis')
+      .update({
+        recommendation: 'NO BET',
+        data_validation_status: 'PARTIAL',
+        data_validation_notes: appendValidationNote(row.analysis.data_validation_notes, 'INSUFFICIENT_MARKET_DATA'),
+        analysis_summary: 'INSUFFICIENT_MARKET_DATA: market odds/line data is not ready, so this match cannot be promoted to BET.',
+        raw: {
+          ...raw,
+          analysis_status: 'INSUFFICIENT_DATA',
+          recommendation_reason: 'Market odds/line data is not ready, so this match is kept as NO BET instead of being promoted.',
+          data_readiness_status: row.readiness,
+          ranking_gate: 'INSUFFICIENT_MARKET_DATA',
+        },
+      })
+      .eq('match_id', row.matchId)
+    if (updateResult.error) {
+      if (isMissingColumnError(updateResult.error)) return
+      throw updateResult.error
+    }
+    row.analysis.recommendation = 'NO BET'
+    row.analysis.data_validation_status = 'PARTIAL'
+  }
+}
+
+function appendValidationNote(current: unknown, note: string) {
+  const parts = String(current ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (!parts.includes(note)) parts.push(note)
+  return parts.join(', ')
 }
 
 async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc: string }) {
@@ -5648,6 +5965,53 @@ async function countAnalyzedCandidates(range: { startUtc: string; endUtc: string
     const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
     return analysis && String(analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID'
   }).length
+}
+
+async function getRankingReadinessSummary(range: { startUtc: string; endUtc: string }) {
+  const result = await supabase
+    .from('football_matches')
+    .select('id, enrichment_status, odds_updated_at, has_market_data, has_fixture_detail, data_readiness_status')
+    .gte('kickoff_at', range.startUtc)
+    .lt('kickoff_at', range.endUtc)
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) {
+      const fallback = await supabase
+        .from('football_matches')
+        .select('id, enrichment_status, odds_updated_at')
+        .gte('kickoff_at', range.startUtc)
+        .lt('kickoff_at', range.endUtc)
+      if (fallback.error) return { totalFixtures: 0, ready: 0, partial: 0, noMarketData: 0, pending: 0, failed: 0 }
+      const ids = (fallback.data ?? []).map((row: any) => row.id).filter(Boolean)
+      const oddsIds = await fetchMatchIdsWithOdds(ids)
+      return summarizeRankingReadiness(fallback.data ?? [], oddsIds)
+    }
+    throw result.error
+  }
+
+  const ids = (result.data ?? []).map((row: any) => row.id).filter(Boolean)
+  const oddsIds = await fetchMatchIdsWithOdds(ids)
+  return summarizeRankingReadiness(result.data ?? [], oddsIds)
+}
+
+function summarizeRankingReadiness(rows: Array<any>, oddsIds: Set<string>) {
+  const summary = {
+    totalFixtures: rows.length,
+    ready: 0,
+    partial: 0,
+    noMarketData: 0,
+    pending: 0,
+    failed: 0,
+  }
+  for (const row of rows) {
+    const status = classifyRankingReadiness(row, oddsIds)
+    if (status === 'READY') summary.ready += 1
+    else if (status === 'PARTIAL') summary.partial += 1
+    else if (status === 'FAILED') summary.failed += 1
+    else if (status === 'PENDING') summary.pending += 1
+    else summary.noMarketData += 1
+  }
+  return summary
 }
 
 async function fetchTopSelectionsDebug(range: { startUtc: string; endUtc: string }) {
@@ -7199,7 +7563,7 @@ function normalizeSyncMode(value: unknown) {
 }
 
 function getSyncLimit(value: unknown, mode = 'manual') {
-  if (mode === 'sync-odds') return getPositiveLimit(value, 3, 5)
+  if (mode === 'sync-odds') return getPositiveLimit(value, 10, maxFootballEnrichmentLimit)
   if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
   if (isResultPipelineMode(mode)) return getPositiveLimit(value, 10, 20)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
