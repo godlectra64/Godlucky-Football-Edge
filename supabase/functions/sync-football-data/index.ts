@@ -191,6 +191,7 @@ Deno.serve(async (request) => {
         runningSteps: modeResult.runningSteps ?? null,
         nextPhase: modeResult.nextPhase ?? null,
         retryAfterSeconds: modeResult.retryAfterSeconds ?? null,
+        rankingReadiness: modeResult.rankingReadiness ?? modeResult.finalSummary?.rankingReadiness ?? null,
         finalSummary: modeResult.finalSummary ?? null,
         nextAction: modeResult.nextAction ?? null,
         nextRequestExample: modeResult.nextRequestExample ?? null,
@@ -822,7 +823,7 @@ async function runNextDailySyncStep(state: any, body: Record<string, unknown>, d
         steps: state.steps,
       }
     }
-    const run = await markDailySyncRunFinished(state.run.id, state.steps)
+    const run = await markDailySyncRunFinished(state.run.id, state.steps, state.run.run_date)
     return { run, step: null, nextStep: null, summary: emptyDailyStepSummary('complete', 'success'), steps: state.steps }
   }
   return runDailySyncStep(state.run, step, body, dayRange, context)
@@ -936,7 +937,7 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
       current_step: step.step_order,
       finished_at: runStatus === 'success' || runStatus === 'failed' ? finishedAt : null,
       last_error: summary.message ?? null,
-      summary: buildDailyRunSummary(freshState.steps, summary),
+      summary: await buildDailyRunSummaryWithDb(freshState.steps, getBangkokDayRange(run.run_date), summary),
     })
     .eq('id', run.id)
     .select('*')
@@ -1003,11 +1004,12 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
   }
 }
 
-async function markDailySyncRunFinished(runId: string, steps: Array<any>) {
+async function markDailySyncRunFinished(runId: string, steps: Array<any>, runDate?: string) {
   const status = getDailyRunStatus(steps)
+  const dayRange = runDate ? getBangkokDayRange(runDate) : getBangkokDayRange()
   const result = await supabase
     .from('api_football_daily_sync_runs')
-    .update({ status, finished_at: new Date().toISOString(), summary: buildDailyRunSummary(steps) })
+    .update({ status, finished_at: new Date().toISOString(), summary: await buildDailyRunSummaryWithDb(steps, dayRange) })
     .eq('id', runId)
     .select('*')
     .single()
@@ -1015,9 +1017,11 @@ async function markDailySyncRunFinished(runId: string, steps: Array<any>) {
   return result.data
 }
 
-function buildDailySyncStartResponse(mode: string, state: any, durationMs: number) {
+async function buildDailySyncStartResponse(mode: string, state: any, durationMs: number) {
   const nextStep = findNextDailySyncStep(state.steps)
   const waitingRetry = !nextStep ? findWaitingRetryStep(state.steps) : null
+  const dayRange = getBangkokDayRange(state.run.run_date)
+  const finalSummary = await buildFinalDailySummaryWithDb(state.steps, dayRange, state.run.summary?.finalSummary)
   return buildDailySyncSafeResponse({
     mode,
     runId: state.run.id,
@@ -1031,15 +1035,18 @@ function buildDailySyncStartResponse(mode: string, state: any, durationMs: numbe
     rateLimited: false,
     durationMs,
     steps: state.steps,
-    finalSummary: state.run.summary?.finalSummary ?? buildFinalDailySummary(state.steps),
+    finalSummary,
+    rankingReadiness: finalSummary.rankingReadiness,
     nextAction: nextStep ? 'call daily-sync-next' : waitingRetry ? 'Retry after next_retry_at' : 'daily sync already completed',
     nextRequestExample: nextStep || waitingRetry ? { mode: 'daily-sync-next', runId: state.run.id } : { mode: 'daily-sync-status', runId: state.run.id },
   })
 }
 
-function buildDailySyncStatusResponse(mode: string, state: any, durationMs: number, message = '') {
+async function buildDailySyncStatusResponse(mode: string, state: any, durationMs: number, message = '') {
   const nextStep = findNextDailySyncStep(state.steps)
   const waitingRetry = !nextStep ? findWaitingRetryStep(state.steps) : null
+  const dayRange = getBangkokDayRange(state.run.run_date)
+  const finalSummary = await buildFinalDailySummaryWithDb(state.steps, dayRange, state.run.summary?.finalSummary)
   return buildDailySyncSafeResponse({
     mode,
     runId: state.run.id,
@@ -1053,17 +1060,22 @@ function buildDailySyncStatusResponse(mode: string, state: any, durationMs: numb
     rateLimited: state.steps.some((step: any) => step.rate_limited),
     durationMs,
     steps: state.steps,
-    finalSummary: state.run.summary?.finalSummary ?? buildFinalDailySummary(state.steps),
+    finalSummary,
+    rankingReadiness: finalSummary.rankingReadiness,
     nextAction: nextStep ? 'call daily-sync-next again' : waitingRetry ? 'Retry after next_retry_at' : message || 'daily sync complete',
     nextRequestExample: nextStep || waitingRetry ? { mode: 'daily-sync-next', runId: state.run.id } : { mode: 'daily-sync-status', runId: state.run.id },
   })
 }
 
-function buildDailySyncStepResponse(mode: string, result: any, providerResult: any, durationMs: number, stepResults: Array<any> = []) {
+async function buildDailySyncStepResponse(mode: string, result: any, providerResult: any, durationMs: number, stepResults: Array<any> = []) {
   const summary = result?.summary ?? emptyDailyStepSummary(result?.step?.phase ?? null, 'success')
   const nextStep = result?.nextStep
   const steps = result?.steps ?? []
   const waitingRetry = !nextStep ? findWaitingRetryStep(steps) : null
+  const dayRange = result?.run?.run_date ? getBangkokDayRange(result.run.run_date) : getBangkokDayRange()
+  const dbFinalSummary = await buildFinalDailySummaryWithDb(steps, dayRange, result?.run?.summary?.finalSummary)
+  const finalSummary = result?.run?.summary?.finalSummary || result?.run?.status === 'success' ? dbFinalSummary : null
+  const rankingReadiness = summary.rankingReadiness ?? summary.details?.rankingReadiness ?? dbFinalSummary.rankingReadiness ?? null
   return {
     providerResult,
     runId: result?.run?.id ?? null,
@@ -1083,7 +1095,7 @@ function buildDailySyncStepResponse(mode: string, result: any, providerResult: a
     enrichedMatches: [],
     processedMatches: [],
     skippedEndpoints: [],
-    rankingReadiness: summary.rankingReadiness ?? summary.details?.rankingReadiness ?? null,
+    rankingReadiness,
     rateLimited: summary.rateLimited,
     durationMs,
     steps: stepResults.length ? stepResults : [summary],
@@ -1091,7 +1103,7 @@ function buildDailySyncStepResponse(mode: string, result: any, providerResult: a
     ...calculateRunProgress(steps),
     nextPhase: nextStep?.phase ?? waitingRetry?.phase ?? null,
     retryAfterSeconds: getRetryAfterSeconds(waitingRetry),
-    finalSummary: result?.run?.summary?.finalSummary ?? (result?.run?.status === 'success' ? buildFinalDailySummary(steps) : null),
+    finalSummary,
     nextAction: nextStep ? (mode === 'daily-sync-auto' ? 'Call this same endpoint again later' : 'call daily-sync-next again') : waitingRetry ? 'Retry after next_retry_at' : 'No action required',
     nextRequestExample: nextStep || waitingRetry ? { mode: mode === 'daily-sync-auto' ? 'daily-sync-auto' : 'daily-sync-next', runId: result?.run?.id, autoAdvance: true, maxStepsPerRequest: 2 } : { mode: 'daily-sync-status', runId: result?.run?.id },
   }
@@ -1219,6 +1231,21 @@ function buildDailyRunSummary(steps: Array<any>, latest: any = null) {
   }
 }
 
+async function buildDailyRunSummaryWithDb(steps: Array<any>, dayRange: ReturnType<typeof getBangkokDayRange>, latest: any = null) {
+  const finalSummary = await buildFinalDailySummaryWithDb(steps, dayRange)
+  return {
+    completed: (steps ?? []).filter((step) => ['success', 'skipped'].includes(step.status)).length,
+    failed: countDailySteps(steps, 'failed'),
+    partial: countDailySteps(steps, 'partial'),
+    processed: sumStepField(steps, 'processed'),
+    rowsSaved: sumStepField(steps, 'rows_saved'),
+    skipped: sumStepField(steps, 'skipped'),
+    rateLimited: (steps ?? []).some((step) => step.rate_limited),
+    finalSummary,
+    latest,
+  }
+}
+
 function emptyDailyStepSummary(mode: string | null, status: DailyFullSyncStepSummary['status'], message = '') {
   return {
     step: 0,
@@ -1288,6 +1315,176 @@ function buildFinalDailySummary(steps: Array<any>) {
     failedEndpoints: aggregateEndpointNames(steps, 'failed'),
     skippedEndpoints: aggregateEndpointNames(steps, 'skipped'),
     rateLimited: (steps ?? []).some((step) => step.rate_limited || step.summary?.rateLimited),
+  }
+}
+
+async function buildFinalDailySummaryWithDb(steps: Array<any>, dayRange: ReturnType<typeof getBangkokDayRange>, storedSummary: any = null) {
+  const base = {
+    ...buildFinalDailySummary(steps),
+    ...(storedSummary && typeof storedSummary === 'object' ? storedSummary : {}),
+  }
+  const dbSummary = await getDailySyncReadinessDebugSummary(dayRange).catch((error) => {
+    console.warn('daily sync DB readiness summary failed', { message: error instanceof Error ? error.message : 'summary failed' })
+    return null
+  })
+  return mergeDailySyncDbSummary(base, dbSummary)
+}
+
+function mergeDailySyncDbSummary(summary: any, dbSummary: any) {
+  if (!dbSummary) {
+    return {
+      ...summary,
+      rankingReadiness: summary?.rankingReadiness ?? emptyRankingReadinessSummary(),
+      fixtureEnrichment: summary?.fixtureEnrichment && Object.keys(summary.fixtureEnrichment).length ? summary.fixtureEnrichment : emptyFixtureEnrichmentSummary(),
+      analysisSummary: summary?.analysisSummary ?? emptyAnalysisDailySummary(),
+    }
+  }
+  return {
+    ...summary,
+    rankingReadiness: dbSummary.rankingReadiness,
+    fixtureEnrichment: {
+      ...(summary?.fixtureEnrichment && typeof summary.fixtureEnrichment === 'object' ? summary.fixtureEnrichment : {}),
+      ...dbSummary.fixtureEnrichment,
+    },
+    analysisSummary: dbSummary.analysisSummary,
+  }
+}
+
+async function getDailySyncReadinessDebugSummary(dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      kickoff_at,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
+      analysis:match_analysis(recommendation, confidence_score, ranking_score, analysis_status, market_data_used, odds_rows_used, raw)
+    `)
+    .gte('kickoff_at', dayRange.startUtc)
+    .lt('kickoff_at', dayRange.endUtc)
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return getDailySyncReadinessDebugSummaryLegacy(dayRange)
+    throw result.error
+  }
+  return summarizeDailySyncReadinessRows(result.data ?? [])
+}
+
+async function getDailySyncReadinessDebugSummaryLegacy(dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      kickoff_at,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
+      analysis:match_analysis(recommendation, confidence_score, ranking_score, raw)
+    `)
+    .gte('kickoff_at', dayRange.startUtc)
+    .lt('kickoff_at', dayRange.endUtc)
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return {
+      rankingReadiness: emptyRankingReadinessSummary(),
+      fixtureEnrichment: emptyFixtureEnrichmentSummary(),
+      analysisSummary: emptyAnalysisDailySummary(),
+    }
+    throw result.error
+  }
+  return summarizeDailySyncReadinessRows(result.data ?? [])
+}
+
+async function summarizeDailySyncReadinessRows(matches: Array<any>) {
+  const matchIds = (matches ?? []).map((row) => row.id).filter(Boolean)
+  const oddsRows = matchIds.length
+    ? await supabase.from('football_match_odds').select('match_id').in('match_id', matchIds)
+    : { data: [], error: null }
+  if (oddsRows.error) {
+    if (isMissingColumnError(oddsRows.error)) return summarizeDailySyncReadinessRowsWithOdds(matches, [])
+    throw oddsRows.error
+  }
+  return summarizeDailySyncReadinessRowsWithOdds(matches, oddsRows.data ?? [])
+}
+
+function summarizeDailySyncReadinessRowsWithOdds(matches: Array<any>, oddsRows: Array<any>) {
+  const oddsMatchIds = new Set((oddsRows ?? []).map((row) => row.match_id).filter(Boolean))
+  const rankingReadiness = emptyRankingReadinessSummary()
+  const analysisSummary = emptyAnalysisDailySummary()
+
+  rankingReadiness.totalFixtures = matches.length
+  for (const match of matches ?? []) {
+    const readiness = classifyRankingReadiness(match, oddsMatchIds)
+    if (readiness === 'READY') rankingReadiness.ready += 1
+    else if (readiness === 'PARTIAL') rankingReadiness.partial += 1
+    else if (readiness === 'FAILED') rankingReadiness.failed += 1
+    else if (readiness === 'PENDING') rankingReadiness.pending += 1
+    else rankingReadiness.noMarketData += 1
+
+    if (match.has_market_data || match.odds_updated_at || oddsMatchIds.has(match.id)) rankingReadiness.hasMarketDataCount += 1
+    if (match.has_fixture_detail) rankingReadiness.hasFixtureDetailCount += 1
+
+    const analysis = getAnalysis(match)
+    const recommendation = String(analysis?.recommendation ?? '').toUpperCase()
+    if (recommendation === 'BET') analysisSummary.bet += 1
+    else if (recommendation === 'LEAN') analysisSummary.lean += 1
+    else if (recommendation === 'NO BET') analysisSummary.noBet += 1
+
+    const marketDataUsed = Boolean(analysis?.market_data_used ?? analysis?.raw?.market_data_used)
+    if (marketDataUsed) analysisSummary.marketDataUsed += 1
+    if (!marketDataUsed && readiness === 'NO_MARKET_DATA') analysisSummary.insufficientMarketData += 1
+    if ((match.has_market_data || match.odds_updated_at || oddsMatchIds.has(match.id)) && analysisLooksDefaultStale(analysis)) analysisSummary.defaultAnalysisRemaining += 1
+  }
+
+  const fixtureEnrichment = {
+    oddsRowsCount: oddsRows.length,
+    fixturesWithMarketData: rankingReadiness.hasMarketDataCount,
+    fixturesWithoutMarketData: rankingReadiness.noMarketData,
+    readyFixtures: rankingReadiness.ready,
+    partialFixtures: rankingReadiness.partial,
+    noMarketDataFixtures: rankingReadiness.noMarketData,
+    pendingFixtures: rankingReadiness.pending,
+  }
+
+  return { rankingReadiness, fixtureEnrichment, analysisSummary }
+}
+
+function emptyRankingReadinessSummary() {
+  return {
+    totalFixtures: 0,
+    ready: 0,
+    partial: 0,
+    noMarketData: 0,
+    pending: 0,
+    failed: 0,
+    hasMarketDataCount: 0,
+    hasFixtureDetailCount: 0,
+  }
+}
+
+function emptyFixtureEnrichmentSummary() {
+  return {
+    oddsRowsCount: 0,
+    fixturesWithMarketData: 0,
+    fixturesWithoutMarketData: 0,
+    readyFixtures: 0,
+    partialFixtures: 0,
+    noMarketDataFixtures: 0,
+    pendingFixtures: 0,
+  }
+}
+
+function emptyAnalysisDailySummary() {
+  return {
+    bet: 0,
+    lean: 0,
+    noBet: 0,
+    marketDataUsed: 0,
+    insufficientMarketData: 0,
+    defaultAnalysisRemaining: 0,
   }
 }
 

@@ -522,11 +522,11 @@ async function checkTodayDataCoverage() {
   const { startUtc, endUtc, dateKey } = getBangkokDayRange()
   const { data: matches, error } = await supabase
     .from('football_matches')
-    .select('id, odds_updated_at, enrichment_status, data_readiness_status, analysis:match_analysis(recommendation)')
+    .select('id, odds_updated_at, enrichment_status, data_readiness_status, has_market_data, has_fixture_detail, analysis:match_analysis(recommendation, confidence_score, ranking_score, analysis_status, market_data_used, raw)')
     .gte('kickoff_at', startUtc)
     .lt('kickoff_at', endUtc)
   if (error) {
-    if (isOptionalV2Missing(error)) return { count: 0, warning: error.message }
+    if (isOptionalV2Missing(error)) return checkTodayDataCoverageLegacy(startUtc, endUtc, dateKey)
     return { error }
   }
 
@@ -539,18 +539,66 @@ async function checkTodayDataCoverage() {
     return { error: oddsRows.error }
   }
 
-  const enrichment = countBy(matches ?? [], (row) => row.enrichment_status ?? 'NULL')
+  const coverageSummary = buildVerifyCoverageSummary(matches ?? [], oddsRows.count ?? 0)
+  const allNoBet = (matches ?? []).length > 0 && Object.keys(coverageSummary.recommendation).every((key) => ['NO BET', 'NO_ANALYSIS'].includes(key))
+  const warning = allNoBet && Number(oddsRows.count ?? 0) === 0
+    ? `coverage issue on ${dateKey}: ${formatVerifyCoverageSummary(coverageSummary)}; this is a data coverage issue, not a model issue`
+    : `coverage ${dateKey}: ${formatVerifyCoverageSummary(coverageSummary)}`
+  return { count: 0, warning }
+}
+
+async function checkTodayDataCoverageLegacy(startUtc, endUtc, dateKey) {
+  const { data: matches, error } = await supabase
+    .from('football_matches')
+    .select('id, odds_updated_at, enrichment_status, data_readiness_status, analysis:match_analysis(recommendation, confidence_score, ranking_score, raw)')
+    .gte('kickoff_at', startUtc)
+    .lt('kickoff_at', endUtc)
+  if (error) {
+    if (isOptionalV2Missing(error)) return { count: 0, warning: error.message }
+    return { error }
+  }
+  const matchIds = (matches ?? []).map((row) => row.id).filter(Boolean)
+  const oddsRows = matchIds.length
+    ? await supabase.from('football_match_odds').select('id', { count: 'exact', head: true }).in('match_id', matchIds)
+    : { count: 0, error: null }
+  if (oddsRows.error) {
+    if (isOptionalV2Missing(oddsRows.error)) return { count: 0, warning: oddsRows.error.message }
+    return { error: oddsRows.error }
+  }
+  return { count: 0, warning: `coverage ${dateKey}: ${formatVerifyCoverageSummary(buildVerifyCoverageSummary(matches ?? [], oddsRows.count ?? 0))}` }
+}
+
+function buildVerifyCoverageSummary(matches, oddsRowsCount) {
   const readiness = countBy(matches ?? [], (row) => row.data_readiness_status ?? 'UNKNOWN')
   const recommendation = countBy(matches ?? [], (row) => {
     const analysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
     return analysis?.recommendation ?? 'NO_ANALYSIS'
   })
   const oddsUpdatedNull = (matches ?? []).filter((row) => !row.odds_updated_at).length
-  const allNoBet = (matches ?? []).length > 0 && Object.keys(recommendation).every((key) => ['NO BET', 'NO_ANALYSIS'].includes(key))
-  const warning = allNoBet && Number(oddsRows.count ?? 0) === 0
-    ? `coverage issue on ${dateKey}: fixtures=${matches.length}, oddsRows=0, oddsUpdatedAtNull=${oddsUpdatedNull}, enrichment=${JSON.stringify(enrichment)}, readiness=${JSON.stringify(readiness)}, recommendation=${JSON.stringify(recommendation)}; this is a data coverage issue, not a model issue`
-    : `coverage ${dateKey}: fixtures=${matches.length}, oddsRows=${oddsRows.count ?? 0}, oddsUpdatedAtNull=${oddsUpdatedNull}, enrichment=${JSON.stringify(enrichment)}, readiness=${JSON.stringify(readiness)}, recommendation=${JSON.stringify(recommendation)}`
-  return { count: 0, warning }
+  let marketDataUsed = 0
+  let insufficientMarketData = 0
+  let defaultAnalysisRemaining = 0
+  for (const match of matches ?? []) {
+    const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
+    if (analysis?.market_data_used || analysis?.raw?.market_data_used) marketDataUsed += 1
+    const readinessStatus = String(match.data_readiness_status ?? '').toUpperCase()
+    if (!Boolean(analysis?.market_data_used || analysis?.raw?.market_data_used) && readinessStatus === 'NO_MARKET_DATA') insufficientMarketData += 1
+    if (Boolean(match.has_market_data || match.odds_updated_at) && analysisAppearsDefault(analysis)) defaultAnalysisRemaining += 1
+  }
+  return {
+    fixtures: matches.length,
+    oddsRows: Number(oddsRowsCount ?? 0),
+    oddsUpdatedNull,
+    readiness,
+    recommendation,
+    marketDataUsed,
+    insufficientMarketData,
+    defaultAnalysisRemaining,
+  }
+}
+
+function formatVerifyCoverageSummary(summary) {
+  return `fixtures=${summary.fixtures}, oddsRows=${summary.oddsRows}, oddsUpdatedAtNull=${summary.oddsUpdatedNull}, readiness=${JSON.stringify(summary.readiness)}, recommendation=${JSON.stringify(summary.recommendation)}, marketDataUsed=${summary.marketDataUsed}, insufficientMarketData=${summary.insufficientMarketData}, defaultAnalysisRemaining=${summary.defaultAnalysisRemaining}`
 }
 
 async function checkMarketReadyDefaultAnalysis() {
