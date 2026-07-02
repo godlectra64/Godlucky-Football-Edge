@@ -79,6 +79,7 @@ const footballEnrichmentChunkSize = 2
 const footballEnrichmentModes = [
   'coverage',
   'rounds',
+  'fixture-enrichment',
   'fixture-enrich',
   'injuries',
   'squads',
@@ -126,7 +127,16 @@ Deno.serve(async (request) => {
 
   try {
     const body = await safeJson(request)
+    const requestedMode = normalizeRequestedMode(body.mode)
     const mode = normalizeSyncMode(body.mode)
+    if (!mode) {
+      return json({
+        ok: false,
+        code: 'UNKNOWN_SYNC_MODE',
+        mode: requestedMode,
+        supportedModes: getSupportedSyncModes(),
+      }, 400)
+    }
     responseMode = mode
     responseProviderName = isFootballEnrichmentMode(mode) ? 'api-football' : requestedProviderName
     const authError = await getServiceAuthError(request, mode, body)
@@ -143,6 +153,8 @@ Deno.serve(async (request) => {
       const modeResult = await runFootballEnrichmentMode(mode, body, dayRange, limit)
       return json({
         ok: true,
+        requestedMode,
+        resolvedMode: mode,
         partial: modeResult.partial ?? false,
         provider: modeResult.provider ?? (isResultPipelineMode(mode) ? 'supabase' : 'api-football'),
         mode,
@@ -162,6 +174,8 @@ Deno.serve(async (request) => {
         totalCandidates: modeResult.totalCandidates,
         totalFetched: modeResult.totalFetched,
         endpointCoverage: modeResult.endpointCoverage,
+        endpointBreakdown: modeResult.endpointBreakdown,
+        details: modeResult.details,
         steps: modeResult.steps ?? [],
         limits: modeResult.limits ?? { limit },
         skippedEndpoints: modeResult.skippedEndpoints,
@@ -313,6 +327,8 @@ Deno.serve(async (request) => {
 
     return json({
       ok: true,
+      requestedMode,
+      resolvedMode: mode,
       provider: primaryProvider.name,
       mode,
       fallbackUsed: providerResult.fallbackUsed,
@@ -515,6 +531,36 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
     return runDailySyncOrchestratorMode(mode, body, dayRange, context, providerResult, started)
   }
 
+  if (mode === 'fixture-enrichment') {
+    const before = cloneEndpointCounters(context.endpoints)
+    const summary = await executeDailySyncPhase(2, 'fixture-enrichment', body, dayRange, context, before)
+    return {
+      providerResult,
+      phase: 'fixture-enrichment',
+      status: summary.status,
+      partial: Boolean(summary.partial),
+      totalCandidates: summary.totalCandidates,
+      totalFetched: summary.totalCandidates,
+      processed: summary.processed,
+      rowsSaved: summary.rowsSaved,
+      failed: summary.failed,
+      skipped: summary.skipped,
+      skippedByLimit: 0,
+      failures: summary.failed ? [{ message: summary.message ?? 'fixture-enrichment partial' }] : [],
+      rankedSelectionRows: 0,
+      topSelections: [],
+      endpointCoverage: context.endpoints,
+      endpointBreakdown: summary.endpointBreakdown,
+      details: summary.details,
+      enrichedMatches: [],
+      processedMatches: [],
+      skippedEndpoints: context.skippedEndpoints,
+      rateLimited: summary.rateLimited,
+      durationMs: Date.now() - started,
+      steps: [summary],
+    }
+  }
+
   let processed = 0
   let totalCandidates = 0
   if (mode === 'enrich-all') {
@@ -541,6 +587,8 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       rankedSelectionRows: 0,
       topSelections: [],
       endpointCoverage: context.endpoints,
+      endpointBreakdown: result.endpointBreakdown,
+      details: result.details,
       enrichedMatches: [],
       processedMatches: [],
       skippedEndpoints: context.skippedEndpoints,
@@ -1418,7 +1466,7 @@ async function runDailyRankingStep(dayRange: ReturnType<typeof getBangkokDayRang
 async function executeFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   if (mode === 'coverage') return syncApiFootballCoverage(context)
   if (mode === 'rounds') return syncApiFootballRounds(context)
-  if (mode === 'fixture-enrich') return syncApiFootballFixtureEnrichment(dayRange, context)
+  if (mode === 'fixture-enrich') return syncApiFootballFixtureEnrichment(dayRange, context, body)
   if (mode === 'injuries') return syncApiFootballInjuries(String(body.date ?? context.dateKey), context)
   if (mode === 'squads') return syncApiFootballSquads(context)
   if (mode === 'coaches') return syncApiFootballCoaches(context)
@@ -2147,8 +2195,8 @@ async function syncApiFootballRounds(context: FootballEnrichmentContext) {
   return { processed, totalCandidates: leagues.length }
 }
 
-async function syncApiFootballFixtureEnrichment(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const fixtures = await fetchApiFootballFixtureCandidates(dayRange, context.limit)
+async function syncApiFootballFixtureEnrichment(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, body: Record<string, unknown> = {}) {
+  const fixtures = await fetchApiFootballFixtureCandidates(dayRange, context.limit, getSyncOffset(body.offset))
   let processed = 0
   let rowsSaved = 0
   let emptyFixtures = 0
@@ -3834,7 +3882,8 @@ async function fetchDistinctApiFootballVenues() {
   return [...map.values()]
 }
 
-async function fetchApiFootballFixtureCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+async function fetchApiFootballFixtureCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, limit: number, offset = 0) {
+  const safeOffset = Math.max(0, Number(offset ?? 0))
   const result = await supabase
     .from('football_matches')
     .select(`
@@ -3855,12 +3904,12 @@ async function fetchApiFootballFixtureCandidates(dayRange: ReturnType<typeof get
     .lt('kickoff_at', dayRange.endUtc)
     .not('api_sports_fixture_id', 'is', null)
     .order('kickoff_at', { ascending: true })
-    .limit(Math.max(limit, 10))
+    .limit(Math.max(limit + safeOffset, 10))
 
   if (result.error) throw result.error
   return [...(result.data ?? [])]
     .sort(compareEnrichCandidatePriority)
-    .slice(0, limit)
+    .slice(safeOffset, safeOffset + limit)
 }
 
 async function fetchCoverageForMatch(match: any) {
@@ -4045,6 +4094,10 @@ function buildDailyPhaseDetails(phase: string, results: Array<any>) {
       oddsRowsSaved: Number(odds.oddsRowsSaved ?? odds.rowsSaved ?? 0),
       oddsEmptyFixtures: Number(odds.oddsEmptyFixtures ?? odds.emptyFixtures ?? 0),
       oddsFailedFixtures: Number(odds.oddsFailedFixtures ?? odds.failedFixtures ?? 0),
+      fixtureDetailAttempted: Number(fixtureDetail.attempted ?? 0),
+      fixtureDetailRowsSaved: Number(fixtureDetail.rowsSaved ?? 0),
+      fixtureDetailEmptyFixtures: Number(fixtureDetail.empty ?? 0),
+      fixtureDetailFailedFixtures: Number(fixtureDetail.error ?? 0),
       partial: isFixtureEnrichmentPartial(results, {}),
     }
   }
@@ -7556,10 +7609,18 @@ function normalizeProviderName(value: string) {
   return 'api-football'
 }
 
+function normalizeRequestedMode(value: unknown) {
+  return String(value ?? 'manual').trim().toLowerCase() || 'manual'
+}
+
 function normalizeSyncMode(value: unknown) {
-  const mode = String(value ?? 'manual').toLowerCase()
+  const mode = normalizeRequestedMode(value)
   if (['manual', 'enrich', 'recompute', 'learning', ...footballEnrichmentModes].includes(mode)) return mode
-  return 'manual'
+  return null
+}
+
+function getSupportedSyncModes() {
+  return ['manual', 'enrich', 'recompute', 'learning', ...footballEnrichmentModes]
 }
 
 function getSyncLimit(value: unknown, mode = 'manual') {
