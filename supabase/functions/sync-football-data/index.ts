@@ -20,6 +20,7 @@ const priorityLeagues = new Map<string, number>([
 ])
 
 const leagueQualityScoringVersion = 'league-quality-v4.1'
+const marketReadinessAnalysisVersion = 'market-readiness-v1'
 
 const apiFootballLeagueTierScores = new Map<number, number>([
   [2, 100], // UEFA Champions League
@@ -65,7 +66,8 @@ const supabase = createClient(supabaseUrl, serviceRoleKey)
 const legacyAnalysisSelect = 'id, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, motivation_score, market_risk_score, confidence_score, recommendation, risk_level, analysis_summary, thai_reason, raw'
 const pickAnalysisSelect = `${legacyAnalysisSelect}, pick_side, pick_team, pick_reason`
 const finalPickAnalysisSelect = `${pickAnalysisSelect}, market_type, market_line, fair_line, model_probability, value_status, value_reason`
-const selectionV2AnalysisSelect = `${finalPickAnalysisSelect}, data_validation_status, data_validation_notes, league_quality_score, match_quality_score, tactical_matchup_score, market_reading_score, home_away_score, risk_score, edge_score, ai_score, ranking_score, final_rank, recommendation_tier, final_pick_note, is_top_pick, is_final_pick`
+const analysisReadinessMetadataSelect = 'analysis_status, recommendation_reason, market_data_used, odds_rows_used, recalculated_at, analysis_version'
+const selectionV2AnalysisSelect = `${finalPickAnalysisSelect}, data_validation_status, data_validation_notes, league_quality_score, match_quality_score, tactical_matchup_score, market_reading_score, home_away_score, risk_score, edge_score, ai_score, ranking_score, final_rank, recommendation_tier, final_pick_note, is_top_pick, is_final_pick, ${analysisReadinessMetadataSelect}`
 const defaultManualLimit = 50
 const maxManualLimit = 100
 const defaultEnrichLimit = 10
@@ -263,6 +265,7 @@ Deno.serve(async (request) => {
     const recomputeResult = modeResult.recomputeResult ?? { updated: 0, failures: [] }
     const recomputedStoredRows = modeResult.recomputedStoredRows ?? 0
     const normalizedAnalysisRows = modeResult.normalizedAnalysisRows ?? { checked: 0, fixed: 0 }
+    const recomputeReadiness = modeResult.recomputeReadiness ?? null
     const rankedSelectionRows = modeResult.rankedSelectionRows ?? await updateDailySelectionRanks(dayRange)
     const endpointCoverage = modeResult.endpointCoverage ?? null
     const enrichedMatches = modeResult.enrichedMatches ?? []
@@ -316,6 +319,7 @@ Deno.serve(async (request) => {
       invalidRowsFixed,
       recomputedStoredRows,
       normalizedAnalysisRows: normalizedAnalysisRows.checked,
+      recomputeReadiness,
       rankedSelectionRows,
       endpointCoverage,
       enrichedMatches,
@@ -356,6 +360,7 @@ Deno.serve(async (request) => {
       invalidRowsFixed,
       recomputedStoredRows,
       normalizedAnalysisRows: normalizedAnalysisRows.checked,
+      recomputeReadiness,
       rankedSelectionRows,
       endpointCoverage,
       enrichedMatches,
@@ -2625,10 +2630,14 @@ async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRa
       api_sports_home_team_id,
       api_sports_away_team_id,
       kickoff_at,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
       raw,
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw)
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', dayRange.startUtc)
     .lt('kickoff_at', dayRange.endUtc)
@@ -2678,6 +2687,12 @@ async function upsertAiFinalPickForMatch(match: any) {
     ou_analysis: pick.ouAnalysis,
     primary_bookmaker: pick.primaryBookmaker,
     latest_odds: pick.latestOdds,
+    analysis_status: pick.analysisStatus,
+    recommendation_reason: pick.recommendationReason,
+    market_data_used: pick.marketDataUsed,
+    odds_rows_used: pick.oddsRowsUsed,
+    recalculated_at: pick.recalculatedAt,
+    analysis_version: pick.analysisVersion,
     raw: pick,
     updated_at: new Date().toISOString(),
   }
@@ -2816,10 +2831,14 @@ async function fetchDailyTop10LockCandidates(dayRange: ReturnType<typeof getBang
       id,
       api_sports_fixture_id,
       kickoff_at,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
       raw,
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw)
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', dayRange.startUtc)
     .lt('kickoff_at', dayRange.endUtc)
@@ -2835,10 +2854,14 @@ async function fetchMatchForAiFinalPick(matchId: string) {
       id,
       api_sports_fixture_id,
       kickoff_at,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
       raw,
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw)
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw, ${analysisReadinessMetadataSelect})
     `)
     .eq('id', matchId)
     .maybeSingle()
@@ -2870,6 +2893,32 @@ async function fetchMatchIdsWithOdds(matchIds: Array<string>) {
     throw result.error
   }
   return new Set((result.data ?? []).map((row: any) => row.match_id).filter(Boolean))
+}
+
+async function fetchStoredOddsByMatchIds(matchIds: Array<string>) {
+  const oddsByMatchId = new Map<string, Array<any>>()
+  const ids = [...new Set(matchIds.filter(Boolean))]
+  if (!ids.length) return oddsByMatchId
+
+  const result = await supabase
+    .from('football_match_odds')
+    .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at, raw')
+    .in('match_id', ids)
+    .order('is_latest', { ascending: false })
+    .order('snapshot_at', { ascending: false })
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return oddsByMatchId
+    throw result.error
+  }
+
+  for (const row of result.data ?? []) {
+    if (!row.match_id) continue
+    const rows = oddsByMatchId.get(row.match_id) ?? []
+    rows.push(row)
+    oddsByMatchId.set(row.match_id, rows)
+  }
+  return oddsByMatchId
 }
 
 function compareDailyTop10LockCandidate(a: any, b: any) {
@@ -3086,6 +3135,7 @@ async function runRecomputeMode(dayRange: ReturnType<typeof getBangkokDayRange>,
     processedMatchIds: ids,
     failures: [...recomputeResult.failures, ...v4Result.failures],
     recomputeResult: { updated: recomputeResult.updated + v4Result.updated, failures: [...recomputeResult.failures, ...v4Result.failures] },
+    recomputeReadiness: v4Result.recomputeReadiness,
     recomputedStoredRows: 0,
     normalizedAnalysisRows: { checked: 0, fixed: 0 },
     rankedSelectionRows,
@@ -4296,6 +4346,8 @@ function buildEdgeAiFinalPick(match: any) {
   const warningSigns = uniqueText([...(selected.warnings ?? [])]).slice(0, 5)
   const bookmakerCount = new Set(odds.map((row: any) => row.bookmaker_name).filter(Boolean)).size
   const movementAgainst = /against/i.test(String(selected.marketSignal ?? ''))
+  const marketDataUsed = Boolean(analysis.market_data_used ?? analysis.raw?.market_data_used ?? hasOdds)
+  const oddsRowsUsed = Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? odds.length)
   let signal: 'STRONG_SIGNAL' | 'WATCH' | 'SKIP' = 'WATCH'
   if (totalAnalysisScore < 60 || confidenceScore < 55 || riskLevel === 'HIGH' || !hasOdds || movementAgainst || warningSigns.length > 3) signal = 'SKIP'
   else if (totalAnalysisScore >= 75 && selectionScore >= 70 && confidenceScore >= 70 && bookmakerCount >= 1 && keyReasons.length >= 3) signal = 'STRONG_SIGNAL'
@@ -4316,6 +4368,12 @@ function buildEdgeAiFinalPick(match: any) {
     ouAnalysis,
     primaryBookmaker: odds.find((row: any) => row.bookmaker_name)?.bookmaker_name ?? null,
     latestOdds: odds.find((row: any) => row.market_focus === selected.marketFocus)?.odd_text ?? null,
+    analysisStatus: analysis.analysis_status ?? analysis.raw?.analysis_status ?? (marketDataUsed ? 'MARKET_DATA_READY_RECALCULATED' : 'INSUFFICIENT_MARKET_DATA'),
+    recommendationReason: analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? (marketDataUsed ? 'มีข้อมูลตลาดแล้ว แต่คะแนน edge/risk ยังไม่ผ่านเกณฑ์' : 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ'),
+    marketDataUsed,
+    oddsRowsUsed,
+    recalculatedAt: analysis.recalculated_at ?? new Date().toISOString(),
+    analysisVersion: analysis.analysis_version ?? analysis.raw?.analysis_version ?? marketReadinessAnalysisVersion,
   }
 }
 
@@ -4579,13 +4637,19 @@ async function updateMatchAnalysisByMatchId(matchId: string, payload: Record<str
 }
 
 async function recomputeV4AnalysisRows(matchIds: Array<string>) {
-  if (!matchIds.length) return { updated: 0, failures: [] }
+  if (!matchIds.length) return { updated: 0, failures: [], recomputeReadiness: emptyRecomputeReadinessSummary() }
 
   const result = await supabase
     .from('football_matches')
     .select(`
       id,
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, risk_score, ranking_score, market_edge_score, odds_confidence_score, odds_movement_score, team_stats_score, injuries_score, lineups_score, data_depth_score, learning_adjustment_score, historical_accuracy_score, value_market, value_side, value_line)
+      api_sports_fixture_id,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_score,
+      data_readiness_status,
+      odds_updated_at,
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, risk_score, ranking_score, market_edge_score, odds_confidence_score, odds_movement_score, team_stats_score, injuries_score, lineups_score, data_depth_score, learning_adjustment_score, historical_accuracy_score, value_market, value_side, value_line, raw, ${analysisReadinessMetadataSelect})
     `)
     .in('id', matchIds)
 
@@ -4593,18 +4657,22 @@ async function recomputeV4AnalysisRows(matchIds: Array<string>) {
 
   let updated = 0
   const failures: Array<{ matchId?: string; message: string }> = []
+  const recomputeReadiness = emptyRecomputeReadinessSummary()
+  const oddsByMatchId = await fetchStoredOddsByMatchIds(matchIds)
   for (const row of result.data ?? []) {
     try {
       const analysis = getAnalysis(row)
-      const payload = buildV4RecomputeAnalysis(analysis)
+      const oddsRows = oddsByMatchId.get(row.id) ?? []
+      const payload = buildMarketReadinessRecomputeAnalysis(row, analysis, oddsRows)
       await updateMatchAnalysisByMatchId(row.id, payload)
+      trackRecomputeReadiness(recomputeReadiness, row, oddsRows, payload)
       updated += 1
     } catch (error) {
       failures.push({ matchId: row.id, message: error instanceof Error ? error.message : 'v4 recompute failed' })
     }
   }
 
-  return { updated, failures }
+  return { updated, failures, recomputeReadiness }
 }
 
 function buildV4RecomputeAnalysis(analysis: any) {
@@ -4641,6 +4709,213 @@ function buildV4RecomputeAnalysis(analysis: any) {
     ai_score: rankingScore,
     enriched_summary: `Data Intelligence v4 calibrated ${calibrated}/100 with data depth ${depth}/100.`,
   }
+}
+
+function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRows: Array<any>) {
+  const marketReady = hasUsableMarketDataForRecompute(match, oddsRows)
+  const recalculatedAt = new Date().toISOString()
+  const raw = analysis?.raw && typeof analysis.raw === 'object' ? analysis.raw : {}
+
+  if (!marketReady) {
+    const base = buildV4RecomputeAnalysis(analysis)
+    const confidenceScore = roundScore(Math.min(Number(base.confidence_score ?? 50), 54))
+    const rankingScore = roundScore(Math.min(Number(base.ranking_score ?? 45), 49))
+    const riskScore = normalizeScore(Math.max(Number(base.risk_score ?? 68), 68))
+    return {
+      ...base,
+      market_edge_score: 0,
+      odds_confidence_score: 0,
+      odds_movement_score: 0,
+      calibrated_confidence_score: confidenceScore,
+      confidence_score: confidenceScore,
+      ranking_score: rankingScore,
+      ai_score: rankingScore,
+      risk_score: riskScore,
+      risk_level: getRiskLevelFromRiskScore(riskScore),
+      recommendation: 'NO BET',
+      analysis_status: 'INSUFFICIENT_MARKET_DATA',
+      recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
+      market_data_used: false,
+      odds_rows_used: oddsRows.length,
+      recalculated_at: recalculatedAt,
+      analysis_version: marketReadinessAnalysisVersion,
+      enriched_summary: 'Market readiness recompute kept this match as NO BET because market odds/line data is not ready.',
+      raw: {
+        ...raw,
+        analysis_status: 'INSUFFICIENT_MARKET_DATA',
+        recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
+        market_data_used: false,
+        odds_rows_used: oddsRows.length,
+        data_readiness_status: match?.data_readiness_status ?? null,
+        analysis_version: marketReadinessAnalysisVersion,
+      },
+    }
+  }
+
+  const metrics = summarizeStoredOddsRows(oddsRows)
+  const readinessScore = normalizeScore(match?.data_readiness_score ?? (String(match?.data_readiness_status ?? '').toUpperCase() === 'READY' ? 88 : 72))
+  const baseConfidence = normalizeScore(analysis?.calibrated_confidence_score ?? analysis?.confidence_score ?? 58)
+  const teamStats = normalizeScore(analysis?.team_stats_score ?? averageNumbers([analysis?.team_strength_score, analysis?.form_score], 60))
+  const injuries = normalizeScore(analysis?.injuries_score ?? 60)
+  const lineups = normalizeScore(analysis?.lineups_score ?? (match?.has_fixture_detail ? 62 : 55))
+  const depth = normalizeScore(Math.max(Number(analysis?.data_depth_score ?? 0), readinessScore, metrics.dataDepthScore))
+  const learningAdjustment = Number(analysis?.learning_adjustment_score ?? 0)
+  const calibrated = roundScore(
+    baseConfidence * 0.34 +
+      metrics.oddsConfidenceScore * 0.22 +
+      metrics.marketEdgeScore * 0.18 +
+      metrics.oddsMovementScore * 0.1 +
+      teamStats * 0.06 +
+      depth * 0.1 +
+      learningAdjustment,
+  )
+  const riskScore = normalizeScore(
+    (100 - calibrated) * 0.45 +
+      metrics.riskScore * 0.45 +
+      (String(match?.data_readiness_status ?? '').toUpperCase() === 'PARTIAL' ? 8 : 0),
+  )
+  const riskLevel = getRiskLevelFromRiskScore(riskScore)
+  const recommendation = getRecommendationFromConfidence(calibrated, riskLevel)
+  const rankingScore = roundScore(calibrated * 0.5 + metrics.marketEdgeScore * 0.22 + metrics.oddsMovementScore * 0.13 + depth * 0.15 - (riskScore >= 70 ? 4 : 0))
+  const analysisStatus = recommendation === 'NO BET' ? 'MODEL_NO_EDGE' : 'MARKET_DATA_READY_RECALCULATED'
+  const recommendationReason = recommendation === 'NO BET'
+    ? 'มีข้อมูลตลาดแล้ว แต่คะแนน edge/risk ยังไม่ผ่านเกณฑ์'
+    : 'มีข้อมูลตลาดและคะแนน edge/risk ผ่านเกณฑ์ของโมเดล'
+
+  return {
+    market_edge_score: metrics.marketEdgeScore,
+    odds_confidence_score: metrics.oddsConfidenceScore,
+    odds_movement_score: metrics.oddsMovementScore,
+    team_stats_score: teamStats,
+    injuries_score: injuries,
+    lineups_score: lineups,
+    data_depth_score: depth,
+    learning_adjustment_score: learningAdjustment,
+    calibrated_confidence_score: calibrated,
+    historical_accuracy_score: normalizeScore(analysis?.historical_accuracy_score ?? 50),
+    model_version: 'v4',
+    value_side: metrics.primarySelection ?? analysis?.value_side ?? analysis?.pick_side ?? null,
+    value_market: metrics.primaryMarket ?? analysis?.value_market ?? analysis?.market_type ?? null,
+    value_line: metrics.primaryLine ?? analysis?.value_line ?? null,
+    opening_line: metrics.openingLine ?? analysis?.opening_line ?? null,
+    latest_line: metrics.latestLine ?? analysis?.latest_line ?? null,
+    opening_odds: metrics.openingOdds ?? analysis?.opening_odds ?? null,
+    latest_odds: metrics.latestOdds ?? analysis?.latest_odds ?? null,
+    odds_movement_summary: metrics.movementSummary,
+    confidence_score: calibrated,
+    recommendation,
+    risk_score: riskScore,
+    risk_level: riskLevel,
+    ranking_score: rankingScore,
+    ai_score: rankingScore,
+    enriched_summary: `Market readiness recompute used ${oddsRows.length} odds rows (${metrics.marketFocusCount} markets, ${metrics.bookmakerCount} bookmakers).`,
+    analysis_status: analysisStatus,
+    recommendation_reason: recommendationReason,
+    market_data_used: true,
+    odds_rows_used: oddsRows.length,
+    recalculated_at: recalculatedAt,
+    analysis_version: marketReadinessAnalysisVersion,
+    raw: {
+      ...raw,
+      market_recompute: metrics,
+      analysis_status: analysisStatus,
+      recommendation_reason: recommendationReason,
+      market_data_used: true,
+      odds_rows_used: oddsRows.length,
+      data_readiness_status: match?.data_readiness_status ?? null,
+      analysis_version: marketReadinessAnalysisVersion,
+    },
+  }
+}
+
+function hasUsableMarketDataForRecompute(match: any, oddsRows: Array<any>) {
+  const status = String(match?.data_readiness_status ?? '').toUpperCase()
+  const hasReadyStatus = status === 'READY' || status === 'PARTIAL'
+  const hasMarketData = Boolean(match?.has_market_data || match?.odds_updated_at || oddsRows.length > 0)
+  return hasReadyStatus && hasMarketData && oddsRows.length > 0
+}
+
+function summarizeStoredOddsRows(oddsRows: Array<any>) {
+  const rows = oddsRows.length ? oddsRows : []
+  const latestRows = rows.filter((row) => row.is_latest !== false)
+  const activeRows = latestRows.length ? latestRows : rows
+  const marketFocuses = new Set(activeRows.map((row) => String(row.market_focus ?? 'NONE')).filter((value) => value && value !== 'NONE'))
+  const bookmakerCount = new Set(activeRows.map((row) => row.bookmaker_name ?? row.api_bookmaker_id).filter(Boolean)).size
+  const prices = activeRows.map((row) => nullableNumber(row.price)).filter((value): value is number => value !== null && value > 0)
+  const avgPrice = averageNumbers(prices, 2)
+  const priceSpread = prices.length > 1 ? Math.max(...prices) - Math.min(...prices) : 0
+  const primaryMarket = mostFrequentValue(activeRows.map((row) => row.market_focus).filter((value) => value && value !== 'NONE')) ?? 'MATCH_WINNER'
+  const primaryRows = activeRows.filter((row) => row.market_focus === primaryMarket)
+  const primaryRow = primaryRows.find((row) => row.line || row.selection || row.odd_text) ?? activeRows[0] ?? null
+  const lineValues = activeRows.map((row) => parseLineNumber(row.line)).filter((value): value is number => value !== null)
+  const lineSpread = lineValues.length > 1 ? Math.max(...lineValues) - Math.min(...lineValues) : 0
+  const coverageScore = 46 + Math.min(24, marketFocuses.size * 8) + Math.min(18, bookmakerCount * 3) + Math.min(10, Math.log10(rows.length + 1) * 8)
+  const priceSignal = prices.length ? Math.min(12, Math.abs(avgPrice - 2) * 10 + Math.min(priceSpread * 6, 8)) : -8
+  const lineSignal = Math.min(8, lineSpread * 4)
+  const marketEdgeScore = roundScore(coverageScore + priceSignal + lineSignal)
+  const oddsConfidenceScore = roundScore(48 + Math.min(22, rows.length * 0.9) + Math.min(16, bookmakerCount * 3) + Math.min(10, marketFocuses.size * 4) - Math.min(12, priceSpread * 4))
+  const oddsMovementScore = roundScore(52 + Math.min(16, lineSignal + priceSpread * 5) + Math.min(10, marketFocuses.size * 3) - (prices.length ? 0 : 10))
+  const dataDepthScore = roundScore(40 + Math.min(30, rows.length * 1.2) + Math.min(18, bookmakerCount * 3) + Math.min(12, marketFocuses.size * 4))
+  const riskScore = normalizeScore(76 - Math.min(18, bookmakerCount * 3) - Math.min(14, marketFocuses.size * 4) + Math.min(18, priceSpread * 5))
+
+  return {
+    rows: rows.length,
+    marketFocusCount: marketFocuses.size,
+    bookmakerCount,
+    avgPrice: roundScore(avgPrice),
+    priceSpread: roundScore(priceSpread),
+    marketEdgeScore,
+    oddsConfidenceScore,
+    oddsMovementScore,
+    dataDepthScore,
+    riskScore,
+    primaryMarket,
+    primarySelection: primaryRow?.selection ?? null,
+    primaryLine: primaryRow?.line ?? null,
+    latestLine: primaryRow?.line ?? null,
+    openingLine: rows.find((row) => row.is_opening)?.line ?? null,
+    latestOdds: primaryRow?.odd_text ?? (primaryRow?.price ? String(primaryRow.price) : null),
+    openingOdds: rows.find((row) => row.is_opening)?.odd_text ?? null,
+    movementSummary: `Stored odds coverage: ${rows.length} rows, ${marketFocuses.size} markets, ${bookmakerCount} bookmakers.`,
+  }
+}
+
+function mostFrequentValue(values: Array<unknown>) {
+  const counts = new Map<string, number>()
+  for (const value of values) {
+    const key = String(value ?? '').trim()
+    if (!key) continue
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+}
+
+function emptyRecomputeReadinessSummary() {
+  return {
+    total: 0,
+    marketDataReady: 0,
+    recalculatedWithMarketData: 0,
+    insufficientMarketData: 0,
+    defaultAnalysisRemaining: 0,
+  }
+}
+
+function trackRecomputeReadiness(summary: ReturnType<typeof emptyRecomputeReadinessSummary>, match: any, oddsRows: Array<any>, payload: Record<string, unknown>) {
+  summary.total += 1
+  const marketReady = hasUsableMarketDataForRecompute(match, oddsRows)
+  if (marketReady) summary.marketDataReady += 1
+  if (payload.market_data_used) summary.recalculatedWithMarketData += 1
+  else summary.insufficientMarketData += 1
+  if (marketReady && analysisLooksDefaultStale(payload)) summary.defaultAnalysisRemaining += 1
+}
+
+function analysisLooksDefaultStale(analysis: any) {
+  const confidence = Number(analysis?.confidence_score ?? analysis?.calibrated_confidence_score)
+  const ranking = Number(analysis?.ranking_score)
+  return Number.isFinite(confidence) &&
+    Number.isFinite(ranking) &&
+    Math.abs(confidence - 59.1) <= 0.2 &&
+    Math.abs(ranking - 54.8) <= 0.2
 }
 
 async function storePredictionResult(row: any) {
@@ -5754,8 +6029,9 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
       odds_updated_at,
       has_market_data,
       has_fixture_detail,
+      data_readiness_score,
       data_readiness_status,
-      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_score, data_validation_status, data_validation_notes, raw)
+      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_score, data_validation_status, data_validation_notes, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', range.startUtc)
     .lt('kickoff_at', range.endUtc)
@@ -5864,14 +6140,23 @@ async function markInsufficientMarketDataRows(rows: Array<any>) {
       .from('match_analysis')
       .update({
         recommendation: 'NO BET',
+        analysis_status: 'INSUFFICIENT_MARKET_DATA',
+        recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
+        market_data_used: false,
+        odds_rows_used: 0,
+        recalculated_at: new Date().toISOString(),
+        analysis_version: marketReadinessAnalysisVersion,
         data_validation_status: 'PARTIAL',
         data_validation_notes: appendValidationNote(row.analysis.data_validation_notes, 'INSUFFICIENT_MARKET_DATA'),
         analysis_summary: 'INSUFFICIENT_MARKET_DATA: market odds/line data is not ready, so this match cannot be promoted to BET.',
         raw: {
           ...raw,
-          analysis_status: 'INSUFFICIENT_DATA',
-          recommendation_reason: 'Market odds/line data is not ready, so this match is kept as NO BET instead of being promoted.',
+          analysis_status: 'INSUFFICIENT_MARKET_DATA',
+          recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
+          market_data_used: false,
+          odds_rows_used: 0,
           data_readiness_status: row.readiness,
+          analysis_version: marketReadinessAnalysisVersion,
           ranking_gate: 'INSUFFICIENT_MARKET_DATA',
         },
       })
@@ -5881,6 +6166,9 @@ async function markInsufficientMarketDataRows(rows: Array<any>) {
       throw updateResult.error
     }
     row.analysis.recommendation = 'NO BET'
+    row.analysis.analysis_status = 'INSUFFICIENT_MARKET_DATA'
+    row.analysis.market_data_used = false
+    row.analysis.odds_rows_used = 0
     row.analysis.data_validation_status = 'PARTIAL'
   }
 }
@@ -5907,11 +6195,16 @@ async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc
       status,
       home_goals,
       away_goals,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_score,
+      data_readiness_status,
       raw,
       league:football_leagues(id, api_league_id, name, country, priority),
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name, country),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name, country),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, risk_score, ranking_score, data_validation_status, match_quality_score, team_strength_score, form_score, goal_scoring_score, defensive_stability_score, tactical_matchup_score, motivation_score, market_reading_score, home_away_score, edge_score, ai_score, raw)
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, risk_score, ranking_score, data_validation_status, match_quality_score, team_strength_score, form_score, goal_scoring_score, defensive_stability_score, tactical_matchup_score, motivation_score, market_reading_score, home_away_score, edge_score, ai_score, market_edge_score, odds_confidence_score, odds_movement_score, injuries_score, lineups_score, data_depth_score, learning_adjustment_score, historical_accuracy_score, value_market, value_side, value_line, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', range.startUtc)
     .lt('kickoff_at', range.endUtc)
@@ -5923,6 +6216,8 @@ async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc
   }
 
   let updated = 0
+  const matchIds = (result.data ?? []).map((row: any) => row.id).filter(Boolean)
+  const oddsByMatchId = await fetchStoredOddsByMatchIds(matchIds)
   for (const row of result.data ?? []) {
     const analysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
     if (!analysis) continue
@@ -5960,30 +6255,43 @@ async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc
       risk_score: analysis.risk_score,
       ranking_score: analysis.ranking_score,
     })
+    const oddsRows = oddsByMatchId.get(row.id) ?? []
+    const marketAware = buildMarketReadinessRecomputeAnalysis(row, {
+      ...(rawAnalysis ?? {}),
+      ...(analysis ?? {}),
+      recommendation: analysis.recommendation,
+      confidence_score: analysis.confidence_score,
+      calibrated_confidence_score: analysis.calibrated_confidence_score,
+      risk_score: analysis.risk_score,
+      risk_level: analysis.risk_level,
+      ranking_score: analysis.ranking_score,
+    }, oddsRows)
     const updateResult = await supabase
       .from('match_analysis')
       .update({
         league_quality_score: next.league_quality_score,
         match_quality_score: next.match_quality_score,
+        team_strength_score: next.team_strength_score,
+        form_score: next.form_score,
+        goal_scoring_score: next.goal_scoring_score,
+        defensive_stability_score: next.defensive_stability_score,
         tactical_matchup_score: next.tactical_matchup_score,
+        motivation_score: next.motivation_score,
         market_reading_score: next.market_reading_score,
         home_away_score: next.home_away_score,
-        risk_score: next.risk_score,
         edge_score: next.edge_score,
-        ai_score: next.ai_score,
-        confidence_score: next.confidence_score,
-        ranking_score: next.ranking_score,
-        recommendation: next.recommendation,
-        recommendation_tier: next.recommendation_tier,
+        ...marketAware,
+        recommendation_tier: getRecommendationTierV2(String(marketAware.recommendation ?? 'NO BET'), Number(marketAware.confidence_score ?? 0), Number(marketAware.risk_score ?? 100)),
         data_validation_status: next.data_validation_status,
         data_validation_notes: next.data_validation_notes,
-        analysis_summary: next.analysis_summary,
+        analysis_summary: marketAware.enriched_summary ?? next.analysis_summary,
         raw: {
           ...rawAnalysis,
+          ...(marketAware.raw && typeof marketAware.raw === 'object' ? marketAware.raw : {}),
           league_quality_score: next.league_quality_score,
-          confidence_score: next.confidence_score,
-          ranking_score: next.ranking_score,
-          recommendation: next.recommendation,
+          confidence_score: marketAware.confidence_score,
+          ranking_score: marketAware.ranking_score,
+          recommendation: marketAware.recommendation,
           leagueQualitySource: leagueQualityScoringVersion,
         },
       })
@@ -6073,10 +6381,13 @@ async function fetchTopSelectionsDebug(range: { startUtc: string; endUtc: string
     .select(`
       id,
       kickoff_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
       league:football_leagues(id, api_league_id, name, country),
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, name),
-      analysis:match_analysis(final_rank, recommendation, confidence_score, ranking_score, league_quality_score, raw)
+      analysis:match_analysis(final_rank, recommendation, confidence_score, ranking_score, risk_level, league_quality_score, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', range.startUtc)
     .lt('kickoff_at', range.endUtc)
@@ -6101,6 +6412,16 @@ async function fetchTopSelectionsDebug(range: { startUtc: string; endUtc: string
         recommendation: analysis.recommendation ?? null,
         confidence_score: analysis.confidence_score ?? null,
         ranking_score: analysis.ranking_score ?? null,
+        risk_level: analysis.risk_level ?? null,
+        data_readiness_status: match.data_readiness_status ?? null,
+        has_market_data: Boolean(match.has_market_data),
+        has_fixture_detail: Boolean(match.has_fixture_detail),
+        analysis_status: analysis.analysis_status ?? analysis.raw?.analysis_status ?? null,
+        recommendation_reason: analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? null,
+        market_data_used: Boolean(analysis.market_data_used ?? analysis.raw?.market_data_used),
+        odds_rows_used: analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? null,
+        recalculated_at: analysis.recalculated_at ?? null,
+        analysis_version: analysis.analysis_version ?? analysis.raw?.analysis_version ?? null,
         league_quality_score: analysis.league_quality_score ?? null,
         leagueQualitySource: analysis.raw?.leagueQualitySource ?? leagueQualityScoringVersion,
       }

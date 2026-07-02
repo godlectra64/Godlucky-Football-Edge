@@ -251,6 +251,10 @@ const footballEnrichmentChecks = [
     label: 'today data coverage snapshot',
     query: checkTodayDataCoverage,
   },
+  {
+    label: 'market-ready stale default analysis',
+    query: checkMarketReadyDefaultAnalysis,
+  },
 ]
 
 let failed = false
@@ -421,7 +425,7 @@ async function runLinkedCliVerification() {
       if (count > 0) failedCliCheck = true
     }
 
-    for (const check of [checkFrontendEmptyEnrichment, checkFootballEnrichmentKeywordScan, checkDailySyncModesPresent, checkDailySyncDocs, checkDailySyncRetryMigration]) {
+    for (const check of [checkFrontendEmptyEnrichment, checkFootballEnrichmentKeywordScan, checkDailySyncModesPresent, checkDailySyncDocs, checkDailySyncRetryMigration, checkMarketReadyDefaultAnalysis]) {
       const { count, warning } = await check()
       const label = check.name.replace(/^check/, '')
       if (warning) console.warn(`${label}: ${warning}`)
@@ -547,6 +551,51 @@ async function checkTodayDataCoverage() {
     ? `coverage issue on ${dateKey}: fixtures=${matches.length}, oddsRows=0, oddsUpdatedAtNull=${oddsUpdatedNull}, enrichment=${JSON.stringify(enrichment)}, readiness=${JSON.stringify(readiness)}, recommendation=${JSON.stringify(recommendation)}; this is a data coverage issue, not a model issue`
     : `coverage ${dateKey}: fixtures=${matches.length}, oddsRows=${oddsRows.count ?? 0}, oddsUpdatedAtNull=${oddsUpdatedNull}, enrichment=${JSON.stringify(enrichment)}, readiness=${JSON.stringify(readiness)}, recommendation=${JSON.stringify(recommendation)}`
   return { count: 0, warning }
+}
+
+async function checkMarketReadyDefaultAnalysis() {
+  const { startUtc, endUtc } = getBangkokDayRange()
+  const { data: matches, error } = await supabase
+    .from('football_matches')
+    .select('id, has_market_data, odds_updated_at, data_readiness_status, analysis:match_analysis(confidence_score, ranking_score)')
+    .gte('kickoff_at', startUtc)
+    .lt('kickoff_at', endUtc)
+
+  if (error) {
+    if (isOptionalV2Missing(error)) return { count: 0, warning: error.message }
+    return { error }
+  }
+
+  const matchIds = (matches ?? []).map((row) => row.id).filter(Boolean)
+  const { data: oddsRows, error: oddsError } = matchIds.length
+    ? await supabase.from('football_match_odds').select('match_id').in('match_id', matchIds)
+    : { data: [], error: null }
+  if (oddsError) {
+    if (isOptionalV2Missing(oddsError)) return { count: 0, warning: oddsError.message }
+    return { error: oddsError }
+  }
+
+  const oddsMatchIds = new Set((oddsRows ?? []).map((row) => row.match_id).filter(Boolean))
+  const stale = (matches ?? []).filter((match) => {
+    const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
+    const hasMarket = Boolean(match.has_market_data || match.odds_updated_at || oddsMatchIds.has(match.id))
+    return hasMarket && analysisAppearsDefault(analysis)
+  })
+
+  if (!stale.length) return { count: 0 }
+  return {
+    count: 0,
+    warning: `Market data exists but analysis appears stale/default: ${stale.length} matches`,
+  }
+}
+
+function analysisAppearsDefault(analysis) {
+  const confidence = Number(analysis?.confidence_score)
+  const ranking = Number(analysis?.ranking_score)
+  return Number.isFinite(confidence) &&
+    Number.isFinite(ranking) &&
+    Math.abs(confidence - 59.1) <= 0.2 &&
+    Math.abs(ranking - 54.8) <= 0.2
 }
 
 function countBy(rows, getKey) {
