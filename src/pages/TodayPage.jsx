@@ -1,7 +1,7 @@
 import { CheckCircle2, Lock, RefreshCcw, Sparkles, Unlock, Zap } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import MatchCard from '../components/MatchCard'
-import { getConfidence, recommendationLabels } from '../utils/analysisEngine'
+import { getConfidence, isMarketReadyForDisplay, isWaitingForMarketData, recommendationLabels } from '../utils/analysisEngine'
 import { buildAiFinalPick, getOneBestPickOfDay } from '../utils/finalPick'
 import { formatThaiDate, formatUpdatedAt } from '../utils/formatters'
 
@@ -10,12 +10,15 @@ const filters = [allFilter, recommendationLabels.bet, recommendationLabels.lean,
 
 export default function TodayPage({ matches, oneBestPick: providedOneBestPick = null, totalMatchCount = matches.length, top10Status = null, top10Locked = false, loading, error, onRefresh, onOpenMatch }) {
   const [filter, setFilter] = useState(allFilter)
-  const visibleMatches = useMemo(() => {
+  const filteredMatches = useMemo(() => {
     if (filter === allFilter) return matches
     return matches.filter((match) => match.recommendation === filter)
   }, [filter, matches])
+  const readyMatches = useMemo(() => filteredMatches.filter(isMarketReadyForDisplay), [filteredMatches])
+  const waitingMatches = useMemo(() => filteredMatches.filter(isWaitingForMarketData), [filteredMatches])
   const avgConfidence = matches.length ? Math.round(matches.reduce((total, match) => total + getConfidence(match), 0) / matches.length) : 0
-  const playableCount = matches.filter((match) => [recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.watch].includes(match.recommendation)).length
+  const marketReadyCount = matches.filter(isMarketReadyForDisplay).length
+  const waitingMarketCount = matches.filter(isWaitingForMarketData).length
   const v4ReadyCount = matches.filter((match) => Number(match.calibratedConfidence ?? match.calibrated_confidence_score ?? match.analysis?.calibrated_confidence_score ?? 0) > 0).length
   const oneBestPick = useMemo(() => providedOneBestPick ?? getOneBestPickOfDay(matches), [providedOneBestPick, matches])
   const lastUpdated = top10Status?.lastUpdated ?? top10Status?.lockedAt ?? null
@@ -43,7 +46,8 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             <Top10LockBadge status={top10Status} locked={top10Locked} />
             <CompactMetric label="Top10" value={`${matches.length || 0}/${totalMatchCount || 0}`} />
             <CompactMetric label="เฉลี่ย" value={`${avgConfidence}%`} />
-            <CompactMetric label="พร้อม" value={`${playableCount}/${matches.length || 0}`} />
+            <CompactMetric label="พร้อม" value={`${marketReadyCount}/${matches.length || 0}`} />
+            <CompactMetric label="รอ" value={`${waitingMarketCount}/${matches.length || 0}`} />
           </div>
 
           <div className="mt-2 flex min-w-0 items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/20 px-2.5 py-1.5">
@@ -56,9 +60,9 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             </span>
           </div>
 
-          {!loading && matches.length && !matches.some((match) => match.recommendation === recommendationLabels.bet) ? (
+          {!loading && matches.length && !marketReadyCount ? (
             <p className="mt-1.5 text-clamp-1 rounded-lg border border-amber-300/20 bg-amber-300/10 px-2.5 py-1.5 text-[11px] font-bold leading-4 text-amber-100">
-              วันนี้ยังไม่มีคู่ระดับ BET แต่ยังจัดอันดับคู่ที่น่าติดตามให้ครบ
+              วันนี้ข้อมูลตลาดยังไม่พร้อม ระบบจะอัปเดตอีกครั้งรอบถัดไป
             </p>
           ) : null}
           {!loading && matches.length < 10 ? (
@@ -88,7 +92,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
 
       {loading ? <LoadingSkeleton /> : null}
       {error && !loading && !matches.length ? <StateBox title="โหลดข้อมูลไม่สำเร็จ" message="ระบบกำลังแสดงข้อมูลล่าสุดที่มีอยู่" detail={error} tone="error" onRetry={onRefresh} /> : null}
-      {!loading && !error && !visibleMatches.length ? (
+      {!loading && !error && !filteredMatches.length ? (
         <StateBox
           title={matches.length ? 'ไม่มีคู่ในตัวกรองนี้' : 'ยังไม่มีคู่สำหรับวันนี้'}
           message={matches.length ? 'ลองเปลี่ยนตัวกรองคำแนะนำ หรือรีเฟรชข้อมูลอีกครั้ง' : 'ลองรีเฟรชข้อมูลหรือกลับมาตรวจอีกครั้ง'}
@@ -96,12 +100,45 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
         />
       ) : null}
 
-      <div className="mt-1.5 grid gap-2.5">
-        {visibleMatches.map((match) => (
-          <MatchCard key={match.id} match={match} onOpen={onOpenMatch} />
-        ))}
-      </div>
+      {!loading && !error && filteredMatches.length ? (
+        <div className="mt-2.5 grid gap-4">
+          <MatchSection title="คู่พร้อมวิเคราะห์" count={readyMatches.length} tone="ready">
+            {readyMatches.length ? (
+              <div className="grid gap-2.5">
+                {readyMatches.map((match) => (
+                  <MatchCard key={match.id} match={match} onOpen={onOpenMatch} />
+                ))}
+              </div>
+            ) : (
+              <StateBox title="ข้อมูลยังไม่พร้อม" message="วันนี้ข้อมูลตลาดยังไม่พร้อม ระบบจะอัปเดตอีกครั้งรอบถัดไป" onRetry={onRefresh} />
+            )}
+          </MatchSection>
+
+          {waitingMatches.length ? (
+            <MatchSection title="รอข้อมูลตลาด" count={waitingMatches.length} tone="waiting">
+              <div className="grid gap-2.5">
+                {waitingMatches.map((match) => (
+                  <MatchCard key={match.id} match={match} onOpen={onOpenMatch} />
+                ))}
+              </div>
+            </MatchSection>
+          ) : null}
+        </div>
+      ) : null}
     </main>
+  )
+}
+
+function MatchSection({ title, count, tone = 'ready', children }) {
+  const toneClass = tone === 'ready' ? 'text-emerald-100' : 'text-amber-100'
+  return (
+    <section>
+      <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+        <h3 className={`text-sm font-black ${toneClass}`}>{title}</h3>
+        <span className="semantic-badge border-white/10 bg-white/[0.04] text-slate-200">{count}</span>
+      </div>
+      {children}
+    </section>
   )
 }
 

@@ -49,6 +49,20 @@ for (const dateKey of days) {
 
   const analyses = dayMatches.map(getAnalysis).filter(Boolean)
   const top10Analyses = dayTop10.map((item) => item.analysis).filter(Boolean)
+  const marketReadyCandidates = dayMatches.filter(isMarketReadyCandidate)
+  const marketReadyInTop10 = dayTop10.filter((item) => isMarketReadyCandidate(item.match)).length
+  const waitingMarketInTop10 = dayTop10.filter((item) => isWaitingMarketData(item.match)).length
+  const top10MatchIds = new Set(dayTop10.map((item) => item.match?.id).filter(Boolean))
+  const staleNoMarketLockCount = dayTop10.filter((item) => item.source === 'daily_top10_selections' && isWaitingMarketData(item.match)).length
+  const readyButNotDisplayedCount = marketReadyCandidates.filter((match) => !top10MatchIds.has(match.id)).length
+  const displayedSignalCount = dayTop10.filter((item) => ['STRONG_SIGNAL', 'WATCH'].includes(normalizeSignal(finalPickByMatch.get(item.match.id)?.signal))).length
+  const betFinalPickMismatchCount = dayMatches.filter((match) => {
+    const analysis = getAnalysis(match)
+    const finalPick = finalPickByMatch.get(match.id)
+    return normalizeRecommendation(analysis?.recommendation) === 'BET' &&
+      isMarketReadyCandidate(match) &&
+      normalizeSignal(finalPick?.signal) !== 'STRONG_SIGNAL'
+  }).length
   if (top10Analyses.some((analysis) => normalizeRecommendation(analysis.recommendation) === 'BET')) allTop10NoBet = false
 
   console.log('')
@@ -75,6 +89,14 @@ for (const dateKey of days) {
   printCount('matchesWithPickSide', analyses.filter((row) => normalizePickSide(row.pick_side) !== 'NONE').length)
   printCount('matchesWithPickTeam', analyses.filter((row) => hasText(row.pick_team)).length)
   printCount('marketDataMissingDowngrades', analyses.filter(isMarketMissingDowngrade).length)
+  printCount('marketReadyCandidates', marketReadyCandidates.length)
+  printCount('marketReadyInTop10', marketReadyInTop10)
+  printCount('waitingMarketInTop10', waitingMarketInTop10)
+  printCount('staleNoMarketLockCount', staleNoMarketLockCount)
+  printCount('readyButNotDisplayedCount', readyButNotDisplayedCount)
+  printCount('displayedSignalCount', displayedSignalCount)
+  printCount('betFinalPickMismatchCount', betFinalPickMismatchCount)
+  console.log(`rootCause: ${getRootCause({ marketReadyCandidates, readyButNotDisplayedCount, betFinalPickMismatchCount, staleNoMarketLockCount })}`)
   printCount('aiFinalPicks', dayFinalPicks.length)
   printCount('pickResults', dayResults.length)
   printTop10Reasons(dateKey, dayTop10)
@@ -266,6 +288,43 @@ function explainNoBet({ match, analysis, finalPick, odds }) {
     blockers,
     reason: analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? finalPick?.market_signal ?? 'no stored reason',
   }
+}
+
+function isMarketReadyCandidate(match) {
+  const analysis = getAnalysis(match) ?? {}
+  const finalPick = finalPickByMatch.get(match?.id) ?? {}
+  const odds = oddsByMatch.get(match?.id) ?? []
+  const hasOdds = odds.length > 0 || Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? finalPick.odds_rows_used ?? 0) > 0
+  const readiness = String(match?.data_readiness_status ?? analysis.raw?.data_readiness_status ?? '').toUpperCase()
+  const analysisStatus = String(analysis.analysis_status ?? analysis.raw?.analysis_status ?? finalPick.analysis_status ?? '').toUpperCase()
+  const validationStatus = String(analysis.data_validation_status ?? 'VALID').toUpperCase()
+  const marketDataUsed = Boolean(analysis.market_data_used ?? analysis.raw?.market_data_used ?? finalPick.market_data_used)
+  const marketEdge = Number(analysis.market_edge_score ?? analysis.raw?.market_edge_score ?? 0)
+  const confidence = Number(analysis.calibrated_confidence_score ?? analysis.confidence_score ?? finalPick.confidence_score ?? 0)
+  const risk = normalizeRisk(analysis.risk_level ?? finalPick.risk_level)
+
+  return hasOdds &&
+    ['VALID', 'PARTIAL'].includes(validationStatus) &&
+    (marketDataUsed || analysisStatus === 'MARKET_DATA_READY_RECALCULATED' || ['READY', 'PARTIAL'].includes(readiness)) &&
+    marketEdge > 0 &&
+    confidence >= 58 &&
+    risk !== 'HIGH'
+}
+
+function isWaitingMarketData(match) {
+  const analysis = getAnalysis(match) ?? {}
+  const finalPick = finalPickByMatch.get(match?.id) ?? {}
+  const odds = oddsByMatch.get(match?.id) ?? []
+  const hasOdds = odds.length > 0 || Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? finalPick.odds_rows_used ?? 0) > 0
+  return !hasOdds
+}
+
+function getRootCause({ marketReadyCandidates, readyButNotDisplayedCount, betFinalPickMismatchCount, staleNoMarketLockCount }) {
+  if (!marketReadyCandidates.length) return 'no_market_ready_candidates: วันนี้ไม่มี signal เพราะไม่มี market-ready candidates จริง'
+  if (readyButNotDisplayedCount > 0) return 'bug_ready_not_displayed: มี market-ready candidates แต่ไม่ได้ถูกเลือกขึ้น Today'
+  if (betFinalPickMismatchCount > 0) return 'bug_final_pick_mismatch: มี BET ใน analysis แต่ final pick ไม่ตรง'
+  if (staleNoMarketLockCount > marketReadyCandidates.length) return 'stale_lock_issue: Top10 ถูก lock จากคู่ไม่มี market data'
+  return 'market_ready_display_ok'
 }
 
 function isMarketMissingDowngrade(analysis) {

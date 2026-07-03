@@ -14,9 +14,9 @@ export const resultStatusLabelsTh = {
 }
 
 export const signalLabelsTh = {
-  STRONG_SIGNAL: 'STRONG_SIGNAL · สัญญาณแข็งแรง',
-  WATCH: 'WATCH · รอติดตาม',
-  SKIP: 'SKIP · ข้ามคู่นี้',
+  STRONG_SIGNAL: 'STRONG_SIGNAL · สัญญาณแรง',
+  WATCH: 'WATCH · น่าติดตาม',
+  SKIP: 'SKIP · ไม่มีสัญญาณ',
 }
 
 export const marketLabelsTh = {

@@ -5,6 +5,8 @@ import {
   calculateFootballMasterAnalysis,
   calculateLeagueContext,
   getRecommendationFromConfidence,
+  isMarketReadyForDisplay,
+  isWaitingForMarketData,
   rankTopMatches,
 } from '../src/utils/analysisEngine.js'
 import {
@@ -861,6 +863,59 @@ const missingMarketFinalPick = generateAiFinalPick({
   odds: [],
 })
 assert.equal(missingMarketFinalPick.signal, 'SKIP', 'missing market data must stay SKIP even when stored confidence is high')
+
+const marketReadyMatches = Array.from({ length: 3 }, (_, index) => ({
+  ...baseMatch,
+  id: `market-ready-${index}`,
+  kickoffAt: `2026-07-03T0${index}:00:00.000Z`,
+  has_market_data: true,
+  data_readiness_status: 'READY',
+  odds: [{ market_focus: 'AH', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9 }],
+  aiFinalPick: { signal: index === 0 ? 'STRONG_SIGNAL' : 'WATCH', confidence_score: 82 - index, risk_level: 'LOW' },
+  analysis: {
+    ...baseMatch.analysis,
+    recommendation: index === 0 ? 'BET' : 'LEAN',
+    ranking_score: 88 - index,
+    confidence_score: 82 - index,
+    calibrated_confidence_score: 82 - index,
+    risk_level: 'LOW',
+    market_edge_score: 80 - index,
+    market_data_used: true,
+    odds_rows_used: 1,
+    data_validation_status: 'VALID',
+    analysis_status: 'MARKET_DATA_READY_RECALCULATED',
+  },
+}))
+const waitingMarketMatches = Array.from({ length: 7 }, (_, index) => ({
+  ...baseMatch,
+  id: `waiting-market-${index}`,
+  kickoffAt: `2026-07-03T1${index}:00:00.000Z`,
+  has_market_data: false,
+  data_readiness_status: 'NO_MARKET_DATA',
+  odds: [],
+  aiFinalPick: { signal: 'SKIP', confidence_score: 54, risk_level: 'MEDIUM' },
+  analysis: {
+    ...baseMatch.analysis,
+    recommendation: 'NO BET',
+    ranking_score: 99,
+    confidence_score: 90,
+    calibrated_confidence_score: 90,
+    risk_level: 'LOW',
+    market_edge_score: 100,
+    market_data_used: false,
+    odds_rows_used: 0,
+    data_validation_status: 'PARTIAL',
+    analysis_status: 'INSUFFICIENT_MARKET_DATA',
+  },
+}))
+const marketReadyFirst = rankTopMatches([...waitingMarketMatches, ...marketReadyMatches], 10)
+assert.deepEqual(marketReadyFirst.slice(0, 3).map((match) => match.id), marketReadyMatches.map((match) => match.id), 'market-ready matches must be displayed before waiting market matches')
+assert.equal(marketReadyFirst.filter(isMarketReadyForDisplay).length, 3)
+assert.equal(marketReadyFirst.filter(isWaitingForMarketData).length, 7)
+
+const waitingOnly = rankTopMatches(waitingMarketMatches, 10)
+assert.equal(waitingOnly.some((match) => match.aiFinalPick?.signal === 'STRONG_SIGNAL'), false, 'waiting market matches must not become strong signals')
+assert.equal(waitingOnly.every(isWaitingForMarketData), true, 'no market-ready day should remain in waiting market state')
 
 for (const repositoryFn of [
   fetchEnabledLeagues,

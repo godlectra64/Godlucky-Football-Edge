@@ -1,5 +1,6 @@
 import { getBangkokToday } from '../utils/bangkokDate.js'
 import { fetchMatchesByKickoffRange } from './matchesRepository.js'
+import { compareMarketReadyMatches, isMarketReadyForDisplay } from '../utils/analysisEngine.js'
 
 export async function getDailyTop10Status(date = getBangkokToday()) {
   const client = await getSupabaseClient()
@@ -46,10 +47,12 @@ export async function getLockedTop10(date = getBangkokToday()) {
   if (matchesResult.error) return { data: [], error: matchesResult.error, status: buildStatus(date, rows) }
 
   const byId = new Map((matchesResult.data ?? []).map((match) => [match.id, match]))
+  const normalized = rows.map((row) => normalizeLockedMatch(byId.get(row.match_id), row)).filter((row) => row.id)
+  const sorted = sortMarketReadyTop10(normalized)
   return {
-    data: rows.map((row) => normalizeLockedMatch(byId.get(row.match_id), row)).filter((row) => row.id),
+    data: sorted,
     error: null,
-    status: buildStatus(date, rows),
+    status: buildStatus(date, rows, sorted),
   }
 }
 
@@ -75,6 +78,23 @@ function normalizeLockedMatch(match = {}, lock = {}) {
   }
 }
 
+function sortMarketReadyTop10(matches = []) {
+  return [...matches]
+    .sort((a, b) => compareMarketReadyMatches(a, b) || Number(a.rank ?? 999) - Number(b.rank ?? 999))
+    .map((match, index) => ({
+      ...match,
+      displayRank: index + 1,
+      display_rank: index + 1,
+      finalRank: index + 1,
+      final_rank: index + 1,
+      rank: index + 1,
+      aiPickRank: index + 1,
+      ai_pick_rank: index + 1,
+      aiPickLabel: `AI PICK #${index + 1}`,
+      ai_pick_label: `AI PICK #${index + 1}`,
+    }))
+}
+
 export async function getTodayTop10OrFallback(fallback = []) {
   const date = getBangkokToday()
   const locked = await getLockedTop10(date)
@@ -83,7 +103,7 @@ export async function getTodayTop10OrFallback(fallback = []) {
   return { matches: fallback, status: statusResult.data ?? emptyStatus(date).data, locked: false }
 }
 
-function buildStatus(date, rows) {
+function buildStatus(date, rows, displayRows = []) {
   const lockedAt = rows.map((row) => row.locked_at).filter(Boolean).sort()[0] ?? null
   const lastUpdated = rows.map((row) => row.updated_at ?? row.created_at).filter(Boolean).sort().at(-1) ?? null
   return {
@@ -95,6 +115,7 @@ function buildStatus(date, rows) {
     strongSignalCount: rows.filter((row) => row.signal === 'STRONG_SIGNAL').length,
     watchCount: rows.filter((row) => row.signal === 'WATCH').length,
     skipCount: rows.filter((row) => row.signal === 'SKIP').length,
+    displayedMarketReadyCount: displayRows.filter(isMarketReadyForDisplay).length,
   }
 }
 

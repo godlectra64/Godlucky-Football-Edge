@@ -1,5 +1,5 @@
 import { ArrowRight, Clock, Medal } from 'lucide-react'
-import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel } from '../utils/analysisEngine'
+import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel, isWaitingForMarketData } from '../utils/analysisEngine'
 import { generateAiFinalPick } from '../utils/aiFinalPickEngine'
 import { buildAiFinalPick } from '../utils/finalPick'
 import { formatKickoffTime } from '../utils/formatters'
@@ -19,6 +19,7 @@ export default function MatchCard({ match, onOpen }) {
   const analysisSummary = buildCardSummary(match, recommendation, confidence)
   const reasons = buildReasonList(match, finalPick, analysisSummary)
   const odds = normalizeOddsRows(match)
+  const waitingMarket = isWaitingForMarketData(match)
   const cardClass = buildCardClass(finalRank ?? match.rank, recommendation, riskLevel)
   const open = () => onOpen?.(match.id)
 
@@ -53,7 +54,7 @@ export default function MatchCard({ match, onOpen }) {
       <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-1.5">
         <ScoreBadge recommendation={recommendation} />
         <RiskBadge level={riskLevel} />
-        <MarketDirectionBadge signal={aiPick.signal} compact />
+        <MarketDirectionBadge signal={waitingMarket ? 'SKIP' : aiPick.signal} compact />
         <span className="semantic-badge border-white/10 bg-white/[0.04] text-white">{confidence}%</span>
       </div>
 
@@ -62,7 +63,7 @@ export default function MatchCard({ match, onOpen }) {
         <span className="text-slate-600"> · </span>
         <span className="text-[var(--page-accent)]">{formatDirection(aiPick.direction)}</span>
         <span className="text-slate-600"> · </span>
-        <span className="text-slate-500">{odds.length ? 'มีข้อมูลราคา' : 'ยังไม่มีราคา'}</span>
+        <span className="text-slate-500">{odds.length ? 'มีข้อมูลราคา' : 'รอข้อมูลตลาด'}</span>
       </p>
 
       {reasons[0] ? (
@@ -109,6 +110,9 @@ function buildReasonList(match, finalPick, analysisSummary) {
 }
 
 function buildCardSummary(match, recommendation, confidence) {
+  if (isWaitingForMarketData(match)) {
+    return 'ข้อมูลยังไม่พร้อม รอข้อมูลตลาดอัปเดตรอบถัดไป'
+  }
   const summary = getAnalysisSummary(match)
   if (summary) return summary
   if (recommendation === 'NO BET') {

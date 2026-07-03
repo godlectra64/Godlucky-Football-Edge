@@ -18,6 +18,12 @@ export const riskLabels = {
   high: 'HIGH',
 }
 
+export const marketReadinessGroups = {
+  ready: 'MARKET_READY_SIGNAL',
+  seen: 'MARKET_SEEN_INCOMPLETE',
+  waiting: 'WAITING_MARKET_DATA',
+}
+
 export const footballMasterModules = [
   { key: 'team_strength_score', breakdownKey: 'team_strength', label: 'Team Strength', weight: 0.1, max: 100 },
   { key: 'form_score', breakdownKey: 'recent_form', label: 'Recent Form', weight: 0.1, max: 100 },
@@ -176,7 +182,7 @@ export function getTopMatches(matches, limit = 10) {
     .sort((a, b) => {
       const rankA = Number(a.finalRank ?? a.final_rank ?? a.analysis?.final_rank ?? 999)
       const rankB = Number(b.finalRank ?? b.final_rank ?? b.analysis?.final_rank ?? 999)
-      return rankA - rankB
+      return compareMarketReadyMatches(a, b) || rankA - rankB
     })
 
   if (storedTopPicks.length) {
@@ -236,6 +242,7 @@ export function enrichMatch(match) {
 }
 
 export function compareForTopMatches(a, b) {
+  const marketReadinessDiff = compareMarketReadyMatches(a, b)
   const recommendationDiff = getRecommendationPriority(a.recommendation) - getRecommendationPriority(b.recommendation)
   const confidenceDiff = getAiPickConfidence(b) - getAiPickConfidence(a)
   const scoreDiff = getAiPickScore(b) - getAiPickScore(a)
@@ -243,7 +250,83 @@ export function compareForTopMatches(a, b) {
   const kickoffA = new Date(a.kickoffAt ?? a.kickoff_at ?? 0).getTime()
   const kickoffB = new Date(b.kickoffAt ?? b.kickoff_at ?? 0).getTime()
 
-  return recommendationDiff || confidenceDiff || scoreDiff || marketRiskDiff || kickoffA - kickoffB
+  return marketReadinessDiff || recommendationDiff || confidenceDiff || scoreDiff || marketRiskDiff || kickoffA - kickoffB
+}
+
+export function compareMarketReadyMatches(a, b) {
+  const priorityA = getMarketReadinessPriority(a)
+  const priorityB = getMarketReadinessPriority(b)
+  const priorityDiff = priorityA - priorityB
+  if (priorityDiff) return priorityDiff
+  if (priorityA !== 1) return 0
+  const signalDiff = getSignalPriority(a) - getSignalPriority(b)
+  const marketEdgeDiff = getMarketEdgeScore(b) - getMarketEdgeScore(a)
+  return signalDiff || marketEdgeDiff
+}
+
+export function getMarketReadinessGroup(match = {}) {
+  const analysis = match.analysis ?? match.match_analysis ?? {}
+  const pick = match.aiFinalPick ?? match.ai_final_pick ?? {}
+  const oddsRows = getOddsRows(match)
+  const hasOdds = oddsRows.length > 0 || Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? pick.oddsRowsUsed ?? pick.odds_rows_used ?? 0) > 0
+  const readiness = String(match.dataReadinessStatus ?? match.data_readiness_status ?? analysis.raw?.data_readiness_status ?? '').toUpperCase()
+  const analysisStatus = String(analysis.analysis_status ?? analysis.raw?.analysis_status ?? pick.analysisStatus ?? pick.analysis_status ?? '').toUpperCase()
+  const validationStatus = String(analysis.data_validation_status ?? 'VALID').toUpperCase()
+  const marketDataUsed = Boolean(analysis.market_data_used ?? analysis.raw?.market_data_used ?? pick.marketDataUsed ?? pick.market_data_used)
+  const marketEdge = getMarketEdgeScore(match)
+  const confidence = getAiPickConfidence(match)
+  const risk = normalizeRiskLevel(match.riskLevel ?? match.risk_level ?? analysis.risk_level)
+
+  if (!hasOdds) return marketReadinessGroups.waiting
+  if (
+    ['VALID', 'PARTIAL'].includes(validationStatus) &&
+    (marketDataUsed || analysisStatus === 'MARKET_DATA_READY_RECALCULATED' || ['READY', 'PARTIAL'].includes(readiness)) &&
+    marketEdge > 0 &&
+    confidence >= 58 &&
+    risk !== riskLabels.high
+  ) {
+    return marketReadinessGroups.ready
+  }
+  return marketReadinessGroups.seen
+}
+
+export function isWaitingForMarketData(match = {}) {
+  return getMarketReadinessGroup(match) === marketReadinessGroups.waiting
+}
+
+export function isMarketReadyForDisplay(match = {}) {
+  return getMarketReadinessGroup(match) !== marketReadinessGroups.waiting
+}
+
+export function getMarketReadinessPriority(match = {}) {
+  const group = getMarketReadinessGroup(match)
+  if (group === marketReadinessGroups.ready) return 1
+  if (group === marketReadinessGroups.seen) return 2
+  return 3
+}
+
+function getSignalPriority(match = {}) {
+  const signal = String(match.aiFinalPick?.signal ?? match.ai_final_pick?.signal ?? match.dailyTop10Lock?.signal ?? '').toUpperCase()
+  const recommendation = String(match.recommendation ?? match.analysis?.recommendation ?? '').toUpperCase().replace('_', ' ')
+  if (signal === 'STRONG_SIGNAL' && recommendation === recommendationLabels.bet) return 1
+  if (signal === 'STRONG_SIGNAL') return 2
+  if (signal === 'WATCH' || recommendation === recommendationLabels.lean || recommendation === recommendationLabels.watch) return 3
+  return 4
+}
+
+function getMarketEdgeScore(match = {}) {
+  return numberValue(
+    match.marketEdgeScore ??
+      match.market_edge_score ??
+      match.analysis?.market_edge_score ??
+      match.analysis?.raw?.market_edge_score ??
+      0,
+  )
+}
+
+function getOddsRows(match = {}) {
+  const rows = match.odds ?? match.matchOdds ?? match.match_odds ?? match.enrichment?.odds ?? []
+  return Array.isArray(rows) ? rows : []
 }
 
 export function calculateStats(matches) {

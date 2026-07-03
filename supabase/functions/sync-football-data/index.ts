@@ -105,6 +105,7 @@ const footballEnrichmentModes = [
   'lock-daily-top10',
   'get-daily-top10-status',
   'refresh-locked-top10-signals',
+  'refresh-market-ready-top10',
   'sync-completed-fixtures',
   'backfill-ai-pick-results',
   'settle-ai-pick-results',
@@ -1739,6 +1740,7 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'lock-daily-top10') return lockDailyTop10(dayRange)
   if (mode === 'get-daily-top10-status') return getDailyTop10Status(dayRange)
   if (mode === 'refresh-locked-top10-signals') return refreshLockedTop10Signals(dayRange, context)
+  if (mode === 'refresh-market-ready-top10') return refreshMarketReadyTop10(dayRange)
   if (mode === 'sync-completed-fixtures') return syncCompletedFixtures(body, dayRange, context)
   if (mode === 'backfill-ai-pick-results') return backfillAiPickResults(body, dayRange)
   if (mode === 'settle-ai-pick-results') return settleAiPickResults(body, dayRange)
@@ -3052,16 +3054,24 @@ async function lockDailyTop10(dayRange: ReturnType<typeof getBangkokDayRange>) {
     .order('rank', { ascending: true })
   if (existing.error) throw existing.error
   if ((existing.data ?? []).length) {
-    const status = summarizeDailyTop10(selectionDate, existing.data ?? [])
-    return { processed: status.lockedCount, totalCandidates: status.lockedCount, rowsSaved: 0, failed: 0, locked: true, alreadyLocked: true, ...status }
+    const refreshed = await refreshMarketReadyTop10(dayRange)
+    return { ...refreshed, locked: true, alreadyLocked: true }
   }
 
   const matches = await fetchDailyTop10LockCandidates(dayRange)
   const matchIds = matches.map((match: any) => match.id).filter(Boolean)
-  const picks = await fetchAiFinalPicksForMatches(matchIds)
+  const [picks, oddsByMatchId] = await Promise.all([
+    fetchAiFinalPicksForMatches(matchIds),
+    fetchStoredOddsByMatchIds(matchIds),
+  ])
   const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
   const selected = matches
-    .map((match: any) => ({ match, analysis: getAnalysis(match), pick: pickByMatch.get(match.id) ?? null }))
+    .map((match: any) => ({
+      match,
+      analysis: getAnalysis(match),
+      pick: pickByMatch.get(match.id) ?? null,
+      odds: oddsByMatchId.get(match.id) ?? [],
+    }))
     .sort(compareDailyTop10LockCandidate)
     .slice(0, 10)
 
@@ -3164,6 +3174,138 @@ async function refreshLockedTop10Signals(dayRange: ReturnType<typeof getBangkokD
   return { processed, totalCandidates: locked.data?.length ?? 0, rowsSaved: updated, failed, updated, failures, selectionDate }
 }
 
+async function refreshMarketReadyTop10(dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const selectionDate = dayRange.dateKey
+  const requestedSelectionDate = selectionDate
+  const [locked, matches] = await Promise.all([
+    supabase
+      .from('daily_top10_selections')
+      .select('*')
+      .eq('selection_date', selectionDate)
+      .order('rank', { ascending: true }),
+    fetchDailyTop10LockCandidates(dayRange),
+  ])
+  if (locked.error) throw locked.error
+
+  const existingRows = locked.data ?? []
+  const matchIds = matches.map((match: any) => match.id).filter(Boolean)
+  const [picks, oddsByMatchId] = await Promise.all([
+    fetchAiFinalPicksForMatches(matchIds),
+    fetchStoredOddsByMatchIds(matchIds),
+  ])
+  const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
+  const candidates = matches
+    .map((match: any) => ({
+      match,
+      analysis: getAnalysis(match),
+      pick: pickByMatch.get(match.id) ?? null,
+      odds: oddsByMatchId.get(match.id) ?? [],
+    }))
+    .filter((item: any) => item.analysis)
+    .sort(compareDailyTop10LockCandidate)
+
+  const readyCandidates = candidates.filter((item: any) => isMarketReadyCandidate(item))
+  const waitingCandidates = candidates.filter((item: any) => isWaitingMarketCandidate(item))
+  const selected = candidates.slice(0, 10)
+  const selectedReady = selected.filter((item: any) => isMarketReadyCandidate(item))
+  const selectedWaiting = selected.filter((item: any) => isWaitingMarketCandidate(item))
+  const existingSummary = summarizeExistingMarketLock(existingRows, oddsByMatchId)
+  const refreshedBecause = readyCandidates.length ? 'market_ready_candidates_available' : 'no_market_ready_candidates'
+  const shouldPersist = Boolean(
+    existingRows.length &&
+      readyCandidates.length &&
+      (existingSummary.staleNoMarketLockCount > existingRows.length / 2 ||
+        readyCandidates.some((item: any) => !existingRows.some((row: any) => row.match_id === item.match.id))),
+  )
+
+  let rowsSaved = 0
+  let failed = 0
+  const failures: Array<any> = []
+
+  if (shouldPersist || !existingRows.length) {
+    const persistResult = await persistMarketReadyTop10(selectionDate, selected, existingRows)
+    rowsSaved = persistResult.rowsSaved
+    failed = persistResult.failed
+    failures.push(...persistResult.failures)
+  }
+
+  return {
+    processed: selected.length,
+    totalCandidates: candidates.length,
+    rowsSaved,
+    failed,
+    failures,
+    selectionDate,
+    requestedSelectionDate,
+    resolvedDateKey: selectionDate,
+    marketReadyCount: readyCandidates.length,
+    signalReadyCount: readyCandidates.filter((item: any) => String(item.pick?.signal ?? '').toUpperCase() === 'STRONG_SIGNAL').length,
+    waitingMarketCount: waitingCandidates.length,
+    top10MarketReadyCount: selectedReady.length,
+    displayedSignalCount: selectedReady.filter((item: any) => ['STRONG_SIGNAL', 'WATCH'].includes(String(item.pick?.signal ?? '').toUpperCase())).length,
+    waitingMarketDataCount: selectedWaiting.length,
+    noBetBecauseMarketMissingCount: selectedWaiting.filter((item: any) => normalizeRecommendationText(item.analysis?.recommendation) === 'NO BET').length,
+    staleNoMarketLockCount: existingSummary.staleNoMarketLockCount,
+    readyMatches: selectedReady.map(formatTop10RefreshMatch),
+    waitingMatches: selectedWaiting.map(formatTop10RefreshMatch),
+    refreshedBecause,
+    refreshed: shouldPersist || !existingRows.length,
+  }
+}
+
+async function persistMarketReadyTop10(selectionDate: string, selected: Array<any>, existingRows: Array<any>) {
+  const exactRows = new Map(existingRows.map((row: any) => [row.match_id, row]))
+  const assignedRowIds = new Set<string>()
+  let rowsSaved = 0
+  let failed = 0
+  const failures: Array<any> = []
+
+  for (const [index, item] of selected.entries()) {
+    try {
+      item.pick = await upsertAiFinalPickForMatch(item.match)
+      const payload = buildDailyTop10RowPayload(selectionDate, item, index)
+      const exactRow = exactRows.get(item.match.id)
+      const fallbackRow = existingRows.find((row: any) => row.id && !assignedRowIds.has(row.id) && !selected.some((candidate: any) => candidate.match.id === row.match_id))
+      const targetRow = exactRow ?? fallbackRow ?? null
+      if (targetRow?.id) {
+        assignedRowIds.add(targetRow.id)
+        const update = await supabase
+          .from('daily_top10_selections')
+          .update(payload)
+          .eq('id', targetRow.id)
+        if (update.error) throw update.error
+      } else {
+        const insert = await supabase
+          .from('daily_top10_selections')
+          .insert(payload)
+        if (insert.error) throw insert.error
+      }
+      rowsSaved += 1
+    } catch (error) {
+      failed += 1
+      failures.push({ matchId: item.match?.id, rank: index + 1, message: formatErrorMessage(error, 'refresh market-ready top10 failed') })
+    }
+  }
+
+  return { rowsSaved, failed, failures }
+}
+
+function buildDailyTop10RowPayload(selectionDate: string, item: any, index: number) {
+  return {
+    selection_date: selectionDate,
+    match_id: item.match.id,
+    api_fixture_id: nullableNumber(item.match.api_sports_fixture_id),
+    rank: index + 1,
+    selection_score: nullableNumber(item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
+    ai_final_pick_id: item.pick?.id ?? null,
+    signal: item.pick?.signal ?? 'SKIP',
+    market_focus: item.pick?.market_focus ?? 'NONE',
+    confidence_score: nullableNumber(item.pick?.confidence_score ?? item.analysis?.confidence_score),
+    risk_level: normalizeRiskLevelText(item.pick?.risk_level ?? item.analysis?.risk_level ?? 'MEDIUM'),
+    updated_at: new Date().toISOString(),
+  }
+}
+
 async function fetchDailyTop10LockCandidates(dayRange: ReturnType<typeof getBangkokDayRange>) {
   const result = await supabase
     .from('football_matches')
@@ -3262,12 +3404,97 @@ async function fetchStoredOddsByMatchIds(matchIds: Array<string>) {
 }
 
 function compareDailyTop10LockCandidate(a: any, b: any) {
+  const marketPriorityDiff = dailyMarketReadinessPriority(a) - dailyMarketReadinessPriority(b)
+  const signalDiff = dailySignalPriority(a) - dailySignalPriority(b)
+  const marketEdgeDiff = dailyMarketEdgeScore(b) - dailyMarketEdgeScore(a)
   const hasPickDiff = Number(Boolean(b.pick)) - Number(Boolean(a.pick))
   const scoreDiff = dailySelectionScore(b) - dailySelectionScore(a)
   const confidenceDiff = dailyConfidenceScore(b) - dailyConfidenceScore(a)
   const riskDiff = riskSortValue(a.pick?.risk_level ?? a.analysis?.risk_level) - riskSortValue(b.pick?.risk_level ?? b.analysis?.risk_level)
   const kickoffDiff = new Date(a.match?.kickoff_at ?? 0).getTime() - new Date(b.match?.kickoff_at ?? 0).getTime()
-  return hasPickDiff || scoreDiff || confidenceDiff || riskDiff || kickoffDiff
+  return marketPriorityDiff || signalDiff || marketEdgeDiff || hasPickDiff || scoreDiff || confidenceDiff || riskDiff || kickoffDiff
+}
+
+function dailyMarketReadinessGroup(item: any) {
+  const analysis = item.analysis ?? getAnalysis(item.match)
+  const odds = item.odds ?? []
+  const hasOdds = odds.length > 0 || Number(analysis?.odds_rows_used ?? analysis?.raw?.odds_rows_used ?? item.pick?.odds_rows_used ?? 0) > 0
+  const readiness = String(item.match?.data_readiness_status ?? analysis?.raw?.data_readiness_status ?? '').toUpperCase()
+  const analysisStatus = String(analysis?.analysis_status ?? analysis?.raw?.analysis_status ?? item.pick?.analysis_status ?? '').toUpperCase()
+  const validationStatus = String(analysis?.data_validation_status ?? 'VALID').toUpperCase()
+  const marketDataUsed = Boolean(analysis?.market_data_used ?? analysis?.raw?.market_data_used ?? item.pick?.market_data_used)
+  const marketEdgeScore = dailyMarketEdgeScore(item)
+  const confidenceScore = dailyConfidenceScore(item)
+  const riskLevel = normalizeRiskLevelText(item.pick?.risk_level ?? analysis?.risk_level)
+
+  if (!hasOdds) return 'WAITING_MARKET_DATA'
+  if (
+    ['VALID', 'PARTIAL'].includes(validationStatus) &&
+    (marketDataUsed || analysisStatus === 'MARKET_DATA_READY_RECALCULATED' || ['READY', 'PARTIAL'].includes(readiness)) &&
+    marketEdgeScore > 0 &&
+    confidenceScore >= 58 &&
+    riskLevel !== 'HIGH'
+  ) return 'MARKET_READY_SIGNAL'
+  return 'MARKET_SEEN_INCOMPLETE'
+}
+
+function dailyMarketReadinessPriority(item: any) {
+  const group = dailyMarketReadinessGroup(item)
+  if (group === 'MARKET_READY_SIGNAL') return 1
+  if (group === 'MARKET_SEEN_INCOMPLETE') return 2
+  return 3
+}
+
+function isMarketReadyCandidate(item: any) {
+  return dailyMarketReadinessGroup(item) !== 'WAITING_MARKET_DATA'
+}
+
+function isWaitingMarketCandidate(item: any) {
+  return dailyMarketReadinessGroup(item) === 'WAITING_MARKET_DATA'
+}
+
+function dailySignalPriority(item: any) {
+  const signal = String(item.pick?.signal ?? '').toUpperCase()
+  const recommendation = normalizeRecommendationText(item.analysis?.recommendation)
+  if (signal === 'STRONG_SIGNAL' && recommendation === 'BET') return 1
+  if (signal === 'STRONG_SIGNAL') return 2
+  if (signal === 'WATCH' || recommendation === 'LEAN' || recommendation === 'WATCH') return 3
+  return 4
+}
+
+function dailyMarketEdgeScore(item: any) {
+  return normalizeScore(item.analysis?.market_edge_score ?? item.analysis?.raw?.market_edge_score ?? 0)
+}
+
+function normalizeRecommendationText(value: unknown) {
+  const recommendation = String(value ?? 'NO BET').toUpperCase().replace('_', ' ')
+  if (['BET', 'LEAN', 'WATCH', 'NO BET'].includes(recommendation)) return recommendation
+  return 'NO BET'
+}
+
+function summarizeExistingMarketLock(rows: Array<any>, oddsByMatchId: Map<string, Array<any>>) {
+  const staleNoMarketLockCount = rows.filter((row: any) => {
+    const odds = oddsByMatchId.get(row.match_id) ?? []
+    const signal = String(row.signal ?? '').toUpperCase()
+    return !odds.length && (signal === 'SKIP' || !signal)
+  }).length
+  return { staleNoMarketLockCount }
+}
+
+function formatTop10RefreshMatch(item: any) {
+  return {
+    matchId: item.match?.id ?? null,
+    apiFixtureId: item.match?.api_sports_fixture_id ?? null,
+    homeTeam: item.match?.homeTeam?.name ?? null,
+    awayTeam: item.match?.awayTeam?.name ?? null,
+    kickoffAt: item.match?.kickoff_at ?? null,
+    recommendation: normalizeRecommendationText(item.analysis?.recommendation),
+    signal: item.pick?.signal ?? 'SKIP',
+    oddsRows: (item.odds ?? []).length,
+    readiness: dailyMarketReadinessGroup(item),
+    confidenceScore: dailyConfidenceScore(item),
+    marketEdgeScore: dailyMarketEdgeScore(item),
+  }
 }
 
 function dailySelectionScore(item: any) {
@@ -6381,7 +6608,7 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
       has_fixture_detail,
       data_readiness_score,
       data_readiness_status,
-      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_score, data_validation_status, data_validation_notes, raw, ${analysisReadinessMetadataSelect})
+      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_level, risk_score, market_edge_score, data_validation_status, data_validation_notes, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', range.startUtc)
     .lt('kickoff_at', range.endUtc)
@@ -6422,10 +6649,11 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
     .sort((a: any, b: any) => {
       const readinessDiff = rankingReadinessPriority(a.readiness) - rankingReadinessPriority(b.readiness)
       const recommendationDiff = recommendationPriority(getCoverageAwareRecommendation(a)) - recommendationPriority(getCoverageAwareRecommendation(b))
+      const marketEdgeDiff = Number(b.analysis.market_edge_score ?? 0) - Number(a.analysis.market_edge_score ?? 0)
       const rankingDiff = Number(b.analysis.ranking_score ?? 0) - Number(a.analysis.ranking_score ?? 0)
       const confidenceDiff = Number(b.analysis.calibrated_confidence_score ?? b.analysis.confidence_score ?? 0) - Number(a.analysis.calibrated_confidence_score ?? a.analysis.confidence_score ?? 0)
       const riskDiff = Number(a.analysis.risk_score ?? 100) - Number(b.analysis.risk_score ?? 100)
-      return readinessDiff || recommendationDiff || rankingDiff || confidenceDiff || riskDiff
+      return readinessDiff || recommendationDiff || marketEdgeDiff || rankingDiff || confidenceDiff || riskDiff
     })
     .slice(0, 10)
 
