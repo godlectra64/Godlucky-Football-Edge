@@ -20,7 +20,12 @@ export function generateAiFinalPick(match = {}) {
   const warningSigns = uniqueItems([...(selected.warnings ?? []), ...getStoredWarnings(match)]).slice(0, 5)
   const bookmakerCount = Number(selected.bookmakerCount ?? new Set(oddsRows.map((row) => row.bookmaker).filter(Boolean)).size)
   const movementState = String(selected.marketSignal ?? '').toLowerCase().includes('against') ? 'against' : 'ok'
+  const marketDataUsed = Boolean(analysis.market_data_used ?? analysis.raw?.market_data_used ?? hasOdds)
+  const oddsRowsUsed = Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? oddsRows.length)
+  const marketEdgeScore = scoreValue(analysis.market_edge_score ?? analysis.raw?.market_edge_score, 0)
+  const recommendation = normalizeRecommendation(analysis.recommendation ?? match.recommendation)
   const signal = resolveSignal({
+    recommendation,
     totalAnalysisScore,
     selectionScore,
     confidenceScore,
@@ -28,6 +33,9 @@ export function generateAiFinalPick(match = {}) {
     hasOdds,
     bookmakerCount,
     movementState,
+    marketDataUsed,
+    oddsRowsUsed,
+    marketEdgeScore,
     keyReasons,
     warningSigns,
   })
@@ -82,7 +90,7 @@ function chooseMarketAnalysis(ahAnalysis, ouAnalysis) {
   return riskWeight(ah.warnings) <= riskWeight(ou.warnings) ? ah : ou
 }
 
-function resolveSignal({ totalAnalysisScore, selectionScore, confidenceScore, riskLevel, hasOdds, bookmakerCount, movementState, keyReasons, warningSigns }) {
+function resolveSignal({ recommendation, totalAnalysisScore, selectionScore, confidenceScore, riskLevel, hasOdds, bookmakerCount, movementState, marketDataUsed, oddsRowsUsed, marketEdgeScore, keyReasons, warningSigns }) {
   if (
     totalAnalysisScore < 60 ||
     confidenceScore < 55 ||
@@ -92,6 +100,18 @@ function resolveSignal({ totalAnalysisScore, selectionScore, confidenceScore, ri
     warningSigns.length > 3
   ) {
     return 'SKIP'
+  }
+  if (
+    recommendation === 'BET' &&
+    totalAnalysisScore >= 78 &&
+    confidenceScore >= 78 &&
+    riskLevel !== 'HIGH' &&
+    hasOdds &&
+    marketDataUsed &&
+    oddsRowsUsed > 0 &&
+    marketEdgeScore >= 70
+  ) {
+    return 'STRONG_SIGNAL'
   }
   if (
     totalAnalysisScore >= 75 &&
@@ -149,6 +169,11 @@ function uniqueItems(items) {
 function normalizeSignal(value) {
   const text = String(value ?? '').toUpperCase()
   return signals.includes(text) ? text : 'SKIP'
+}
+
+function normalizeRecommendation(value) {
+  const text = String(value ?? '').toUpperCase().replace('_', ' ')
+  return ['BET', 'LEAN', 'WATCH', 'NO BET'].includes(text) ? text : 'NO BET'
 }
 
 function normalizeRiskLevel(value) {

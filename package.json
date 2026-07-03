@@ -15,6 +15,7 @@
     "verify:daily-top10": "node scripts/verifyDailyTop10Lock.mjs",
     "verify:results": "node scripts/verifyResultSettlementIntegrity.mjs",
     "verify:scheduler": "node scripts/verifyGitHubActionsScheduler.mjs",
+    "diagnose:no-bet": "node scripts/auditNoBetDistribution.mjs",
     "test:daily-sync-auth": "node scripts/dailySyncAuth.unit.test.mjs",
     "test:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "build": "vite build",

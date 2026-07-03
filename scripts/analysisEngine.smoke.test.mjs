@@ -60,6 +60,7 @@ import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { runAiSelectionEngine } from '../src/utils/aiSelectionEngine.js'
+import { generateAiFinalPick } from '../src/utils/aiFinalPickEngine.js'
 import { getPagePath, getRouteState } from '../src/utils/routes.js'
 import { fetchEnabledLeagues, updateLeagueSettingsById } from '../src/repositories/analysisRepository.js'
 import { fetchMatchById, fetchMatchesByKickoffRange } from '../src/repositories/matchesRepository.js'
@@ -817,6 +818,45 @@ assert.equal(noBetRanking.recommendation, 'NO BET')
 assert.ok(!noBetRanking.rankBadges.includes('คู่เด่น'), 'NO BET should not receive BET-like featured badge')
 assert.ok(!noBetRanking.rankReason.includes('เหมาะเป็น'), 'NO BET rank reason should not read like a BET recommendation')
 assert.ok(noBetRanking.rankReason.includes('ควรข้าม'), 'NO BET rank reason should clearly recommend skipping')
+
+const marketReadyFinalPick = generateAiFinalPick({
+  analysis: {
+    recommendation: 'BET',
+    ranking_score: 89,
+    confidence_score: 84,
+    calibrated_confidence_score: 84,
+    risk_level: 'LOW',
+    market_edge_score: 100,
+    market_data_used: true,
+    odds_rows_used: 12,
+    team_strength_score: 60,
+    form_score: 58,
+    home_advantage_score: 66,
+    away_weakness_score: 55,
+    goal_scoring_score: 57,
+    defensive_stability_score: 58,
+  },
+  odds: [
+    { market_focus: 'AH', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9 },
+    { market_focus: 'OU', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Over 2.5', line: '2.5', price: 1.95 },
+  ],
+})
+assert.equal(marketReadyFinalPick.signal, 'STRONG_SIGNAL', 'market-ready BET must not be downgraded to SKIP only because sub-market reasons are conservative')
+
+const missingMarketFinalPick = generateAiFinalPick({
+  analysis: {
+    recommendation: 'BET',
+    ranking_score: 89,
+    confidence_score: 84,
+    calibrated_confidence_score: 84,
+    risk_level: 'LOW',
+    market_edge_score: 100,
+    market_data_used: false,
+    odds_rows_used: 0,
+  },
+  odds: [],
+})
+assert.equal(missingMarketFinalPick.signal, 'SKIP', 'missing market data must stay SKIP even when stored confidence is high')
 
 for (const repositoryFn of [
   fetchEnabledLeagues,

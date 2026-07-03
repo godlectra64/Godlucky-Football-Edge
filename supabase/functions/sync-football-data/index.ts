@@ -2834,7 +2834,7 @@ async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRa
       raw,
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw, ${analysisReadinessMetadataSelect})
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', dayRange.startUtc)
     .lt('kickoff_at', dayRange.endUtc)
@@ -2921,12 +2921,10 @@ async function lockDailyTop10(dayRange: ReturnType<typeof getBangkokDayRange>) {
     .slice(0, 10)
 
   for (const item of selected) {
-    if (!item.pick) {
-      try {
-        item.pick = await upsertAiFinalPickForMatch(item.match)
-      } catch (error) {
-        console.warn('lock-daily-top10 ai final pick fallback failed', { matchId: item.match?.id, error: formatErrorMessage(error, 'ai final pick failed') })
-      }
+    try {
+      item.pick = await upsertAiFinalPickForMatch(item.match)
+    } catch (error) {
+      console.warn('lock-daily-top10 ai final pick refresh failed', { matchId: item.match?.id, error: formatErrorMessage(error, 'ai final pick failed') })
     }
   }
 
@@ -3035,7 +3033,7 @@ async function fetchDailyTop10LockCandidates(dayRange: ReturnType<typeof getBang
       raw,
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw, ${analysisReadinessMetadataSelect})
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', dayRange.startUtc)
     .lt('kickoff_at', dayRange.endUtc)
@@ -3058,7 +3056,7 @@ async function fetchMatchForAiFinalPick(matchId: string) {
       raw,
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, raw, ${analysisReadinessMetadataSelect})
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
     `)
     .eq('id', matchId)
     .maybeSingle()
@@ -4545,8 +4543,18 @@ function buildEdgeAiFinalPick(match: any) {
   const movementAgainst = /against/i.test(String(selected.marketSignal ?? ''))
   const marketDataUsed = Boolean(analysis.market_data_used ?? analysis.raw?.market_data_used ?? hasOdds)
   const oddsRowsUsed = Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? odds.length)
+  const marketEdgeScore = normalizeScore(analysis.market_edge_score ?? analysis.raw?.market_edge_score ?? 0)
+  const recommendation = String(analysis.recommendation ?? '').toUpperCase().replace('_', ' ')
   let signal: 'STRONG_SIGNAL' | 'WATCH' | 'SKIP' = 'WATCH'
   if (totalAnalysisScore < 60 || confidenceScore < 55 || riskLevel === 'HIGH' || !hasOdds || movementAgainst || warningSigns.length > 3) signal = 'SKIP'
+  else if (
+    recommendation === 'BET' &&
+    totalAnalysisScore >= 78 &&
+    confidenceScore >= 78 &&
+    marketDataUsed &&
+    oddsRowsUsed > 0 &&
+    marketEdgeScore >= 70
+  ) signal = 'STRONG_SIGNAL'
   else if (totalAnalysisScore >= 75 && selectionScore >= 70 && confidenceScore >= 70 && bookmakerCount >= 1 && keyReasons.length >= 3) signal = 'STRONG_SIGNAL'
 
   const marketFocus = signal === 'SKIP' && !hasOdds ? 'NONE' : selected.marketFocus
