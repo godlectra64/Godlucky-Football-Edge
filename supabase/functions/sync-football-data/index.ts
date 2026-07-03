@@ -101,6 +101,7 @@ const footballEnrichmentModes = [
   'sync-odds',
   'sync-fixture-odds',
   'recompute-ai-final-picks',
+  'recompute-ai-final-picks-date',
   'lock-daily-top10',
   'get-daily-top10-status',
   'refresh-locked-top10-signals',
@@ -166,6 +167,12 @@ Deno.serve(async (request) => {
         dateKey,
         dateFrom,
         dateTo,
+        requestedSelectionDate: modeResult.requestedSelectionDate ?? (typeof body.selectionDate === 'string' ? body.selectionDate : null),
+        resolvedDateKey: modeResult.resolvedDateKey ?? dateKey,
+        resolvedDateFrom: modeResult.resolvedDateFrom ?? dateFrom,
+        resolvedDateTo: modeResult.resolvedDateTo ?? dateTo,
+        reusedRunId: modeResult.reusedRunId ?? null,
+        runDateKey: modeResult.runDateKey ?? null,
         startUtc,
         endUtc,
         limit,
@@ -208,6 +215,16 @@ Deno.serve(async (request) => {
         alreadyLocked: modeResult.alreadyLocked,
         lockedCount: modeResult.lockedCount,
         selectionDate: modeResult.selectionDate,
+        top10Count: modeResult.top10Count,
+        finalPickRowsBefore: modeResult.finalPickRowsBefore,
+        finalPickRowsAfter: modeResult.finalPickRowsAfter,
+        recomputedFinalPicks: modeResult.recomputedFinalPicks,
+        strongSignals: modeResult.strongSignals,
+        leanSignals: modeResult.leanSignals,
+        skipSignals: modeResult.skipSignals,
+        missingFinalPickRows: modeResult.missingFinalPickRows,
+        top10Coverage: modeResult.top10Coverage,
+        source: modeResult.source,
         lockedAt: modeResult.lockedAt,
         lastUpdated: modeResult.lastUpdated,
         matchesWithOdds: modeResult.matchesWithOdds,
@@ -530,7 +547,7 @@ type DailyFullSyncStepSummary = {
 async function runFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
   const provider = getProviderAdapter('api-football')
   const providerResult = { provider, fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] }
-  const context = createFootballEnrichmentContext(mode, limit, typeof body.date === 'string' ? body.date : dayRange.dateKey)
+  const context = createFootballEnrichmentContext(mode, limit, dayRange.dateKey)
   const started = Date.now()
 
   if (isDailySyncOrchestratorMode(mode)) {
@@ -646,41 +663,49 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
 }
 
 async function runDailySyncOrchestratorMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, providerResult: any, started: number) {
+  const dateDiagnostics = buildDailySyncDateDiagnostics(body, dayRange)
   if (mode === 'daily-sync-status') {
     const state = await getDailySyncState(String(body.runId ?? ''))
-    return buildDailySyncStatusResponse(mode, state, Date.now() - started)
+    assertDailySyncRunDateMatchesRequest(state, dayRange, body)
+    return withDailySyncDateDiagnostics(await buildDailySyncStatusResponse(mode, state, Date.now() - started), dateDiagnostics, state)
   }
 
   if (mode === 'daily-sync-start') {
     const state = await startDailySyncRun(body, dayRange)
-    return buildDailySyncStartResponse(mode, state, Date.now() - started)
+    return withDailySyncDateDiagnostics(await buildDailySyncStartResponse(mode, state, Date.now() - started), dateDiagnostics, state)
   }
 
   if (mode === 'daily-sync-next') {
     const state = await getDailySyncState(String(body.runId ?? ''))
+    assertDailySyncRunDateMatchesRequest(state, dayRange, body)
     const result = await runDailySyncStepBatch(state, body, getBangkokDayRange(state.run.run_date), context, body.autoAdvance === true ? getMaxStepsPerRequest(body) : 1)
-    return buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started)
+    result.reusedRunId = Boolean(state.reusedRunId)
+    return withDailySyncDateDiagnostics(await buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started), dateDiagnostics, result)
   }
 
   if (mode === 'daily-sync-phase') {
     const state = await getDailySyncState(String(body.runId ?? ''))
+    assertDailySyncRunDateMatchesRequest(state, dayRange, body)
     const result = await runRequestedDailySyncPhase(state, String(body.phase ?? ''), body, getBangkokDayRange(state.run.run_date), context)
-    return buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started)
+    result.reusedRunId = Boolean(state.reusedRunId)
+    return withDailySyncDateDiagnostics(await buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started), dateDiagnostics, result)
   }
 
   if (mode === 'daily-sync-auto') {
     const state = await startDailySyncRun({ ...body, resume: body.resume ?? true }, dayRange)
     const result = await runDailySyncStepBatch(state, body, getBangkokDayRange(state.run.run_date), context, getMaxStepsPerRequest(body))
-    return buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started)
+    result.reusedRunId = Boolean(state.reusedRunId)
+    return withDailySyncDateDiagnostics(await buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started), dateDiagnostics, result)
   }
 
   if (['daily-full-sync', 'daily-full-sync-safe', 'auto-daily-enrichment'].includes(mode)) {
     const state = await startDailySyncRun(body, dayRange)
-    if (state.run.status === 'success') return buildDailySyncStatusResponse(mode, state, Date.now() - started, 'daily sync already completed')
+    if (state.run.status === 'success') return withDailySyncDateDiagnostics(await buildDailySyncStatusResponse(mode, state, Date.now() - started, 'daily sync already completed'), dateDiagnostics, state)
 
     const autoAdvance = body.autoAdvance === true
     const result = await runDailySyncStepBatch(state, body, getBangkokDayRange(state.run.run_date), context, autoAdvance ? getMaxStepsPerRequest(body) : 1)
-    return buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started)
+    result.reusedRunId = Boolean(state.reusedRunId)
+    return withDailySyncDateDiagnostics(await buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started), dateDiagnostics, result)
   }
 
   return buildDailySyncSafeResponse({
@@ -736,15 +761,15 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
     if (inserted.error) throw inserted.error
     run = inserted.data
     await createDailySyncSteps(run.id, limits)
-    return getDailySyncState(run.id)
+    return withDailySyncReuseMeta(await getDailySyncState(run.id), false)
   }
 
   if (run.status === 'success' && !force) {
-    return getDailySyncState(run.id)
+    return withDailySyncReuseMeta(await getDailySyncState(run.id), true)
   }
 
   if (run.status !== 'success' && resume && !force) {
-    return getDailySyncState(run.id)
+    return withDailySyncReuseMeta(await getDailySyncState(run.id), true)
   }
 
   if (force || run.status !== 'success') {
@@ -768,10 +793,42 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
     if (updated.error) throw updated.error
     await supabase.from('api_football_daily_sync_steps').delete().eq('run_id', run.id)
     await createDailySyncSteps(run.id, limits)
-    return getDailySyncState(run.id)
+    return withDailySyncReuseMeta(await getDailySyncState(run.id), false)
   }
 
-  return getDailySyncState(run.id)
+  return withDailySyncReuseMeta(await getDailySyncState(run.id), true)
+}
+
+function withDailySyncReuseMeta(state: any, reusedRunId: boolean) {
+  return { ...state, reusedRunId }
+}
+
+function buildDailySyncDateDiagnostics(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
+  return {
+    requestedSelectionDate: typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : null,
+    resolvedDateKey: dayRange.dateKey,
+    resolvedDateFrom: dayRange.dateFrom,
+    resolvedDateTo: dayRange.dateTo,
+  }
+}
+
+function withDailySyncDateDiagnostics(response: any, diagnostics: ReturnType<typeof buildDailySyncDateDiagnostics>, stateOrResult: any) {
+  const run = stateOrResult?.run ?? null
+  return {
+    ...response,
+    ...diagnostics,
+    reusedRunId: Boolean(stateOrResult?.reusedRunId),
+    runDateKey: run?.run_date ?? null,
+  }
+}
+
+function assertDailySyncRunDateMatchesRequest(state: any, dayRange: ReturnType<typeof getBangkokDayRange>, body: Record<string, unknown>) {
+  const hasExplicitDate = Boolean(body.selectionDate || body.dateKey || body.date || body.dateFrom)
+  if (!hasExplicitDate) return
+  const runDate = String(state?.run?.run_date ?? '')
+  if (runDate && runDate !== dayRange.dateKey) {
+    throw new Error(`Daily sync run date mismatch: requested ${dayRange.dateKey} but run ${state.run.id} is for ${runDate}`)
+  }
 }
 
 async function createDailySyncSteps(runId: string, limits: Record<string, number>) {
@@ -1678,6 +1735,7 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'sync-odds') return syncApiFootballOdds(body, dayRange, context)
   if (mode === 'sync-fixture-odds') return syncApiFootballFixtureOdds(body, dayRange, context)
   if (mode === 'recompute-ai-final-picks') return recomputeAiFinalPicks(dayRange, context)
+  if (mode === 'recompute-ai-final-picks-date') return recomputeAiFinalPicksForSelectionDate(dayRange, context)
   if (mode === 'lock-daily-top10') return lockDailyTop10(dayRange)
   if (mode === 'get-daily-top10-status') return getDailyTop10Status(dayRange)
   if (mode === 'refresh-locked-top10-signals') return refreshLockedTop10Signals(dayRange, context)
@@ -2863,6 +2921,93 @@ async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRa
     }
   }
   return { processed, totalCandidates: rows.length, rowsSaved, failed }
+}
+
+async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const selectionDate = dayRange.dateKey
+  const locked = await supabase
+    .from('daily_top10_selections')
+    .select('*')
+    .eq('selection_date', selectionDate)
+    .order('rank', { ascending: true })
+  if (locked.error) throw locked.error
+
+  let source = 'daily_top10_selections'
+  let items: Array<{ match: any; lockedRow: any | null; rank: number }> = []
+
+  if ((locked.data ?? []).length) {
+    for (const row of locked.data ?? []) {
+      const match = await fetchMatchForAiFinalPick(row.match_id)
+      if (!match) continue
+      items.push({ match, lockedRow: row, rank: Number(row.rank ?? items.length + 1) })
+    }
+  } else {
+    source = 'match_analysis'
+    const candidates = await fetchDailyTop10LockCandidates(dayRange)
+    items = candidates
+      .map((match: any) => ({ match, lockedRow: null, rank: Number(getAnalysis(match)?.final_rank ?? 999) }))
+      .filter((item) => Boolean(getAnalysis(item.match)?.is_top_pick || Number(item.rank) < 999))
+      .sort((a, b) => a.rank - b.rank)
+      .slice(0, 10)
+  }
+
+  const matchIds = items.map((item) => item.match?.id).filter(Boolean)
+  const beforePicks = await fetchAiFinalPicksForMatches(matchIds)
+  let recomputedFinalPicks = 0
+  let rowsSaved = 0
+  let failed = 0
+  const failures: Array<any> = []
+
+  for (const item of items) {
+    try {
+      const pick = await upsertAiFinalPickForMatch(item.match)
+      recomputedFinalPicks += 1
+      rowsSaved += 1
+      if (item.lockedRow?.id) {
+        const patch = await supabase
+          .from('daily_top10_selections')
+          .update({
+            ai_final_pick_id: pick.id,
+            signal: pick.signal,
+            market_focus: pick.market_focus,
+            confidence_score: pick.confidence_score,
+            risk_level: pick.risk_level,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', item.lockedRow.id)
+        if (patch.error) throw patch.error
+      }
+    } catch (error) {
+      failed += 1
+      failures.push({ matchId: item.match?.id, rank: item.rank, message: formatErrorMessage(error, 'recompute final pick failed') })
+    }
+  }
+
+  const afterPicks = await fetchAiFinalPicksForMatches(matchIds)
+  const afterPickByMatch = new Map(afterPicks.map((pick: any) => [pick.match_id, pick]))
+  const missingFinalPickRows = matchIds.filter((matchId) => !afterPickByMatch.has(matchId)).length
+  const strongSignals = afterPicks.filter((pick: any) => pick.signal === 'STRONG_SIGNAL').length
+  const leanSignals = afterPicks.filter((pick: any) => pick.signal === 'WATCH').length
+  const skipSignals = afterPicks.filter((pick: any) => pick.signal === 'SKIP').length
+
+  return {
+    processed: recomputedFinalPicks,
+    totalCandidates: items.length,
+    rowsSaved,
+    failed,
+    failures,
+    selectionDate,
+    source,
+    top10Count: items.length,
+    finalPickRowsBefore: beforePicks.length,
+    finalPickRowsAfter: afterPicks.length,
+    recomputedFinalPicks,
+    strongSignals,
+    leanSignals,
+    skipSignals,
+    missingFinalPickRows,
+    top10Coverage: `${afterPicks.length}/${items.length}`,
+  }
 }
 
 async function upsertAiFinalPickForMatch(match: any) {
@@ -8201,7 +8346,9 @@ function normalizeFixtureIds(value: unknown) {
 }
 
 function getSyncDateRange(body: Record<string, unknown>) {
-  const dateInput = typeof body.date === 'string' && body.date
+  const dateInput = typeof body.selectionDate === 'string' && body.selectionDate
+    ? body.selectionDate
+    : typeof body.date === 'string' && body.date
     ? body.date
     : typeof body.dateKey === 'string' && body.dateKey
     ? body.dateKey
