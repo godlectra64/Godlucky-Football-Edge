@@ -202,6 +202,7 @@ export function normalizeMatch(row = {}) {
     analysis: activeAnalysis,
     odds,
   })
+  const waitingMarketData = deriveWaitingMarketData(source, activeAnalysis, aiFinalPick, odds)
 
   return {
     id: source.id,
@@ -256,6 +257,8 @@ export function normalizeMatch(row = {}) {
     odds,
     matchOdds: odds,
     match_odds: odds,
+    waitingMarketData,
+    waiting_market_data: waitingMarketData,
     aiFinalPick,
     ai_final_pick: aiFinalPick,
     enrichment: normalizeEnrichment(source.enrichment),
@@ -338,6 +341,24 @@ export function normalizeMatch(row = {}) {
     data_validation_status: activeAnalysis?.data_validation_status,
     updatedAt: activeAnalysis?.updated_at ?? source.updated_at ?? source.created_at,
   }
+}
+
+function deriveWaitingMarketData(source = {}, analysis = {}, aiFinalPick = {}, odds = []) {
+  const oddsRows = Array.isArray(odds) ? odds : []
+  const oddsRowsUsed = Number(analysis?.odds_rows_used ?? analysis?.raw?.odds_rows_used ?? aiFinalPick?.oddsRowsUsed ?? aiFinalPick?.odds_rows_used ?? 0)
+  const hasOdds = oddsRows.length > 0 || oddsRowsUsed > 0
+  const readiness = String(source?.data_readiness_status ?? analysis?.raw?.data_readiness_status ?? '').toUpperCase()
+  const analysisStatus = String(analysis?.analysis_status ?? analysis?.raw?.analysis_status ?? aiFinalPick?.analysisStatus ?? aiFinalPick?.analysis_status ?? '').toUpperCase()
+  const signal = String(aiFinalPick?.signal ?? '').toUpperCase()
+  const reason = String(analysis?.recommendation_reason ?? analysis?.raw?.recommendation_reason ?? aiFinalPick?.marketSignal ?? aiFinalPick?.market_signal ?? '').toLowerCase()
+  const marketDataUsed = Boolean(analysis?.market_data_used ?? analysis?.raw?.market_data_used ?? aiFinalPick?.marketDataUsed ?? aiFinalPick?.market_data_used)
+
+  return !hasOdds && (
+    ['NO_MARKET_DATA', 'PENDING'].includes(readiness) ||
+    analysisStatus === 'INSUFFICIENT_MARKET_DATA' ||
+    (signal === 'SKIP' && /market|odds|ราคา|ตลาด/.test(reason)) ||
+    marketDataUsed === false
+  )
 }
 
 function normalizeEnrichment(enrichment = {}) {

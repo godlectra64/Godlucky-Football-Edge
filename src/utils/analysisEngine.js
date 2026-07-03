@@ -265,6 +265,7 @@ export function compareMarketReadyMatches(a, b) {
 }
 
 export function getMarketReadinessGroup(match = {}) {
+  if (match.waitingMarketData || match.waiting_market_data) return marketReadinessGroups.waiting
   const analysis = match.analysis ?? match.match_analysis ?? {}
   const pick = match.aiFinalPick ?? match.ai_final_pick ?? {}
   const oddsRows = getOddsRows(match)
@@ -303,6 +304,21 @@ export function getMarketReadinessPriority(match = {}) {
   if (group === marketReadinessGroups.ready) return 1
   if (group === marketReadinessGroups.seen) return 2
   return 3
+}
+
+export function buildTodayMarketSections(matches = [], filter = 'ALL') {
+  const rows = Array.isArray(matches) ? matches : []
+  const filteredReadyPool = filter === 'ALL'
+    ? rows
+    : rows.filter((match) => String(match.recommendation ?? match.analysis?.recommendation ?? '').toUpperCase().replace('_', ' ') === filter)
+  const readyMatches = filteredReadyPool.filter(isMarketReadyForDisplay)
+  const waitingMatches = rows.filter(isWaitingForMarketData)
+  return {
+    readyMatches,
+    waitingMatches,
+    hasDisplayMatches: readyMatches.length > 0 || waitingMatches.length > 0,
+    showWaitingNotice: readyMatches.length === 0 && waitingMatches.length > 0,
+  }
 }
 
 function getSignalPriority(match = {}) {

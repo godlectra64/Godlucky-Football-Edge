@@ -58,6 +58,7 @@ export async function getLockedTop10(date = getBangkokToday()) {
 
 function normalizeLockedMatch(match = {}, lock = {}) {
   const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
+  const waitingMarketData = deriveWaitingMarketData(match, analysis, match.aiFinalPick ?? match.ai_final_pick, lock)
   return {
     ...match,
     kickoffAt: match.kickoffAt ?? match.kickoff_at,
@@ -74,8 +75,29 @@ function normalizeLockedMatch(match = {}, lock = {}) {
     confidence: match.confidence ?? analysis?.calibrated_confidence_score ?? analysis?.confidence_score,
     riskLevel: match.riskLevel ?? analysis?.risk_level,
     rankingScore: match.rankingScore ?? analysis?.ranking_score ?? analysis?.calibrated_confidence_score,
+    waitingMarketData,
+    waiting_market_data: waitingMarketData,
     dailyTop10Lock: lock,
   }
+}
+
+function deriveWaitingMarketData(match = {}, analysis = {}, aiFinalPick = {}, lock = {}) {
+  const odds = match.odds ?? match.matchOdds ?? match.match_odds ?? []
+  const oddsRows = Array.isArray(odds) ? odds : []
+  const oddsRowsUsed = Number(analysis?.odds_rows_used ?? analysis?.raw?.odds_rows_used ?? aiFinalPick?.odds_rows_used ?? aiFinalPick?.oddsRowsUsed ?? 0)
+  const hasOdds = oddsRows.length > 0 || oddsRowsUsed > 0
+  const readiness = String(match?.data_readiness_status ?? analysis?.raw?.data_readiness_status ?? '').toUpperCase()
+  const analysisStatus = String(analysis?.analysis_status ?? analysis?.raw?.analysis_status ?? aiFinalPick?.analysis_status ?? aiFinalPick?.analysisStatus ?? '').toUpperCase()
+  const signal = String(aiFinalPick?.signal ?? lock?.signal ?? '').toUpperCase()
+  const reason = String(analysis?.recommendation_reason ?? analysis?.raw?.recommendation_reason ?? aiFinalPick?.market_signal ?? aiFinalPick?.marketSignal ?? '').toLowerCase()
+  const marketDataUsed = Boolean(analysis?.market_data_used ?? analysis?.raw?.market_data_used ?? aiFinalPick?.market_data_used ?? aiFinalPick?.marketDataUsed)
+
+  return !hasOdds && (
+    ['NO_MARKET_DATA', 'PENDING'].includes(readiness) ||
+    analysisStatus === 'INSUFFICIENT_MARKET_DATA' ||
+    (signal === 'SKIP' && /market|odds|ราคา|ตลาด/.test(reason)) ||
+    marketDataUsed === false
+  )
 }
 
 function sortMarketReadyTop10(matches = []) {
@@ -99,8 +121,26 @@ export async function getTodayTop10OrFallback(fallback = []) {
   const date = getBangkokToday()
   const locked = await getLockedTop10(date)
   if (!locked.error && locked.data.length) return { matches: locked.data, status: locked.status, locked: true }
+  const latestLocked = await getLatestLockedTop10(date)
+  if (!latestLocked.error && latestLocked.data.length) return { matches: latestLocked.data, status: latestLocked.status, locked: true }
   const statusResult = await getDailyTop10Status(date)
   return { matches: fallback, status: statusResult.data ?? emptyStatus(date).data, locked: false }
+}
+
+async function getLatestLockedTop10(beforeOrOnDate) {
+  const client = await getSupabaseClient()
+  const latest = await client
+    .from('daily_top10_selections')
+    .select('selection_date')
+    .lte('selection_date', beforeOrOnDate)
+    .order('selection_date', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (isMissingTable(latest.error)) return { data: [], error: null, status: emptyStatus(beforeOrOnDate).data }
+  if (latest.error) return { data: [], error: latest.error, status: emptyStatus(beforeOrOnDate).data }
+  const latestDate = latest.data?.selection_date
+  if (!latestDate || latestDate === beforeOrOnDate) return { data: [], error: null, status: emptyStatus(beforeOrOnDate).data }
+  return getLockedTop10(latestDate)
 }
 
 function buildStatus(date, rows, displayRows = []) {

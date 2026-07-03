@@ -4,6 +4,7 @@ import {
   calculateRankingScore,
   calculateFootballMasterAnalysis,
   calculateLeagueContext,
+  buildTodayMarketSections,
   getRecommendationFromConfidence,
   isMarketReadyForDisplay,
   isWaitingForMarketData,
@@ -916,6 +917,26 @@ assert.equal(marketReadyFirst.filter(isWaitingForMarketData).length, 7)
 const waitingOnly = rankTopMatches(waitingMarketMatches, 10)
 assert.equal(waitingOnly.some((match) => match.aiFinalPick?.signal === 'STRONG_SIGNAL'), false, 'waiting market matches must not become strong signals')
 assert.equal(waitingOnly.every(isWaitingForMarketData), true, 'no market-ready day should remain in waiting market state')
+
+const tenWaitingMarketMatches = Array.from({ length: 10 }, (_, index) => ({
+  ...waitingMarketMatches[index % waitingMarketMatches.length],
+  id: `today-waiting-${index}`,
+  waitingMarketData: true,
+}))
+const waitingOnlySections = buildTodayMarketSections(tenWaitingMarketMatches)
+assert.equal(waitingOnlySections.readyMatches.length, 0, 'Today ready section should be empty when no market-ready matches exist')
+assert.equal(waitingOnlySections.waitingMatches.length, 10, 'Today waiting section must render all waiting market matches')
+assert.equal(waitingOnlySections.hasDisplayMatches, true, 'Today page must not fall into empty state when waiting matches exist')
+assert.equal(waitingOnlySections.showWaitingNotice, true, 'Today page should show the market waiting notice above waiting matches')
+
+const mixedTodaySections = buildTodayMarketSections([...marketReadyMatches, ...waitingMarketMatches])
+assert.equal(mixedTodaySections.readyMatches.length, 3, 'Today ready section should render market-ready matches')
+assert.equal(mixedTodaySections.waitingMatches.length, 7, 'Today waiting section should render waiting matches alongside ready matches')
+
+const emptyTodaySections = buildTodayMarketSections([])
+assert.equal(emptyTodaySections.readyMatches.length, 0)
+assert.equal(emptyTodaySections.waitingMatches.length, 0)
+assert.equal(emptyTodaySections.hasDisplayMatches, false, 'Today page should show empty state only when no ready or waiting matches exist')
 
 for (const repositoryFn of [
   fetchEnabledLeagues,

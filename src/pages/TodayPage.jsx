@@ -1,7 +1,7 @@
 import { CheckCircle2, Lock, RefreshCcw, Sparkles, Unlock, Zap } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import MatchCard from '../components/MatchCard'
-import { getConfidence, isMarketReadyForDisplay, isWaitingForMarketData, recommendationLabels } from '../utils/analysisEngine'
+import { buildTodayMarketSections, getConfidence, isMarketReadyForDisplay, isWaitingForMarketData, recommendationLabels } from '../utils/analysisEngine'
 import { buildAiFinalPick, getOneBestPickOfDay } from '../utils/finalPick'
 import { formatThaiDate, formatUpdatedAt } from '../utils/formatters'
 
@@ -10,12 +10,7 @@ const filters = [allFilter, recommendationLabels.bet, recommendationLabels.lean,
 
 export default function TodayPage({ matches, oneBestPick: providedOneBestPick = null, totalMatchCount = matches.length, top10Status = null, top10Locked = false, loading, error, onRefresh, onOpenMatch }) {
   const [filter, setFilter] = useState(allFilter)
-  const filteredMatches = useMemo(() => {
-    if (filter === allFilter) return matches
-    return matches.filter((match) => match.recommendation === filter)
-  }, [filter, matches])
-  const readyMatches = useMemo(() => filteredMatches.filter(isMarketReadyForDisplay), [filteredMatches])
-  const waitingMatches = useMemo(() => filteredMatches.filter(isWaitingForMarketData), [filteredMatches])
+  const { readyMatches, waitingMatches, hasDisplayMatches, showWaitingNotice } = useMemo(() => buildTodayMarketSections(matches, filter), [filter, matches])
   const avgConfidence = matches.length ? Math.round(matches.reduce((total, match) => total + getConfidence(match), 0) / matches.length) : 0
   const marketReadyCount = matches.filter(isMarketReadyForDisplay).length
   const waitingMarketCount = matches.filter(isWaitingForMarketData).length
@@ -60,7 +55,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             </span>
           </div>
 
-          {!loading && matches.length && !marketReadyCount ? (
+          {!loading && showWaitingNotice ? (
             <p className="mt-1.5 text-clamp-1 rounded-lg border border-amber-300/20 bg-amber-300/10 px-2.5 py-1.5 text-[11px] font-bold leading-4 text-amber-100">
               วันนี้ข้อมูลตลาดยังไม่พร้อม ระบบจะอัปเดตอีกครั้งรอบถัดไป
             </p>
@@ -92,27 +87,25 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
 
       {loading ? <LoadingSkeleton /> : null}
       {error && !loading && !matches.length ? <StateBox title="โหลดข้อมูลไม่สำเร็จ" message="ระบบกำลังแสดงข้อมูลล่าสุดที่มีอยู่" detail={error} tone="error" onRetry={onRefresh} /> : null}
-      {!loading && !error && !filteredMatches.length ? (
+      {!loading && !error && !hasDisplayMatches ? (
         <StateBox
-          title={matches.length ? 'ไม่มีคู่ในตัวกรองนี้' : 'ยังไม่มีคู่สำหรับวันนี้'}
-          message={matches.length ? 'ลองเปลี่ยนตัวกรองคำแนะนำ หรือรีเฟรชข้อมูลอีกครั้ง' : 'ลองรีเฟรชข้อมูลหรือกลับมาตรวจอีกครั้ง'}
+          title="ยังไม่มีรายการแข่งขันสำหรับวันนี้"
+          message="ลองรีเฟรชข้อมูลหรือกลับมาตรวจอีกครั้ง"
           onRetry={onRefresh}
         />
       ) : null}
 
-      {!loading && !error && filteredMatches.length ? (
+      {!loading && !error && hasDisplayMatches ? (
         <div className="mt-2.5 grid gap-4">
-          <MatchSection title="คู่พร้อมวิเคราะห์" count={readyMatches.length} tone="ready">
-            {readyMatches.length ? (
+          {readyMatches.length ? (
+            <MatchSection title="คู่พร้อมวิเคราะห์" count={readyMatches.length} tone="ready">
               <div className="grid gap-2.5">
                 {readyMatches.map((match) => (
                   <MatchCard key={match.id} match={match} onOpen={onOpenMatch} />
                 ))}
               </div>
-            ) : (
-              <StateBox title="ข้อมูลยังไม่พร้อม" message="วันนี้ข้อมูลตลาดยังไม่พร้อม ระบบจะอัปเดตอีกครั้งรอบถัดไป" onRetry={onRefresh} />
-            )}
-          </MatchSection>
+            </MatchSection>
+          ) : null}
 
           {waitingMatches.length ? (
             <MatchSection title="รอข้อมูลตลาด" count={waitingMatches.length} tone="waiting">
