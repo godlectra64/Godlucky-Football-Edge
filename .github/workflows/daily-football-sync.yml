@@ -1,0 +1,150 @@
+name: Daily Football Sync
+
+on:
+  schedule:
+    - cron: '10 0 * * *'
+    - cron: '10 11 * * *'
+    - cron: '40 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-football-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync football data
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SYNC_ENDPOINT: https://fzjbnxomflqopwhzxfog.supabase.co/functions/v1/sync-football-data
+      EDGE_ADMIN_SECRET: ${{ secrets.EDGE_ADMIN_SECRET }}
+
+    steps:
+      - name: Run daily sync and result refresh
+        shell: bash
+        run: |
+          node <<'NODE'
+          const endpoint = process.env.SYNC_ENDPOINT
+          const adminSecret = process.env.EDGE_ADMIN_SECRET
+
+          if (!adminSecret) {
+            throw new Error('Missing required GitHub secret: EDGE_ADMIN_SECRET')
+          }
+
+          function maskText(value) {
+            return String(value)
+              .split(adminSecret).join('[masked]')
+              .replace(/sb_secret_[A-Za-z0-9._-]+/g, 'sb_secret_[masked]')
+              .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [masked]')
+          }
+
+          function sanitize(value) {
+            if (Array.isArray(value)) return value.map(sanitize)
+            if (value && typeof value === 'object') {
+              return Object.fromEntries(Object.entries(value)
+                .filter(([key]) => !/authorization|apikey|api[_-]?key|sb_secret|secret|token|key/i.test(key))
+                .map(([key, item]) => [key, sanitize(item)]))
+            }
+            if (typeof value === 'string') return maskText(value)
+            return value
+          }
+
+          function hasItems(value) {
+            return Array.isArray(value) && value.length > 0
+          }
+
+          function hasFailedStep(result) {
+            return hasItems(result.steps) && result.steps.some((step) => step?.status === 'failed')
+          }
+
+          function assertNoRealFailure(mode, result) {
+            if (result.ok === false) {
+              throw new Error(`${mode} returned ok:false`)
+            }
+            if (Number(result.failed ?? 0) > 0) {
+              throw new Error(`${mode} reported failed=${result.failed}`)
+            }
+            if (hasItems(result.failures)) {
+              throw new Error(`${mode} returned failures`)
+            }
+            if (hasFailedStep(result)) {
+              throw new Error(`${mode} has a failed step`)
+            }
+          }
+
+          async function postSync(payload) {
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ ...payload, sb_secret: adminSecret }),
+            })
+            const rawBody = await response.text()
+            let body
+            try {
+              body = rawBody ? JSON.parse(rawBody) : {}
+            } catch {
+              body = { rawBody: maskText(rawBody) }
+            }
+
+            console.log(`${payload.mode} HTTP ${response.status}`)
+            console.log(JSON.stringify(sanitize(body), null, 2))
+
+            if (!response.ok) {
+              throw new Error(`${payload.mode} failed with HTTP ${response.status}`)
+            }
+            assertNoRealFailure(payload.mode, body)
+            return body
+          }
+
+          function normalizeAction(value) {
+            return String(value ?? '').trim().toLowerCase()
+          }
+
+          function isComplete(result) {
+            const nextAction = normalizeAction(result.nextAction)
+            return result.status === 'success'
+              || Number(result.progressPercent ?? 0) >= 100
+              || nextAction === 'daily sync complete'
+              || nextAction === 'no action required'
+          }
+
+          function shouldContinue(result) {
+            return !isComplete(result) && ['running', 'pending_retry', 'partial_success'].includes(result.status)
+          }
+
+          async function waitForRetryWindow(result) {
+            const retryAfterSeconds = Number(result.retryAfterSeconds ?? 0)
+            if (result.status !== 'pending_retry' || !Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) return
+            const waitSeconds = Math.min(retryAfterSeconds, 60)
+            console.log(`daily-sync-auto pending_retry; waiting ${waitSeconds}s before continuing`)
+            await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000))
+          }
+
+          let dailySync = await postSync({ mode: 'daily-sync-auto' })
+          const runId = dailySync.runId
+          if (!runId) {
+            throw new Error('daily-sync-auto response did not include runId')
+          }
+
+          for (let attempt = 1; attempt <= 5 && shouldContinue(dailySync); attempt += 1) {
+            await waitForRetryWindow(dailySync)
+            console.log(`Continuing daily-sync-auto run ${runId}; attempt ${attempt}/5`)
+            dailySync = await postSync({
+              mode: 'daily-sync-auto',
+              runId,
+              autoAdvance: true,
+              maxStepsPerRequest: 2,
+            })
+          }
+
+          if (!isComplete(dailySync)) {
+            console.log(`daily-sync-auto stopped without a real failure: status=${dailySync.status ?? 'unknown'}, progressPercent=${dailySync.progressPercent ?? 'unknown'}, nextAction=${dailySync.nextAction ?? 'unknown'}`)
+          }
+
+          await postSync({ mode: 'result-refresh', limit: 20 })
+          console.log('Daily football sync workflow completed successfully.')
+          NODE
