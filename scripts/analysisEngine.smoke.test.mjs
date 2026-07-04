@@ -64,6 +64,7 @@ import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 import { buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
+import { buildUsableDailySelection } from '../src/utils/selectionEngineV2.js'
 import { mergeResultRows } from '../src/repositories/resultTrackerRepository.js'
 import { runAiSelectionEngine } from '../src/utils/aiSelectionEngine.js'
 import { generateAiFinalPick } from '../src/utils/aiFinalPickEngine.js'
@@ -967,6 +968,38 @@ const readyAndWaitingSections = buildTodayMarketSections(readyAndWaitingBuckets.
 assert.equal(readyAndWaitingSections.readyMatches.length, 3, 'Case D: Today should render ready matches')
 assert.equal(readyAndWaitingSections.waitingMatches.length, 7, 'Case D: Today should render waiting matches')
 assert.equal(mergeResultRows([], toResultRows(readyAndWaitingBuckets.finishedMatches)).length, 0, 'Case D: Results should not render unfinished rows')
+
+const selectionNow = new Date('2026-07-04T00:00:00.000Z')
+const oneWaitingNow = createStatusMatches(1, 'NS', 'selection-waiting-now', {
+  waitingMarketData: true,
+  odds: [],
+  analysis: { market_data_used: false, odds_rows_used: 0, analysis_status: 'INSUFFICIENT_MARKET_DATA' },
+}).map((match) => ({ ...match, kickoffAt: '2026-07-04T03:00:00.000Z' }))
+const nextWindowReady = createStatusMatches(5, 'NS', 'selection-ready-next', {
+  waitingMarketData: false,
+  odds: [{ price: 1.9 }],
+  aiFinalPick: { signal: 'STRONG_SIGNAL', confidence_score: 82, risk_level: 'LOW' },
+  analysis: {
+    recommendation: 'BET',
+    market_data_used: true,
+    odds_rows_used: 1,
+    analysis_status: 'MARKET_DATA_READY_RECALCULATED',
+    market_edge_score: 80,
+    confidence_score: 82,
+    calibrated_confidence_score: 82,
+    risk_level: 'LOW',
+  },
+}).map((match, index) => ({ ...match, kickoffAt: `2026-07-05T${13 + index}:00:00.000Z` }))
+const rollingSelection = buildUsableDailySelection([...oneWaitingNow, ...nextWindowReady], { now: selectionNow, windowHours: 36, minPlayable: 5 })
+assert.equal(rollingSelection.windowHoursUsed, 48, 'Selection V2 should expand to 48h when the first 36h has too few playable matches')
+assert.equal(rollingSelection.reason, 'using_next_window_candidates', 'Selection V2 should report using_next_window_candidates when expanded')
+assert.equal(rollingSelection.selectedCount, 6, 'Selection V2 should keep waiting playable matches instead of emptying Today')
+assert.deepEqual(rollingSelection.selected.slice(0, 5).map((match) => match.id), nextWindowReady.map((match) => match.id), 'Selection V2 should rank market-ready matches before waiting matches')
+
+const finishedOnlySelection = buildUsableDailySelection(createStatusMatches(10, 'FT', 'selection-finished'), { now: selectionNow })
+assert.equal(finishedOnlySelection.selectedCount, 0, 'Selection V2 must not select finished matches for Today')
+assert.equal(finishedOnlySelection.finishedExcludedCount, 10, 'Selection V2 should count finished rows for Results routing')
+assert.equal(finishedOnlySelection.reason, 'all_matches_finished', 'Selection V2 should explain all-finished boards')
 
 assert.equal(getMatchStatusInfo({ fixture_status_short: '1H' }).group, matchStatusGroups.live)
 assert.equal(getMatchStatusInfo({ match_status: 'PEN' }).group, matchStatusGroups.finished)

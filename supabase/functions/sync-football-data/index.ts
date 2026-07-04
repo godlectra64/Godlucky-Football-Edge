@@ -106,6 +106,7 @@ const footballEnrichmentModes = [
   'get-daily-top10-status',
   'refresh-locked-top10-signals',
   'refresh-market-ready-top10',
+  'select-usable-daily-picks',
   'sync-completed-fixtures',
   'backfill-ai-pick-results',
   'settle-ai-pick-results',
@@ -230,6 +231,19 @@ Deno.serve(async (request) => {
         lastUpdated: modeResult.lastUpdated,
         matchesWithOdds: modeResult.matchesWithOdds,
         matchesWithoutOdds: modeResult.matchesWithoutOdds,
+        windowStart: modeResult.windowStart,
+        windowEnd: modeResult.windowEnd,
+        windowHoursUsed: modeResult.windowHoursUsed,
+        totalFixturesInWindow: modeResult.totalFixturesInWindow,
+        playableCandidates: modeResult.playableCandidates,
+        marketReadyCandidates: modeResult.marketReadyCandidates,
+        waitingMarketCandidates: modeResult.waitingMarketCandidates,
+        finishedExcludedCount: modeResult.finishedExcludedCount,
+        selectedCount: modeResult.selectedCount,
+        readySelectedCount: modeResult.readySelectedCount,
+        waitingSelectedCount: modeResult.waitingSelectedCount,
+        reason: modeResult.reason,
+        nextSyncSuggestion: modeResult.nextSyncSuggestion,
         strongSignalCount: modeResult.strongSignalCount,
         watchCount: modeResult.watchCount,
         skipCount: modeResult.skipCount,
@@ -1741,6 +1755,7 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'get-daily-top10-status') return getDailyTop10Status(dayRange)
   if (mode === 'refresh-locked-top10-signals') return refreshLockedTop10Signals(dayRange, context)
   if (mode === 'refresh-market-ready-top10') return refreshMarketReadyTop10(dayRange)
+  if (mode === 'select-usable-daily-picks') return selectUsableDailyPicks(dayRange, body)
   if (mode === 'sync-completed-fixtures') return syncCompletedFixtures(body, dayRange, context)
   if (mode === 'backfill-ai-pick-results') return backfillAiPickResults(body, dayRange)
   if (mode === 'settle-ai-pick-results') return settleAiPickResults(body, dayRange)
@@ -3253,6 +3268,90 @@ async function refreshMarketReadyTop10(dayRange: ReturnType<typeof getBangkokDay
   }
 }
 
+async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayRange>, body: Record<string, unknown>) {
+  const requestedSelectionDate = typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : dayRange.dateKey
+  const resolvedDateKey = dayRange.dateKey
+  const windowHours = getPositiveNumber(body.windowHours, 36, 72)
+  const minPlayable = getPositiveNumber(body.minPlayable, 5, 20)
+  const now = new Date()
+  const firstWindowEnd = new Date(now.getTime() + windowHours * 60 * 60 * 1000)
+  const maxWindowHours = Math.max(windowHours, 48)
+  const maxWindowEnd = new Date(now.getTime() + maxWindowHours * 60 * 60 * 1000)
+  const allMatches = await fetchUsableDailyPickCandidates(now.toISOString(), maxWindowEnd.toISOString())
+  const firstWindowMatches = allMatches.filter((match: any) => isKickoffInRange(match, now, firstWindowEnd))
+  const firstWindowPlayable = firstWindowMatches.filter((match: any) => isPlayableStatusText(match.status_short ?? match.match_status ?? match.status))
+  const useExpandedWindow = firstWindowPlayable.length < minPlayable
+  const windowEnd = useExpandedWindow ? maxWindowEnd : firstWindowEnd
+  const windowMatches = allMatches.filter((match: any) => isKickoffInRange(match, now, windowEnd))
+  const playableMatches = windowMatches.filter((match: any) => isPlayableStatusText(match.status_short ?? match.match_status ?? match.status))
+  const finishedMatches = windowMatches.filter((match: any) => isFinishedStatusText(match.status_short ?? match.match_status ?? match.status))
+  const matchIds = playableMatches.map((match: any) => match.id).filter(Boolean)
+  const [picks, oddsByMatchId, existing] = await Promise.all([
+    fetchAiFinalPicksForMatches(matchIds),
+    fetchStoredOddsByMatchIds(matchIds),
+    supabase
+      .from('daily_top10_selections')
+      .select('*')
+      .eq('selection_date', resolvedDateKey)
+      .order('rank', { ascending: true }),
+  ])
+  if (existing.error) throw existing.error
+
+  const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
+  const candidates = playableMatches
+    .map((match: any) => ({
+      match,
+      analysis: getAnalysis(match),
+      pick: pickByMatch.get(match.id) ?? null,
+      odds: oddsByMatchId.get(match.id) ?? [],
+    }))
+    .sort(compareDailyTop10LockCandidate)
+
+  const selected = candidates.slice(0, 10)
+  const persistResult = await persistMarketReadyTop10(resolvedDateKey, selected, existing.data ?? [])
+  const selectedReady = selected.filter((item: any) => dailyMarketReadinessPriority(item) <= 2)
+  const selectedWaiting = selected.filter((item: any) => isWaitingMarketCandidate(item))
+  const marketReadyCandidates = candidates.filter((item: any) => dailyMarketReadinessPriority(item) === 1)
+  const waitingMarketCandidates = candidates.filter((item: any) => isWaitingMarketCandidate(item))
+  const reason = getUsableSelectionReason({
+    playableCount: playableMatches.length,
+    selectedCount: selected.length,
+    marketReadyCount: marketReadyCandidates.length,
+    waitingCount: waitingMarketCandidates.length,
+    finishedCount: finishedMatches.length,
+    expanded: useExpandedWindow,
+  })
+
+  return {
+    processed: selected.length,
+    totalCandidates: candidates.length,
+    rowsSaved: persistResult.rowsSaved,
+    failed: persistResult.failed,
+    failures: persistResult.failures,
+    requestedSelectionDate,
+    resolvedDateKey,
+    selectionDate: resolvedDateKey,
+    locked: selected.length > 0,
+    lockedCount: selected.length,
+    windowStart: now.toISOString(),
+    windowEnd: windowEnd.toISOString(),
+    windowHoursUsed: useExpandedWindow ? maxWindowHours : windowHours,
+    totalFixturesInWindow: windowMatches.length,
+    playableCandidates: playableMatches.length,
+    marketReadyCandidates: marketReadyCandidates.length,
+    waitingMarketCandidates: waitingMarketCandidates.length,
+    finishedExcludedCount: finishedMatches.length,
+    selectedCount: selected.length,
+    readySelectedCount: selectedReady.length,
+    waitingSelectedCount: selectedWaiting.length,
+    reason,
+    nextSyncSuggestion: marketReadyCandidates.length ? 'refresh_display_order' : 'sync_odds_then_reselect',
+    readyMatches: selectedReady.map(formatTop10RefreshMatch),
+    waitingMatches: selectedWaiting.map(formatTop10RefreshMatch),
+    refreshed: true,
+  }
+}
+
 async function persistMarketReadyTop10(selectionDate: string, selected: Array<any>, existingRows: Array<any>) {
   const exactRows = new Map(existingRows.map((row: any) => [row.match_id, row]))
   const assignedRowIds = new Set<string>()
@@ -3313,11 +3412,16 @@ async function fetchDailyTop10LockCandidates(dayRange: ReturnType<typeof getBang
       id,
       api_sports_fixture_id,
       kickoff_at,
+      status,
+      status_short,
+      status_long,
+      match_status,
       odds_updated_at,
       has_market_data,
       has_fixture_detail,
       data_readiness_status,
       raw,
+      league:football_leagues(id, api_league_id, name, country, priority),
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
       analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
@@ -3325,6 +3429,35 @@ async function fetchDailyTop10LockCandidates(dayRange: ReturnType<typeof getBang
     .gte('kickoff_at', dayRange.startUtc)
     .lt('kickoff_at', dayRange.endUtc)
     .limit(200)
+  if (result.error) throw result.error
+  return result.data ?? []
+}
+
+async function fetchUsableDailyPickCandidates(startUtc: string, endUtc: string) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      kickoff_at,
+      status,
+      status_short,
+      status_long,
+      match_status,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
+      raw,
+      league:football_leagues(id, api_league_id, name, country, priority),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
+    `)
+    .gte('kickoff_at', startUtc)
+    .lt('kickoff_at', endUtc)
+    .order('kickoff_at', { ascending: true })
+    .limit(300)
   if (result.error) throw result.error
   return result.data ?? []
 }
@@ -3405,6 +3538,7 @@ async function fetchStoredOddsByMatchIds(matchIds: Array<string>) {
 
 function compareDailyTop10LockCandidate(a: any, b: any) {
   const marketPriorityDiff = dailyMarketReadinessPriority(a) - dailyMarketReadinessPriority(b)
+  const leagueCoverageDiff = getLeagueMarketCoverageScore(b) - getLeagueMarketCoverageScore(a)
   const signalDiff = dailySignalPriority(a) - dailySignalPriority(b)
   const marketEdgeDiff = dailyMarketEdgeScore(b) - dailyMarketEdgeScore(a)
   const hasPickDiff = Number(Boolean(b.pick)) - Number(Boolean(a.pick))
@@ -3412,7 +3546,45 @@ function compareDailyTop10LockCandidate(a: any, b: any) {
   const confidenceDiff = dailyConfidenceScore(b) - dailyConfidenceScore(a)
   const riskDiff = riskSortValue(a.pick?.risk_level ?? a.analysis?.risk_level) - riskSortValue(b.pick?.risk_level ?? b.analysis?.risk_level)
   const kickoffDiff = new Date(a.match?.kickoff_at ?? 0).getTime() - new Date(b.match?.kickoff_at ?? 0).getTime()
-  return marketPriorityDiff || signalDiff || marketEdgeDiff || hasPickDiff || scoreDiff || confidenceDiff || riskDiff || kickoffDiff
+  return marketPriorityDiff || leagueCoverageDiff || signalDiff || marketEdgeDiff || hasPickDiff || scoreDiff || confidenceDiff || riskDiff || kickoffDiff
+}
+
+function getUsableSelectionReason(summary: { playableCount: number; selectedCount: number; marketReadyCount: number; waitingCount: number; finishedCount: number; expanded: boolean }) {
+  if (summary.playableCount === 0 && summary.finishedCount > 0) return 'all_matches_finished'
+  if (summary.playableCount === 0) return 'no_playable_candidates'
+  if (summary.expanded && summary.playableCount > 0) return 'using_next_window_candidates'
+  if (summary.marketReadyCount > 0) return 'market_ready_candidates_available'
+  if (summary.waitingCount > 0) return 'waiting_market_data'
+  return 'no_market_ready_candidates'
+}
+
+function isKickoffInRange(match: any, start: Date, end: Date) {
+  const kickoff = new Date(match?.kickoff_at ?? 0).getTime()
+  return Number.isFinite(kickoff) && kickoff >= start.getTime() && kickoff < end.getTime()
+}
+
+function isPlayableStatusText(value: unknown) {
+  const status = normalizeStatusText(value)
+  return ['NS', 'TBD', 'SCHEDULED', '1H', 'HT', '2H', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE'].includes(status)
+}
+
+function isFinishedStatusText(value: unknown) {
+  return ['FT', 'AET', 'PEN', 'FINISHED'].includes(normalizeStatusText(value))
+}
+
+function normalizeStatusText(value: unknown) {
+  const status = String(value ?? '').trim().toUpperCase()
+  if (!status) return 'UNKNOWN'
+  if (status === 'NOT STARTED') return 'NS'
+  if (status === 'TIME TO BE DEFINED') return 'TBD'
+  if (status === 'MATCH FINISHED') return 'FT'
+  return status
+}
+
+function getPositiveNumber(value: unknown, fallback: number, max: number) {
+  const numeric = Number(value ?? fallback)
+  if (!Number.isFinite(numeric) || numeric <= 0) return fallback
+  return Math.max(1, Math.min(Math.floor(numeric), max))
 }
 
 function dailyMarketReadinessGroup(item: any) {
@@ -3482,6 +3654,7 @@ function summarizeExistingMarketLock(rows: Array<any>, oddsByMatchId: Map<string
 }
 
 function formatTop10RefreshMatch(item: any) {
+  const coverage = getLeagueMarketCoverage(item)
   return {
     matchId: item.match?.id ?? null,
     apiFixtureId: item.match?.api_sports_fixture_id ?? null,
@@ -3492,9 +3665,27 @@ function formatTop10RefreshMatch(item: any) {
     signal: item.pick?.signal ?? 'SKIP',
     oddsRows: (item.odds ?? []).length,
     readiness: dailyMarketReadinessGroup(item),
+    leagueMarketCoverageScore: coverage.score,
+    recentOddsCoverageRate: coverage.rate,
+    marketAvailabilityTier: coverage.tier,
     confidenceScore: dailyConfidenceScore(item),
     marketEdgeScore: dailyMarketEdgeScore(item),
   }
+}
+
+function getLeagueMarketCoverageScore(item: any) {
+  return getLeagueMarketCoverage(item).score
+}
+
+function getLeagueMarketCoverage(item: any) {
+  const rawRate = Number(item.match?.league?.recent_odds_coverage_rate ?? item.match?.recent_odds_coverage_rate ?? 0)
+  const oddsRows = Array.isArray(item.odds) ? item.odds.length : 0
+  const rate = Number.isFinite(rawRate) && rawRate > 0 ? (rawRate > 1 ? rawRate / 100 : rawRate) : oddsRows > 0 ? 0.7 : 0
+  const tier = rate >= 0.7 ? 'HIGH' : rate >= 0.35 ? 'MEDIUM' : rate > 0 ? 'LOW' : 'NONE'
+  const leaguePriority = Number(item.match?.league?.priority ?? 999)
+  const priorityBonus = Number.isFinite(leaguePriority) && leaguePriority <= 20 ? 10 : Number.isFinite(leaguePriority) && leaguePriority <= 50 ? 5 : 0
+  const score = normalizeScore((rate || (oddsRows > 0 ? 0.55 : 0.05)) * 100 + priorityBonus)
+  return { rate, tier, score }
 }
 
 function dailySelectionScore(item: any) {

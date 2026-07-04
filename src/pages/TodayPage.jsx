@@ -24,8 +24,11 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
   }, [providedOneBestPick, playableMatches])
   const lastUpdated = top10Status?.lastUpdated ?? top10Status?.lockedAt ?? null
   const totalTop10Count = matches.length || 0
-  const showFinishedOnlyState = !loading && !error && playableMatches.length === 0 && finishedMatches.length > 0
-  const showEmptyState = !loading && !error && playableMatches.length === 0 && finishedMatches.length === 0
+  const finishedExcludedCount = Number(top10Status?.finishedExcludedCount ?? finishedMatches.length ?? 0)
+  const selectedCount = Number(top10Status?.selectedCount ?? playableMatches.length)
+  const windowHoursUsed = Number(top10Status?.windowHoursUsed ?? 36)
+  const showFinishedOnlyState = !loading && !error && playableMatches.length === 0 && (finishedMatches.length > 0 || top10Status?.reason === 'all_matches_finished')
+  const showEmptyState = !loading && !error && playableMatches.length === 0 && finishedMatches.length === 0 && !showFinishedOnlyState
 
   return (
     <main className="app-page theme-today">
@@ -54,6 +57,8 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             <CompactMetric label="พร้อมวิเคราะห์" value={`${marketReadyCount}/${playableMatches.length || 0}`} />
             <CompactMetric label="รอตลาด" value={`${waitingMarketCount}/${playableMatches.length || 0}`} />
             <CompactMetric label="จบแล้ว" value={`${finishedMatches.length}/${totalTop10Count}`} />
+            <CompactMetric label="finished" value={`${finishedExcludedCount}/${Math.max(totalTop10Count, finishedExcludedCount)}`} />
+            <CompactMetric label="window" value={`${windowHoursUsed}h`} />
           </div>
 
           <div className="mt-2 flex min-w-0 items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/20 px-2.5 py-1.5">
@@ -69,6 +74,16 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
           {!loading && showWaitingNotice ? (
             <p className="mt-1.5 text-clamp-1 rounded-lg border border-amber-300/20 bg-amber-300/10 px-2.5 py-1.5 text-[11px] font-bold leading-4 text-amber-100">
               วันนี้ข้อมูลตลาดยังไม่พร้อม ระบบจะอัปเดตอีกครั้งรอบถัดไป
+            </p>
+          ) : null}
+          {!loading && selectedCount === 1 ? (
+            <p className="mt-1.5 text-clamp-1 rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-2.5 py-1.5 text-[11px] font-bold leading-4 text-cyan-100">
+              Found 1 currently usable match. The next refresh will expand the board when more market data arrives.
+            </p>
+          ) : null}
+          {!loading && selectedCount === 0 ? (
+            <p className="mt-1.5 text-clamp-2 rounded-lg border border-slate-300/20 bg-slate-300/10 px-2.5 py-1.5 text-[11px] font-bold leading-4 text-slate-200">
+              No usable matches in this selection window yet. The system will update again on the next sync.
             </p>
           ) : null}
           {!loading && totalTop10Count < 10 ? (

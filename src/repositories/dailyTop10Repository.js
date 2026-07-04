@@ -2,6 +2,7 @@ import { getBangkokToday } from '../utils/bangkokDate.js'
 import { fetchMatchesByKickoffRange } from './matchesRepository.js'
 import { compareMarketReadyMatches, isMarketReadyForDisplay } from '../utils/analysisEngine.js'
 import { getStatusCodeFromMatch } from '../utils/matchStatus.js'
+import { buildUsableDailySelection } from '../utils/selectionEngineV2.js'
 
 export async function getDailyTop10Status(date = getBangkokToday()) {
   const client = await getSupabaseClient()
@@ -124,28 +125,67 @@ function sortMarketReadyTop10(matches = []) {
 
 export async function getTodayTop10OrFallback(fallback = []) {
   const date = getBangkokToday()
+  const usable = await getUsableRollingTop10(date)
+  if (!usable.error && (usable.data.length || usable.status?.finishedExcludedCount)) {
+    return { matches: usable.data, status: usable.status, locked: Boolean(usable.locked), selection: usable.selection }
+  }
+
   const locked = await getLockedTop10(date)
-  if (!locked.error && locked.data.length) return { matches: locked.data, status: locked.status, locked: true }
-  const latestLocked = await getLatestLockedTop10(date)
-  if (!latestLocked.error && latestLocked.data.length) return { matches: latestLocked.data, status: latestLocked.status, locked: true }
+  if (!locked.error && locked.data.length) {
+    const selection = buildUsableDailySelection(locked.data)
+    return {
+      matches: selection.selected,
+      status: {
+        ...locked.status,
+        ...selection,
+        selectionDate: date,
+        locked: true,
+        lockedCount: locked.status?.lockedCount ?? locked.data.length,
+      },
+      locked: true,
+      selection,
+    }
+  }
+
   const statusResult = await getDailyTop10Status(date)
-  return { matches: fallback, status: statusResult.data ?? emptyStatus(date).data, locked: false }
+  const fallbackSelection = buildUsableDailySelection(fallback)
+  return {
+    matches: fallbackSelection.selected,
+    status: {
+      ...(statusResult.data ?? emptyStatus(date).data),
+      ...fallbackSelection,
+      selectionDate: date,
+      locked: false,
+    },
+    locked: false,
+    selection: fallbackSelection,
+  }
 }
 
-async function getLatestLockedTop10(beforeOrOnDate) {
-  const client = await getSupabaseClient()
-  const latest = await client
-    .from('daily_top10_selections')
-    .select('selection_date')
-    .lte('selection_date', beforeOrOnDate)
-    .order('selection_date', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  if (isMissingTable(latest.error)) return { data: [], error: null, status: emptyStatus(beforeOrOnDate).data }
-  if (latest.error) return { data: [], error: latest.error, status: emptyStatus(beforeOrOnDate).data }
-  const latestDate = latest.data?.selection_date
-  if (!latestDate || latestDate === beforeOrOnDate) return { data: [], error: null, status: emptyStatus(beforeOrOnDate).data }
-  return getLockedTop10(latestDate)
+async function getUsableRollingTop10(date) {
+  const now = new Date()
+  const windowEnd = new Date(now.getTime() + 48 * 60 * 60 * 1000)
+  const [matchesResult, statusResult] = await Promise.all([
+    fetchMatchesByKickoffRange(now.toISOString(), windowEnd.toISOString()),
+    getDailyTop10Status(date),
+  ])
+  if (matchesResult.error) return { data: [], error: matchesResult.error, status: statusResult.data ?? emptyStatus(date).data }
+
+  const selection = buildUsableDailySelection(matchesResult.data ?? [], { now })
+  return {
+    data: selection.selected,
+    error: null,
+    locked: Boolean(statusResult.data?.locked),
+    selection,
+    status: {
+      ...(statusResult.data ?? emptyStatus(date).data),
+      ...selection,
+      selectionDate: date,
+      locked: Boolean(statusResult.data?.locked),
+      lockedCount: statusResult.data?.lockedCount ?? 0,
+      displayedMarketReadyCount: selection.readySelectedCount,
+    },
+  }
 }
 
 function buildStatus(date, rows, displayRows = []) {
