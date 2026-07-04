@@ -3,7 +3,8 @@ import { formatKickoffTime, formatShortDate } from '../utils/formatters'
 import { getResultTrackerStatusLabel, getScoreDisplay, hasMatchScore, isFinishedStatus, isLiveStatus, normalizeStatusCode } from '../utils/matchStatus.js'
 
 export default function ResultTrackerPage({ matches }) {
-  const summary = buildResultSummary(matches)
+  const finishedMatches = (Array.isArray(matches) ? matches : []).filter((match) => isFinishedStatus(toTrackerShape(match).statusShort))
+  const summary = buildResultSummary(finishedMatches)
 
   return (
     <main className="app-page theme-results">
@@ -34,14 +35,14 @@ export default function ResultTrackerPage({ matches }) {
       </section>
 
       <div className="mt-3 grid gap-1.5">
-        {!matches.length ? (
+        {!finishedMatches.length ? (
           <div className="empty-state">
             <Trophy size={28} className="mx-auto text-[var(--page-accent)]" />
             <p className="mt-3 font-black text-white">ยังไม่มีผลย้อนหลัง</p>
             <p className="mt-1 text-sm text-slate-400">เมื่อระบบ refresh ผลแล้ว รายการจะแสดงที่นี่โดยอัตโนมัติ</p>
           </div>
         ) : null}
-        {matches.map((match) => (
+        {finishedMatches.map((match) => (
           <article key={match.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] px-3 py-2.5">
             <div className="min-w-0">
               <p className="truncate text-[11px] font-bold text-slate-500">{formatShortDate(match.kickoffAt)} · {formatKickoffTime(match.kickoffAt)} · {match.league?.name ?? '-'}</p>
@@ -96,9 +97,9 @@ function formatTrackerScore(match) {
 function toTrackerShape(match) {
   return {
     ...match,
-    statusShort: match.statusShort ?? match.status,
-    homeScore: match.homeScore ?? match.homeGoals,
-    awayScore: match.awayScore ?? match.awayGoals,
+    statusShort: match.statusShort ?? match.status_short ?? match.fixture_status_short ?? match.match_status ?? match.status ?? match.statusLong ?? match.status_long,
+    homeScore: match.homeScore ?? match.homeGoals ?? match.home_score ?? match.home_goals,
+    awayScore: match.awayScore ?? match.awayGoals ?? match.away_score ?? match.away_goals,
   }
 }
 

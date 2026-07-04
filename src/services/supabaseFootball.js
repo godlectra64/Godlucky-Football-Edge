@@ -6,6 +6,7 @@ import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../re
 import { getTopMatches } from '../utils/analysisEngine'
 import { normalizeStoredAiFinalPick } from '../utils/aiFinalPickEngine.js'
 import { getBangkokDayRange } from '../utils/bangkokDateRange.js'
+import { getStatusCodeFromMatch } from '../utils/matchStatus.js'
 import { normalizePerformanceRows } from '../utils/performanceIntelligence'
 
 const isSupabaseConfigured = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY)
@@ -203,6 +204,7 @@ export function normalizeMatch(row = {}) {
     odds,
   })
   const waitingMarketData = deriveWaitingMarketData(source, activeAnalysis, aiFinalPick, odds)
+  const statusShort = getStatusCodeFromMatch(source)
 
   return {
     id: source.id,
@@ -237,9 +239,9 @@ export function normalizeMatch(row = {}) {
     injuriesUpdatedAt: source.injuries_updated_at,
     lineupsUpdatedAt: source.lineups_updated_at,
     kickoffAt: source.kickoff_at,
-    status: source.status_short ?? source.match_status ?? source.status,
-    statusShort: source.status_short ?? source.match_status ?? source.status,
-    status_short: source.status_short ?? source.match_status ?? source.status,
+    status: statusShort,
+    statusShort,
+    status_short: statusShort,
     statusLong: source.status_long,
     status_long: source.status_long,
     venue: source.venue,

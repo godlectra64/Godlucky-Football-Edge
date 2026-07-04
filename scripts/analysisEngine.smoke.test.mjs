@@ -62,6 +62,9 @@ import {
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
+import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
+import { buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
+import { mergeResultRows } from '../src/repositories/resultTrackerRepository.js'
 import { runAiSelectionEngine } from '../src/utils/aiSelectionEngine.js'
 import { generateAiFinalPick } from '../src/utils/aiFinalPickEngine.js'
 import { getPagePath, getRouteState } from '../src/utils/routes.js'
@@ -933,6 +936,42 @@ const mixedTodaySections = buildTodayMarketSections([...marketReadyMatches, ...w
 assert.equal(mixedTodaySections.readyMatches.length, 3, 'Today ready section should render market-ready matches')
 assert.equal(mixedTodaySections.waitingMatches.length, 7, 'Today waiting section should render waiting matches alongside ready matches')
 
+const finishedTop10Matches = createStatusMatches(10, 'FT', 'finished-top10')
+const finishedTodayBuckets = buildTodayStatusBuckets(finishedTop10Matches)
+assert.equal(finishedTodayBuckets.playableMatches.length, 0, 'Case A: finished Top10 rows must not be playable on Today')
+assert.equal(finishedTodayBuckets.finishedMatches.length, 10, 'Case A: Today should count all finished Top10 rows')
+assert.equal(mergeResultRows([], toResultRows(finishedTodayBuckets.finishedMatches)).length, 10, 'Case A: Results should show all finished Top10 rows')
+
+const mixedStatusTop10 = [
+  ...createStatusMatches(3, 'NS', 'upcoming-top10', { waitingMarketData: false, odds: [{ price: 1.9 }], analysis: { market_data_used: true, odds_rows_used: 1, market_edge_score: 80, confidence_score: 70, risk_level: 'LOW', data_validation_status: 'VALID' } }),
+  ...createStatusMatches(7, 'FT', 'finished-mixed'),
+]
+const mixedStatusBuckets = buildTodayStatusBuckets(mixedStatusTop10)
+const mixedStatusSections = buildTodayMarketSections(mixedStatusBuckets.playableMatches)
+assert.equal(mixedStatusSections.readyMatches.length, 3, 'Case B: Today should render only upcoming/live rows')
+assert.equal(mixedStatusBuckets.finishedMatches.length, 7, 'Case B: Today should keep finished rows out of main cards')
+assert.equal(mergeResultRows([], toResultRows(mixedStatusBuckets.finishedMatches)).length, 7, 'Case B: Results should render finished rows')
+
+const waitingNotFinishedTop10 = createStatusMatches(10, 'NS', 'waiting-not-finished', { waitingMarketData: true, odds: [], analysis: { market_data_used: false, odds_rows_used: 0, analysis_status: 'INSUFFICIENT_MARKET_DATA' } })
+const waitingNotFinishedBuckets = buildTodayStatusBuckets(waitingNotFinishedTop10)
+const waitingNotFinishedSections = buildTodayMarketSections(waitingNotFinishedBuckets.playableMatches)
+assert.equal(waitingNotFinishedSections.readyMatches.length, 0, 'Case C: no market-ready matches should leave ready empty')
+assert.equal(waitingNotFinishedSections.waitingMatches.length, 10, 'Case C: waiting market rows that are not finished should remain on Today')
+
+const readyAndWaitingTop10 = [
+  ...createStatusMatches(3, 'NS', 'ready-d', { waitingMarketData: false, odds: [{ price: 1.9 }], analysis: { market_data_used: true, odds_rows_used: 1, market_edge_score: 80, confidence_score: 70, risk_level: 'LOW', data_validation_status: 'VALID' } }),
+  ...createStatusMatches(7, 'NS', 'waiting-d', { waitingMarketData: true, odds: [], analysis: { market_data_used: false, odds_rows_used: 0, analysis_status: 'INSUFFICIENT_MARKET_DATA' } }),
+]
+const readyAndWaitingBuckets = buildTodayStatusBuckets(readyAndWaitingTop10)
+const readyAndWaitingSections = buildTodayMarketSections(readyAndWaitingBuckets.playableMatches)
+assert.equal(readyAndWaitingSections.readyMatches.length, 3, 'Case D: Today should render ready matches')
+assert.equal(readyAndWaitingSections.waitingMatches.length, 7, 'Case D: Today should render waiting matches')
+assert.equal(mergeResultRows([], toResultRows(readyAndWaitingBuckets.finishedMatches)).length, 0, 'Case D: Results should not render unfinished rows')
+
+assert.equal(getMatchStatusInfo({ fixture_status_short: '1H' }).group, matchStatusGroups.live)
+assert.equal(getMatchStatusInfo({ match_status: 'PEN' }).group, matchStatusGroups.finished)
+assert.equal(getMatchStatusInfo({ status_long: 'Match Finished' }).group, matchStatusGroups.finished)
+
 const emptyTodaySections = buildTodayMarketSections([])
 assert.equal(emptyTodaySections.readyMatches.length, 0)
 assert.equal(emptyTodaySections.waitingMatches.length, 0)
@@ -954,3 +993,36 @@ for (const repositoryFn of [
 }
 
 console.log('analysisEngine smoke tests passed')
+
+function createStatusMatches(count, statusShort, prefix, patch = {}) {
+  return Array.from({ length: count }, (_, index) => ({
+    ...baseMatch,
+    ...patch,
+    id: `${prefix}-${index}`,
+    statusShort,
+    status_short: statusShort,
+    status: statusShort,
+    kickoffAt: `2026-07-03T${String(index).padStart(2, '0')}:00:00.000Z`,
+    homeScore: ['FT', 'AET', 'PEN'].includes(statusShort) ? 2 : null,
+    awayScore: ['FT', 'AET', 'PEN'].includes(statusShort) ? 1 : null,
+    homeGoals: ['FT', 'AET', 'PEN'].includes(statusShort) ? 2 : null,
+    awayGoals: ['FT', 'AET', 'PEN'].includes(statusShort) ? 1 : null,
+    analysis: {
+      ...baseMatch.analysis,
+      ...(patch.analysis ?? {}),
+    },
+  }))
+}
+
+function toResultRows(matches) {
+  return matches.map((match) => ({
+    id: `result-${match.id}`,
+    matchId: match.id,
+    match_id: match.id,
+    kickoffAt: match.kickoffAt,
+    statusShort: match.statusShort,
+    status_short: match.status_short,
+    homeScore: match.homeScore,
+    awayScore: match.awayScore,
+  }))
+}

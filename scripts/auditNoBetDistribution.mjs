@@ -1,6 +1,7 @@
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import { getBangkokDayRange } from '../src/utils/bangkokDateRange.js'
+import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 
 dotenv.config({ path: '.env.local' })
 dotenv.config({ path: '.env' })
@@ -52,6 +53,10 @@ for (const dateKey of days) {
   const marketReadyCandidates = dayMatches.filter(isMarketReadyCandidate)
   const marketReadyInTop10 = dayTop10.filter((item) => isMarketReadyCandidate(item.match)).length
   const waitingMarketInTop10 = dayTop10.filter((item) => isWaitingMarketData(item.match)).length
+  const top10StatusCounts = buildMatchStatusCounts(dayTop10.map((item) => item.match))
+  const playableTodayCount = top10StatusCounts.upcomingCount + top10StatusCounts.liveCount
+  const finishedTop10Count = top10StatusCounts.finishedCount
+  const resultsPageEligibleCount = dayMatches.filter((match) => getMatchStatusInfo(match).isFinished).length
   const top10MatchIds = new Set(dayTop10.map((item) => item.match?.id).filter(Boolean))
   const staleNoMarketLockCount = dayTop10.filter((item) => item.source === 'daily_top10_selections' && isWaitingMarketData(item.match)).length
   const readyButNotDisplayedCount = marketReadyCandidates.filter((match) => !top10MatchIds.has(match.id)).length
@@ -90,13 +95,29 @@ for (const dateKey of days) {
   printCount('matchesWithPickTeam', analyses.filter((row) => hasText(row.pick_team)).length)
   printCount('marketDataMissingDowngrades', analyses.filter(isMarketMissingDowngrade).length)
   printCount('marketReadyCandidates', marketReadyCandidates.length)
+  printCount('upcomingCount', top10StatusCounts.upcomingCount)
+  printCount('liveCount', top10StatusCounts.liveCount)
+  printCount('finishedCount', top10StatusCounts.finishedCount)
+  printCount('playableTodayCount', playableTodayCount)
+  printCount('finishedTop10Count', finishedTop10Count)
+  printCount('resultsPageEligibleCount', resultsPageEligibleCount)
   printCount('marketReadyInTop10', marketReadyInTop10)
   printCount('waitingMarketInTop10', waitingMarketInTop10)
   printCount('staleNoMarketLockCount', staleNoMarketLockCount)
   printCount('readyButNotDisplayedCount', readyButNotDisplayedCount)
   printCount('displayedSignalCount', displayedSignalCount)
   printCount('betFinalPickMismatchCount', betFinalPickMismatchCount)
-  console.log(`rootCause: ${getRootCause({ marketReadyCandidates, readyButNotDisplayedCount, betFinalPickMismatchCount, staleNoMarketLockCount })}`)
+  console.log(`rootCause: ${getRootCause({
+    dayMatches,
+    dayTop10,
+    top10StatusCounts,
+    marketReadyCandidates,
+    marketReadyInTop10,
+    waitingMarketInTop10,
+    readyButNotDisplayedCount,
+    betFinalPickMismatchCount,
+    staleNoMarketLockCount,
+  })}`)
   printCount('aiFinalPicks', dayFinalPicks.length)
   printCount('pickResults', dayResults.length)
   printTop10Reasons(dateKey, dayTop10)
@@ -130,6 +151,8 @@ async function fetchMatches(startUtc, endUtc) {
       kickoff_at,
       status,
       status_short,
+      status_long,
+      match_status,
       has_market_data,
       has_fixture_detail,
       data_readiness_status,
@@ -319,12 +342,31 @@ function isWaitingMarketData(match) {
   return !hasOdds
 }
 
-function getRootCause({ marketReadyCandidates, readyButNotDisplayedCount, betFinalPickMismatchCount, staleNoMarketLockCount }) {
-  if (!marketReadyCandidates.length) return 'no_market_ready_candidates: วันนี้ไม่มี signal เพราะไม่มี market-ready candidates จริง'
+function getRootCause({ dayMatches, dayTop10, top10StatusCounts, marketReadyCandidates, marketReadyInTop10, waitingMarketInTop10, readyButNotDisplayedCount, betFinalPickMismatchCount, staleNoMarketLockCount }) {
+  if (!dayMatches.length && !dayTop10.length) return 'no_matches_today'
+  if (dayTop10.length > 0 && top10StatusCounts.finishedCount === dayTop10.length) return 'all_matches_finished'
+  if (waitingMarketInTop10 > 0 && marketReadyInTop10 === 0 && top10StatusCounts.finishedCount === 0) return 'waiting_market_data'
+  if (!marketReadyCandidates.length) return 'no_market_ready_candidates'
   if (readyButNotDisplayedCount > 0) return 'bug_ready_not_displayed: มี market-ready candidates แต่ไม่ได้ถูกเลือกขึ้น Today'
   if (betFinalPickMismatchCount > 0) return 'bug_final_pick_mismatch: มี BET ใน analysis แต่ final pick ไม่ตรง'
   if (staleNoMarketLockCount > marketReadyCandidates.length) return 'stale_lock_issue: Top10 ถูก lock จากคู่ไม่มี market data'
-  return 'market_ready_display_ok'
+  return 'ready_display_ok'
+}
+
+function buildMatchStatusCounts(matches) {
+  return (matches ?? []).reduce((counts, match) => {
+    const group = getMatchStatusInfo(match).group
+    if (group === matchStatusGroups.upcoming) counts.upcomingCount += 1
+    else if (group === matchStatusGroups.live) counts.liveCount += 1
+    else if (group === matchStatusGroups.finished) counts.finishedCount += 1
+    else counts.notPlayableCount += 1
+    return counts
+  }, {
+    upcomingCount: 0,
+    liveCount: 0,
+    finishedCount: 0,
+    notPlayableCount: 0,
+  })
 }
 
 function isMarketMissingDowngrade(analysis) {

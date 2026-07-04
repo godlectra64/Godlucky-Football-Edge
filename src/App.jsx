@@ -182,6 +182,10 @@ function App() {
     window.history.pushState({}, '', getPagePath(page))
   }
 
+  const goResults = () => {
+    navigatePage('results')
+  }
+
   const runManualSync = async () => {
     setSyncing(true)
     setError('')
@@ -259,6 +263,7 @@ function App() {
             notice={notice}
             onRefresh={loadToday}
             onOpenMatch={openMatch}
+            onGoResults={goResults}
           />
         ) : null}
         <Suspense fallback={<PageFallback />}>

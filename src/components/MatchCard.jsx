@@ -3,13 +3,17 @@ import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel, isW
 import { generateAiFinalPick } from '../utils/aiFinalPickEngine'
 import { buildAiFinalPick } from '../utils/finalPick'
 import { formatKickoffTime } from '../utils/formatters'
+import { getMatchStatusInfo, getScoreDisplay } from '../utils/matchStatus'
 import { normalizeOddsRows } from '../utils/oddsUtils'
 import { formatMarketFocus } from '../utils/uiLabels'
 import MarketDirectionBadge from './MarketDirectionBadge'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
 
-export default function MatchCard({ match, onOpen }) {
+export default function MatchCard({ match, onOpen, isFinished: providedIsFinished = null, isPlayable: providedIsPlayable = null, isWaitingMarketData: providedIsWaitingMarketData = null }) {
+  const matchStatus = getMatchStatusInfo(match)
+  const isFinished = providedIsFinished ?? matchStatus.isFinished
+  const isPlayable = providedIsPlayable ?? matchStatus.isPlayable
   const recommendation = match.recommendation ?? getRecommendation(match)
   const confidence = Math.round(match.confidence ?? getConfidence(match))
   const riskLevel = match.riskLevel ?? getRiskLevel(match)
@@ -19,9 +23,10 @@ export default function MatchCard({ match, onOpen }) {
   const analysisSummary = buildCardSummary(match, recommendation, confidence)
   const reasons = buildReasonList(match, finalPick, analysisSummary)
   const odds = normalizeOddsRows(match)
-  const waitingMarket = isWaitingForMarketData(match)
+  const waitingMarket = providedIsWaitingMarketData ?? (!isFinished && isWaitingForMarketData(match))
   const cardClass = buildCardClass(finalRank ?? match.rank, recommendation, riskLevel)
   const open = () => onOpen?.(match.id)
+  const scoreDisplay = getFinishedScoreDisplay(match)
 
   return (
     <article
@@ -38,15 +43,20 @@ export default function MatchCard({ match, onOpen }) {
             <span className="truncate">{match.league?.name ?? 'ไม่ทราบลีก'}</span>
           </p>
         </div>
+        {isFinished ? (
+          <span className="semantic-badge shrink-0 border-emerald-300/30 bg-emerald-300/10 text-emerald-100">แข่งจบแล้ว</span>
+        ) : !isPlayable ? (
+          <span className="semantic-badge shrink-0 border-slate-300/20 bg-slate-300/10 text-slate-200">{matchStatus.label}</span>
+        ) : null}
         <span className={`flex h-9 min-w-9 shrink-0 items-center justify-center rounded-xl border bg-black/25 px-2 text-sm font-black text-[var(--page-accent)] ${finalRank === 1 ? 'border-amber-300/45 shadow-[0_0_20px_rgba(246,196,69,0.18)]' : 'border-white/10'}`}>
           {finalRank ? `#${finalRank}` : <Medal size={17} />}
         </span>
       </div>
 
       <div className="mt-2.5 rounded-xl border border-white/10 bg-black/18 p-2.5">
-        <div className="grid grid-cols-[minmax(0,1fr)_30px_minmax(0,1fr)] items-center gap-2">
+        <div className="grid grid-cols-[minmax(0,1fr)_42px_minmax(0,1fr)] items-center gap-2">
           <TeamName name={match.homeTeam?.name ?? 'ไม่ทราบทีม'} active={finalPick.pickSide === 'HOME'} />
-          <span className="text-center text-xs font-black uppercase text-slate-500">vs</span>
+          <span className="text-center text-xs font-black uppercase text-slate-500">{isFinished && scoreDisplay ? scoreDisplay : 'vs'}</span>
           <TeamName name={match.awayTeam?.name ?? 'ไม่ทราบทีม'} active={finalPick.pickSide === 'AWAY'} align="right" />
         </div>
       </div>
@@ -63,7 +73,7 @@ export default function MatchCard({ match, onOpen }) {
         <span className="text-slate-600"> · </span>
         <span className="text-[var(--page-accent)]">{formatDirection(aiPick.direction)}</span>
         <span className="text-slate-600"> · </span>
-        <span className="text-slate-500">{odds.length ? 'มีข้อมูลราคา' : 'รอข้อมูลตลาด'}</span>
+        <span className="text-slate-500">{isFinished ? 'ผลการแข่งขัน' : odds.length ? 'มีข้อมูลราคา' : 'รอข้อมูลตลาด'}</span>
       </p>
 
       {reasons[0] ? (
@@ -110,6 +120,9 @@ function buildReasonList(match, finalPick, analysisSummary) {
 }
 
 function buildCardSummary(match, recommendation, confidence) {
+  if (getMatchStatusInfo(match).isFinished) {
+    return 'แข่งจบแล้ว ดูผลและการประเมินได้ที่หน้าผลย้อนหลัง'
+  }
   if (isWaitingForMarketData(match)) {
     return 'ข้อมูลยังไม่พร้อม รอข้อมูลตลาดอัปเดตรอบถัดไป'
   }
@@ -119,6 +132,15 @@ function buildCardSummary(match, recommendation, confidence) {
     return `แนะนำ NO BET เพราะความมั่นใจ ${confidence}% ยังไม่พอหรือความเสี่ยงสูง ควรรอข้อมูลเพิ่ม`
   }
   return `แนะนำ ${recommendation} ด้วยความมั่นใจ ${confidence}% แต่ควรเช็กราคาและไลน์อัปก่อนตัดสินใจ`
+}
+
+function getFinishedScoreDisplay(match = {}) {
+  if (!getMatchStatusInfo(match).isFinished) return ''
+  return getScoreDisplay({
+    ...match,
+    homeScore: match.homeScore ?? match.homeGoals ?? match.home_score ?? match.home_goals,
+    awayScore: match.awayScore ?? match.awayGoals ?? match.away_score ?? match.away_goals,
+  })
 }
 
 function buildCardClass(rank, recommendation, riskLevel) {

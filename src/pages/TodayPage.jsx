@@ -4,19 +4,28 @@ import MatchCard from '../components/MatchCard'
 import { buildTodayMarketSections, getConfidence, isMarketReadyForDisplay, isWaitingForMarketData, recommendationLabels } from '../utils/analysisEngine'
 import { buildAiFinalPick, getOneBestPickOfDay } from '../utils/finalPick'
 import { formatThaiDate, formatUpdatedAt } from '../utils/formatters'
+import { buildTodayStatusBuckets } from '../utils/todayMatchBuckets'
 
 const allFilter = 'ALL'
 const filters = [allFilter, recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.watch, recommendationLabels.noBet]
 
-export default function TodayPage({ matches, oneBestPick: providedOneBestPick = null, totalMatchCount = matches.length, top10Status = null, top10Locked = false, loading, error, onRefresh, onOpenMatch }) {
+export default function TodayPage({ matches, oneBestPick: providedOneBestPick = null, totalMatchCount = matches.length, top10Status = null, top10Locked = false, loading, error, onRefresh, onOpenMatch, onGoResults }) {
   const [filter, setFilter] = useState(allFilter)
-  const { readyMatches, waitingMatches, hasDisplayMatches, showWaitingNotice } = useMemo(() => buildTodayMarketSections(matches, filter), [filter, matches])
-  const avgConfidence = matches.length ? Math.round(matches.reduce((total, match) => total + getConfidence(match), 0) / matches.length) : 0
-  const marketReadyCount = matches.filter(isMarketReadyForDisplay).length
-  const waitingMarketCount = matches.filter(isWaitingForMarketData).length
-  const v4ReadyCount = matches.filter((match) => Number(match.calibratedConfidence ?? match.calibrated_confidence_score ?? match.analysis?.calibrated_confidence_score ?? 0) > 0).length
-  const oneBestPick = useMemo(() => providedOneBestPick ?? getOneBestPickOfDay(matches), [providedOneBestPick, matches])
+  const { playableMatches, finishedMatches, notPlayableMatches } = useMemo(() => buildTodayStatusBuckets(matches), [matches])
+  const { readyMatches, waitingMatches, hasDisplayMatches, showWaitingNotice } = useMemo(() => buildTodayMarketSections(playableMatches, filter), [filter, playableMatches])
+  const avgConfidence = playableMatches.length ? Math.round(playableMatches.reduce((total, match) => total + getConfidence(match), 0) / playableMatches.length) : 0
+  const marketReadyCount = playableMatches.filter(isMarketReadyForDisplay).length
+  const waitingMarketCount = playableMatches.filter(isWaitingForMarketData).length
+  const v4ReadyCount = playableMatches.filter((match) => Number(match.calibratedConfidence ?? match.calibrated_confidence_score ?? match.analysis?.calibrated_confidence_score ?? 0) > 0).length
+  const oneBestPick = useMemo(() => {
+    const providedMatchId = providedOneBestPick?.match?.id
+    if (providedMatchId && playableMatches.some((match) => match.id === providedMatchId)) return providedOneBestPick
+    return getOneBestPickOfDay(playableMatches)
+  }, [providedOneBestPick, playableMatches])
   const lastUpdated = top10Status?.lastUpdated ?? top10Status?.lockedAt ?? null
+  const totalTop10Count = matches.length || 0
+  const showFinishedOnlyState = !loading && !error && playableMatches.length === 0 && finishedMatches.length > 0
+  const showEmptyState = !loading && !error && playableMatches.length === 0 && finishedMatches.length === 0
 
   return (
     <main className="app-page theme-today">
@@ -39,15 +48,17 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
 
           <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
             <Top10LockBadge status={top10Status} locked={top10Locked} />
-            <CompactMetric label="Top10" value={`${matches.length || 0}/${totalMatchCount || 0}`} />
+            <CompactMetric label="ทั้งหมดวันนี้" value={`${totalTop10Count}/${totalMatchCount || 0}`} />
+            <CompactMetric label="พร้อมใช้งาน" value={`${playableMatches.length}/${totalTop10Count}`} />
             <CompactMetric label="เฉลี่ย" value={`${avgConfidence}%`} />
-            <CompactMetric label="พร้อม" value={`${marketReadyCount}/${matches.length || 0}`} />
-            <CompactMetric label="รอ" value={`${waitingMarketCount}/${matches.length || 0}`} />
+            <CompactMetric label="พร้อมวิเคราะห์" value={`${marketReadyCount}/${playableMatches.length || 0}`} />
+            <CompactMetric label="รอตลาด" value={`${waitingMarketCount}/${playableMatches.length || 0}`} />
+            <CompactMetric label="จบแล้ว" value={`${finishedMatches.length}/${totalTop10Count}`} />
           </div>
 
           <div className="mt-2 flex min-w-0 items-center justify-between gap-2 rounded-xl border border-white/10 bg-black/20 px-2.5 py-1.5">
             <p className="text-clamp-1 text-[11px] font-semibold text-slate-400">
-              V4 {v4ReadyCount}/{matches.length || 0} · อัปเดต {lastUpdated ? formatUpdatedAt(lastUpdated) : '-'}
+              V4 {v4ReadyCount}/{playableMatches.length || 0} · อัปเดต {lastUpdated ? formatUpdatedAt(lastUpdated) : '-'}
             </p>
             <span className="flex shrink-0 items-center gap-1 text-[11px] font-black text-emerald-100">
               <CheckCircle2 size={12} />
@@ -60,34 +71,49 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
               วันนี้ข้อมูลตลาดยังไม่พร้อม ระบบจะอัปเดตอีกครั้งรอบถัดไป
             </p>
           ) : null}
-          {!loading && matches.length < 10 ? (
+          {!loading && totalTop10Count < 10 ? (
             <p className="mt-1 text-clamp-1 text-[10.5px] font-semibold text-slate-500">
-              วันนี้มี AI Picks {matches.length} คู่จากข้อมูลที่พร้อมใช้งาน
+              วันนี้มี AI Picks {totalTop10Count} คู่จากข้อมูลที่พร้อมใช้งาน
+            </p>
+          ) : null}
+          {!loading && notPlayableMatches.length ? (
+            <p className="mt-1 text-clamp-1 text-[10.5px] font-semibold text-slate-500">
+              ไม่แสดงคู่ที่เลื่อน/ยกเลิก/ไม่ทราบสถานะ {notPlayableMatches.length} คู่ในบอร์ดหลัก
             </p>
           ) : null}
         </div>
       </section>
 
-      <OneBestPickSummary oneBestPick={oneBestPick} />
+      {playableMatches.length ? <OneBestPickSummary oneBestPick={oneBestPick} /> : null}
 
-      <div className="mobile-scroll mt-1.5 flex gap-1.5 overflow-x-auto pb-0.5">
-        {filters.map((item) => (
-          <button
-            key={item}
-            type="button"
-            onClick={() => setFilter(item)}
-            className={`min-h-8 shrink-0 rounded-full border px-3 text-[11px] font-black transition ${
-              filter === item ? filterActiveClass(item) : 'border-white/10 bg-white/[0.04] text-slate-400 hover:text-white'
-            }`}
-          >
-            {item}
-          </button>
-        ))}
-      </div>
+      {playableMatches.length ? (
+        <div className="mobile-scroll mt-1.5 flex gap-1.5 overflow-x-auto pb-0.5">
+          {filters.map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setFilter(item)}
+              className={`min-h-8 shrink-0 rounded-full border px-3 text-[11px] font-black transition ${
+                filter === item ? filterActiveClass(item) : 'border-white/10 bg-white/[0.04] text-slate-400 hover:text-white'
+              }`}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {loading ? <LoadingSkeleton /> : null}
       {error && !loading && !matches.length ? <StateBox title="โหลดข้อมูลไม่สำเร็จ" message="ระบบกำลังแสดงข้อมูลล่าสุดที่มีอยู่" detail={error} tone="error" onRetry={onRefresh} /> : null}
-      {!loading && !error && !hasDisplayMatches ? (
+      {showFinishedOnlyState ? (
+        <StateBox
+          title="คู่ของวันนี้แข่งจบแล้ว"
+          message="คู่ของวันนี้แข่งจบแล้ว ดูผลได้ที่หน้าผลย้อนหลัง"
+          actionLabel="ไปหน้าผลย้อนหลัง"
+          onAction={onGoResults}
+        />
+      ) : null}
+      {showEmptyState ? (
         <StateBox
           title="ยังไม่มีรายการแข่งขันสำหรับวันนี้"
           message="ลองรีเฟรชข้อมูลหรือกลับมาตรวจอีกครั้ง"
@@ -95,13 +121,13 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
         />
       ) : null}
 
-      {!loading && !error && hasDisplayMatches ? (
+      {!loading && !error && playableMatches.length > 0 && hasDisplayMatches ? (
         <div className="mt-2.5 grid gap-4">
           {readyMatches.length ? (
             <MatchSection title="คู่พร้อมวิเคราะห์" count={readyMatches.length} tone="ready">
               <div className="grid gap-2.5">
                 {readyMatches.map((match) => (
-                  <MatchCard key={match.id} match={match} onOpen={onOpenMatch} />
+                  <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable />
                 ))}
               </div>
             </MatchSection>
@@ -111,7 +137,7 @@ export default function TodayPage({ matches, oneBestPick: providedOneBestPick = 
             <MatchSection title="รอข้อมูลตลาด" count={waitingMatches.length} tone="waiting">
               <div className="grid gap-2.5">
                 {waitingMatches.map((match) => (
-                  <MatchCard key={match.id} match={match} onOpen={onOpenMatch} />
+                  <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable isWaitingMarketData />
                 ))}
               </div>
             </MatchSection>
@@ -230,12 +256,17 @@ function LoadingSkeleton() {
   )
 }
 
-function StateBox({ title, message, detail = '', tone = 'default', onRetry }) {
+function StateBox({ title, message, detail = '', tone = 'default', onRetry, actionLabel = '', onAction }) {
   return (
     <div className={`mt-3 rounded-2xl border p-4 text-center ${tone === 'error' ? 'border-red-400/30 bg-red-400/10' : 'border-white/10 bg-white/[0.045]'}`}>
       <p className="font-black text-white">{title}</p>
       <p className="mt-1 text-sm leading-6 text-slate-300">{message}</p>
       {detail ? <p className="text-clamp-2 mt-1 text-xs leading-5 text-slate-400">{detail}</p> : null}
+      {onAction ? (
+        <button type="button" onClick={onAction} className="premium-button premium-focus mt-3 min-h-11 px-5 text-sm">
+          {actionLabel || 'ไปหน้าผลย้อนหลัง'}
+        </button>
+      ) : null}
       {onRetry ? (
         <button type="button" onClick={onRetry} className="premium-button premium-focus mt-3 min-h-11 px-5 text-sm">
           ลองใหม่

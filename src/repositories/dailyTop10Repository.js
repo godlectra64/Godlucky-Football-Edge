@@ -1,6 +1,7 @@
 import { getBangkokToday } from '../utils/bangkokDate.js'
 import { fetchMatchesByKickoffRange } from './matchesRepository.js'
 import { compareMarketReadyMatches, isMarketReadyForDisplay } from '../utils/analysisEngine.js'
+import { getStatusCodeFromMatch } from '../utils/matchStatus.js'
 
 export async function getDailyTop10Status(date = getBangkokToday()) {
   const client = await getSupabaseClient()
@@ -59,9 +60,13 @@ export async function getLockedTop10(date = getBangkokToday()) {
 function normalizeLockedMatch(match = {}, lock = {}) {
   const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
   const waitingMarketData = deriveWaitingMarketData(match, analysis, match.aiFinalPick ?? match.ai_final_pick, lock)
+  const statusShort = getStatusCodeFromMatch(match)
   return {
     ...match,
     kickoffAt: match.kickoffAt ?? match.kickoff_at,
+    status: statusShort,
+    statusShort,
+    status_short: statusShort,
     finalRank: lock.rank,
     final_rank: lock.rank,
     rank: lock.rank,
