@@ -24,7 +24,7 @@ export const marketLabelsTh = {
   OU: 'สูง/ต่ำ',
   MATCH_WINNER: '1X2',
   BTTS: 'ทั้งสองทีมยิงได้',
-  NONE: 'รอข้อมูลจาก API-Football',
+  NONE: 'ยังไม่มีข้อมูลราคา',
 }
 
 export const riskLabelsTh = {

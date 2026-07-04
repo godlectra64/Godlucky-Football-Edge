@@ -49,7 +49,7 @@ const selectedWithOdds = selected.filter((item) => item.oddsRows.length > 0).len
 const duplicateRanks = findDuplicates(top10Rows, (row) => row.rank)
 const duplicateMatches = findDuplicates(top10Rows, (row) => row.match_id)
 const crossDateRows = selected.filter((item) => getBangkokDateKey(item.match.kickoff_at) !== selectionDate)
-const oddsPriorityViolation = hasOddsPriorityViolation(selected)
+const oddsAfterNoOddsCount = countOddsAfterNoOdds(selected)
 const selectedMissingFromDate = top10Rows.filter((row) => !matchById.has(row.match_id))
 const noOddsPickTeamRows = selected.filter((item) => item.oddsRows.length === 0 && Boolean(item.row.pick_team))
 const teamlessMarketRows = selected.filter((item) => ['OU', 'BTTS'].includes(String(item.row.pick_market ?? item.pick.pickMarket ?? '').toUpperCase()) && Boolean(item.row.pick_team))
@@ -65,8 +65,8 @@ report('cross-date selection', crossDateRows.length)
 report('daily rows missing same-date fixture', selectedMissingFromDate.length)
 report('odds rows exists but has_market_data=false', oddsRowsExistButHasMarketDataFalse)
 report('has_market_data=true but no odds rows', hasMarketDataTrueButNoOddsRows)
-report('odds priority violation', oddsPriorityViolation ? 1 : 0)
-report('selected odds coverage', selectedWithOdds < expectedOddsInTop10 ? expectedOddsInTop10 - selectedWithOdds : 0, `selectedWithOdds=${selectedWithOdds}/${expectedOddsInTop10} totalMatchesWithOdds=${totalMatchesWithOdds}`)
+console.log(`odds bonus ordering note: oddsAfterNoOdds=${oddsAfterNoOddsCount}`)
+console.log(`selected odds coverage: selectedWithOdds=${selectedWithOdds}/${expectedOddsInTop10} totalMatchesWithOdds=${totalMatchesWithOdds}`)
 report('pick_team without API odds', noOddsPickTeamRows.length)
 report('OU/BTTS rows with pick_team', teamlessMarketRows.length)
 report('DRAW rows with pick_team', drawTeamRows.length)
@@ -134,13 +134,14 @@ async function fetchTop10Rows(dateKey) {
   return data ?? []
 }
 
-function hasOddsPriorityViolation(items) {
+function countOddsAfterNoOdds(items) {
   let seenWithoutOdds = false
+  let count = 0
   for (const item of items) {
     if (item.oddsRows.length === 0) seenWithoutOdds = true
-    if (seenWithoutOdds && item.oddsRows.length > 0) return true
+    if (seenWithoutOdds && item.oddsRows.length > 0) count += 1
   }
-  return false
+  return count
 }
 
 function findDuplicates(rows, keyFn) {

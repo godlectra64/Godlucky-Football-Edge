@@ -14,6 +14,7 @@ import { formatKickoffTime, formatScore } from '../utils/formatters'
 import { calculateDataCoverage, normalizeDataPlatform } from '../utils/dataPlatform'
 import { buildExplainableAi } from '../utils/explainableAi'
 import { normalizeMarketIntelligence } from '../utils/marketIntelligence'
+import { buildPickSummaryFromApiFootballOdds } from '../utils/marketDisplay'
 
 const moduleSubtitles = {
   'Team Strength': 'คุณภาพทีม',
@@ -75,6 +76,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
       <FinalDecisionSection detail={detail} heroSelection={heroSelection} />
+      <SystemPickSummarySection detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <DetailAccordion open={detailsOpen} onToggle={() => setDetailsOpen((value) => !value)}>
       <AiFinalPickAnalysisSection detail={detail} />
@@ -223,6 +225,31 @@ function FinalDecisionSection({ detail, heroSelection }) {
           <DecisionMetric label="เหตุผลการสรุปผล" value={sanitizeUiText(finalPick.valueReason)} muted={finalPick.valueStatus !== 'YES'} />
         </div>
         <p className="text-clamp-2 mt-2 text-sm leading-6 text-slate-300">{sanitizeUiText(detail.analysisSummary || 'ข้อมูลวิเคราะห์ยังจำกัด')}</p>
+      </div>
+    </Section>
+  )
+}
+
+function SystemPickSummarySection({ detail }) {
+  const summary = buildPickSummaryFromApiFootballOdds(detail)
+  const hasMarket = Boolean(summary?.hasApiFootballOdds)
+  return (
+    <Section title="สรุปมุมมองระบบ" icon={Gauge} accent>
+      <div className={`rounded-2xl border p-3 ${hasMarket ? 'border-emerald-300/25 bg-emerald-300/10' : 'border-amber-300/25 bg-amber-300/10'}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase text-slate-400">ฝั่งที่ระบบประเมิน</p>
+            <p className="text-clamp-2 mt-1 text-2xl font-black leading-7 text-white">{summary.sideLabel}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{summary.predictedOutcomeLabel}</p>
+          </div>
+          <span className="semantic-badge shrink-0 border-white/10 bg-white/[0.05] text-white">{summary.confidenceLabel}</span>
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <DecisionMetric label="ตลาดที่ใช้" value={summary.market} muted={!hasMarket} />
+          <DecisionMetric label="มุมมองผลการแข่งขัน" value={summary.predictedOutcomeLabel} muted={!hasMarket} />
+          <DecisionMetric label="ความมั่นใจ" value={summary.confidenceLabel} />
+          <DecisionMetric label="เหตุผลย่อ" value={summary.reason} muted={!hasMarket} />
+        </div>
       </div>
     </Section>
   )

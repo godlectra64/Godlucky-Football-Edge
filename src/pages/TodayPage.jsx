@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import MatchCard from '../components/MatchCard'
 import { getConfidence } from '../utils/analysisEngine'
 import { formatThaiDate, formatUpdatedAt } from '../utils/formatters'
+import { getApiFootballOddsRows } from '../utils/marketDisplay'
 import { buildTodayMatchBuckets } from '../utils/todayMatchBuckets'
 
 export default function TodayPage({
@@ -44,6 +45,7 @@ export default function TodayPage({
   const showFinishedOnlyState = !loading && !error && playableMatches.length === 0 && finishedCount > 0
   const showEmptyState = !loading && !error && playableMatches.length === 0 && finishedCount === 0
   const hasMainSections = !loading && !error && (strongMatches.length || watchMatches.length || waitingMatches.length)
+  const noOddsOnlySelection = !loading && !error && playableMatches.length > 0 && playableMatches.every((match) => getApiFootballOddsRows(match).length === 0)
 
   return (
     <main className="app-page theme-today">
@@ -73,7 +75,7 @@ export default function TodayPage({
 
           <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
             <div className="flex min-w-0 items-center justify-between gap-2">
-              <p className="text-clamp-1 text-[12px] font-black text-white">{buildHeroMessage(summary)}</p>
+              <p className="text-clamp-1 text-[12px] font-black text-white">{buildHeroMessage(summary, noOddsOnlySelection)}</p>
               <span className="flex shrink-0 items-center gap-1 text-[11px] font-black text-emerald-100">
                 <CheckCircle2 size={12} />
                 พร้อมใช้งาน
@@ -120,6 +122,10 @@ export default function TodayPage({
 
       {hasMainSections ? (
         <div className="mt-3 grid gap-4">
+          {noOddsOnlySelection ? (
+            <NoOddsNotice />
+          ) : null}
+
           <MatchSection title="คู่เด่นวันนี้" count={strongMatches.length} tone="strong" emptyMessage="วันนี้ยังไม่มีคู่ที่ AI ยกระดับเป็นคู่เด่นแบบชัดเจน">
             {strongMatches.map((match) => (
               <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable displayMode="strong" />
@@ -135,7 +141,7 @@ export default function TodayPage({
           ) : null}
 
           {waitingMatches.length ? (
-            <MatchSection title="รอข้อมูลตลาด" count={waitingMatches.length} tone="waiting">
+            <MatchSection title="รอข้อมูลราคา" count={waitingMatches.length} tone="waiting">
               {waitingMatches.map((match) => (
                 <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable isWaitingMarketData displayMode="waiting" />
               ))}
@@ -182,6 +188,15 @@ function MatchSection({ title, count, tone = 'strong', emptyMessage = '', childr
         <span className="semantic-badge border-white/10 bg-white/[0.04] text-slate-200">{count}</span>
       </div>
       {childRows.length ? <div className="grid gap-2.5">{childRows}</div> : <EmptySection message={emptyMessage} />}
+    </section>
+  )
+}
+
+function NoOddsNotice() {
+  return (
+    <section className="rounded-[18px] border border-amber-300/24 bg-amber-300/10 p-3">
+      <p className="text-sm font-black text-amber-50">วันนี้ API-Football ยังไม่มีข้อมูลราคาสำหรับคู่ที่เลือก</p>
+      <p className="mt-1 text-xs font-semibold leading-5 text-amber-100">ระบบจะแสดงจาก fixture จริงก่อน และจะอัปเดตมุมมองราคาเมื่อ football_match_odds พร้อมใช้งาน</p>
     </section>
   )
 }
@@ -245,10 +260,11 @@ function StateBox({ title, message, detail = '', tone = 'default', onRetry, acti
   )
 }
 
-function buildHeroMessage(summary) {
+function buildHeroMessage(summary, noOddsOnlySelection = false) {
+  if (noOddsOnlySelection) return 'วันนี้ API-Football ยังไม่มีข้อมูลราคาสำหรับคู่ที่เลือก ระบบจะแสดงจาก fixture จริงก่อน'
   if (summary.hasStrongPick) return 'วันนี้มีคู่ที่ AI ให้สัญญาณชัด'
   if (summary.watchCount) return 'วันนี้ยังไม่สุด แต่มีคู่ที่ควรเฝ้าดู'
-  if (summary.waitingCount) return 'รอข้อมูลตลาดเพื่อยืนยันคู่เด่น'
+  if (summary.waitingCount) return 'รอข้อมูลราคาเพื่อยืนยันคู่เด่น'
   if (summary.hasFinishedOnly) return 'คู่วันนี้แข่งจบแล้ว'
   return 'กำลังรอข้อมูลที่พร้อมพอสำหรับการคัดคู่'
 }

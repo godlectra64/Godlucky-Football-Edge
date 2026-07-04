@@ -28,6 +28,7 @@ export default function MatchCard({
   const aiPick = match.aiFinalPick ?? generateAiFinalPick(match)
   const marketDisplay = getApiFootballMarketDisplay(match, aiPick)
   const apiPick = derivePickTeamFromApiFootballOdds(match)
+  const pickSummary = apiPick.pickSummary
   const waitingMarket = providedIsWaitingMarketData ?? (!isFinished && isWaitingForMarketData(match))
   const mode = displayMode || (waitingMarket ? 'waiting' : recommendation === 'BET' ? 'strong' : 'watch')
   const analysisSummary = buildCardSummary(match, recommendation, confidence, waitingMarket)
@@ -76,13 +77,7 @@ export default function MatchCard({
         <span className="semantic-badge border-white/10 bg-white/[0.04] text-white">AI Score {confidence}%</span>
       </div>
 
-      <p className="text-clamp-1 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-black leading-5 text-slate-300">
-        <span className={marketDisplay.hasApiFootballMarket ? 'text-white' : 'text-amber-100'}>{marketDisplay.label}</span>
-      </p>
-
-      <p className="text-clamp-1 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-semibold leading-5 text-slate-300">
-        {formatApiPickDisplay(apiPick)}
-      </p>
+      <SystemPickSummaryBox summary={pickSummary} confidence={confidence} hasMarket={marketDisplay.hasApiFootballMarket} />
 
       {reasons[0] ? (
         <p className="text-clamp-2 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-semibold leading-5 text-slate-300">
@@ -110,6 +105,39 @@ function TeamName({ name, active = false, align = 'left' }) {
     <p className={`text-clamp-1 text-[0.98rem] font-black leading-6 ${align === 'right' ? 'text-right' : ''} ${active ? 'text-emerald-100 underline decoration-emerald-300/60 underline-offset-4' : 'text-white'}`}>
       {name}
     </p>
+  )
+}
+
+function SystemPickSummaryBox({ summary, confidence, hasMarket }) {
+  const safeSummary = summary ?? {
+    title: 'สรุปมุมมองระบบ',
+    sideLabel: 'ยังไม่เลือกฝั่ง',
+    market: 'ยังไม่มีข้อมูลราคา',
+    predictedOutcomeLabel: 'ยังไม่มีข้อมูลราคา',
+    reason: 'ระบบยังไม่พบข้อมูลราคาจาก API-Football สำหรับคู่นี้',
+  }
+  return (
+    <div className={`mt-2 rounded-xl border p-2.5 ${hasMarket ? 'border-emerald-300/20 bg-emerald-300/[0.06]' : 'border-amber-300/20 bg-amber-300/[0.06]'}`}>
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <p className="text-[11px] font-black text-white">{safeSummary.title}</p>
+        <span className="semantic-badge shrink-0 border-white/10 bg-white/[0.05] text-white">{confidence}%</span>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <SummaryMetric label="ฝั่งที่ระบบประเมิน" value={safeSummary.sideLabel} />
+        <SummaryMetric label="ตลาดที่ใช้" value={safeSummary.market} muted={!hasMarket} />
+      </div>
+      <p className="text-clamp-1 mt-2 text-xs font-black leading-5 text-slate-100">{safeSummary.predictedOutcomeLabel}</p>
+      <p className="text-clamp-2 mt-1 text-[11px] font-semibold leading-4 text-slate-300">{safeSummary.reason}</p>
+    </div>
+  )
+}
+
+function SummaryMetric({ label, value, muted = false }) {
+  return (
+    <div className="min-w-0 rounded-lg border border-white/10 bg-black/15 px-2 py-1.5">
+      <p className="text-[9px] font-black uppercase text-slate-500">{label}</p>
+      <p className={`text-clamp-1 text-[11px] font-black leading-4 ${muted ? 'text-amber-100' : 'text-white'}`}>{value || '-'}</p>
+    </div>
   )
 }
 
@@ -150,26 +178,6 @@ function sanitizeUserText(value) {
     .replace(/\bNO_MARKET_DATA\b/g, 'ยังไม่มีข้อมูลตลาด')
     .replace(/\bmarket_data_used\b/gi, 'ข้อมูลตลาด')
     .trim()
-}
-
-function formatApiPickDisplay(apiPick) {
-  if (!apiPick?.hasApiFootballOdds) return 'ยังไม่มีข้อมูลราคา'
-  if (apiPick.pickTeam) {
-    const price = apiPick.pickPrice ? ` · ราคา/ตัวเลข ${apiPick.pickPrice}` : ''
-    return `ทีมที่ระบบประเมิน: ${apiPick.pickTeam}${price}`
-  }
-  const sideLabel = {
-    OVER: 'สูง',
-    UNDER: 'ต่ำ',
-    YES: 'ใช่',
-    NO: 'ไม่ใช่',
-    DRAW: 'เสมอ',
-  }[apiPick.pickSide]
-  if (sideLabel) {
-    const price = apiPick.pickPrice ? ` · ราคา/ตัวเลข ${apiPick.pickPrice}` : ''
-    return `มุมมองตลาด: ${sideLabel}${price}`
-  }
-  return 'ยังไม่มีข้อมูลราคา'
 }
 
 function getFinishedScoreDisplay(match = {}) {

@@ -2,6 +2,11 @@ import { normalizeMarketFocus } from './oddsUtils.js'
 
 export const waitingApiFootballMarketLabel = 'ยังไม่มีข้อมูลราคา'
 export const waitingApiFootballMarketReason = 'ยังไม่มีข้อมูลราคา'
+export const strictDailyTiers = {
+  ready: 'READY',
+  watch: 'WATCH',
+  noData: 'NO_DATA',
+}
 
 export function getApiFootballMarketDisplay(match = {}, finalPick = {}) {
   const rows = getApiFootballOddsRows(match)
@@ -47,7 +52,7 @@ export function derivePickTeamFromApiFootballOdds(match = {}, oddsRows = null) {
     hasApiFootballOdds: false,
     hasPrimaryMarket: false,
   }
-  if (!primary) return empty
+  if (!primary) return withPickSummary(empty, match, rows)
 
   const homeName = firstText(match.homeTeam?.name, match.home_team?.name, match.home_team, match.home)
   const awayName = firstText(match.awayTeam?.name, match.away_team?.name, match.away_team, match.away)
@@ -72,28 +77,32 @@ export function derivePickTeamFromApiFootballOdds(match = {}, oddsRows = null) {
 
   if (market === 'AH') {
     const side = inferTeamSide(selection, homeName, awayName)
-    if (side === 'HOME') return { ...base, pickTeam: homeName || null, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }
-    if (side === 'AWAY') return { ...base, pickTeam: awayName || null, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }
-    return { ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาดแฮนดิแคปได้' }
+    if (side === 'HOME') return withPickSummary({ ...base, pickTeam: homeName || null, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }, match, rows)
+    if (side === 'AWAY') return withPickSummary({ ...base, pickTeam: awayName || null, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }, match, rows)
+    return withPickSummary({ ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาดแฮนดิแคปได้' }, match, rows)
   }
 
   if (market === 'MATCH_WINNER') {
     const side = inferTeamSide(selection, homeName, awayName)
-    if (side === 'HOME') return { ...base, pickTeam: homeName || null, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }
-    if (side === 'AWAY') return { ...base, pickTeam: awayName || null, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }
-    if (isDrawSelection(selection)) return { ...base, pickSide: 'DRAW', reason: 'ตลาดนี้เป็นผลเสมอ ไม่มีทีมที่เลือก' }
-    return { ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาด 1X2 ได้' }
+    if (side === 'HOME') return withPickSummary({ ...base, pickTeam: homeName || null, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }, match, rows)
+    if (side === 'AWAY') return withPickSummary({ ...base, pickTeam: awayName || null, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }, match, rows)
+    if (isDrawSelection(selection)) return withPickSummary({ ...base, pickSide: 'DRAW', reason: 'ตลาดนี้เป็นผลเสมอ ไม่มีทีมที่เลือก' }, match, rows)
+    return withPickSummary({ ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาด 1X2 ได้' }, match, rows)
   }
 
   if (market === 'OU') {
-    return { ...base, pickSide: inferOverUnderSide(selection), reason: 'ตลาดสูงต่ำไม่มีทีมที่เลือก' }
+    return withPickSummary({ ...base, pickSide: inferOverUnderSide(selection), reason: 'ตลาดสูงต่ำไม่มีทีมที่เลือก' }, match, rows)
   }
 
   if (market === 'BTTS') {
-    return { ...base, pickSide: inferYesNoSide(selection), reason: 'ตลาดทั้งสองทีมยิงได้ไม่มีทีมที่เลือก' }
+    return withPickSummary({ ...base, pickSide: inferYesNoSide(selection), reason: 'ตลาดทั้งสองทีมยิงได้ไม่มีทีมที่เลือก' }, match, rows)
   }
 
-  return { ...base, pickSide: 'NONE', reason: 'ตลาดจาก API-Football ไม่ใช่ตลาดเลือกทีม' }
+  return withPickSummary({ ...base, pickSide: 'NONE', reason: 'ตลาดจาก API-Football ไม่ใช่ตลาดเลือกทีม' }, match, rows)
+}
+
+export function buildPickSummaryFromApiFootballOdds(match = {}, oddsRows = null) {
+  return derivePickTeamFromApiFootballOdds(match, oddsRows).pickSummary
 }
 
 export function getApiFootballMarketPriority(marketFocus) {
@@ -139,10 +148,12 @@ export function buildStrictApiFootballSelection(matches = [], options = {}) {
 export function buildStrictApiFootballCandidate(match = {}) {
   const pick = derivePickTeamFromApiFootballOdds(match)
   const oddsRows = getApiFootballOddsRows(match)
+  const scoreParts = getStrictDailyScoreParts(match, oddsRows, pick)
   return {
     match,
     matchId: match.id,
     hasApiFootballOdds: oddsRows.length > 0,
+    hasRealMarketData: oddsRows.length > 0,
     hasPrimaryMarket: pick.hasPrimaryMarket,
     marketPriority: pick.marketPriority,
     primaryMarket: pick.pickMarket,
@@ -153,6 +164,13 @@ export function buildStrictApiFootballCandidate(match = {}) {
     pickSelection: pick.pickSelection,
     pickPrice: pick.pickPrice,
     pickSource: pick.pickSource,
+    pickSummary: pick.pickSummary,
+    pickSummaryTitle: pick.pickSummaryTitle,
+    pickSummarySide: pick.pickSummarySide,
+    pickSummaryTeam: pick.pickSummaryTeam,
+    pickSummaryMarket: pick.pickSummaryMarket,
+    pickSummaryReason: pick.pickSummaryReason,
+    predictedOutcomeLabel: pick.predictedOutcomeLabel,
     reason: pick.reason,
     completenessScore: getCompletenessScore(match, oddsRows),
     completenessBreakdown: getCompletenessBreakdown(match, oddsRows),
@@ -161,15 +179,26 @@ export function buildStrictApiFootballCandidate(match = {}) {
     leagueQualityScore: numberValue(match.leagueQualityScore ?? match.league_quality_score ?? match.analysis?.league_quality_score ?? match.league?.priority),
     kickoffTime: new Date(match.kickoffAt ?? match.kickoff_at ?? 0).getTime() || 0,
     stableId: String(match.id ?? match.api_fixture_id ?? match.api_sports_fixture_id ?? ''),
+    baseFixtureQualityScore: scoreParts.baseFixtureQualityScore,
+    dataReadinessScore: scoreParts.dataReadinessScore,
+    marketReadinessScore: scoreParts.marketReadinessScore,
+    safetyPenalty: scoreParts.safetyPenalty,
+    strictRankingScore: scoreParts.strictRankingScore,
+    recommendedTier: scoreParts.recommendedTier,
   }
 }
 
 export function compareStrictApiFootballCandidates(a, b) {
   return (
-    Number(b.hasApiFootballOdds) - Number(a.hasApiFootballOdds) ||
-    Number(b.hasPrimaryMarket) - Number(a.hasPrimaryMarket) ||
+    strictTierPriority(b.recommendedTier) - strictTierPriority(a.recommendedTier) ||
+    b.strictRankingScore - a.strictRankingScore ||
+    b.dataReadinessScore - a.dataReadinessScore ||
+    b.baseFixtureQualityScore - a.baseFixtureQualityScore ||
+    b.marketReadinessScore - a.marketReadinessScore ||
     b.marketPriority - a.marketPriority ||
     b.completenessScore - a.completenessScore ||
+    Number(b.hasApiFootballOdds) - Number(a.hasApiFootballOdds) ||
+    Number(b.hasPrimaryMarket) - Number(a.hasPrimaryMarket) ||
     Number(Boolean(b.pickTeam)) - Number(Boolean(a.pickTeam)) ||
     Number(b.hasFixtureStatistics) - Number(a.hasFixtureStatistics) ||
     Number(b.hasLineups) - Number(a.hasLineups) ||
@@ -230,6 +259,152 @@ function normalizeApiFootballOddsRow(row = {}) {
 
 function formatApiFootballMarketName(row = {}) {
   return row.marketName || waitingApiFootballMarketLabel
+}
+
+function withPickSummary(pick, match, oddsRows) {
+  const summary = createPickSummary(match, pick, oddsRows)
+  return {
+    ...pick,
+    pickSummary: summary,
+    pickSummaryTitle: summary.title,
+    pickSummarySide: summary.sideLabel,
+    pickSummaryTeam: summary.team,
+    pickSummaryMarket: summary.market,
+    pickSummaryReason: summary.reason,
+    predictedOutcomeLabel: summary.predictedOutcomeLabel,
+  }
+}
+
+function createPickSummary(match = {}, pick = {}, oddsRows = []) {
+  const hasOdds = Array.isArray(oddsRows) && oddsRows.length > 0
+  const confidence = Math.round(numberValue(match.confidence ?? match.confidence_score ?? match.aiFinalPick?.confidence_score ?? match.analysis?.calibrated_confidence_score ?? match.analysis?.confidence_score))
+  const market = pick.pickMarket ? (pick.pickMarket === 'OTHER' ? (pick.pickSelection ? 'API-Football' : waitingApiFootballMarketLabel) : pick.pickMarket) : waitingApiFootballMarketLabel
+  const marketName = getPrimaryMarketName(oddsRows) || market
+  const sideLabel = getPickSideLabel(pick)
+  const team = pick.pickTeam || null
+  const predictedOutcomeLabel = getPredictedOutcomeLabel(pick, team)
+  const reason = hasOdds
+    ? getPickSummaryReason(pick)
+    : 'ระบบยังไม่พบข้อมูลราคาจาก API-Football สำหรับคู่นี้'
+
+  return {
+    title: 'สรุปมุมมองระบบ',
+    side: pick.pickSide ?? 'NONE',
+    sideLabel,
+    team,
+    market: hasOdds ? marketName : waitingApiFootballMarketLabel,
+    reason,
+    predictedOutcomeLabel,
+    confidenceLabel: confidence ? `${confidence}%` : 'รอข้อมูลเพิ่ม',
+    hasApiFootballOdds: hasOdds,
+  }
+}
+
+function getPrimaryMarketName(oddsRows = []) {
+  return firstText(oddsRows[0]?.marketName, oddsRows[0]?.market_name)
+}
+
+function getPickSideLabel(pick = {}) {
+  if (pick.pickTeam) return pick.pickTeam
+  const labels = {
+    HOME: 'เจ้าบ้าน',
+    AWAY: 'ทีมเยือน',
+    DRAW: 'เสมอ',
+    OVER: 'สูง',
+    UNDER: 'ต่ำ',
+    YES: 'ใช่',
+    NO: 'ไม่ใช่',
+    NONE: 'ยังไม่เลือกฝั่ง',
+  }
+  return labels[pick.pickSide] ?? labels.NONE
+}
+
+function getPredictedOutcomeLabel(pick = {}, team = '') {
+  const side = String(pick.pickSide ?? 'NONE').toUpperCase()
+  const market = String(pick.pickMarket ?? '').toUpperCase()
+  if (!pick.hasApiFootballOdds) return waitingApiFootballMarketLabel
+  if (team && market === 'AH') return `${team} เป็นฝั่งที่ระบบให้ภาษีดีกว่า`
+  if (team && market === 'MATCH_WINNER') return `${team} มีโอกาสเหนือกว่า`
+  if (side === 'DRAW') return 'เกมมีโอกาสออกเสมอ'
+  if (side === 'OVER') return 'เกมมีแนวโน้มประตูรวมสูง'
+  if (side === 'UNDER') return 'เกมมีแนวโน้มประตูรวมต่ำ'
+  if (side === 'YES') return 'มีแนวโน้มที่ทั้งสองทีมทำประตูได้'
+  if (side === 'NO') return 'มีแนวโน้มที่อย่างน้อยหนึ่งทีมทำประตูไม่ได้'
+  return 'รอข้อมูลเพิ่มก่อนเลือกฝั่ง'
+}
+
+function getPickSummaryReason(pick = {}) {
+  const market = String(pick.pickMarket ?? '').toUpperCase()
+  if (market === 'AH') return 'อ้างอิงตลาดแฮนดิแคปจริงจาก API-Football'
+  if (market === 'MATCH_WINNER') return 'อ้างอิงตลาดผลแพ้ชนะจริงจาก API-Football'
+  if (market === 'OU') return 'อ้างอิงตลาดประตูรวมจริงจาก API-Football'
+  if (market === 'BTTS') return 'อ้างอิงตลาดทั้งสองทีมทำประตูจริงจาก API-Football'
+  return 'อ้างอิงข้อมูลราคาจริงจาก API-Football'
+}
+
+function getStrictDailyScoreParts(match, oddsRows, pick) {
+  const baseFixtureQualityScore = clampScore(
+    (hasTeamNames(match) ? 30 : 0) +
+    (hasLeagueName(match) ? 20 : 0) +
+    (hasKickoff(match) ? 20 : 0) +
+    Math.min(30, numberValue(match.leagueQualityScore ?? match.league_quality_score ?? match.analysis?.league_quality_score ?? match.league?.priority) * 0.3)
+  )
+  const dataReadinessScore = clampScore(
+    (match.has_fixture_detail || match.hasFixtureDetail ? 25 : 0) +
+    (hasRows(match.statistics ?? match.enrichment?.statistics ?? match.raw?.statistics) ? 20 : 0) +
+    (hasRows(match.lineups ?? match.enrichment?.lineups ?? match.raw?.lineups) ? 15 : 0) +
+    Math.min(30, numberValue(match.data_readiness_score ?? match.dataReadinessScore ?? match.analysis?.data_readiness_score)) +
+    (['READY', 'PARTIAL'].includes(String(match.data_readiness_status ?? match.dataReadinessStatus ?? '').toUpperCase()) ? 10 : 0)
+  )
+  const marketReadinessScore = clampScore(
+    (oddsRows.length ? 45 : 0) +
+    (pick.hasPrimaryMarket ? 25 : 0) +
+    Math.min(30, numberValue(pick.marketPriority) * 0.3)
+  )
+  const safetyPenalty = getStrictDailySafetyPenalty(match, oddsRows)
+  const strictRankingScore = clampScore((baseFixtureQualityScore * 0.44) + (dataReadinessScore * 0.32) + (marketReadinessScore * 0.24) - safetyPenalty)
+  const recommendedTier = getStrictDailyTier({ strictRankingScore, dataReadinessScore, marketReadinessScore, safetyPenalty, hasOdds: oddsRows.length > 0 })
+  return { baseFixtureQualityScore, dataReadinessScore, marketReadinessScore, safetyPenalty, strictRankingScore, recommendedTier }
+}
+
+function getStrictDailySafetyPenalty(match, oddsRows) {
+  let penalty = 0
+  if (!hasTeamNames(match)) penalty += 30
+  if (!hasLeagueName(match)) penalty += 15
+  if (!hasKickoff(match)) penalty += 25
+  if (!oddsRows.length) penalty += 8
+  if (numberValue(match.leagueQualityScore ?? match.league_quality_score ?? match.analysis?.league_quality_score ?? match.league?.priority) < 20) penalty += 5
+  return Math.min(60, penalty)
+}
+
+function getStrictDailyTier({ strictRankingScore, dataReadinessScore, marketReadinessScore, safetyPenalty, hasOdds }) {
+  if (hasOdds && marketReadinessScore >= 45 && dataReadinessScore >= 25 && strictRankingScore >= 45 && safetyPenalty < 35) return strictDailyTiers.ready
+  if (strictRankingScore >= 35 && safetyPenalty < 45) return strictDailyTiers.watch
+  return strictDailyTiers.noData
+}
+
+function strictTierPriority(tier) {
+  if (tier === strictDailyTiers.ready) return 3
+  if (tier === strictDailyTiers.watch) return 2
+  return 1
+}
+
+function hasTeamNames(match = {}) {
+  return Boolean(firstText(match.homeTeam?.name, match.home_team?.name, match.home_team, match.home)) &&
+    Boolean(firstText(match.awayTeam?.name, match.away_team?.name, match.away_team, match.away))
+}
+
+function hasLeagueName(match = {}) {
+  return Boolean(firstText(match.league?.name, match.league_name, match.league))
+}
+
+function hasKickoff(match = {}) {
+  return Boolean(new Date(match.kickoffAt ?? match.kickoff_at ?? 0).getTime())
+}
+
+function clampScore(value) {
+  const numeric = numberValue(value)
+  return Math.max(0, Math.min(100, Math.round(numeric * 100) / 100))
 }
 
 function asArray(value) {

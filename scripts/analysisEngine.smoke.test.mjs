@@ -1011,6 +1011,9 @@ const pickTeamMatch = {
 const noOddsPick = derivePickTeamFromApiFootballOdds({ ...pickTeamMatch, odds: [] })
 assert.equal(noOddsPick.pickTeam, null, 'No API odds must not derive pick_team')
 assert.equal(noOddsPick.pickSource, 'NONE', 'No API odds must keep pick_source NONE')
+assert.equal(noOddsPick.pickSide, 'NONE', 'No API odds must keep pick_side NONE')
+assert.equal(noOddsPick.pickSummary.market, 'ยังไม่มีข้อมูลราคา', 'No API odds summary should show waiting price copy')
+assert.equal(noOddsPick.predictedOutcomeLabel, 'ยังไม่มีข้อมูลราคา', 'No API odds predicted outcome should not invent a side')
 
 const ahPick = derivePickTeamFromApiFootballOdds({
   ...pickTeamMatch,
@@ -1019,6 +1022,9 @@ const ahPick = derivePickTeamFromApiFootballOdds({
 assert.equal(ahPick.pickTeam, 'Arsenal', 'AH selection should derive the selected team from API-Football odds')
 assert.equal(ahPick.pickTeamId, 10)
 assert.equal(ahPick.pickSide, 'HOME')
+assert.equal(ahPick.pickSummary.team, 'Arsenal')
+assert.equal(ahPick.pickSummary.market, 'Asian Handicap')
+assert.equal(ahPick.predictedOutcomeLabel.includes('Arsenal'), true)
 
 const ahAwayPick = derivePickTeamFromApiFootballOdds({
   ...pickTeamMatch,
@@ -1047,6 +1053,7 @@ const drawPick = derivePickTeamFromApiFootballOdds({
 })
 assert.equal(drawPick.pickTeam, null, '1X2 draw should not assign pick_team')
 assert.equal(drawPick.pickSide, 'DRAW')
+assert.equal(drawPick.pickSummary.sideLabel, 'เสมอ')
 
 const ouPick = derivePickTeamFromApiFootballOdds({
   ...pickTeamMatch,
@@ -1054,6 +1061,7 @@ const ouPick = derivePickTeamFromApiFootballOdds({
 })
 assert.equal(ouPick.pickTeam, null, 'OU should not assign pick_team')
 assert.equal(ouPick.pickSide, 'OVER')
+assert.equal(ouPick.pickSummary.sideLabel, 'สูง')
 
 const bttsPick = derivePickTeamFromApiFootballOdds({
   ...pickTeamMatch,
@@ -1061,6 +1069,7 @@ const bttsPick = derivePickTeamFromApiFootballOdds({
 })
 assert.equal(bttsPick.pickTeam, null, 'BTTS should not assign pick_team')
 assert.equal(bttsPick.pickSide, 'YES')
+assert.equal(bttsPick.pickSummary.sideLabel, 'ใช่')
 
 const strictApiSelection = buildStrictApiFootballSelection([
   { ...pickTeamMatch, id: 'strict-no-odds', odds: [], kickoffAt: '2026-07-04T09:00:00.000Z' },
@@ -1071,12 +1080,48 @@ const strictApiSelection = buildStrictApiFootballSelection([
 assert.deepEqual(strictApiSelection.selected.map((match) => match.id), ['strict-ah', 'strict-ou', 'strict-1x2', 'strict-no-odds'], 'Strict daily selection should prioritize API odds and market priority before no-odds rows')
 assert.equal(strictApiSelection.usedRollingWindow, false)
 assert.equal(strictApiSelection.usedNextDateFallback, false)
+assert.equal(strictApiSelection.selectedCount, 4, 'Strict daily should display fewer than 10 when fewer real fixtures exist')
+assert.equal(strictApiSelection.selected.find((match) => match.id === 'strict-no-odds').strictApiFootball.pickSide, 'NONE')
+assert.equal(strictApiSelection.selected.find((match) => match.id === 'strict-no-odds').strictApiFootball.recommendedTier, 'WATCH')
+
+const strictNoOddsOnlySelection = buildStrictApiFootballSelection([
+  { ...pickTeamMatch, id: 'no-odds-real-1', odds: [], kickoffAt: '2026-07-04T09:00:00.000Z', league: { name: 'Real League', priority: 75 } },
+  { ...pickTeamMatch, id: 'no-odds-real-2', odds: [], kickoffAt: '2026-07-04T10:00:00.000Z', league: { name: 'Real League', priority: 72 } },
+], { limit: 10 })
+assert.equal(strictNoOddsOnlySelection.selectedCount, 2, 'No-odds day should still select real same-day fixtures')
+assert.equal(strictNoOddsOnlySelection.selectedWithoutOddsCount, 2)
+assert.equal(strictNoOddsOnlySelection.selected.every((match) => match.strictApiFootball.pickTeam === null), true, 'No-odds strict fixtures must not create pick_team')
+
+const noOddsStrongFixture = {
+  ...pickTeamMatch,
+  id: 'strict-high-quality-no-odds',
+  odds: [],
+  league: { name: 'High Quality League', priority: 100 },
+  data_readiness_score: 100,
+  statistics: [{ type: 'shots' }],
+  lineups: [{ team: 'home' }],
+}
+const weakOddsFixture = {
+  ...pickTeamMatch,
+  id: 'strict-weak-odds',
+  odds: [{ id: 'weak-odds-1', match_id: 'strict-weak-odds', market_name: 'Asian Handicap', selection: 'Arsenal -0.25', is_latest: true }],
+  homeTeam: { name: '' },
+  awayTeam: { name: '' },
+  league: {},
+  has_fixture_detail: false,
+  data_readiness_status: 'WAITING',
+}
+const bonusNotGateSelection = buildStrictApiFootballSelection([weakOddsFixture, noOddsStrongFixture], { limit: 2 })
+assert.equal(bonusNotGateSelection.selected[0].id, 'strict-high-quality-no-odds', 'Odds should be a readiness bonus, not a hard ordering gate over safer fixtures')
 
 const waitingCardCopy = [
   missingApiMarketDisplay.label,
   missingApiMarketDisplay.reason,
+  noOddsPick.pickSummary.reason,
+  ahPick.pickSummary.reason,
+  ahPick.predictedOutcomeLabel,
 ].join(' ')
-for (const forbidden of ['ยังไม่มีตลาดหลัก', 'ยังไม่มีทิศทางตลาด', 'NO BET', 'SKIP', 'INSUFFICIENT_MARKET_DATA', 'NO_MARKET_DATA', 'readiness', 'analysis_status']) {
+for (const forbidden of ['ยังไม่มีตลาดหลัก', 'ยังไม่มีทิศทางตลาด', 'NO BET', 'SKIP', 'INSUFFICIENT_MARKET_DATA', 'NO_MARKET_DATA', 'readiness', 'analysis_status', 'ชนะชัวร์', 'ฟันธง', 'ล็อก', 'การันตี']) {
   assert.equal(waitingCardCopy.includes(forbidden), false, `Waiting card market copy should not expose ${forbidden}`)
 }
 
