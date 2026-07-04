@@ -1,5 +1,6 @@
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
+import { readFileSync } from 'node:fs'
 
 dotenv.config({ path: '.env.local' })
 dotenv.config({ path: '.env' })
@@ -21,6 +22,7 @@ console.log(`[verify:daily-top10] today=${bangkokDate}`)
 const supabase = createClient(supabaseUrl, supabaseKey)
 
 await checkTableExists()
+await checkExpectedConstraintDefinitions()
 await checkDailyInvariants()
 await checkTodayCoverage()
 
@@ -30,6 +32,12 @@ console.log('Daily Top10 lock checks passed')
 async function checkTableExists() {
   const { error, count } = await supabase.from('daily_top10_selections').select('id', { count: 'exact', head: true })
   report('daily_top10_selections table', error ? 1 : 0, error?.message || `rows ${count ?? 0}`)
+}
+
+async function checkExpectedConstraintDefinitions() {
+  const migration = readFileSync(new URL('../supabase/migrations/20260706_add_daily_top10_lock.sql', import.meta.url), 'utf8')
+  report('schema unique rank per selection_date', migration.includes('constraint daily_top10_selections_unique_rank unique (selection_date, rank)') ? 0 : 1)
+  report('schema unique match per selection_date', migration.includes('constraint daily_top10_selections_unique_match unique (selection_date, match_id)') ? 0 : 1)
 }
 
 async function checkDailyInvariants() {

@@ -64,7 +64,7 @@ import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 import { buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
-import { buildUsableDailySelection } from '../src/utils/selectionEngineV2.js'
+import { buildUsableDailySelection, planDailyTop10Persistence } from '../src/utils/selectionEngineV2.js'
 import { mergeResultRows } from '../src/repositories/resultTrackerRepository.js'
 import { runAiSelectionEngine } from '../src/utils/aiSelectionEngine.js'
 import { generateAiFinalPick } from '../src/utils/aiFinalPickEngine.js'
@@ -1000,6 +1000,35 @@ const finishedOnlySelection = buildUsableDailySelection(createStatusMatches(10, 
 assert.equal(finishedOnlySelection.selectedCount, 0, 'Selection V2 must not select finished matches for Today')
 assert.equal(finishedOnlySelection.finishedExcludedCount, 10, 'Selection V2 should count finished rows for Results routing')
 assert.equal(finishedOnlySelection.reason, 'all_matches_finished', 'Selection V2 should explain all-finished boards')
+
+const existingTop10Rows = Array.from({ length: 10 }, (_, index) => ({
+  id: `existing-${index + 1}`,
+  selection_date: '2026-07-04',
+  rank: index + 1,
+  match_id: `match-${index + 1}`,
+}))
+const repeatPlan = planDailyTop10Persistence(existingTop10Rows, existingTop10Rows.map((row) => ({ id: row.match_id, match_id: row.match_id })))
+assert.equal(repeatPlan.rowsUpdated, 10, 'Case A: existing locked Top10 should update by rank without inserting duplicates')
+assert.equal(repeatPlan.rowsInserted, 0, 'Case A: rerun should not grow row count')
+assert.equal(repeatPlan.duplicateRanks.length, 0, 'Case A: rerun should not duplicate ranks')
+assert.equal(repeatPlan.duplicateMatches.length, 0, 'Case A: rerun should not duplicate matches')
+
+const changedRankOnePlan = planDailyTop10Persistence(existingTop10Rows, [
+  { id: 'match-5', match_id: 'match-5' },
+  ...existingTop10Rows.filter((row) => row.match_id !== 'match-5').slice(0, 9).map((row) => ({ id: row.match_id, match_id: row.match_id })),
+])
+assert.ok(changedRankOnePlan.duplicateRankResolved >= 1, 'Case B: moving an existing match to occupied rank should resolve the old row first')
+assert.equal(changedRankOnePlan.duplicateRanks.length, 0, 'Case B: occupied rank update should not create duplicate rank')
+assert.equal(changedRankOnePlan.duplicateMatches.length, 0, 'Case B: occupied rank update should not create duplicate match')
+
+let repeatedRows = existingTop10Rows
+for (let run = 0; run < 3; run += 1) {
+  const plan = planDailyTop10Persistence(repeatedRows, existingTop10Rows.map((row) => ({ id: row.match_id, match_id: row.match_id })))
+  repeatedRows = plan.finalRows
+  assert.equal(plan.duplicateRanks.length, 0, 'Case C: repeated select-usable writes should keep ranks unique')
+  assert.equal(plan.duplicateMatches.length, 0, 'Case C: repeated select-usable writes should keep matches unique')
+}
+assert.equal(repeatedRows.length, 10, 'Case C: repeated select-usable writes should not grow row count')
 
 assert.equal(getMatchStatusInfo({ fixture_status_short: '1H' }).group, matchStatusGroups.live)
 assert.equal(getMatchStatusInfo({ match_status: 'PEN' }).group, matchStatusGroups.finished)

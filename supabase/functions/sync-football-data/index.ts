@@ -231,6 +231,12 @@ Deno.serve(async (request) => {
         lastUpdated: modeResult.lastUpdated,
         matchesWithOdds: modeResult.matchesWithOdds,
         matchesWithoutOdds: modeResult.matchesWithoutOdds,
+        rowsUpdated: modeResult.rowsUpdated,
+        rowsInserted: modeResult.rowsInserted,
+        rowsSkipped: modeResult.rowsSkipped,
+        duplicateRankResolved: modeResult.duplicateRankResolved,
+        refreshedBecause: modeResult.refreshedBecause,
+        skippedBecause: modeResult.skippedBecause,
         windowStart: modeResult.windowStart,
         windowEnd: modeResult.windowEnd,
         windowHoursUsed: modeResult.windowHoursUsed,
@@ -3326,8 +3332,13 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
     processed: selected.length,
     totalCandidates: candidates.length,
     rowsSaved: persistResult.rowsSaved,
+    rowsUpdated: persistResult.rowsUpdated,
+    rowsInserted: persistResult.rowsInserted,
+    rowsSkipped: persistResult.rowsSkipped,
+    duplicateRankResolved: persistResult.duplicateRankResolved,
     failed: persistResult.failed,
     failures: persistResult.failures,
+    status: persistResult.failed > 0 ? (persistResult.rowsSaved > 0 ? 'partial_success' : 'failed') : 'success',
     requestedSelectionDate,
     resolvedDateKey,
     selectionDate: resolvedDateKey,
@@ -3346,6 +3357,8 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
     waitingSelectedCount: selectedWaiting.length,
     reason,
     nextSyncSuggestion: marketReadyCandidates.length ? 'refresh_display_order' : 'sync_odds_then_reselect',
+    refreshedBecause: reason,
+    skippedBecause: null,
     readyMatches: selectedReady.map(formatTop10RefreshMatch),
     waitingMatches: selectedWaiting.map(formatTop10RefreshMatch),
     refreshed: true,
@@ -3354,30 +3367,67 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
 
 async function persistMarketReadyTop10(selectionDate: string, selected: Array<any>, existingRows: Array<any>) {
   const exactRows = new Map(existingRows.map((row: any) => [row.match_id, row]))
+  const rankRows = new Map(existingRows.map((row: any) => [Number(row.rank), row]))
   const assignedRowIds = new Set<string>()
+  const deletedRowIds = new Set<string>()
   let rowsSaved = 0
+  let rowsUpdated = 0
+  let rowsInserted = 0
+  let rowsSkipped = 0
+  let duplicateRankResolved = 0
   let failed = 0
   const failures: Array<any> = []
+
+  for (const [index, item] of selected.entries()) {
+    const desiredRank = index + 1
+    const exactRow = exactRows.get(item.match.id)
+    if (exactRow?.id && Number(exactRow.rank) !== desiredRank) {
+      const cleanup = await supabase
+        .from('daily_top10_selections')
+        .delete()
+        .eq('id', exactRow.id)
+        .eq('selection_date', selectionDate)
+      if (cleanup.error) {
+        failed += 1
+        failures.push({ matchId: item.match?.id, rank: desiredRank, message: formatErrorMessage(cleanup.error, 'resolve daily top10 rank conflict failed') })
+      } else {
+        assignedRowIds.add(exactRow.id)
+        deletedRowIds.add(exactRow.id)
+        duplicateRankResolved += 1
+      }
+    }
+  }
 
   for (const [index, item] of selected.entries()) {
     try {
       item.pick = await upsertAiFinalPickForMatch(item.match)
       const payload = buildDailyTop10RowPayload(selectionDate, item, index)
-      const exactRow = exactRows.get(item.match.id)
-      const fallbackRow = existingRows.find((row: any) => row.id && !assignedRowIds.has(row.id) && !selected.some((candidate: any) => candidate.match.id === row.match_id))
-      const targetRow = exactRow ?? fallbackRow ?? null
+      const desiredRank = index + 1
+      const rawRankRow = rankRows.get(desiredRank)
+      const rawExactRow = exactRows.get(item.match.id)
+      const rankRow = rawRankRow?.id && !deletedRowIds.has(rawRankRow.id) ? rawRankRow : null
+      const exactRow = rawExactRow?.id && !deletedRowIds.has(rawExactRow.id) ? rawExactRow : null
+      let targetRow = rankRow ?? exactRow ?? null
+
+      if (targetRow?.id) {
+        if (assignedRowIds.has(targetRow.id)) targetRow = null
+      }
+
       if (targetRow?.id) {
         assignedRowIds.add(targetRow.id)
         const update = await supabase
           .from('daily_top10_selections')
           .update(payload)
           .eq('id', targetRow.id)
+          .eq('selection_date', selectionDate)
         if (update.error) throw update.error
+        rowsUpdated += 1
       } else {
         const insert = await supabase
           .from('daily_top10_selections')
           .insert(payload)
         if (insert.error) throw insert.error
+        rowsInserted += 1
       }
       rowsSaved += 1
     } catch (error) {
@@ -3386,7 +3436,8 @@ async function persistMarketReadyTop10(selectionDate: string, selected: Array<an
     }
   }
 
-  return { rowsSaved, failed, failures }
+  if (!selected.length) rowsSkipped = existingRows.length
+  return { rowsSaved, rowsUpdated, rowsInserted, rowsSkipped, duplicateRankResolved, failed, failures }
 }
 
 function buildDailyTop10RowPayload(selectionDate: string, item: any, index: number) {

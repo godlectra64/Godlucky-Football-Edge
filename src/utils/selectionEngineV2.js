@@ -156,6 +156,91 @@ export function compareSelectionCandidates(a, b) {
   return priorityDiff || coverageDiff || signalDiff || marketEdgeDiff || rankingDiff || confidenceDiff || riskDiff || kickoffDiff
 }
 
+export function planDailyTop10Persistence(existingRows = [], selectedRows = []) {
+  const rankRows = new Map(existingRows.map((row) => [Number(row.rank), row]))
+  const exactRows = new Map(existingRows.map((row) => [row.match_id ?? row.matchId, row]))
+  const assignedRowIds = new Set()
+  const deletedRowIds = new Set()
+  const operations = []
+  let duplicateRankResolved = 0
+
+  selectedRows.forEach((row, index) => {
+    const rank = index + 1
+    const matchId = row.match_id ?? row.matchId ?? row.id
+    const exactRow = exactRows.get(matchId)
+    if (exactRow?.id && Number(exactRow.rank) !== rank) {
+      operations.push({ type: 'delete_conflict', id: exactRow.id, rank: exactRow.rank, matchId })
+      assignedRowIds.add(exactRow.id)
+      deletedRowIds.add(exactRow.id)
+      duplicateRankResolved += 1
+    }
+  })
+
+  selectedRows.forEach((row, index) => {
+    const rank = index + 1
+    const matchId = row.match_id ?? row.matchId ?? row.id
+    const rawRankRow = rankRows.get(rank)
+    const rawExactRow = exactRows.get(matchId)
+    const rankRow = rawRankRow?.id && !deletedRowIds.has(rawRankRow.id) ? rawRankRow : null
+    const exactRow = rawExactRow?.id && !deletedRowIds.has(rawExactRow.id) ? rawExactRow : null
+    let targetRow = rankRow ?? exactRow ?? null
+
+    if (targetRow?.id && assignedRowIds.has(targetRow.id)) targetRow = null
+
+    if (targetRow?.id) {
+      assignedRowIds.add(targetRow.id)
+      operations.push({ type: 'update', id: targetRow.id, rank, matchId })
+    } else {
+      operations.push({ type: 'insert', rank, matchId })
+    }
+  })
+
+  const finalRows = applyDailyTop10Plan(existingRows, operations)
+  return {
+    operations,
+    rowsUpdated: operations.filter((item) => item.type === 'update').length,
+    rowsInserted: operations.filter((item) => item.type === 'insert').length,
+    rowsSkipped: selectedRows.length ? 0 : existingRows.length,
+    duplicateRankResolved,
+    finalRows,
+    duplicateRanks: findDuplicateKeys(finalRows, (row) => `${row.selection_date}:${row.rank}`),
+    duplicateMatches: findDuplicateKeys(finalRows, (row) => `${row.selection_date}:${row.match_id}`),
+  }
+}
+
+function applyDailyTop10Plan(existingRows, operations) {
+  const rows = new Map(existingRows.map((row) => [row.id, { ...row }]))
+  let insertIndex = 0
+  for (const operation of operations) {
+    if (operation.type === 'delete_conflict') {
+      rows.delete(operation.id)
+    } else if (operation.type === 'update') {
+      const existing = rows.get(operation.id)
+      if (existing) rows.set(operation.id, { ...existing, rank: operation.rank, match_id: operation.matchId })
+    } else if (operation.type === 'insert') {
+      insertIndex += 1
+      rows.set(`insert-${insertIndex}`, {
+        id: `insert-${insertIndex}`,
+        selection_date: existingRows[0]?.selection_date ?? '2026-07-04',
+        rank: operation.rank,
+        match_id: operation.matchId,
+      })
+    }
+  }
+  return [...rows.values()]
+}
+
+function findDuplicateKeys(rows, getKey) {
+  const seen = new Set()
+  const duplicates = []
+  for (const row of rows) {
+    const key = getKey(row)
+    if (seen.has(key)) duplicates.push(key)
+    else seen.add(key)
+  }
+  return duplicates
+}
+
 function getPriorityTier(match, statusGroup, marketReadiness) {
   if (statusGroup === matchStatusGroups.finished) return selectionPriorityTiers.finished
   if (statusGroup !== matchStatusGroups.upcoming && statusGroup !== matchStatusGroups.live) return 'Z'
