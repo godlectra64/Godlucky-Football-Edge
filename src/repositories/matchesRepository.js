@@ -211,6 +211,27 @@ export async function fetchMatchById(matchId) {
   return attachAiMarketData(legacyResult)
 }
 
+export async function fetchMatchesByIds(matchIds = []) {
+  const ids = [...new Set((Array.isArray(matchIds) ? matchIds : []).filter(Boolean))]
+  if (!ids.length) return { data: [], error: null }
+
+  const client = await getSupabaseClient()
+  const result = await client
+    .from('football_matches')
+    .select(matchSelect)
+    .in('id', ids)
+    .order('kickoff_at', { ascending: true })
+
+  if (!isMissingColumnError(result.error)) return attachAiMarketData(result)
+
+  const legacyResult = await client
+    .from('football_matches')
+    .select(legacyMatchSelect)
+    .in('id', ids)
+    .order('kickoff_at', { ascending: true })
+  return attachAiMarketData(legacyResult)
+}
+
 export async function fetchMatchEnrichment(match) {
   const client = await getSupabaseClient()
   const apiFixtureId = getApiFixtureId(match)

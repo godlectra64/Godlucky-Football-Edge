@@ -6,12 +6,11 @@ export default function MarketDirectionBadge({ signal = 'SKIP', compact = false 
   const config = getConfig(normalized)
   const Icon = config.icon
   const label = formatSignal(normalized)
-  const compactLabel = compact ? label.split(' · ').at(-1) : label
 
   return (
     <span className={`semantic-badge shrink-0 ${compact ? 'min-h-7 px-2 text-[10px]' : ''} ${config.className}`} title={label} aria-label={label}>
       <Icon size={12} />
-      {compactLabel}
+      {label}
     </span>
   )
 }

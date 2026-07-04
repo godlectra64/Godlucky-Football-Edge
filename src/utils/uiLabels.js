@@ -1,30 +1,30 @@
 export const recommendationLabelsTh = {
-  BET: 'BET',
-  LEAN: 'LEAN',
-  WATCH: 'WATCH',
-  'NO BET': 'NO BET',
+  BET: 'คู่เด่น',
+  LEAN: 'น่าติดตาม',
+  WATCH: 'เฝ้าดู',
+  'NO BET': 'รอข้อมูลเพิ่ม',
 }
 
 export const resultStatusLabelsTh = {
-  HIT: 'HIT · เข้าเป้า',
-  MISS: 'MISS · ไม่เข้าเป้า',
-  PUSH: 'PUSH · เจ๊า',
-  PENDING: 'PENDING · รอผล',
-  VOID: 'VOID · ไม่นับผล',
+  HIT: 'เข้าเป้า',
+  MISS: 'ไม่เข้าเป้า',
+  PUSH: 'เจ๊า',
+  PENDING: 'รอผล',
+  VOID: 'ไม่นับผล',
 }
 
 export const signalLabelsTh = {
-  STRONG_SIGNAL: 'STRONG_SIGNAL · สัญญาณแรง',
-  WATCH: 'WATCH · น่าติดตาม',
-  SKIP: 'SKIP · ไม่มีสัญญาณ',
+  STRONG_SIGNAL: 'สัญญาณเด่น',
+  WATCH: 'น่าติดตาม',
+  SKIP: 'รอข้อมูลเพิ่ม',
 }
 
 export const marketLabelsTh = {
-  AH: 'AH · ราคาต่อรอง',
-  OU: 'OU · สูง/ต่ำ',
-  MATCH_WINNER: '1X2 · ผู้ชนะ',
-  BTTS: 'BTTS · ทั้งสองทีมยิงได้',
-  NONE: 'ไม่มีตลาดหลัก',
+  AH: 'ราคาต่อรอง',
+  OU: 'สูง/ต่ำ',
+  MATCH_WINNER: 'ผู้ชนะ',
+  BTTS: 'ทั้งสองทีมยิงได้',
+  NONE: 'ยังไม่มีตลาดหลัก',
 }
 
 export const riskLabelsTh = {
@@ -36,15 +36,22 @@ export const riskLabelsTh = {
   HIGH: 'เสี่ยงสูง',
 }
 
+export function formatRecommendationLabel(value) {
+  const normalized = String(value ?? 'NO BET').toUpperCase().replace('_', ' ')
+  return recommendationLabelsTh[normalized] ?? recommendationLabelsTh['NO BET']
+}
+
 export function formatMarketFocus(value) {
-  return marketLabelsTh[String(value ?? '').toUpperCase()] ?? value ?? '-'
+  const normalized = String(value ?? 'NONE').toUpperCase()
+  return marketLabelsTh[normalized] ?? String(value ?? '-')
 }
 
 export function formatRiskLevel(value) {
   const normalized = String(value ?? 'medium').toLowerCase()
-  return riskLabelsTh[normalized] ?? value ?? '-'
+  return riskLabelsTh[normalized] ?? String(value ?? '-')
 }
 
 export function formatSignal(value) {
-  return signalLabelsTh[String(value ?? 'SKIP').toUpperCase()] ?? value ?? '-'
+  const normalized = String(value ?? 'SKIP').toUpperCase()
+  return signalLabelsTh[normalized] ?? signalLabelsTh.SKIP
 }

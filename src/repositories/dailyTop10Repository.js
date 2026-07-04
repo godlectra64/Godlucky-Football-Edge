@@ -1,5 +1,5 @@
 import { getBangkokToday } from '../utils/bangkokDate.js'
-import { fetchMatchesByKickoffRange } from './matchesRepository.js'
+import { fetchMatchesByIds, fetchMatchesByKickoffRange } from './matchesRepository.js'
 import { compareMarketReadyMatches, isMarketReadyForDisplay } from '../utils/analysisEngine.js'
 import { getStatusCodeFromMatch } from '../utils/matchStatus.js'
 import { buildUsableDailySelection } from '../utils/selectionEngineV2.js'
@@ -43,9 +43,8 @@ export async function getLockedTop10(date = getBangkokToday()) {
   const rows = locked.data ?? []
   if (!rows.length) return { data: [], error: null, status: emptyStatus(date).data }
 
-  const firstDay = new Date(`${date}T00:00:00+07:00`)
-  const nextDay = new Date(firstDay.getTime() + 24 * 60 * 60 * 1000)
-  const matchesResult = await fetchMatchesByKickoffRange(firstDay.toISOString(), nextDay.toISOString())
+  const matchIds = rows.map((row) => row.match_id).filter(Boolean)
+  const matchesResult = await fetchMatchesByIds(matchIds)
   if (matchesResult.error) return { data: [], error: matchesResult.error, status: buildStatus(date, rows) }
 
   const byId = new Map((matchesResult.data ?? []).map((match) => [match.id, match]))
@@ -125,13 +124,8 @@ function sortMarketReadyTop10(matches = []) {
 
 export async function getTodayTop10OrFallback(fallback = []) {
   const date = getBangkokToday()
-  const usable = await getUsableRollingTop10(date)
-  if (!usable.error && (usable.data.length || usable.status?.finishedExcludedCount)) {
-    return { matches: usable.data, status: usable.status, locked: Boolean(usable.locked), selection: usable.selection }
-  }
-
   const locked = await getLockedTop10(date)
-  if (!locked.error && locked.data.length) {
+  if (!locked.error && (locked.status?.lockedCount || locked.data.length)) {
     const selection = buildUsableDailySelection(locked.data)
     return {
       matches: selection.selected,
@@ -145,6 +139,11 @@ export async function getTodayTop10OrFallback(fallback = []) {
       locked: true,
       selection,
     }
+  }
+
+  const usable = await getUsableRollingTop10(date)
+  if (!usable.error && (usable.data.length || usable.status?.finishedExcludedCount)) {
+    return { matches: usable.data, status: usable.status, locked: Boolean(usable.locked), selection: usable.selection }
   }
 
   const statusResult = await getDailyTop10Status(date)

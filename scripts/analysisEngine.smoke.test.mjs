@@ -63,14 +63,15 @@ import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
-import { buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
+import { buildTodayMatchBuckets, buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
 import { buildUsableDailySelection, planDailyTop10Persistence } from '../src/utils/selectionEngineV2.js'
+import { formatMarketFocus, formatRecommendationLabel, formatSignal } from '../src/utils/uiLabels.js'
 import { mergeResultRows } from '../src/repositories/resultTrackerRepository.js'
 import { runAiSelectionEngine } from '../src/utils/aiSelectionEngine.js'
 import { generateAiFinalPick } from '../src/utils/aiFinalPickEngine.js'
 import { getPagePath, getRouteState } from '../src/utils/routes.js'
 import { fetchEnabledLeagues, updateLeagueSettingsById } from '../src/repositories/analysisRepository.js'
-import { fetchMatchById, fetchMatchesByKickoffRange } from '../src/repositories/matchesRepository.js'
+import { fetchMatchById, fetchMatchesByIds, fetchMatchesByKickoffRange } from '../src/repositories/matchesRepository.js'
 import { fetchPredictionEvaluations, fetchPredictionResults, fetchPredictionSnapshots } from '../src/repositories/performanceRepository.js'
 import { fetchLatestSyncLog, fetchSyncLogs, invokeSyncFootballData } from '../src/repositories/syncRepository.js'
 
@@ -86,6 +87,7 @@ assert.equal(isWithinBangkokDay('2026-06-28T16:59:59.000Z', '2026-06-28'), true)
 assert.equal(isWithinBangkokDay('2026-06-28T17:00:00.000Z', '2026-06-28'), false)
 
 const syncFootballDataSource = readFileSync(new URL('../supabase/functions/sync-football-data/index.ts', import.meta.url), 'utf8')
+const dailyTop10RepositorySource = readFileSync(new URL('../src/repositories/dailyTop10Repository.js', import.meta.url), 'utf8')
 assert.ok(syncFootballDataSource.includes("Deno.env.get('FOOTBALL_PROVIDER') ?? 'api-football'"), 'sync-football-data should default to API-FOOTBALL')
 assert.ok(syncFootballDataSource.includes('const primaryProvider = getProviderAdapter(requestedProviderName)'), 'sync-football-data should choose the primary provider before fetching')
 assert.ok(syncFootballDataSource.includes("fetchFixtures: ({ dateKey }) => fetchApiFootballFixtures(dateKey)"), 'API-FOOTBALL adapter should fetch fixtures by Bangkok dateKey')
@@ -150,6 +152,8 @@ assert.ok(syncFootballDataSource.includes('endpointCoverage,'), 'enrich response
 assert.ok(syncFootballDataSource.includes('enrichedMatches,'), 'enrich response should include per-match enrichment summaries')
 assert.ok(syncFootballDataSource.includes('rowsSaved'), 'endpoint coverage should include rowsSaved')
 assert.ok(syncFootballDataSource.includes('empty: !failed && dataCount === 0 ? 1 : 0'), 'endpoint coverage should count empty API responses')
+assert.ok(dailyTop10RepositorySource.includes('fetchMatchesByIds(matchIds)'), 'locked daily Top10 must fetch matches by locked match_id instead of only same-day kickoff range')
+assert.ok(dailyTop10RepositorySource.indexOf('const locked = await getLockedTop10(date)') < dailyTop10RepositorySource.indexOf('const usable = await getUsableRollingTop10(date)'), 'locked daily Top10 should be the primary Today source when present')
 assert.ok(syncFootballDataSource.includes("return 'ENRICHED_ODDS_ONLY'"), 'enrichment status should distinguish odds-only enrichment')
 assert.ok(syncFootballDataSource.includes('statsResult.rows.length'), 'per-match enrichment summary should include statistics rows')
 assert.ok(syncFootballDataSource.includes('lineupsResult.rows.length'), 'per-match enrichment summary should include lineups rows')
@@ -937,6 +941,42 @@ const mixedTodaySections = buildTodayMarketSections([...marketReadyMatches, ...w
 assert.equal(mixedTodaySections.readyMatches.length, 3, 'Today ready section should render market-ready matches')
 assert.equal(mixedTodaySections.waitingMatches.length, 7, 'Today waiting section should render waiting matches alongside ready matches')
 
+const decisiveTodayBuckets = buildTodayMatchBuckets([...marketReadyMatches, ...waitingMarketMatches], { locked: true, lockedCount: 10, windowHours: 36 })
+assert.equal(decisiveTodayBuckets.strongMatches.length, 3, 'Today V2 should put market-ready strong signals in the strong section')
+assert.equal(decisiveTodayBuckets.waitingMatches.length, 7, 'Today V2 should keep insufficient market-data matches visible in waiting section')
+assert.equal(decisiveTodayBuckets.watchMatches.length, 0, 'Today V2 should not mix strong picks into watch section')
+assert.equal(decisiveTodayBuckets.summary.locked, true, 'Today V2 summary should preserve locked source status')
+assert.equal(decisiveTodayBuckets.summary.windowHours, 36, 'Today V2 summary should expose the selection window')
+
+const oneStrongOneWatchOneWaiting = buildTodayMatchBuckets([
+  createStatusMatches(1, 'NS', 'bucket-strong', {
+    waitingMarketData: false,
+    odds: [{ price: 1.9 }],
+    aiFinalPick: { signal: 'STRONG_SIGNAL', confidence_score: 83, risk_level: 'LOW' },
+    analysis: { recommendation: 'BET', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 80, confidence_score: 83, calibrated_confidence_score: 83, risk_level: 'LOW', data_validation_status: 'VALID' },
+  })[0],
+  createStatusMatches(1, 'NS', 'bucket-watch', {
+    waitingMarketData: false,
+    odds: [{ price: 1.8 }],
+    aiFinalPick: { signal: 'WATCH', confidence_score: 62, risk_level: 'MEDIUM' },
+    analysis: { recommendation: 'LEAN', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 45, confidence_score: 62, calibrated_confidence_score: 62, risk_level: 'MEDIUM', data_validation_status: 'VALID' },
+  })[0],
+  createStatusMatches(1, 'NS', 'bucket-waiting', {
+    waitingMarketData: true,
+    odds: [],
+    analysis: { market_data_used: false, odds_rows_used: 0, analysis_status: 'INSUFFICIENT_MARKET_DATA' },
+  })[0],
+])
+assert.equal(oneStrongOneWatchOneWaiting.strongMatches.length, 1, 'Today V2 should expose strongMatches')
+assert.equal(oneStrongOneWatchOneWaiting.watchMatches.length, 1, 'Today V2 should expose watchMatches')
+assert.equal(oneStrongOneWatchOneWaiting.waitingMatches.length, 1, 'Today V2 should expose waitingMatches')
+assert.deepEqual(Object.keys(oneStrongOneWatchOneWaiting).filter((key) => ['strongMatches', 'watchMatches', 'waitingMatches', 'finishedMatches', 'hiddenMatches', 'summary'].includes(key)).sort(), ['finishedMatches', 'hiddenMatches', 'strongMatches', 'summary', 'waitingMatches', 'watchMatches'], 'Today V2 should expose the required bucket keys')
+
+assert.equal(formatRecommendationLabel('NO BET'), 'รอข้อมูลเพิ่ม', 'UI recommendation labels must not expose NO BET')
+assert.equal(formatSignal('STRONG_SIGNAL'), 'สัญญาณเด่น', 'UI signal labels must not expose STRONG_SIGNAL')
+assert.equal(formatSignal('SKIP'), 'รอข้อมูลเพิ่ม', 'UI signal labels must not expose SKIP')
+assert.equal(formatMarketFocus('AH'), 'ราคาต่อรอง', 'UI market labels must not expose AH')
+
 const finishedTop10Matches = createStatusMatches(10, 'FT', 'finished-top10')
 const finishedTodayBuckets = buildTodayStatusBuckets(finishedTop10Matches)
 assert.equal(finishedTodayBuckets.playableMatches.length, 0, 'Case A: finished Top10 rows must not be playable on Today')
@@ -1043,6 +1083,7 @@ for (const repositoryFn of [
   fetchEnabledLeagues,
   updateLeagueSettingsById,
   fetchMatchById,
+  fetchMatchesByIds,
   fetchMatchesByKickoffRange,
   fetchPredictionSnapshots,
   fetchPredictionResults,

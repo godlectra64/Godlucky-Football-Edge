@@ -1,3 +1,5 @@
+import { formatRecommendationLabel } from '../utils/uiLabels'
+
 const styles = {
   BET: 'badge-bet',
   LEAN: 'badge-lean',
@@ -5,11 +7,18 @@ const styles = {
   'NO BET': 'badge-no-bet',
 }
 
-export default function ScoreBadge({ recommendation }) {
-  const value = recommendation || 'NO BET'
+const modeLabels = {
+  strong: 'คู่เด่น',
+  watch: 'เฝ้าดู',
+  waiting: 'รอข้อมูลเพิ่ม',
+}
+
+export default function ScoreBadge({ recommendation, mode = '' }) {
+  const value = String(recommendation || 'NO BET').toUpperCase().replace('_', ' ')
+  const label = modeLabels[mode] ?? formatRecommendationLabel(value)
   return (
-    <span className={`semantic-badge ${styles[value] ?? styles['NO BET']}`} title={value} aria-label={`สัญญาณ ${value}`}>
-      {value}
+    <span className={`semantic-badge ${styles[value] ?? styles['NO BET']}`} title={label} aria-label={label}>
+      {label}
     </span>
   )
 }

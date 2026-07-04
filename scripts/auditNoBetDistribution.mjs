@@ -2,6 +2,7 @@ import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import { getBangkokDayRange } from '../src/utils/bangkokDateRange.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
+import { buildTodayMatchBuckets } from '../src/utils/todayMatchBuckets.js'
 
 dotenv.config({ path: '.env.local' })
 dotenv.config({ path: '.env' })
@@ -52,12 +53,13 @@ const finalPickByMatch = new Map(finalPicks.map((row) => [row.match_id, row]))
 const top10ByDate = groupBy(top10Rows, (row) => row.selection_date)
 const resultByMatch = groupBy(resultRows, (row) => row.match_id)
 const matchesByDate = groupBy(matches, (row) => getBangkokDateKey(row.kickoff_at))
+const matchesById = new Map(matches.map((row) => [row.id, row]))
 
 let allTop10NoBet = true
 
 for (const dateKey of days) {
   const dayMatches = matchesByDate.get(dateKey) ?? []
-  const dayTop10 = getDailyTop10Rows(dateKey, dayMatches, top10ByDate)
+  const dayTop10 = getDailyTop10Rows(dateKey, dayMatches, top10ByDate, matchesById)
   const dayMatchIds = new Set(dayMatches.map((row) => row.id))
   const dayOdds = oddsRows.filter((row) => dayMatchIds.has(row.match_id))
   const dayFinalPicks = finalPicks.filter((row) => dayMatchIds.has(row.match_id))
@@ -70,6 +72,10 @@ for (const dateKey of days) {
   const marketReadyInTop10 = dayTop10.filter((item) => isMarketReadyCandidate(item.match)).length
   const waitingMarketInTop10 = dayTop10.filter((item) => isWaitingMarketData(item.match)).length
   const top10StatusCounts = buildMatchStatusCounts(dayTop10.map((item) => item.match))
+  const todayDisplayBuckets = buildTodayMatchBuckets(dayTop10.map((item) => item.match), {
+    locked: dayTop10.some((item) => item.source === 'daily_top10_selections'),
+    lockedCount: dayTop10.filter((item) => item.source === 'daily_top10_selections').length,
+  })
   const playableTodayCount = top10StatusCounts.upcomingCount + top10StatusCounts.liveCount
   const finishedTop10Count = top10StatusCounts.finishedCount
   const resultsPageEligibleCount = dayMatches.filter((match) => getMatchStatusInfo(match).isFinished).length
@@ -122,6 +128,12 @@ for (const dateKey of days) {
   printCount('waitingMarketInTop10', waitingMarketInTop10)
   printCount('readySelectedCount', marketReadyInTop10)
   printCount('waitingSelectedCount', waitingMarketInTop10)
+  printCount('todayStrongDisplayCount', todayDisplayBuckets.strongMatches.length)
+  printCount('todayWatchDisplayCount', todayDisplayBuckets.watchMatches.length)
+  printCount('todayWaitingDisplayCount', todayDisplayBuckets.waitingMatches.length)
+  printCount('todayFinishedDisplayCount', todayDisplayBuckets.finishedMatches.length)
+  printCount('todayHiddenDisplayCount', todayDisplayBuckets.hiddenMatches.length)
+  printCount('todayVisibleDisplayCount', todayDisplayBuckets.summary.visibleCount)
   printCount('staleNoMarketLockCount', staleNoMarketLockCount)
   printCount('readyButNotDisplayedCount', readyButNotDisplayedCount)
   printCount('displayedSignalCount', displayedSignalCount)
@@ -263,12 +275,12 @@ async function fetchTop10Rows(fromDate, toDate) {
   return data ?? []
 }
 
-function getDailyTop10Rows(dateKey, dayMatches, top10ByDate) {
+function getDailyTop10Rows(dateKey, dayMatches, top10ByDate, matchesById) {
   const storedTop10 = top10ByDate.get(dateKey) ?? []
   if (storedTop10.length) {
     return storedTop10
       .map((row) => {
-        const match = dayMatches.find((item) => item.id === row.match_id)
+        const match = matchesById.get(row.match_id)
         return { source: 'daily_top10_selections', rank: row.rank, match, analysis: getAnalysis(match), stored: row }
       })
       .filter((item) => item.match)

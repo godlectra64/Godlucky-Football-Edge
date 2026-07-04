@@ -10,7 +10,14 @@ import MarketDirectionBadge from './MarketDirectionBadge'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
 
-export default function MatchCard({ match, onOpen, isFinished: providedIsFinished = null, isPlayable: providedIsPlayable = null, isWaitingMarketData: providedIsWaitingMarketData = null }) {
+export default function MatchCard({
+  match,
+  onOpen,
+  isFinished: providedIsFinished = null,
+  isPlayable: providedIsPlayable = null,
+  isWaitingMarketData: providedIsWaitingMarketData = null,
+  displayMode = '',
+}) {
   const matchStatus = getMatchStatusInfo(match)
   const isFinished = providedIsFinished ?? matchStatus.isFinished
   const isPlayable = providedIsPlayable ?? matchStatus.isPlayable
@@ -20,11 +27,12 @@ export default function MatchCard({ match, onOpen, isFinished: providedIsFinishe
   const finalRank = match.finalRank ?? match.final_rank ?? match.analysis?.final_rank ?? match.rank
   const finalPick = buildAiFinalPick(match)
   const aiPick = match.aiFinalPick ?? generateAiFinalPick(match)
-  const analysisSummary = buildCardSummary(match, recommendation, confidence)
-  const reasons = buildReasonList(match, finalPick, analysisSummary)
   const odds = normalizeOddsRows(match)
   const waitingMarket = providedIsWaitingMarketData ?? (!isFinished && isWaitingForMarketData(match))
-  const cardClass = buildCardClass(finalRank ?? match.rank, recommendation, riskLevel)
+  const mode = displayMode || (waitingMarket ? 'waiting' : recommendation === 'BET' ? 'strong' : 'watch')
+  const analysisSummary = buildCardSummary(match, recommendation, confidence, waitingMarket)
+  const reasons = buildReasonList(match, finalPick, analysisSummary, waitingMarket)
+  const cardClass = buildCardClass(finalRank ?? match.rank, mode, riskLevel)
   const open = () => onOpen?.(match.id)
   const scoreDisplay = getFinishedScoreDisplay(match)
 
@@ -62,10 +70,10 @@ export default function MatchCard({ match, onOpen, isFinished: providedIsFinishe
       </div>
 
       <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-1.5">
-        <ScoreBadge recommendation={recommendation} />
+        <ScoreBadge recommendation={recommendation} mode={mode} />
         <RiskBadge level={riskLevel} />
         <MarketDirectionBadge signal={waitingMarket ? 'SKIP' : aiPick.signal} compact />
-        <span className="semantic-badge border-white/10 bg-white/[0.04] text-white">{confidence}%</span>
+        <span className="semantic-badge border-white/10 bg-white/[0.04] text-white">AI Score {confidence}%</span>
       </div>
 
       <p className="text-clamp-1 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-black leading-5 text-slate-300">
@@ -77,7 +85,7 @@ export default function MatchCard({ match, onOpen, isFinished: providedIsFinishe
       </p>
 
       {reasons[0] ? (
-        <p className="text-clamp-1 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-semibold leading-5 text-slate-300">
+        <p className="text-clamp-2 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-semibold leading-5 text-slate-300">
           {reasons[0]}
         </p>
       ) : null}
@@ -105,33 +113,43 @@ function TeamName({ name, active = false, align = 'left' }) {
   )
 }
 
-function buildReasonList(match, finalPick, analysisSummary) {
+function buildReasonList(match, finalPick, analysisSummary, waitingMarket) {
+  if (waitingMarket) return ['ข้อมูลตลาดยังไม่พอ ระบบจะอัปเดตอีกครั้งเมื่อมีราคาและทิศทางชัดขึ้น']
   const pickSummary = match.aiFinalPick?.finalSummary ?? finalPick.pickReason
-  const rawReasons = [
-    pickSummary,
-    analysisSummary,
-    finalPick.valueReason,
-  ]
+  const rawReasons = [pickSummary, analysisSummary, finalPick.valueReason]
     .filter(Boolean)
-    .map((item) => String(item).trim())
+    .map((item) => sanitizeUserText(item))
     .filter(Boolean)
 
   return [...new Set(rawReasons)].slice(0, 1)
 }
 
-function buildCardSummary(match, recommendation, confidence) {
+function buildCardSummary(match, recommendation, confidence, waitingMarket) {
   if (getMatchStatusInfo(match).isFinished) {
     return 'แข่งจบแล้ว ดูผลและการประเมินได้ที่หน้าผลย้อนหลัง'
   }
-  if (isWaitingForMarketData(match)) {
-    return 'ข้อมูลยังไม่พร้อม รอข้อมูลตลาดอัปเดตรอบถัดไป'
+  if (waitingMarket || isWaitingForMarketData(match)) {
+    return 'ข้อมูลตลาดยังไม่พอ ระบบจะอัปเดตอีกครั้งเมื่อมีข้อมูลเพิ่ม'
   }
-  const summary = getAnalysisSummary(match)
+  const summary = sanitizeUserText(getAnalysisSummary(match))
   if (summary) return summary
-  if (recommendation === 'NO BET') {
-    return `แนะนำ NO BET เพราะความมั่นใจ ${confidence}% ยังไม่พอหรือความเสี่ยงสูง ควรรอข้อมูลเพิ่ม`
+  if (String(recommendation).toUpperCase().replace('_', ' ') === 'NO BET') {
+    return `ยังไม่ยกระดับเป็นคู่เด่น เพราะ AI Score ${confidence}% ยังไม่ชัดพอ`
   }
-  return `แนะนำ ${recommendation} ด้วยความมั่นใจ ${confidence}% แต่ควรเช็กราคาและไลน์อัปก่อนตัดสินใจ`
+  return `AI Score ${confidence}% พร้อมตรวจรายละเอียดราคาและไลน์อัปก่อนตัดสินใจ`
+}
+
+function sanitizeUserText(value) {
+  return String(value ?? '')
+    .replace(/\bSTRONG_SIGNAL\b/g, 'สัญญาณเด่น')
+    .replace(/\bNO BET\b/g, 'รอข้อมูลเพิ่ม')
+    .replace(/\bSKIP\b/g, 'รอข้อมูลเพิ่ม')
+    .replace(/\bWATCH\b/g, 'น่าติดตาม')
+    .replace(/\bMARKET_DATA_READY_RECALCULATED\b/g, 'ข้อมูลตลาดพร้อม')
+    .replace(/\bINSUFFICIENT_MARKET_DATA\b/g, 'ข้อมูลตลาดยังไม่พอ')
+    .replace(/\bNO_MARKET_DATA\b/g, 'ยังไม่มีข้อมูลตลาด')
+    .replace(/\bmarket_data_used\b/gi, 'ข้อมูลตลาด')
+    .trim()
 }
 
 function getFinishedScoreDisplay(match = {}) {
@@ -143,29 +161,35 @@ function getFinishedScoreDisplay(match = {}) {
   })
 }
 
-function buildCardClass(rank, recommendation, riskLevel) {
+function buildCardClass(rank, mode, riskLevel) {
   const risk = String(riskLevel).toUpperCase()
-  const isHighRisk = risk === 'HIGH'
   const base = 'rounded-[18px] border bg-white/[0.045] shadow-[0_12px_32px_rgba(0,0,0,0.22)]'
   const first = rank === 1 ? 'shadow-[0_18px_44px_rgba(0,0,0,0.3)]' : ''
 
-  if (isHighRisk || recommendation === 'NO BET') {
-    return `${base} ${first} border-red-300/25 bg-[linear-gradient(145deg,rgba(251,113,133,0.08),rgba(255,255,255,0.035))]`
+  if (mode === 'waiting') {
+    return `${base} ${first} border-slate-400/24 bg-[linear-gradient(145deg,rgba(148,163,184,0.1),rgba(255,255,255,0.035))]`
   }
-  if (recommendation === 'BET') {
+  if (risk === 'HIGH') {
+    return `${base} ${first} border-amber-300/28 bg-[linear-gradient(145deg,rgba(245,158,11,0.09),rgba(255,255,255,0.035))]`
+  }
+  if (mode === 'strong') {
     return `${base} ${first} border-emerald-300/35 bg-[linear-gradient(145deg,rgba(52,211,153,0.14),rgba(255,255,255,0.04))]`
   }
-  if (recommendation === 'LEAN') {
-    return `${base} ${first} border-amber-300/30 bg-[linear-gradient(145deg,rgba(245,158,11,0.11),rgba(255,255,255,0.04))]`
-  }
-  if (recommendation === 'WATCH') {
-    return `${base} ${first} border-cyan-300/25 bg-[linear-gradient(145deg,rgba(34,211,238,0.1),rgba(255,255,255,0.04))]`
-  }
-  return `${base} ${first} border-white/10`
+  return `${base} ${first} border-cyan-300/25 bg-[linear-gradient(145deg,rgba(34,211,238,0.1),rgba(255,255,255,0.04))]`
 }
 
 function formatDirection(value) {
   const text = String(value ?? '').trim()
+  const normalized = text.toUpperCase()
+  const labels = {
+    HOME: 'เจ้าบ้าน',
+    AWAY: 'ทีมเยือน',
+    DRAW: 'เสมอ',
+    OVER: 'สูง',
+    UNDER: 'ต่ำ',
+    YES: 'มีโอกาสยิงทั้งคู่',
+    NO: 'ยังไม่ชัด',
+  }
   if (!text || text.toLowerCase() === 'no market direction') return 'ยังไม่มีทิศทางตลาด'
-  return text
+  return labels[normalized] ?? text
 }
