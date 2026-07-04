@@ -3,9 +3,8 @@ import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel, isW
 import { generateAiFinalPick } from '../utils/aiFinalPickEngine'
 import { buildAiFinalPick } from '../utils/finalPick'
 import { formatKickoffTime } from '../utils/formatters'
+import { getApiFootballMarketDisplay } from '../utils/marketDisplay'
 import { getMatchStatusInfo, getScoreDisplay } from '../utils/matchStatus'
-import { normalizeOddsRows } from '../utils/oddsUtils'
-import { formatMarketFocus } from '../utils/uiLabels'
 import MarketDirectionBadge from './MarketDirectionBadge'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
@@ -27,11 +26,11 @@ export default function MatchCard({
   const finalRank = match.finalRank ?? match.final_rank ?? match.analysis?.final_rank ?? match.rank
   const finalPick = buildAiFinalPick(match)
   const aiPick = match.aiFinalPick ?? generateAiFinalPick(match)
-  const odds = normalizeOddsRows(match)
+  const marketDisplay = getApiFootballMarketDisplay(match, aiPick)
   const waitingMarket = providedIsWaitingMarketData ?? (!isFinished && isWaitingForMarketData(match))
   const mode = displayMode || (waitingMarket ? 'waiting' : recommendation === 'BET' ? 'strong' : 'watch')
   const analysisSummary = buildCardSummary(match, recommendation, confidence, waitingMarket)
-  const reasons = buildReasonList(match, finalPick, analysisSummary, waitingMarket)
+  const reasons = buildReasonList(match, finalPick, analysisSummary, waitingMarket || !marketDisplay.hasApiFootballMarket, marketDisplay)
   const cardClass = buildCardClass(finalRank ?? match.rank, mode, riskLevel)
   const open = () => onOpen?.(match.id)
   const scoreDisplay = getFinishedScoreDisplay(match)
@@ -72,16 +71,12 @@ export default function MatchCard({
       <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-1.5">
         <ScoreBadge recommendation={recommendation} mode={mode} />
         <RiskBadge level={riskLevel} />
-        <MarketDirectionBadge signal={waitingMarket ? 'SKIP' : aiPick.signal} compact />
+        {marketDisplay.hasApiFootballMarket ? <MarketDirectionBadge signal={waitingMarket ? 'SKIP' : aiPick.signal} compact /> : null}
         <span className="semantic-badge border-white/10 bg-white/[0.04] text-white">AI Score {confidence}%</span>
       </div>
 
       <p className="text-clamp-1 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-black leading-5 text-slate-300">
-        ตลาด: <span className="text-white">{formatMarketFocus(aiPick.marketFocus)}</span>
-        <span className="text-slate-600"> · </span>
-        <span className="text-[var(--page-accent)]">{formatDirection(aiPick.direction)}</span>
-        <span className="text-slate-600"> · </span>
-        <span className="text-slate-500">{isFinished ? 'ผลการแข่งขัน' : odds.length ? 'มีข้อมูลราคา' : 'รอข้อมูลตลาด'}</span>
+        <span className={marketDisplay.hasApiFootballMarket ? 'text-white' : 'text-amber-100'}>{marketDisplay.label}</span>
       </p>
 
       {reasons[0] ? (
@@ -113,8 +108,8 @@ function TeamName({ name, active = false, align = 'left' }) {
   )
 }
 
-function buildReasonList(match, finalPick, analysisSummary, waitingMarket) {
-  if (waitingMarket) return ['ข้อมูลตลาดยังไม่พอ ระบบจะอัปเดตอีกครั้งเมื่อมีราคาและทิศทางชัดขึ้น']
+function buildReasonList(match, finalPick, analysisSummary, waitingMarket, marketDisplay) {
+  if (waitingMarket) return [marketDisplay.reason]
   const pickSummary = match.aiFinalPick?.finalSummary ?? finalPick.pickReason
   const rawReasons = [pickSummary, analysisSummary, finalPick.valueReason]
     .filter(Boolean)
@@ -176,20 +171,4 @@ function buildCardClass(rank, mode, riskLevel) {
     return `${base} ${first} border-emerald-300/35 bg-[linear-gradient(145deg,rgba(52,211,153,0.14),rgba(255,255,255,0.04))]`
   }
   return `${base} ${first} border-cyan-300/25 bg-[linear-gradient(145deg,rgba(34,211,238,0.1),rgba(255,255,255,0.04))]`
-}
-
-function formatDirection(value) {
-  const text = String(value ?? '').trim()
-  const normalized = text.toUpperCase()
-  const labels = {
-    HOME: 'เจ้าบ้าน',
-    AWAY: 'ทีมเยือน',
-    DRAW: 'เสมอ',
-    OVER: 'สูง',
-    UNDER: 'ต่ำ',
-    YES: 'มีโอกาสยิงทั้งคู่',
-    NO: 'ยังไม่ชัด',
-  }
-  if (!text || text.toLowerCase() === 'no market direction') return 'ยังไม่มีทิศทางตลาด'
-  return labels[normalized] ?? text
 }

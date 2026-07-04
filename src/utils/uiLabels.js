@@ -20,11 +20,11 @@ export const signalLabelsTh = {
 }
 
 export const marketLabelsTh = {
-  AH: 'ราคาต่อรอง',
+  AH: 'แฮนดิแคป',
   OU: 'สูง/ต่ำ',
-  MATCH_WINNER: 'ผู้ชนะ',
+  MATCH_WINNER: '1X2',
   BTTS: 'ทั้งสองทีมยิงได้',
-  NONE: 'ยังไม่มีตลาดหลัก',
+  NONE: 'รอข้อมูลจาก API-Football',
 }
 
 export const riskLabelsTh = {

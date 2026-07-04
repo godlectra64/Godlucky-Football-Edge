@@ -54,6 +54,7 @@ import {
 } from '../src/utils/dataPlatform.js'
 import { buildExplainableAi } from '../src/utils/explainableAi.js'
 import { getBangkokDayRange, isWithinBangkokDay } from '../src/utils/bangkokDateRange.js'
+import { getApiFootballMarketDisplay } from '../src/utils/marketDisplay.js'
 import {
   LEAGUE_QUALITY_SCORING_VERSION,
   getFixtureSyncPriority,
@@ -975,7 +976,36 @@ assert.deepEqual(Object.keys(oneStrongOneWatchOneWaiting).filter((key) => ['stro
 assert.equal(formatRecommendationLabel('NO BET'), 'รอข้อมูลเพิ่ม', 'UI recommendation labels must not expose NO BET')
 assert.equal(formatSignal('STRONG_SIGNAL'), 'สัญญาณเด่น', 'UI signal labels must not expose STRONG_SIGNAL')
 assert.equal(formatSignal('SKIP'), 'รอข้อมูลเพิ่ม', 'UI signal labels must not expose SKIP')
-assert.equal(formatMarketFocus('AH'), 'ราคาต่อรอง', 'UI market labels must not expose AH')
+assert.equal(formatMarketFocus('AH'), 'แฮนดิแคป', 'UI market labels must not expose AH')
+
+const missingApiMarketDisplay = getApiFootballMarketDisplay({
+  id: 'missing-api-market',
+  odds: [],
+}, { marketFocus: 'AH', direction: 'HOME' })
+assert.equal(missingApiMarketDisplay.label, 'รอข้อมูลจาก API-Football', 'No API-Football odds should use the single waiting market label')
+assert.equal(missingApiMarketDisplay.status, 'waiting_api_football_market')
+assert.equal(missingApiMarketDisplay.reason, 'คู่นี้อยู่ในชุดคัดเลือกแล้ว แต่ API-Football ยังไม่มีข้อมูลตลาดสำหรับคู่นี้')
+assert.equal(missingApiMarketDisplay.label.includes('ยังไม่มีตลาดหลัก'), false, 'No API-Football odds should not show old market-focus fallback')
+assert.equal(missingApiMarketDisplay.label.includes('ยังไม่มีทิศทางตลาด'), false, 'No API-Football odds should not show old market-direction fallback')
+
+const readyApiMarketDisplay = getApiFootballMarketDisplay({
+  id: 'ready-api-market',
+  odds: [
+    { id: 'odds-1', match_id: 'ready-api-market', market_name: 'Asian Handicap', bookmaker_name: 'API Book', selection: 'Home -0.5', is_latest: true },
+    { id: 'odds-2', match_id: 'ready-api-market', market_name: 'Goals Over/Under', bookmaker_name: 'API Book', selection: 'Over 2.5', is_latest: true },
+  ],
+}, { marketFocus: 'AH' })
+assert.equal(readyApiMarketDisplay.label, 'ตลาดจาก API-Football: แฮนดิแคป', 'API-Football odds should show the API market source with Thai label')
+assert.equal(readyApiMarketDisplay.hasApiFootballMarket, true)
+assert.equal(readyApiMarketDisplay.label.includes('รอข้อมูลจาก API-Football'), false, 'Market-ready API odds should not use waiting copy')
+
+const waitingCardCopy = [
+  missingApiMarketDisplay.label,
+  missingApiMarketDisplay.reason,
+].join(' ')
+for (const forbidden of ['ยังไม่มีตลาดหลัก', 'ยังไม่มีทิศทางตลาด', 'NO BET', 'SKIP', 'INSUFFICIENT_MARKET_DATA', 'NO_MARKET_DATA', 'readiness', 'analysis_status']) {
+  assert.equal(waitingCardCopy.includes(forbidden), false, `Waiting card market copy should not expose ${forbidden}`)
+}
 
 const finishedTop10Matches = createStatusMatches(10, 'FT', 'finished-top10')
 const finishedTodayBuckets = buildTodayStatusBuckets(finishedTop10Matches)

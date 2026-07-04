@@ -1,6 +1,7 @@
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import { getBangkokDayRange } from '../src/utils/bangkokDateRange.js'
+import { getApiFootballMarketDisplay, getApiFootballOddsRows } from '../src/utils/marketDisplay.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 import { buildTodayMatchBuckets } from '../src/utils/todayMatchBuckets.js'
 
@@ -59,7 +60,7 @@ let allTop10NoBet = true
 
 for (const dateKey of days) {
   const dayMatches = matchesByDate.get(dateKey) ?? []
-  const dayTop10 = getDailyTop10Rows(dateKey, dayMatches, top10ByDate, matchesById)
+  const dayTop10 = getDailyTop10Rows(dateKey, dayMatches, top10ByDate, matchesById, oddsByMatch)
   const dayMatchIds = new Set(dayMatches.map((row) => row.id))
   const dayOdds = oddsRows.filter((row) => dayMatchIds.has(row.match_id))
   const dayFinalPicks = finalPicks.filter((row) => dayMatchIds.has(row.match_id))
@@ -83,6 +84,11 @@ for (const dateKey of days) {
   const staleNoMarketLockCount = dayTop10.filter((item) => item.source === 'daily_top10_selections' && isWaitingMarketData(item.match)).length
   const readyButNotDisplayedCount = marketReadyCandidates.filter((match) => !top10MatchIds.has(match.id)).length
   const displayedSignalCount = dayTop10.filter((item) => ['STRONG_SIGNAL', 'WATCH'].includes(normalizeSignal(finalPickByMatch.get(item.match.id)?.signal))).length
+  const marketDisplays = dayTop10.map((item) => getApiFootballMarketDisplay(item.match, finalPickByMatch.get(item.match.id)))
+  const apiFootballOddsRows = dayTop10.reduce((total, item) => total + getApiFootballOddsRows(item.match).length, 0)
+  const apiFootballMarketSourceCount = marketDisplays.filter((item) => item.hasApiFootballMarket).length
+  const missingApiFootballMarketCount = marketDisplays.filter((item) => !item.hasApiFootballMarket).length
+  const uiFallbackMarketCount = marketDisplays.filter(isLegacyUiMarketFallback).length
   const betFinalPickMismatchCount = dayMatches.filter((match) => {
     const analysis = getAnalysis(match)
     const finalPick = finalPickByMatch.get(match.id)
@@ -111,6 +117,10 @@ for (const dateKey of days) {
   printDistribution('readiness', dayMatches.map((row) => row.data_readiness_status ?? 'NULL'))
   printCount('oddsRows', dayOdds.length)
   printCount('matchesWithOddsRows', new Set(dayOdds.map((row) => row.match_id)).size)
+  printCount('apiFootballOddsRows', apiFootballOddsRows)
+  printCount('apiFootballMarketSourceCount', apiFootballMarketSourceCount)
+  printCount('uiFallbackMarketCount', uiFallbackMarketCount)
+  printCount('missingApiFootballMarketCount', missingApiFootballMarketCount)
   printCount('matchesWithMarketLine', analyses.filter((row) => hasText(row.market_line ?? row.value_line ?? row.latest_line)).length)
   printCount('matchesWithFairLine', analyses.filter((row) => hasText(row.fair_line)).length)
   printCount('matchesWithPickSide', analyses.filter((row) => normalizePickSide(row.pick_side) !== 'NONE').length)
@@ -275,18 +285,19 @@ async function fetchTop10Rows(fromDate, toDate) {
   return data ?? []
 }
 
-function getDailyTop10Rows(dateKey, dayMatches, top10ByDate, matchesById) {
+function getDailyTop10Rows(dateKey, dayMatches, top10ByDate, matchesById, oddsByMatch) {
   const storedTop10 = top10ByDate.get(dateKey) ?? []
   if (storedTop10.length) {
     return storedTop10
       .map((row) => {
-        const match = matchesById.get(row.match_id)
+        const match = attachOdds(matchesById.get(row.match_id), oddsByMatch)
         return { source: 'daily_top10_selections', rank: row.rank, match, analysis: getAnalysis(match), stored: row }
       })
       .filter((item) => item.match)
   }
 
   return dayMatches
+    .map((match) => attachOdds(match, oddsByMatch))
     .map((match) => ({ source: 'match_analysis', rank: Number(getAnalysis(match)?.final_rank ?? 999), match, analysis: getAnalysis(match), stored: null }))
     .filter((item) => item.analysis?.is_top_pick || Number.isFinite(item.rank) && item.rank < 999)
     .sort((a, b) => a.rank - b.rank)
@@ -338,9 +349,28 @@ function explainNoBet({ match, analysis, finalPick, odds }) {
   if (!hasText(analysis.market_line ?? analysis.value_line ?? analysis.latest_line)) blockers.push('missing_market_line')
   if (!hasText(analysis.fair_line)) blockers.push('missing_fair_line')
 
+  const marketDisplay = getApiFootballMarketDisplay({ ...match, odds }, finalPick)
   return {
     blockers,
-    reason: analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? finalPick?.market_signal ?? 'no stored reason',
+    reason: marketDisplay.hasApiFootballMarket
+      ? analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? finalPick?.market_signal ?? 'no stored reason'
+      : marketDisplay.reason,
+  }
+}
+
+function isLegacyUiMarketFallback(display = {}) {
+  const text = `${display.label ?? ''} ${display.reason ?? ''}`
+  return text.includes('ยังไม่มีตลาดหลัก') || text.includes('ยังไม่มีทิศทางตลาด')
+}
+
+function attachOdds(match, oddsByMatch) {
+  if (!match) return match
+  const odds = oddsByMatch.get(match.id) ?? []
+  return {
+    ...match,
+    odds,
+    matchOdds: odds,
+    match_odds: odds,
   }
 }
 

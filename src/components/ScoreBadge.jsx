@@ -10,7 +10,7 @@ const styles = {
 const modeLabels = {
   strong: 'คู่เด่น',
   watch: 'เฝ้าดู',
-  waiting: 'รอข้อมูลเพิ่ม',
+  waiting: 'รอข้อมูลจาก API-Football',
 }
 
 export default function ScoreBadge({ recommendation, mode = '' }) {
