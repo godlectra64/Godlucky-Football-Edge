@@ -1,5 +1,6 @@
 import { analyzeAsianHandicap } from './ahAnalysisEngine.js'
 import { analyzeOverUnder } from './ouAnalysisEngine.js'
+import { derivePickTeamFromApiFootballOdds } from './marketDisplay.js'
 import { getPrimaryBookmaker, getPrimaryOddText, normalizeOddsRows } from './oddsUtils.js'
 
 const signals = ['STRONG_SIGNAL', 'WATCH', 'SKIP']
@@ -22,6 +23,7 @@ export function generateAiFinalPick(match = {}) {
   const movementState = String(selected.marketSignal ?? '').toLowerCase().includes('against') ? 'against' : 'ok'
   const marketDataUsed = Boolean(analysis.market_data_used ?? analysis.raw?.market_data_used ?? hasOdds)
   const oddsRowsUsed = Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? oddsRows.length)
+  const apiPick = derivePickTeamFromApiFootballOdds(match, oddsRows)
   const marketEdgeScore = scoreValue(analysis.market_edge_score ?? analysis.raw?.market_edge_score, 0)
   const recommendation = normalizeRecommendation(analysis.recommendation ?? match.recommendation)
   const signal = resolveSignal({
@@ -57,6 +59,16 @@ export function generateAiFinalPick(match = {}) {
     primaryBookmaker: getPrimaryBookmaker(match),
     latestOdds: getPrimaryOddText(match, selected.marketFocus),
     hasOdds,
+    pickTeam: apiPick.pickTeam,
+    pickTeamId: apiPick.pickTeamId,
+    pickSide: apiPick.pickSide,
+    pickSource: apiPick.pickSource,
+    pickMarket: apiPick.pickMarket,
+    pickMarketId: apiPick.pickMarketId,
+    pickSelection: apiPick.pickSelection,
+    pickPrice: apiPick.pickPrice,
+    pickConfidence: signal === 'SKIP' && !hasOdds ? null : confidenceScore,
+    pickReason: apiPick.reason,
   }
 }
 
@@ -77,6 +89,15 @@ export function normalizeStoredAiFinalPick(row, match = {}) {
     primaryBookmaker: row.primary_bookmaker ?? row.primaryBookmaker ?? null,
     latestOdds: row.latest_odds ?? row.latestOdds ?? null,
     hasOdds: Boolean(row.latest_odds ?? row.primary_bookmaker),
+    pickTeam: row.pick_team ?? row.pickTeam ?? null,
+    pickTeamId: row.pick_team_id ?? row.pickTeamId ?? null,
+    pickSide: row.pick_side ?? row.pickSide ?? 'NONE',
+    pickSource: row.pick_source ?? row.pickSource ?? 'NONE',
+    pickMarket: row.pick_market ?? row.pickMarket ?? row.market_focus ?? row.marketFocus ?? null,
+    pickMarketId: row.pick_market_id ?? row.pickMarketId ?? null,
+    pickSelection: row.pick_selection ?? row.pickSelection ?? null,
+    pickPrice: row.pick_price ?? row.pickPrice ?? null,
+    pickConfidence: row.pick_confidence ?? row.pickConfidence ?? row.confidence_score ?? null,
   }
 }
 

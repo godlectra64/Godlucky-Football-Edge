@@ -107,6 +107,7 @@ const footballEnrichmentModes = [
   'refresh-locked-top10-signals',
   'refresh-market-ready-top10',
   'select-usable-daily-picks',
+  'strict-api-football-daily-picks',
   'sync-completed-fixtures',
   'backfill-ai-pick-results',
   'settle-ai-pick-results',
@@ -1762,6 +1763,7 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'refresh-locked-top10-signals') return refreshLockedTop10Signals(dayRange, context)
   if (mode === 'refresh-market-ready-top10') return refreshMarketReadyTop10(dayRange)
   if (mode === 'select-usable-daily-picks') return selectUsableDailyPicks(dayRange, body)
+  if (mode === 'strict-api-football-daily-picks') return strictApiFootballDailyPicks(dayRange, body)
   if (mode === 'sync-completed-fixtures') return syncCompletedFixtures(body, dayRange, context)
   if (mode === 'backfill-ai-pick-results') return backfillAiPickResults(body, dayRange)
   if (mode === 'settle-ai-pick-results') return settleAiPickResults(body, dayRange)
@@ -3050,6 +3052,15 @@ async function upsertAiFinalPickForMatch(match: any) {
     final_summary: pick.finalSummary,
     ah_analysis: pick.ahAnalysis,
     ou_analysis: pick.ouAnalysis,
+    pick_team: pick.pickTeam,
+    pick_team_id: pick.pickTeamId,
+    pick_side: pick.pickSide,
+    pick_source: pick.pickSource,
+    pick_market: pick.pickMarket,
+    pick_market_id: pick.pickMarketId,
+    pick_selection: pick.pickSelection,
+    pick_price: pick.pickPrice,
+    pick_confidence: pick.pickConfidence,
     primary_bookmaker: pick.primaryBookmaker,
     latest_odds: pick.latestOdds,
     analysis_status: pick.analysisStatus,
@@ -3061,9 +3072,34 @@ async function upsertAiFinalPickForMatch(match: any) {
     raw: pick,
     updated_at: new Date().toISOString(),
   }
-  const upsert = await supabase.from('football_ai_final_picks').upsert(payload, { onConflict: 'match_id' }).select('id, signal, market_focus, confidence_score, risk_level').single()
+  const upsert = await upsertAiFinalPickPayload(payload)
   if (upsert.error) throw upsert.error
   return upsert.data
+}
+
+async function upsertAiFinalPickPayload(payload: Record<string, unknown>) {
+  const selectColumns = [
+    'id',
+    'match_id',
+    'signal',
+    'market_focus',
+    'confidence_score',
+    'risk_level',
+    'pick_team',
+    'pick_team_id',
+    'pick_side',
+    'pick_source',
+    'pick_market',
+    'pick_selection',
+    'pick_price',
+  ].join(', ')
+  const result = await supabase.from('football_ai_final_picks').upsert(payload, { onConflict: 'match_id' }).select(selectColumns).single()
+  if (!isMissingColumnError(result.error)) return result
+  return supabase
+    .from('football_ai_final_picks')
+    .upsert(stripApiFootballPickPayload(payload), { onConflict: 'match_id' })
+    .select('id, match_id, signal, market_focus, confidence_score, risk_level')
+    .single()
 }
 
 async function lockDailyTop10(dayRange: ReturnType<typeof getBangkokDayRange>) {
@@ -3365,7 +3401,87 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
   }
 }
 
-async function persistMarketReadyTop10(selectionDate: string, selected: Array<any>, existingRows: Array<any>) {
+async function strictApiFootballDailyPicks(dayRange: ReturnType<typeof getBangkokDayRange>, body: Record<string, unknown>) {
+  const selectionDate = typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : dayRange.dateKey
+  const limit = getPositiveNumber(body.limit, 10, 10)
+  const strictRange = getBangkokDayRange(selectionDate)
+  const [matches, existing] = await Promise.all([
+    fetchDailyTop10LockCandidates(strictRange),
+    supabase
+      .from('daily_top10_selections')
+      .select('*')
+      .eq('selection_date', selectionDate)
+      .order('rank', { ascending: true }),
+  ])
+  if (existing.error) throw existing.error
+
+  const playableMatches = matches.filter((match: any) => isPlayableStatusText(match.status_short ?? match.match_status ?? match.status))
+  const matchIds = playableMatches.map((match: any) => match.id).filter(Boolean)
+  const [picks, oddsByMatchId] = await Promise.all([
+    fetchAiFinalPicksForMatches(matchIds),
+    fetchStoredOddsByMatchIds(matchIds),
+  ])
+  const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
+  const candidates = playableMatches
+    .map((match: any) => {
+      const odds = oddsByMatchId.get(match.id) ?? []
+      const pickTeam = deriveEdgePickTeamFromApiFootballOdds(match, odds)
+      return {
+        match,
+        analysis: getAnalysis(match),
+        pick: pickByMatch.get(match.id) ?? null,
+        odds,
+        pickTeam,
+        strict: buildStrictApiFootballCandidate(match, odds, pickTeam),
+      }
+    })
+    .sort(compareStrictApiFootballCandidateItems)
+
+  const selected = candidates.slice(0, limit)
+  const persistResult = await persistMarketReadyTop10(selectionDate, selected, existing.data ?? [], { cleanupUnselected: true })
+  const selectedStrict = selected.map((item: any) => item.strict)
+  const matchesWithOddsCount = candidates.filter((item: any) => item.strict.hasApiFootballOdds).length
+  const selectedWithOddsCount = selectedStrict.filter((item: any) => item.hasApiFootballOdds).length
+  const selectedWithoutOddsCount = selectedStrict.filter((item: any) => !item.hasApiFootballOdds).length
+  const selectedWithPickTeamCount = selectedStrict.filter((item: any) => Boolean(item.pickTeam)).length
+  const selectedWithoutPickTeamCount = selectedStrict.filter((item: any) => !item.pickTeam).length
+  const primaryMarketCount = selectedStrict.filter((item: any) => item.hasPrimaryMarket).length
+
+  return {
+    processed: selected.length,
+    selectedCount: selected.length,
+    totalCandidates: candidates.length,
+    totalFixturesInDate: matches.length,
+    rowsSaved: persistResult.rowsSaved,
+    rowsUpdated: persistResult.rowsUpdated,
+    rowsInserted: persistResult.rowsInserted,
+    rowsSkipped: persistResult.rowsSkipped,
+    rowsDeleted: persistResult.rowsDeleted,
+    duplicateRankResolved: persistResult.duplicateRankResolved,
+    failed: persistResult.failed,
+    failures: persistResult.failures,
+    status: persistResult.failed > 0 ? (persistResult.rowsSaved > 0 ? 'partial_success' : 'failed') : 'success',
+    selectionDate,
+    requestedSelectionDate: selectionDate,
+    resolvedDateKey: selectionDate,
+    matchesWithOddsCount,
+    selectedWithOddsCount,
+    selectedWithoutOddsCount,
+    selectedWithPickTeamCount,
+    selectedWithoutPickTeamCount,
+    primaryMarketCount,
+    marketPrioritySummary: summarizeStrictMarketPriority(selectedStrict),
+    pickTeamCoverage: {
+      withPickTeam: selectedWithPickTeamCount,
+      withoutPickTeam: selectedWithoutPickTeamCount,
+    },
+    usedRollingWindow: false,
+    usedNextDateFallback: false,
+    selectedMatches: selected.map((item: any, index: number) => formatStrictSelectedMatch({ ...item, rank: index + 1 })),
+  }
+}
+
+async function persistMarketReadyTop10(selectionDate: string, selected: Array<any>, existingRows: Array<any>, options: { cleanupUnselected?: boolean } = {}) {
   const exactRows = new Map(existingRows.map((row: any) => [row.match_id, row]))
   const rankRows = new Map(existingRows.map((row: any) => [Number(row.rank), row]))
   const assignedRowIds = new Set<string>()
@@ -3374,6 +3490,7 @@ async function persistMarketReadyTop10(selectionDate: string, selected: Array<an
   let rowsUpdated = 0
   let rowsInserted = 0
   let rowsSkipped = 0
+  let rowsDeleted = 0
   let duplicateRankResolved = 0
   let failed = 0
   const failures: Array<any> = []
@@ -3415,17 +3532,11 @@ async function persistMarketReadyTop10(selectionDate: string, selected: Array<an
 
       if (targetRow?.id) {
         assignedRowIds.add(targetRow.id)
-        const update = await supabase
-          .from('daily_top10_selections')
-          .update(payload)
-          .eq('id', targetRow.id)
-          .eq('selection_date', selectionDate)
+        const update = await updateDailyTop10Row(targetRow.id, selectionDate, payload)
         if (update.error) throw update.error
         rowsUpdated += 1
       } else {
-        const insert = await supabase
-          .from('daily_top10_selections')
-          .insert(payload)
+        const insert = await insertDailyTop10Row(payload)
         if (insert.error) throw insert.error
         rowsInserted += 1
       }
@@ -3436,8 +3547,26 @@ async function persistMarketReadyTop10(selectionDate: string, selected: Array<an
     }
   }
 
+  if (options.cleanupUnselected && selected.length) {
+    for (const row of existingRows) {
+      if (!row?.id || assignedRowIds.has(row.id) || deletedRowIds.has(row.id)) continue
+      const cleanup = await supabase
+        .from('daily_top10_selections')
+        .delete()
+        .eq('id', row.id)
+        .eq('selection_date', selectionDate)
+      if (cleanup.error) {
+        failed += 1
+        failures.push({ matchId: row.match_id, rank: row.rank, message: formatErrorMessage(cleanup.error, 'cleanup unselected strict daily row failed') })
+      } else {
+        rowsDeleted += 1
+        deletedRowIds.add(row.id)
+      }
+    }
+  }
+
   if (!selected.length) rowsSkipped = existingRows.length
-  return { rowsSaved, rowsUpdated, rowsInserted, rowsSkipped, duplicateRankResolved, failed, failures }
+  return { rowsSaved, rowsUpdated, rowsInserted, rowsSkipped, rowsDeleted, duplicateRankResolved, failed, failures }
 }
 
 function buildDailyTop10RowPayload(selectionDate: string, item: any, index: number) {
@@ -3450,10 +3579,61 @@ function buildDailyTop10RowPayload(selectionDate: string, item: any, index: numb
     ai_final_pick_id: item.pick?.id ?? null,
     signal: item.pick?.signal ?? 'SKIP',
     market_focus: item.pick?.market_focus ?? 'NONE',
+    pick_team: item.pick?.pick_team ?? item.strict?.pickTeam ?? item.pickTeam?.pickTeam ?? null,
+    pick_team_id: item.pick?.pick_team_id ?? item.strict?.pickTeamId ?? item.pickTeam?.pickTeamId ?? null,
+    pick_side: item.pick?.pick_side ?? item.strict?.pickSide ?? item.pickTeam?.pickSide ?? null,
+    pick_source: item.pick?.pick_source ?? item.strict?.pickSource ?? item.pickTeam?.pickSource ?? null,
+    pick_market: item.pick?.pick_market ?? item.strict?.pickMarket ?? item.pickTeam?.pickMarket ?? null,
+    pick_market_id: item.pick?.pick_market_id ?? item.pickTeam?.pickMarketId ?? null,
+    pick_selection: item.pick?.pick_selection ?? item.strict?.pickSelection ?? item.pickTeam?.pickSelection ?? null,
+    pick_price: nullableNumber(item.pick?.pick_price ?? item.strict?.pickPrice ?? item.pickTeam?.pickPrice),
+    pick_confidence: nullableNumber(item.pick?.pick_confidence ?? item.pickTeam?.pickConfidence),
+    market_data_used: Boolean(item.pick?.market_data_used ?? item.strict?.hasApiFootballOdds ?? item.pickTeam?.hasApiFootballOdds ?? false),
+    analysis_status: item.pick?.analysis_status ?? (item.strict?.hasApiFootballOdds ? 'API_FOOTBALL_ODDS_READY' : 'INSUFFICIENT_MARKET_DATA'),
     confidence_score: nullableNumber(item.pick?.confidence_score ?? item.analysis?.confidence_score),
     risk_level: normalizeRiskLevelText(item.pick?.risk_level ?? item.analysis?.risk_level ?? 'MEDIUM'),
     updated_at: new Date().toISOString(),
   }
+}
+
+async function updateDailyTop10Row(rowId: string, selectionDate: string, payload: Record<string, unknown>) {
+  const result = await supabase
+    .from('daily_top10_selections')
+    .update(payload)
+    .eq('id', rowId)
+    .eq('selection_date', selectionDate)
+  if (!isMissingColumnError(result.error)) return result
+  return supabase
+    .from('daily_top10_selections')
+    .update(stripApiFootballPickPayload(payload))
+    .eq('id', rowId)
+    .eq('selection_date', selectionDate)
+}
+
+async function insertDailyTop10Row(payload: Record<string, unknown>) {
+  const result = await supabase.from('daily_top10_selections').insert(payload)
+  if (!isMissingColumnError(result.error)) return result
+  return supabase.from('daily_top10_selections').insert(stripApiFootballPickPayload(payload))
+}
+
+function stripApiFootballPickPayload(payload: Record<string, unknown>) {
+  const stripped = { ...payload }
+  for (const key of [
+    'pick_team',
+    'pick_team_id',
+    'pick_side',
+    'pick_source',
+    'pick_market',
+    'pick_market_id',
+    'pick_selection',
+    'pick_price',
+    'pick_confidence',
+    'market_data_used',
+    'analysis_status',
+  ]) {
+    delete stripped[key]
+  }
+  return stripped
 }
 
 async function fetchDailyTop10LockCandidates(dayRange: ReturnType<typeof getBangkokDayRange>) {
@@ -3539,10 +3719,17 @@ async function fetchAiFinalPicksForMatches(matchIds: Array<string>) {
   if (!matchIds.length) return []
   const result = await supabase
     .from('football_ai_final_picks')
-    .select('id, match_id, signal, market_focus, confidence_score, risk_level')
+    .select('id, match_id, signal, market_focus, confidence_score, risk_level, pick_team, pick_team_id, pick_side, pick_source, pick_market, pick_selection, pick_price')
     .in('match_id', matchIds)
   if (result.error) {
-    if (isMissingColumnError(result.error)) return []
+    if (isMissingColumnError(result.error)) {
+      const legacy = await supabase
+        .from('football_ai_final_picks')
+        .select('id, match_id, signal, market_focus, confidence_score, risk_level')
+        .in('match_id', matchIds)
+      if (legacy.error) return []
+      return legacy.data ?? []
+    }
     throw result.error
   }
   return result.data ?? []
@@ -3587,7 +3774,214 @@ async function fetchStoredOddsByMatchIds(matchIds: Array<string>) {
   return oddsByMatchId
 }
 
+function deriveEdgePickTeamFromApiFootballOdds(match: any, oddsRows: Array<any>) {
+  const rows = Array.isArray(oddsRows) ? oddsRows : []
+  const primary = choosePrimaryEdgeOddsMarket(rows)
+  const empty = {
+    pickTeam: null,
+    pickTeamId: null,
+    pickSide: 'NONE',
+    pickMarket: null,
+    pickMarketId: null,
+    pickSelection: null,
+    pickPrice: null,
+    pickSource: 'NONE',
+    reason: 'ยังไม่มีข้อมูลราคา',
+    marketPriority: 0,
+    hasApiFootballOdds: false,
+    hasPrimaryMarket: false,
+  }
+  if (!primary) return empty
+
+  const normalizedMarket = normalizeMarketFocus(primary.market_focus ?? primary.market_name)
+  const market = normalizedMarket === 'NONE' && firstText(primary.market_focus, primary.market_name) ? 'OTHER' : normalizedMarket
+  const selection = firstText(primary.selection, primary.raw?.selection, primary.raw?.value)
+  const homeName = firstText(match.homeTeam?.name, match.home_team?.name)
+  const awayName = firstText(match.awayTeam?.name, match.away_team?.name)
+  const homeId = nullableNumber(match.homeTeam?.api_team_id ?? match.homeTeam?.id)
+  const awayId = nullableNumber(match.awayTeam?.api_team_id ?? match.awayTeam?.id)
+  const base = {
+    pickTeam: null,
+    pickTeamId: null,
+    pickSide: 'NONE',
+    pickMarket: market,
+    pickMarketId: primary.market_id ?? primary.raw?.market_id ?? null,
+    pickSelection: selection,
+    pickPrice: nullableNumber(primary.price),
+    pickSource: 'API_FOOTBALL_ODDS',
+    reason: '',
+    marketPriority: getEdgeMarketPriority(market),
+    hasApiFootballOdds: rows.length > 0,
+    hasPrimaryMarket: market !== 'NONE',
+  }
+
+  if (market === 'AH') {
+    const side = inferEdgeTeamSide(selection, homeName, awayName)
+    if (side === 'HOME') return { ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }
+    if (side === 'AWAY') return { ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }
+    return { ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาดแฮนดิแคปได้' }
+  }
+
+  if (market === 'MATCH_WINNER') {
+    const side = inferEdgeTeamSide(selection, homeName, awayName)
+    if (side === 'HOME') return { ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }
+    if (side === 'AWAY') return { ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }
+    if (isEdgeDrawSelection(selection)) return { ...base, pickSide: 'DRAW', reason: 'ตลาดนี้เป็นผลเสมอ ไม่มีทีมที่เลือก' }
+    return { ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาด 1X2 ได้' }
+  }
+
+  if (market === 'OU') return { ...base, pickSide: inferEdgeOverUnderSide(selection), reason: 'ตลาดสูงต่ำไม่มีทีมที่เลือก' }
+  if (market === 'BTTS') return { ...base, pickSide: inferEdgeYesNoSide(selection), reason: 'ตลาดทั้งสองทีมยิงได้ไม่มีทีมที่เลือก' }
+  return { ...base, reason: 'ตลาดจาก API-Football ไม่ใช่ตลาดเลือกทีม' }
+}
+
+function choosePrimaryEdgeOddsMarket(rows: Array<any>) {
+  return [...rows]
+    .filter((row) => normalizeMarketFocus(row.market_focus ?? row.market_name) !== 'NONE' || row.market_name)
+    .sort((a, b) => {
+      const marketDiff = getEdgeMarketPriority(b.market_focus ?? b.market_name) - getEdgeMarketPriority(a.market_focus ?? a.market_name)
+      const latestDiff = Number(Boolean(b.is_latest)) - Number(Boolean(a.is_latest))
+      const timeDiff = new Date(b.snapshot_at ?? 0).getTime() - new Date(a.snapshot_at ?? 0).getTime()
+      return marketDiff || latestDiff || timeDiff
+    })[0] ?? null
+}
+
+function buildStrictApiFootballCandidate(match: any, oddsRows: Array<any>, pickTeam = deriveEdgePickTeamFromApiFootballOdds(match, oddsRows)) {
+  const completenessBreakdown = {
+    odds: oddsRows.length ? 45 : 0,
+    fixture: match.has_fixture_detail ? 15 : 0,
+    stats: Array.isArray(match.raw?.statistics) && match.raw.statistics.length ? 15 : 0,
+    lineups: Array.isArray(match.raw?.lineups) && match.raw.lineups.length ? 10 : 0,
+    readiness: ['READY', 'PARTIAL'].includes(String(match.data_readiness_status ?? '').toUpperCase()) ? 15 : 0,
+  }
+  return {
+    matchId: match.id,
+    hasApiFootballOdds: oddsRows.length > 0,
+    hasPrimaryMarket: pickTeam.hasPrimaryMarket,
+    primaryMarket: pickTeam.pickMarket,
+    marketPriority: pickTeam.marketPriority,
+    pickTeam: pickTeam.pickTeam,
+    pickTeamId: pickTeam.pickTeamId,
+    pickSide: pickTeam.pickSide,
+    pickSource: pickTeam.pickSource,
+    pickPrice: pickTeam.pickPrice,
+    pickMarket: pickTeam.pickMarket,
+    pickSelection: pickTeam.pickSelection,
+    completenessScore: Object.values(completenessBreakdown).reduce((total: number, value: any) => total + Number(value ?? 0), 0),
+    completenessBreakdown,
+    hasFixtureStatistics: completenessBreakdown.stats > 0,
+    hasLineups: completenessBreakdown.lineups > 0,
+    leagueQualityScore: Number(getAnalysis(match)?.league_quality_score ?? match.league?.priority ?? 0),
+    kickoffTime: new Date(match.kickoff_at ?? 0).getTime() || 0,
+    stableId: String(match.id ?? ''),
+  }
+}
+
+function compareStrictApiFootballCandidateItems(a: any, b: any) {
+  const left = a.strict ?? buildStrictApiFootballCandidate(a.match, a.odds ?? [], a.pickTeam)
+  const right = b.strict ?? buildStrictApiFootballCandidate(b.match, b.odds ?? [], b.pickTeam)
+  return compareStrictApiFootballCandidateValues(left, right)
+}
+
+function compareStrictApiFootballCandidateValues(a: any, b: any) {
+  return (
+    Number(b.hasApiFootballOdds) - Number(a.hasApiFootballOdds) ||
+    Number(b.hasPrimaryMarket) - Number(a.hasPrimaryMarket) ||
+    Number(b.marketPriority ?? 0) - Number(a.marketPriority ?? 0) ||
+    Number(b.completenessScore ?? 0) - Number(a.completenessScore ?? 0) ||
+    Number(Boolean(b.pickTeam)) - Number(Boolean(a.pickTeam)) ||
+    Number(Boolean(b.hasFixtureStatistics)) - Number(Boolean(a.hasFixtureStatistics)) ||
+    Number(Boolean(b.hasLineups)) - Number(Boolean(a.hasLineups)) ||
+    Number(b.leagueQualityScore ?? 0) - Number(a.leagueQualityScore ?? 0) ||
+    Number(a.kickoffTime ?? 0) - Number(b.kickoffTime ?? 0) ||
+    String(a.stableId ?? '').localeCompare(String(b.stableId ?? ''))
+  )
+}
+
+function getEdgeMarketPriority(value: unknown) {
+  const market = normalizeMarketFocus(value)
+  if (market === 'AH') return 100
+  if (market === 'OU') return 90
+  if (market === 'MATCH_WINNER') return 80
+  if (market === 'BTTS') return 70
+  return market === 'NONE' ? (String(value ?? '').trim() && String(value).toUpperCase() !== 'NONE' ? 50 : 0) : 50
+}
+
+function normalizeEdgeName(value: unknown) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function inferEdgeTeamSide(selection: unknown, homeName: unknown, awayName: unknown) {
+  const text = normalizeEdgeName(selection)
+  const home = normalizeEdgeName(homeName)
+  const away = normalizeEdgeName(awayName)
+  if (!text) return null
+  if (['home', '1'].includes(text) || (home && (text === home || text.includes(home) || home.includes(text)))) return 'HOME'
+  if (['away', '2'].includes(text) || (away && (text === away || text.includes(away) || away.includes(text)))) return 'AWAY'
+  return null
+}
+
+function isEdgeDrawSelection(selection: unknown) {
+  const text = normalizeEdgeName(selection)
+  return ['draw', 'x', 'tie'].includes(text)
+}
+
+function inferEdgeOverUnderSide(selection: unknown) {
+  const text = normalizeEdgeName(selection)
+  if (text.includes('under')) return 'UNDER'
+  if (text.includes('over')) return 'OVER'
+  return 'NONE'
+}
+
+function inferEdgeYesNoSide(selection: unknown) {
+  const text = normalizeEdgeName(selection)
+  if (['yes', 'y'].includes(text) || text.includes('yes')) return 'YES'
+  if (['no', 'n'].includes(text) || text.includes('no')) return 'NO'
+  return 'NONE'
+}
+
+function summarizeStrictMarketPriority(items: Array<any>) {
+  return items.reduce((summary: Record<string, number>, item: any) => {
+    const key = String(item?.primaryMarket ?? item?.pickMarket ?? 'NONE')
+    summary[key] = (summary[key] ?? 0) + 1
+    return summary
+  }, {})
+}
+
+function formatStrictSelectedMatch(item: any) {
+  const strict = item.strict ?? buildStrictApiFootballCandidate(item.match, item.odds ?? [], item.pickTeam)
+  return {
+    matchId: item.match?.id,
+    apiFixtureId: item.match?.api_sports_fixture_id ?? null,
+    rank: item.rank ?? null,
+    kickoffAt: item.match?.kickoff_at ?? null,
+    league: item.match?.league?.name ?? null,
+    homeTeam: item.match?.homeTeam?.name ?? null,
+    awayTeam: item.match?.awayTeam?.name ?? null,
+    hasApiFootballOdds: strict.hasApiFootballOdds,
+    hasPrimaryMarket: strict.hasPrimaryMarket,
+    primaryMarket: strict.primaryMarket,
+    marketPriority: strict.marketPriority,
+    pickTeam: strict.pickTeam,
+    pickTeamId: strict.pickTeamId,
+    pickSide: strict.pickSide,
+    pickSource: strict.pickSource,
+    pickMarket: strict.pickMarket,
+    pickSelection: strict.pickSelection,
+    pickPrice: strict.pickPrice,
+    completenessScore: strict.completenessScore,
+    completenessBreakdown: strict.completenessBreakdown,
+  }
+}
+
 function compareDailyTop10LockCandidate(a: any, b: any) {
+  const strictDiff = compareStrictApiFootballCandidateItems(a, b)
+  if (strictDiff) return strictDiff
   const marketPriorityDiff = dailyMarketReadinessPriority(a) - dailyMarketReadinessPriority(b)
   const leagueCoverageDiff = getLeagueMarketCoverageScore(b) - getLeagueMarketCoverageScore(a)
   const signalDiff = dailySignalPriority(a) - dailySignalPriority(b)
@@ -5146,6 +5540,7 @@ function buildEdgeAiFinalPick(match: any) {
   const ouAnalysis = edgeAnalyzeOu(match)
   const selected = chooseEdgeMarket(ahAnalysis, ouAnalysis)
   const odds = match.odds ?? []
+  const apiPick = deriveEdgePickTeamFromApiFootballOdds(match, odds)
   const hasOdds = odds.length > 0 && Boolean(selected.hasMarket)
   const totalAnalysisScore = normalizeScore(analysis.ranking_score ?? analysis.ai_score ?? analysis.confidence_score ?? 0)
   const selectionScore = normalizeScore(selected.confidenceScore)
@@ -5185,6 +5580,15 @@ function buildEdgeAiFinalPick(match: any) {
     finalSummary: buildEdgeAiFinalSummary(signal, marketFocus, direction, confidenceScore, riskLevel, hasOdds),
     ahAnalysis,
     ouAnalysis,
+    pickTeam: apiPick.pickTeam,
+    pickTeamId: apiPick.pickTeamId,
+    pickSide: apiPick.pickSide,
+    pickSource: apiPick.pickSource,
+    pickMarket: apiPick.pickMarket,
+    pickMarketId: apiPick.pickMarketId,
+    pickSelection: apiPick.pickSelection,
+    pickPrice: apiPick.pickPrice,
+    pickConfidence: apiPick.hasApiFootballOdds ? confidenceScore : null,
     primaryBookmaker: odds.find((row: any) => row.bookmaker_name)?.bookmaker_name ?? null,
     latestOdds: odds.find((row: any) => row.market_focus === selected.marketFocus)?.odd_text ?? null,
     analysisStatus: analysis.analysis_status ?? analysis.raw?.analysis_status ?? (marketDataUsed ? 'MARKET_DATA_READY_RECALCULATED' : 'INSUFFICIENT_MARKET_DATA'),
@@ -5452,6 +5856,14 @@ async function updateMatchAnalysisByMatchId(matchId: string, payload: Record<str
     .update(payload)
     .eq('match_id', matchId)
 
+  if (isMissingColumnError(result.error)) {
+    const legacy = await supabase
+      .from('match_analysis')
+      .update(stripApiFootballPickPayload(payload))
+      .eq('match_id', matchId)
+    if (legacy.error) throw legacy.error
+    return
+  }
   if (result.error) throw result.error
 }
 
@@ -5468,7 +5880,9 @@ async function recomputeV4AnalysisRows(matchIds: Array<string>) {
       data_readiness_score,
       data_readiness_status,
       odds_updated_at,
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, risk_score, ranking_score, market_edge_score, odds_confidence_score, odds_movement_score, team_stats_score, injuries_score, lineups_score, data_depth_score, learning_adjustment_score, historical_accuracy_score, value_market, value_side, value_line, raw, ${analysisReadinessMetadataSelect})
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, risk_score, ranking_score, market_edge_score, odds_confidence_score, odds_movement_score, team_stats_score, injuries_score, lineups_score, data_depth_score, learning_adjustment_score, historical_accuracy_score, value_market, value_side, value_line, raw, ${analysisReadinessMetadataSelect}),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name)
     `)
     .in('id', matchIds)
 
@@ -5534,6 +5948,7 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
   const marketReady = hasUsableMarketDataForRecompute(match, oddsRows)
   const recalculatedAt = new Date().toISOString()
   const raw = analysis?.raw && typeof analysis.raw === 'object' ? analysis.raw : {}
+  const apiPick = deriveEdgePickTeamFromApiFootballOdds(match, oddsRows)
 
   if (!marketReady) {
     const base = buildV4RecomputeAnalysis(analysis)
@@ -5556,6 +5971,14 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
       recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
       market_data_used: false,
       odds_rows_used: oddsRows.length,
+      pick_team: null,
+      pick_team_id: null,
+      pick_source: 'NONE',
+      pick_market: null,
+      pick_market_id: null,
+      pick_selection: null,
+      pick_price: null,
+      pick_confidence: null,
       recalculated_at: recalculatedAt,
       analysis_version: marketReadinessAnalysisVersion,
       enriched_summary: 'Market readiness recompute kept this match as NO BET because market odds/line data is not ready.',
@@ -5565,6 +5988,13 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
         recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
         market_data_used: false,
         odds_rows_used: oddsRows.length,
+        pick_team: null,
+        pick_team_id: null,
+        pick_source: 'NONE',
+        pick_market: null,
+        pick_market_id: null,
+        pick_selection: null,
+        pick_price: null,
         data_readiness_status: match?.data_readiness_status ?? null,
         analysis_version: marketReadinessAnalysisVersion,
       },
@@ -5632,6 +6062,14 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
     recommendation_reason: recommendationReason,
     market_data_used: true,
     odds_rows_used: oddsRows.length,
+    pick_team: apiPick.pickTeam,
+    pick_team_id: apiPick.pickTeamId,
+    pick_source: apiPick.pickSource,
+    pick_market: apiPick.pickMarket,
+    pick_market_id: apiPick.pickMarketId,
+    pick_selection: apiPick.pickSelection,
+    pick_price: apiPick.pickPrice,
+    pick_confidence: apiPick.hasApiFootballOdds ? calibrated : null,
     recalculated_at: recalculatedAt,
     analysis_version: marketReadinessAnalysisVersion,
     raw: {
@@ -5641,6 +6079,13 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
       recommendation_reason: recommendationReason,
       market_data_used: true,
       odds_rows_used: oddsRows.length,
+      pick_team: apiPick.pickTeam,
+      pick_team_id: apiPick.pickTeamId,
+      pick_source: apiPick.pickSource,
+      pick_market: apiPick.pickMarket,
+      pick_market_id: apiPick.pickMarketId,
+      pick_selection: apiPick.pickSelection,
+      pick_price: apiPick.pickPrice,
       data_readiness_status: match?.data_readiness_status ?? null,
       analysis_version: marketReadinessAnalysisVersion,
     },
@@ -6214,6 +6659,13 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
     risk_level: safeAnalysis.risk_level,
     pick_side: safeAnalysis.pick_side,
     pick_team: safeAnalysis.pick_team,
+    pick_team_id: safeAnalysis.pick_team_id,
+    pick_source: safeAnalysis.pick_source,
+    pick_market: safeAnalysis.pick_market,
+    pick_market_id: safeAnalysis.pick_market_id,
+    pick_selection: safeAnalysis.pick_selection,
+    pick_price: safeAnalysis.pick_price,
+    pick_confidence: safeAnalysis.pick_confidence,
     pick_reason: safeAnalysis.pick_reason,
     market_type: safeAnalysis.market_type,
     market_line: safeAnalysis.market_line,
@@ -6265,6 +6717,10 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
 
   const nextResult = await supabase.from('match_analysis').upsert(nextPayload, { onConflict: 'match_id' })
   if (!nextResult.error) return
+  if (isMissingColumnError(nextResult.error)) {
+    const compatibleResult = await supabase.from('match_analysis').upsert(stripApiFootballPickPayload(nextPayload), { onConflict: 'match_id' })
+    if (!compatibleResult.error) return
+  }
 
   const legacyResult = await supabase.from('match_analysis').upsert(
     {
@@ -6338,7 +6794,14 @@ function normalizeAnalysisPayload(analysis: any) {
     recommendation,
     risk_level: riskLevel,
     pick_side: pick.pick_side,
-    pick_team: pick.pick_team,
+    pick_team: null,
+    pick_team_id: null,
+    pick_source: 'NONE',
+    pick_market: null,
+    pick_market_id: null,
+    pick_selection: null,
+    pick_price: null,
+    pick_confidence: null,
     pick_reason: pick.pick_reason,
     market_type: finalPick.market_type,
     market_line: finalPick.market_line,
@@ -7086,9 +7549,7 @@ async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc
       risk_level: analysis.risk_level,
       ranking_score: analysis.ranking_score,
     }, oddsRows)
-    const updateResult = await supabase
-      .from('match_analysis')
-      .update({
+    const nextPayload = {
         league_quality_score: next.league_quality_score,
         match_quality_score: next.match_quality_score,
         team_strength_score: next.team_strength_score,
@@ -7114,12 +7575,22 @@ async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc
           recommendation: marketAware.recommendation,
           leagueQualitySource: leagueQualityScoringVersion,
         },
-      })
+      }
+    const updateResult = await supabase
+      .from('match_analysis')
+      .update(nextPayload)
       .eq('match_id', row.id)
 
     if (updateResult.error) {
-      if (isMissingColumnError(updateResult.error)) return updated
-      throw updateResult.error
+      if (isMissingColumnError(updateResult.error)) {
+        const compatibleResult = await supabase
+          .from('match_analysis')
+          .update(stripApiFootballPickPayload(nextPayload))
+          .eq('match_id', row.id)
+        if (compatibleResult.error) return updated
+      } else {
+        throw updateResult.error
+      }
     }
     updated += 1
   }

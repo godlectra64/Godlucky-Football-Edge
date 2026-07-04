@@ -3,7 +3,7 @@ import { getAnalysisSummary, getConfidence, getRecommendation, getRiskLevel, isW
 import { generateAiFinalPick } from '../utils/aiFinalPickEngine'
 import { buildAiFinalPick } from '../utils/finalPick'
 import { formatKickoffTime } from '../utils/formatters'
-import { getApiFootballMarketDisplay } from '../utils/marketDisplay'
+import { derivePickTeamFromApiFootballOdds, getApiFootballMarketDisplay } from '../utils/marketDisplay'
 import { getMatchStatusInfo, getScoreDisplay } from '../utils/matchStatus'
 import MarketDirectionBadge from './MarketDirectionBadge'
 import RiskBadge from './RiskBadge'
@@ -27,6 +27,7 @@ export default function MatchCard({
   const finalPick = buildAiFinalPick(match)
   const aiPick = match.aiFinalPick ?? generateAiFinalPick(match)
   const marketDisplay = getApiFootballMarketDisplay(match, aiPick)
+  const apiPick = derivePickTeamFromApiFootballOdds(match)
   const waitingMarket = providedIsWaitingMarketData ?? (!isFinished && isWaitingForMarketData(match))
   const mode = displayMode || (waitingMarket ? 'waiting' : recommendation === 'BET' ? 'strong' : 'watch')
   const analysisSummary = buildCardSummary(match, recommendation, confidence, waitingMarket)
@@ -77,6 +78,10 @@ export default function MatchCard({
 
       <p className="text-clamp-1 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-black leading-5 text-slate-300">
         <span className={marketDisplay.hasApiFootballMarket ? 'text-white' : 'text-amber-100'}>{marketDisplay.label}</span>
+      </p>
+
+      <p className="text-clamp-1 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-semibold leading-5 text-slate-300">
+        {formatApiPickDisplay(apiPick)}
       </p>
 
       {reasons[0] ? (
@@ -145,6 +150,26 @@ function sanitizeUserText(value) {
     .replace(/\bNO_MARKET_DATA\b/g, 'ยังไม่มีข้อมูลตลาด')
     .replace(/\bmarket_data_used\b/gi, 'ข้อมูลตลาด')
     .trim()
+}
+
+function formatApiPickDisplay(apiPick) {
+  if (!apiPick?.hasApiFootballOdds) return 'ยังไม่มีข้อมูลราคา'
+  if (apiPick.pickTeam) {
+    const price = apiPick.pickPrice ? ` · ราคา/ตัวเลข ${apiPick.pickPrice}` : ''
+    return `ทีมที่ระบบประเมิน: ${apiPick.pickTeam}${price}`
+  }
+  const sideLabel = {
+    OVER: 'สูง',
+    UNDER: 'ต่ำ',
+    YES: 'ใช่',
+    NO: 'ไม่ใช่',
+    DRAW: 'เสมอ',
+  }[apiPick.pickSide]
+  if (sideLabel) {
+    const price = apiPick.pickPrice ? ` · ราคา/ตัวเลข ${apiPick.pickPrice}` : ''
+    return `มุมมองตลาด: ${sideLabel}${price}`
+  }
+  return 'ยังไม่มีข้อมูลราคา'
 }
 
 function getFinishedScoreDisplay(match = {}) {

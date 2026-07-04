@@ -1,4 +1,5 @@
 import { getMarketReadinessGroup, marketReadinessGroups, recommendationLabels, riskLabels } from './analysisEngine.js'
+import { buildStrictApiFootballCandidate, buildStrictApiFootballSelection, compareStrictApiFootballCandidates } from './marketDisplay.js'
 import { getMatchStatusInfo, matchStatusGroups } from './matchStatus.js'
 
 export const selectionV2Reasons = {
@@ -99,11 +100,16 @@ export function buildUsableDailySelection(matches = [], options = {}) {
   }
 }
 
+export function buildStrictDailyApiFootballSelection(matches = [], options = {}) {
+  return buildStrictApiFootballSelection(matches, options)
+}
+
 export function buildSelectionCandidate(match = {}, now = new Date()) {
   const status = getMatchStatusInfo(match)
   const marketReadiness = status.isPlayable ? getMarketReadinessGroup(match) : null
   const priorityTier = getPriorityTier(match, status.group, marketReadiness)
   const leagueCoverage = getLeagueCoverage(match)
+  const strictApiFootball = buildStrictApiFootballCandidate(match)
   return {
     match,
     kickoffTime: getKickoffTime(match),
@@ -120,6 +126,11 @@ export function buildSelectionCandidate(match = {}, now = new Date()) {
     leagueMarketCoverageScore: leagueCoverage.score,
     recentOddsCoverageRate: leagueCoverage.rate,
     marketAvailabilityTier: leagueCoverage.tier,
+    hasApiFootballOdds: strictApiFootball.hasApiFootballOdds,
+    hasPrimaryMarket: strictApiFootball.hasPrimaryMarket,
+    marketPriority: strictApiFootball.marketPriority,
+    hasPickTeam: Boolean(strictApiFootball.pickTeam),
+    strictApiFootball,
     isPast: getKickoffTime(match) < now.getTime(),
   }
 }
@@ -145,6 +156,11 @@ function normalizeDisplayMatch(match = {}) {
 }
 
 export function compareSelectionCandidates(a, b) {
+  const shouldUseStrictApiPriority = a.strictApiFootball?.hasApiFootballOdds || b.strictApiFootball?.hasApiFootballOdds
+  if (shouldUseStrictApiPriority) {
+    const strictDiff = compareStrictApiFootballCandidates(a.strictApiFootball, b.strictApiFootball)
+    if (strictDiff) return strictDiff
+  }
   const priorityDiff = a.priorityValue - b.priorityValue
   const coverageDiff = b.leagueMarketCoverageScore - a.leagueMarketCoverageScore
   const signalDiff = a.signalPriority - b.signalPriority

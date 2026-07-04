@@ -54,7 +54,7 @@ import {
 } from '../src/utils/dataPlatform.js'
 import { buildExplainableAi } from '../src/utils/explainableAi.js'
 import { getBangkokDayRange, isWithinBangkokDay } from '../src/utils/bangkokDateRange.js'
-import { getApiFootballMarketDisplay } from '../src/utils/marketDisplay.js'
+import { buildStrictApiFootballSelection, derivePickTeamFromApiFootballOdds, getApiFootballMarketDisplay } from '../src/utils/marketDisplay.js'
 import {
   LEAGUE_QUALITY_SCORING_VERSION,
   getFixtureSyncPriority,
@@ -998,6 +998,79 @@ const readyApiMarketDisplay = getApiFootballMarketDisplay({
 assert.equal(readyApiMarketDisplay.label, 'ตลาดจาก API-Football: แฮนดิแคป', 'API-Football odds should show the API market source with Thai label')
 assert.equal(readyApiMarketDisplay.hasApiFootballMarket, true)
 assert.equal(readyApiMarketDisplay.label.includes('รอข้อมูลจาก API-Football'), false, 'Market-ready API odds should not use waiting copy')
+
+const pickTeamMatch = {
+  id: 'pick-team-match',
+  homeTeam: { id: 'home-local-id', api_team_id: 10, name: 'Arsenal' },
+  awayTeam: { id: 'away-local-id', api_team_id: 20, name: 'Chelsea' },
+  kickoffAt: '2026-07-04T10:00:00.000Z',
+  has_fixture_detail: true,
+  data_readiness_status: 'READY',
+  league: { priority: 80 },
+}
+const noOddsPick = derivePickTeamFromApiFootballOdds({ ...pickTeamMatch, odds: [] })
+assert.equal(noOddsPick.pickTeam, null, 'No API odds must not derive pick_team')
+assert.equal(noOddsPick.pickSource, 'NONE', 'No API odds must keep pick_source NONE')
+
+const ahPick = derivePickTeamFromApiFootballOdds({
+  ...pickTeamMatch,
+  odds: [{ id: 'ah-1', match_id: 'pick-team-match', market_name: 'Asian Handicap', selection: 'Arsenal -0.5', price: 1.91, is_latest: true }],
+})
+assert.equal(ahPick.pickTeam, 'Arsenal', 'AH selection should derive the selected team from API-Football odds')
+assert.equal(ahPick.pickTeamId, 10)
+assert.equal(ahPick.pickSide, 'HOME')
+
+const ahAwayPick = derivePickTeamFromApiFootballOdds({
+  ...pickTeamMatch,
+  odds: [{ id: 'ah-2', match_id: 'pick-team-match', market_name: 'Asian Handicap', selection: 'Chelsea +0.5', price: 1.95, is_latest: true }],
+})
+assert.equal(ahAwayPick.pickTeam, 'Chelsea', 'AH away selection should derive away team from API-Football odds')
+assert.equal(ahAwayPick.pickSide, 'AWAY')
+
+const homeWinnerPick = derivePickTeamFromApiFootballOdds({
+  ...pickTeamMatch,
+  odds: [{ id: 'mw-home-1', match_id: 'pick-team-match', market_name: 'Match Winner', selection: 'Arsenal', price: 1.82, is_latest: true }],
+})
+assert.equal(homeWinnerPick.pickTeam, 'Arsenal', '1X2 home selection should derive home team')
+assert.equal(homeWinnerPick.pickSide, 'HOME')
+
+const awayWinnerPick = derivePickTeamFromApiFootballOdds({
+  ...pickTeamMatch,
+  odds: [{ id: 'mw-1', match_id: 'pick-team-match', market_name: 'Match Winner', selection: 'Chelsea', price: 2.1, is_latest: true }],
+})
+assert.equal(awayWinnerPick.pickTeam, 'Chelsea', '1X2 away selection should derive away team')
+assert.equal(awayWinnerPick.pickSide, 'AWAY')
+
+const drawPick = derivePickTeamFromApiFootballOdds({
+  ...pickTeamMatch,
+  odds: [{ id: 'draw-1', match_id: 'pick-team-match', market_name: 'Match Winner', selection: 'Draw', price: 3.2, is_latest: true }],
+})
+assert.equal(drawPick.pickTeam, null, '1X2 draw should not assign pick_team')
+assert.equal(drawPick.pickSide, 'DRAW')
+
+const ouPick = derivePickTeamFromApiFootballOdds({
+  ...pickTeamMatch,
+  odds: [{ id: 'ou-1', match_id: 'pick-team-match', market_name: 'Goals Over/Under', selection: 'Over 2.5', price: 1.86, is_latest: true }],
+})
+assert.equal(ouPick.pickTeam, null, 'OU should not assign pick_team')
+assert.equal(ouPick.pickSide, 'OVER')
+
+const bttsPick = derivePickTeamFromApiFootballOdds({
+  ...pickTeamMatch,
+  odds: [{ id: 'btts-1', match_id: 'pick-team-match', market_name: 'Both Teams Score', selection: 'Yes', price: 1.74, is_latest: true }],
+})
+assert.equal(bttsPick.pickTeam, null, 'BTTS should not assign pick_team')
+assert.equal(bttsPick.pickSide, 'YES')
+
+const strictApiSelection = buildStrictApiFootballSelection([
+  { ...pickTeamMatch, id: 'strict-no-odds', odds: [], kickoffAt: '2026-07-04T09:00:00.000Z' },
+  { ...pickTeamMatch, id: 'strict-1x2', odds: [{ id: 'strict-1x2-odds', match_id: 'strict-1x2', market_name: 'Match Winner', selection: 'Arsenal', is_latest: true }], kickoffAt: '2026-07-04T13:00:00.000Z' },
+  { ...pickTeamMatch, id: 'strict-ou', odds: [{ id: 'strict-ou-odds', match_id: 'strict-ou', market_name: 'Goals Over/Under', selection: 'Over 2.5', is_latest: true }], kickoffAt: '2026-07-04T12:00:00.000Z' },
+  { ...pickTeamMatch, id: 'strict-ah', odds: [{ id: 'strict-ah-odds', match_id: 'strict-ah', market_name: 'Asian Handicap', selection: 'Arsenal -0.25', is_latest: true }], kickoffAt: '2026-07-04T11:00:00.000Z' },
+], { limit: 4 })
+assert.deepEqual(strictApiSelection.selected.map((match) => match.id), ['strict-ah', 'strict-ou', 'strict-1x2', 'strict-no-odds'], 'Strict daily selection should prioritize API odds and market priority before no-odds rows')
+assert.equal(strictApiSelection.usedRollingWindow, false)
+assert.equal(strictApiSelection.usedNextDateFallback, false)
 
 const waitingCardCopy = [
   missingApiMarketDisplay.label,

@@ -145,6 +145,7 @@ jobs:
             console.log(`daily-sync-auto stopped without a real failure: status=${dailySync.status ?? 'unknown'}, progressPercent=${dailySync.progressPercent ?? 'unknown'}, nextAction=${dailySync.nextAction ?? 'unknown'}`)
           }
 
+          await postSync({ mode: 'strict-api-football-daily-picks', limit: 10 })
           await postSync({ mode: 'result-refresh', limit: 20 })
           console.log('Daily football sync workflow completed successfully.')
           NODE
