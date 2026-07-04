@@ -853,8 +853,8 @@ const marketReadyFinalPick = generateAiFinalPick({
     defensive_stability_score: 58,
   },
   odds: [
-    { market_focus: 'AH', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9 },
-    { market_focus: 'OU', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Over 2.5', line: '2.5', price: 1.95 },
+    { id: 'final-pick-ah-odds', match_id: 'final-pick-match', market_focus: 'AH', market_name: 'Asian Handicap', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9 },
+    { id: 'final-pick-ou-odds', match_id: 'final-pick-match', market_focus: 'OU', market_name: 'Goals Over/Under', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Over 2.5', line: '2.5', price: 1.95 },
   ],
 })
 assert.equal(marketReadyFinalPick.signal, 'STRONG_SIGNAL', 'market-ready BET must not be downgraded to SKIP only because sub-market reasons are conservative')
@@ -880,7 +880,7 @@ const marketReadyMatches = Array.from({ length: 3 }, (_, index) => ({
   kickoffAt: `2026-07-03T0${index}:00:00.000Z`,
   has_market_data: true,
   data_readiness_status: 'READY',
-  odds: [{ market_focus: 'AH', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9 }],
+  odds: [{ id: `market-ready-odds-${index}`, match_id: `market-ready-${index}`, market_focus: 'AH', market_name: 'Asian Handicap', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9 }],
   aiFinalPick: { signal: index === 0 ? 'STRONG_SIGNAL' : 'WATCH', confidence_score: 82 - index, risk_level: 'LOW' },
   analysis: {
     ...baseMatch.analysis,
@@ -952,13 +952,13 @@ assert.equal(decisiveTodayBuckets.summary.windowHours, 36, 'Today V2 summary sho
 const oneStrongOneWatchOneWaiting = buildTodayMatchBuckets([
   createStatusMatches(1, 'NS', 'bucket-strong', {
     waitingMarketData: false,
-    odds: [{ price: 1.9 }],
+    odds: [{ id: 'bucket-strong-odds', match_id: 'bucket-strong-0', market_name: 'Asian Handicap', price: 1.9 }],
     aiFinalPick: { signal: 'STRONG_SIGNAL', confidence_score: 83, risk_level: 'LOW' },
     analysis: { recommendation: 'BET', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 80, confidence_score: 83, calibrated_confidence_score: 83, risk_level: 'LOW', data_validation_status: 'VALID' },
   })[0],
   createStatusMatches(1, 'NS', 'bucket-watch', {
     waitingMarketData: false,
-    odds: [{ price: 1.8 }],
+    odds: [{ id: 'bucket-watch-odds', match_id: 'bucket-watch-0', market_name: 'Asian Handicap', price: 1.8 }],
     aiFinalPick: { signal: 'WATCH', confidence_score: 62, risk_level: 'MEDIUM' },
     analysis: { recommendation: 'LEAN', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 45, confidence_score: 62, calibrated_confidence_score: 62, risk_level: 'MEDIUM', data_validation_status: 'VALID' },
   })[0],
@@ -982,9 +982,9 @@ const missingApiMarketDisplay = getApiFootballMarketDisplay({
   id: 'missing-api-market',
   odds: [],
 }, { marketFocus: 'AH', direction: 'HOME' })
-assert.equal(missingApiMarketDisplay.label, 'รอข้อมูลจาก API-Football', 'No API-Football odds should use the single waiting market label')
+assert.equal(missingApiMarketDisplay.label, 'ยังไม่มีข้อมูลราคา', 'No football_match_odds row should show no-price copy')
 assert.equal(missingApiMarketDisplay.status, 'waiting_api_football_market')
-assert.equal(missingApiMarketDisplay.reason, 'คู่นี้อยู่ในชุดคัดเลือกแล้ว แต่ API-Football ยังไม่มีข้อมูลตลาดสำหรับคู่นี้')
+assert.equal(missingApiMarketDisplay.reason, 'ยังไม่มีข้อมูลราคา')
 assert.equal(missingApiMarketDisplay.label.includes('ยังไม่มีตลาดหลัก'), false, 'No API-Football odds should not show old market-focus fallback')
 assert.equal(missingApiMarketDisplay.label.includes('ยังไม่มีทิศทางตลาด'), false, 'No API-Football odds should not show old market-direction fallback')
 
@@ -995,7 +995,7 @@ const readyApiMarketDisplay = getApiFootballMarketDisplay({
     { id: 'odds-2', match_id: 'ready-api-market', market_name: 'Goals Over/Under', bookmaker_name: 'API Book', selection: 'Over 2.5', is_latest: true },
   ],
 }, { marketFocus: 'AH' })
-assert.equal(readyApiMarketDisplay.label, 'ตลาดจาก API-Football: แฮนดิแคป', 'API-Football odds should show the API market source with Thai label')
+assert.equal(readyApiMarketDisplay.label, 'ตลาดจาก API-Football: Asian Handicap', 'API-Football odds should show football_match_odds.market_name directly')
 assert.equal(readyApiMarketDisplay.hasApiFootballMarket, true)
 assert.equal(readyApiMarketDisplay.label.includes('รอข้อมูลจาก API-Football'), false, 'Market-ready API odds should not use waiting copy')
 
@@ -1087,7 +1087,7 @@ assert.equal(finishedTodayBuckets.finishedMatches.length, 10, 'Case A: Today sho
 assert.equal(mergeResultRows([], toResultRows(finishedTodayBuckets.finishedMatches)).length, 10, 'Case A: Results should show all finished Top10 rows')
 
 const mixedStatusTop10 = [
-  ...createStatusMatches(3, 'NS', 'upcoming-top10', { waitingMarketData: false, odds: [{ price: 1.9 }], analysis: { market_data_used: true, odds_rows_used: 1, market_edge_score: 80, confidence_score: 70, risk_level: 'LOW', data_validation_status: 'VALID' } }),
+  ...createStatusMatches(3, 'NS', 'upcoming-top10', { waitingMarketData: false, odds: [{ id: 'upcoming-top10-odds', match_id: 'upcoming-top10-0', market_name: 'Asian Handicap', price: 1.9 }], analysis: { market_data_used: true, odds_rows_used: 1, market_edge_score: 80, confidence_score: 70, risk_level: 'LOW', data_validation_status: 'VALID' } }),
   ...createStatusMatches(7, 'FT', 'finished-mixed'),
 ]
 const mixedStatusBuckets = buildTodayStatusBuckets(mixedStatusTop10)
@@ -1103,7 +1103,7 @@ assert.equal(waitingNotFinishedSections.readyMatches.length, 0, 'Case C: no mark
 assert.equal(waitingNotFinishedSections.waitingMatches.length, 10, 'Case C: waiting market rows that are not finished should remain on Today')
 
 const readyAndWaitingTop10 = [
-  ...createStatusMatches(3, 'NS', 'ready-d', { waitingMarketData: false, odds: [{ price: 1.9 }], analysis: { market_data_used: true, odds_rows_used: 1, market_edge_score: 80, confidence_score: 70, risk_level: 'LOW', data_validation_status: 'VALID' } }),
+  ...createStatusMatches(3, 'NS', 'ready-d', { waitingMarketData: false, odds: [{ id: 'ready-d-odds', match_id: 'ready-d-0', market_name: 'Asian Handicap', price: 1.9 }], analysis: { market_data_used: true, odds_rows_used: 1, market_edge_score: 80, confidence_score: 70, risk_level: 'LOW', data_validation_status: 'VALID' } }),
   ...createStatusMatches(7, 'NS', 'waiting-d', { waitingMarketData: true, odds: [], analysis: { market_data_used: false, odds_rows_used: 0, analysis_status: 'INSUFFICIENT_MARKET_DATA' } }),
 ]
 const readyAndWaitingBuckets = buildTodayStatusBuckets(readyAndWaitingTop10)
@@ -1120,7 +1120,7 @@ const oneWaitingNow = createStatusMatches(1, 'NS', 'selection-waiting-now', {
 }).map((match) => ({ ...match, kickoffAt: '2026-07-04T03:00:00.000Z' }))
 const nextWindowReady = createStatusMatches(5, 'NS', 'selection-ready-next', {
   waitingMarketData: false,
-  odds: [{ price: 1.9 }],
+  odds: [{ id: 'selection-ready-next-odds', match_id: 'selection-ready-next-0', market_name: 'Asian Handicap', price: 1.9 }],
   aiFinalPick: { signal: 'STRONG_SIGNAL', confidence_score: 82, risk_level: 'LOW' },
   analysis: {
     recommendation: 'BET',

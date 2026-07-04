@@ -389,12 +389,19 @@ async function attachAiMarketData(result) {
     oddsByMatch.set(row.match_id, items)
   }
 
-  const attach = (row) => ({
-    ...row,
-    aiFinalPick: pickByMatch.get(row.id) ?? null,
-    ai_final_pick: pickByMatch.get(row.id) ?? null,
-    odds: oddsByMatch.get(row.id) ?? [],
-  })
+  const attach = (row) => {
+    const matchOdds = oddsByMatch.get(row.id) ?? []
+    return {
+      ...row,
+      has_market_data: matchOdds.length > 0,
+      hasMarketData: matchOdds.length > 0,
+      aiFinalPick: pickByMatch.get(row.id) ?? null,
+      ai_final_pick: pickByMatch.get(row.id) ?? null,
+      odds: matchOdds,
+      matchOdds,
+      match_odds: matchOdds,
+    }
+  }
   return {
     ...result,
     data: Array.isArray(result.data) ? rows.map(attach) : attach(result.data),

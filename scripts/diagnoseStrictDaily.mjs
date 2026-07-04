@@ -51,6 +51,8 @@ const actualStrict = selectedRows.map((item) => {
 })
 
 const totalMatchesWithOdds = matchesWithOdds.filter((match) => getApiFootballOddsRows(match).length > 0).length
+const oddsRowsExistButHasMarketDataFalse = matchesWithOdds.filter((match) => getApiFootballOddsRows(match).length > 0 && !match.has_market_data).length
+const hasMarketDataTrueButNoOddsRows = matchesWithOdds.filter((match) => Boolean(match.has_market_data) && getApiFootballOddsRows(match).length === 0).length
 const selectedMissingFromDate = top10Rows.filter((row) => !matchById.has(row.match_id))
 const selectedWithOdds = actualStrict.filter((item) => item.oddsRows.length > 0).length
 const selectedWithoutOdds = actualStrict.filter((item) => item.oddsRows.length === 0).length
@@ -71,6 +73,8 @@ const top10WithoutOddsReason = actualStrict
 console.log('')
 printCount('totalFixturesInDate', matches.length)
 printCount('totalMatchesWithOdds', totalMatchesWithOdds)
+printCount('oddsRowsExistsButHasMarketDataFalse', oddsRowsExistButHasMarketDataFalse)
+printCount('hasMarketDataTrueButNoOddsRows', hasMarketDataTrueButNoOddsRows)
 printCount('lockedTop10Rows', top10Rows.length)
 printCount('selectedCount', top10Rows.length)
 printCount('selectedWithOddsCount', selectedWithOdds)
@@ -105,6 +109,7 @@ async function fetchMatches(startUtc, endUtc) {
       status,
       status_short,
       match_status,
+      has_market_data,
       has_fixture_detail,
       data_readiness_status,
       raw,

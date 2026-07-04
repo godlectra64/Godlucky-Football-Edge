@@ -63,6 +63,9 @@ for (const dateKey of days) {
   const dayTop10 = getDailyTop10Rows(dateKey, dayMatches, top10ByDate, matchesById, oddsByMatch)
   const dayMatchIds = new Set(dayMatches.map((row) => row.id))
   const dayOdds = oddsRows.filter((row) => dayMatchIds.has(row.match_id))
+  const dayOddsMatchIds = new Set(dayOdds.map((row) => row.match_id).filter(Boolean))
+  const oddsRowsExistsButHasMarketDataFalse = dayMatches.filter((match) => dayOddsMatchIds.has(match.id) && !match.has_market_data).length
+  const hasMarketDataTrueButNoOddsRows = dayMatches.filter((match) => Boolean(match.has_market_data) && !dayOddsMatchIds.has(match.id)).length
   const dayFinalPicks = finalPicks.filter((row) => dayMatchIds.has(row.match_id))
   const dayResults = resultRows.filter((row) => dayMatchIds.has(row.match_id))
 
@@ -117,6 +120,8 @@ for (const dateKey of days) {
   printDistribution('readiness', dayMatches.map((row) => row.data_readiness_status ?? 'NULL'))
   printCount('oddsRows', dayOdds.length)
   printCount('matchesWithOddsRows', new Set(dayOdds.map((row) => row.match_id)).size)
+  printCount('oddsRowsExistsButHasMarketDataFalse', oddsRowsExistsButHasMarketDataFalse)
+  printCount('hasMarketDataTrueButNoOddsRows', hasMarketDataTrueButNoOddsRows)
   printCount('apiFootballOddsRows', apiFootballOddsRows)
   printCount('apiFootballMarketSourceCount', apiFootballMarketSourceCount)
   printCount('uiFallbackMarketCount', uiFallbackMarketCount)

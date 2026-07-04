@@ -1503,7 +1503,7 @@ function summarizeDailySyncReadinessRowsWithOdds(matches: Array<any>, oddsRows: 
     else if (readiness === 'PENDING') rankingReadiness.pending += 1
     else rankingReadiness.noMarketData += 1
 
-    if (match.has_market_data || match.odds_updated_at || oddsMatchIds.has(match.id)) rankingReadiness.hasMarketDataCount += 1
+    if (oddsMatchIds.has(match.id)) rankingReadiness.hasMarketDataCount += 1
     if (match.has_fixture_detail) rankingReadiness.hasFixtureDetailCount += 1
 
     const analysis = getAnalysis(match)
@@ -1515,7 +1515,7 @@ function summarizeDailySyncReadinessRowsWithOdds(matches: Array<any>, oddsRows: 
     const marketDataUsed = Boolean(analysis?.market_data_used ?? analysis?.raw?.market_data_used)
     if (marketDataUsed) analysisSummary.marketDataUsed += 1
     if (!marketDataUsed && readiness === 'NO_MARKET_DATA') analysisSummary.insufficientMarketData += 1
-    if ((match.has_market_data || match.odds_updated_at || oddsMatchIds.has(match.id)) && analysisLooksDefaultStale(analysis)) analysisSummary.defaultAnalysisRemaining += 1
+    if (oddsMatchIds.has(match.id) && analysisLooksDefaultStale(analysis)) analysisSummary.defaultAnalysisRemaining += 1
   }
 
   const fixtureEnrichment = {
@@ -4667,7 +4667,8 @@ async function updateMatchReadinessMetadata(matchId: string, patch: Record<strin
     ? existing.data.enrichment_breakdown
     : {}
   const attemptCount = Number(currentBreakdown.attemptCount ?? 0) + 1
-  const hasMarketData = Boolean(patch.hasMarketData ?? existing.data?.has_market_data)
+  const hasStoredOdds = await matchHasStoredOdds(matchId)
+  const hasMarketData = hasStoredOdds
   const hasFixtureDetail = Boolean(patch.hasFixtureDetail ?? existing.data?.has_fixture_detail)
   const failed = String(patch.status ?? '') === 'FAILED'
   const skippedNoCoverage = String(patch.status ?? '') === 'SKIPPED_NO_COVERAGE'
@@ -4717,6 +4718,18 @@ function getDataReadinessStatus({ hasMarketData, hasFixtureDetail, failed = fals
   if (hasMarketData) return 'PARTIAL'
   if (attempted) return 'NO_MARKET_DATA'
   return 'PENDING'
+}
+
+async function matchHasStoredOdds(matchId: string) {
+  const result = await supabase
+    .from('football_match_odds')
+    .select('id', { count: 'exact', head: true })
+    .eq('match_id', matchId)
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return false
+    throw result.error
+  }
+  return Number(result.count ?? 0) > 0
 }
 
 function calculateDataReadinessScore({ hasMarketData, hasFixtureDetail, failed = false, skippedNoCoverage = false }: Record<string, unknown>) {
@@ -6093,10 +6106,7 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
 }
 
 function hasUsableMarketDataForRecompute(match: any, oddsRows: Array<any>) {
-  const status = String(match?.data_readiness_status ?? '').toUpperCase()
-  const hasReadyStatus = status === 'READY' || status === 'PARTIAL'
-  const hasMarketData = Boolean(match?.has_market_data || match?.odds_updated_at || oddsRows.length > 0)
-  return hasReadyStatus && hasMarketData && oddsRows.length > 0
+  return oddsRows.length > 0
 }
 
 function summarizeStoredOddsRows(oddsRows: Array<any>) {
@@ -7387,7 +7397,7 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
 
 function classifyRankingReadiness(match: any, oddsMatchIds: Set<string>) {
   const hasStoredOdds = oddsMatchIds.has(match.id)
-  const hasMarketData = Boolean(match.has_market_data || match.odds_updated_at || hasStoredOdds)
+  const hasMarketData = hasStoredOdds
   const status = String(match.data_readiness_status ?? '').toUpperCase()
   if (status === 'FAILED') return 'FAILED'
   if (status === 'SKIPPED_NO_COVERAGE') return 'SKIPPED_NO_COVERAGE'
@@ -8038,14 +8048,8 @@ function applyMarketDataConfidenceGuard(confidence: number, baseConfidence: numb
 }
 
 function hasMarketData(match: any) {
-  return Boolean(
-    match?.odds ||
-      match?.market ||
-      match?.bookmakers ||
-      match?.raw?.odds ||
-      match?.raw?.market ||
-      match?.raw?.bookmakers,
-  )
+  const rows = Array.isArray(match?.odds) ? match.odds : []
+  return rows.some((row: any) => row?.match_id || row?.id || row?.market_name)
 }
 
 function buildSelectionV2Analysis(match: any, analysis: any) {

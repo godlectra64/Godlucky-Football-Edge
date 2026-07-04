@@ -11,8 +11,8 @@ export function generateAiFinalPick(match = {}) {
   const ahAnalysis = match.aiFinalPick?.ahAnalysis ?? match.ai_final_pick?.ah_analysis ?? analyzeAsianHandicap(match)
   const ouAnalysis = match.aiFinalPick?.ouAnalysis ?? match.ai_final_pick?.ou_analysis ?? analyzeOverUnder(match)
   const selected = chooseMarketAnalysis(ahAnalysis, ouAnalysis)
-  const oddsRows = normalizeOddsRows(match)
-  const hasOdds = oddsRows.length > 0 || Boolean(selected.hasMarket)
+  const oddsRows = normalizeOddsRows(match).filter((row) => row?.id || row?.matchId || row?.match_id)
+  const hasOdds = oddsRows.length > 0
   const totalAnalysisScore = scoreValue(analysis.ranking_score ?? analysis.ai_score ?? analysis.confidence_score ?? match.rankingScore ?? match.confidence, 0)
   const selectionScore = scoreValue(selected.confidenceScore, 0)
   const confidenceScore = clamp(Math.round(Math.max(selectionScore, Number(analysis.calibrated_confidence_score ?? analysis.confidence_score ?? selectionScore))), 0, 100)
@@ -22,7 +22,7 @@ export function generateAiFinalPick(match = {}) {
   const bookmakerCount = Number(selected.bookmakerCount ?? new Set(oddsRows.map((row) => row.bookmaker).filter(Boolean)).size)
   const movementState = String(selected.marketSignal ?? '').toLowerCase().includes('against') ? 'against' : 'ok'
   const marketDataUsed = Boolean(analysis.market_data_used ?? analysis.raw?.market_data_used ?? hasOdds)
-  const oddsRowsUsed = Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? oddsRows.length)
+  const oddsRowsUsed = oddsRows.length
   const apiPick = derivePickTeamFromApiFootballOdds(match, oddsRows)
   const marketEdgeScore = scoreValue(analysis.market_edge_score ?? analysis.raw?.market_edge_score, 0)
   const recommendation = normalizeRecommendation(analysis.recommendation ?? match.recommendation)

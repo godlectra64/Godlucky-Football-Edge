@@ -10,7 +10,7 @@
     "verify:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:daily-sync": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:daily-sync-orchestrator": "node scripts/verifyAnalysisIntegrity.mjs",
-    "verify:odds": "node scripts/verifyAiFinalPickIntegrity.mjs",
+    "verify:odds": "node scripts/verifyOddsIntegrity.mjs",
     "verify:ai-final-pick": "node scripts/verifyAiFinalPickIntegrity.mjs",
     "verify:daily-top10": "node scripts/verifyDailyTop10Lock.mjs",
     "verify:strict-daily": "node scripts/verifyStrictDaily.mjs",

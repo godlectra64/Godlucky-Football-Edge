@@ -103,8 +103,7 @@ function normalizeLockedMatch(match = {}, lock = {}) {
 function deriveWaitingMarketData(match = {}, analysis = {}, aiFinalPick = {}, lock = {}) {
   const odds = match.odds ?? match.matchOdds ?? match.match_odds ?? []
   const oddsRows = Array.isArray(odds) ? odds : []
-  const oddsRowsUsed = Number(analysis?.odds_rows_used ?? analysis?.raw?.odds_rows_used ?? aiFinalPick?.odds_rows_used ?? aiFinalPick?.oddsRowsUsed ?? 0)
-  const hasOdds = oddsRows.length > 0 || oddsRowsUsed > 0
+  const hasOdds = oddsRows.length > 0
   const readiness = String(match?.data_readiness_status ?? analysis?.raw?.data_readiness_status ?? '').toUpperCase()
   const analysisStatus = String(analysis?.analysis_status ?? analysis?.raw?.analysis_status ?? aiFinalPick?.analysis_status ?? aiFinalPick?.analysisStatus ?? '').toUpperCase()
   const signal = String(aiFinalPick?.signal ?? lock?.signal ?? '').toUpperCase()

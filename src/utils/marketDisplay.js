@@ -1,20 +1,13 @@
 import { normalizeMarketFocus } from './oddsUtils.js'
 
-export const waitingApiFootballMarketLabel = 'รอข้อมูลจาก API-Football'
-export const waitingApiFootballMarketReason = 'คู่นี้อยู่ในชุดคัดเลือกแล้ว แต่ API-Football ยังไม่มีข้อมูลตลาดสำหรับคู่นี้'
-
-const apiFootballMarketLabelsTh = {
-  AH: 'แฮนดิแคป',
-  OU: 'สูง/ต่ำ',
-  MATCH_WINNER: '1X2',
-  BTTS: 'ทั้งสองทีมยิงได้',
-}
+export const waitingApiFootballMarketLabel = 'ยังไม่มีข้อมูลราคา'
+export const waitingApiFootballMarketReason = 'ยังไม่มีข้อมูลราคา'
 
 export function getApiFootballMarketDisplay(match = {}, finalPick = {}) {
   const rows = getApiFootballOddsRows(match)
   const primary = choosePrimaryApiFootballMarket(rows, finalPick)
 
-  if (!primary) {
+  if (!primary?.marketName) {
     return {
       label: waitingApiFootballMarketLabel,
       status: 'waiting_api_football_market',
@@ -191,9 +184,8 @@ export function getApiFootballOddsRows(match = {}) {
   const matchOdds = asArray(match.matchOdds)
   const snakeMatchOdds = asArray(match.match_odds)
   const enrichmentOdds = asArray(match.enrichment?.odds)
-  const rawOdds = asArray(match.raw?.odds)
 
-  return [...directRows, ...matchOdds, ...snakeMatchOdds, ...enrichmentOdds, ...rawOdds]
+  return [...directRows, ...matchOdds, ...snakeMatchOdds, ...enrichmentOdds]
     .map(normalizeApiFootballOddsRow)
     .filter((row) => row.hasApiFootballSource)
     .filter(uniqueOddsRow)
@@ -217,7 +209,7 @@ function normalizeApiFootballOddsRow(row = {}) {
   const betName = firstText(row.bet_name, row.betName, row.selection, row.value, row.raw?.bet_name, row.raw?.value)
   const marketFocus = normalizeMarketFocus(row.market_focus ?? row.marketFocus ?? marketName)
   const bookmaker = firstText(row.bookmaker_name, row.bookmaker, row.bookmakerName, row.raw?.bookmaker_name)
-  const hasApiFootballSource = Boolean(row.id || row.match_id || marketName || betName || bookmaker)
+  const hasApiFootballSource = Boolean(row.id || row.match_id || row.matchId)
 
   return {
     id: row.id ?? null,
@@ -237,8 +229,7 @@ function normalizeApiFootballOddsRow(row = {}) {
 }
 
 function formatApiFootballMarketName(row = {}) {
-  if (row.marketFocus && apiFootballMarketLabelsTh[row.marketFocus]) return apiFootballMarketLabelsTh[row.marketFocus]
-  return row.marketName || row.betName || waitingApiFootballMarketLabel
+  return row.marketName || waitingApiFootballMarketLabel
 }
 
 function asArray(value) {

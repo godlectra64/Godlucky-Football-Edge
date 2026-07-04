@@ -43,6 +43,8 @@ const selected = top10Rows
   }))
 
 const totalMatchesWithOdds = matches.filter((match) => (oddsByMatch.get(match.id) ?? []).length > 0).length
+const oddsRowsExistButHasMarketDataFalse = matches.filter((match) => (oddsByMatch.get(match.id) ?? []).length > 0 && !match.has_market_data).length
+const hasMarketDataTrueButNoOddsRows = matches.filter((match) => Boolean(match.has_market_data) && (oddsByMatch.get(match.id) ?? []).length === 0).length
 const selectedWithOdds = selected.filter((item) => item.oddsRows.length > 0).length
 const duplicateRanks = findDuplicates(top10Rows, (row) => row.rank)
 const duplicateMatches = findDuplicates(top10Rows, (row) => row.match_id)
@@ -61,6 +63,8 @@ report('duplicate rank per day', duplicateRanks.length)
 report('duplicate match per day', duplicateMatches.length)
 report('cross-date selection', crossDateRows.length)
 report('daily rows missing same-date fixture', selectedMissingFromDate.length)
+report('odds rows exists but has_market_data=false', oddsRowsExistButHasMarketDataFalse)
+report('has_market_data=true but no odds rows', hasMarketDataTrueButNoOddsRows)
 report('odds priority violation', oddsPriorityViolation ? 1 : 0)
 report('selected odds coverage', selectedWithOdds < expectedOddsInTop10 ? expectedOddsInTop10 - selectedWithOdds : 0, `selectedWithOdds=${selectedWithOdds}/${expectedOddsInTop10} totalMatchesWithOdds=${totalMatchesWithOdds}`)
 report('pick_team without API odds', noOddsPickTeamRows.length)
@@ -96,6 +100,7 @@ async function fetchMatches(startUtc, endUtc) {
       status,
       status_short,
       match_status,
+      has_market_data,
       has_fixture_detail,
       data_readiness_status,
       raw,

@@ -320,9 +320,7 @@ function getLeagueCoverage(match) {
 
 function getOddsRowCount(match) {
   const rows = match.odds ?? match.matchOdds ?? match.match_odds ?? match.enrichment?.odds ?? []
-  const analysis = match.analysis ?? match.match_analysis ?? {}
-  const pick = match.aiFinalPick ?? match.ai_final_pick ?? {}
-  return Array.isArray(rows) ? rows.length : numberValue(analysis.odds_rows_used ?? pick.oddsRowsUsed ?? pick.odds_rows_used)
+  return Array.isArray(rows) ? rows.filter((row) => row?.id || row?.match_id || row?.matchId).length : 0
 }
 
 function getSignal(match) {

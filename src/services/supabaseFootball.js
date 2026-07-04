@@ -198,6 +198,7 @@ export function normalizeMatch(row = {}) {
   const raw = source.raw ?? {}
   const calibratedConfidence = activeAnalysis?.calibrated_confidence_score ?? activeAnalysis?.confidence_score
   const odds = source.odds ?? source.matchOdds ?? source.match_odds ?? source.enrichment?.odds ?? []
+  const hasStoredOdds = Array.isArray(odds) && odds.length > 0
   const aiFinalPick = normalizeStoredAiFinalPick(source.aiFinalPick ?? source.ai_final_pick, {
     ...source,
     analysis: activeAnalysis,
@@ -226,8 +227,8 @@ export function normalizeMatch(row = {}) {
     enrichment_error: source.enrichment_error,
     enrichmentBreakdown: source.enrichment_breakdown,
     enrichment_breakdown: source.enrichment_breakdown,
-    hasMarketData: source.has_market_data,
-    has_market_data: source.has_market_data,
+    hasMarketData: hasStoredOdds,
+    has_market_data: hasStoredOdds,
     hasFixtureDetail: source.has_fixture_detail,
     has_fixture_detail: source.has_fixture_detail,
     dataReadinessScore: source.data_readiness_score,

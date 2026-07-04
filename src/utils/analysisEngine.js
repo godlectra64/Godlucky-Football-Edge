@@ -269,7 +269,7 @@ export function getMarketReadinessGroup(match = {}) {
   const analysis = match.analysis ?? match.match_analysis ?? {}
   const pick = match.aiFinalPick ?? match.ai_final_pick ?? {}
   const oddsRows = getOddsRows(match)
-  const hasOdds = oddsRows.length > 0 || Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? pick.oddsRowsUsed ?? pick.odds_rows_used ?? 0) > 0
+  const hasOdds = oddsRows.length > 0
   const readiness = String(match.dataReadinessStatus ?? match.data_readiness_status ?? analysis.raw?.data_readiness_status ?? '').toUpperCase()
   const analysisStatus = String(analysis.analysis_status ?? analysis.raw?.analysis_status ?? pick.analysisStatus ?? pick.analysis_status ?? '').toUpperCase()
   const validationStatus = String(analysis.data_validation_status ?? 'VALID').toUpperCase()
@@ -342,7 +342,11 @@ function getMarketEdgeScore(match = {}) {
 
 function getOddsRows(match = {}) {
   const rows = match.odds ?? match.matchOdds ?? match.match_odds ?? match.enrichment?.odds ?? []
-  return Array.isArray(rows) ? rows : []
+  return Array.isArray(rows) ? rows.filter(isStoredOddsRow) : []
+}
+
+function isStoredOddsRow(row = {}) {
+  return Boolean(row.id || row.match_id || row.matchId)
 }
 
 export function calculateStats(matches) {
