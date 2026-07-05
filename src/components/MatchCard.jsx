@@ -5,6 +5,7 @@ import { buildAiFinalPick } from '../utils/finalPick'
 import { formatKickoffTime } from '../utils/formatters'
 import { derivePickTeamFromApiFootballOdds, getApiFootballMarketDisplay } from '../utils/marketDisplay'
 import { getMatchStatusInfo, getScoreDisplay } from '../utils/matchStatus'
+import { normalizeProfessionalResultFromAnalysis } from '../utils/professionalSelectionPipeline'
 import MarketDirectionBadge from './MarketDirectionBadge'
 import RiskBadge from './RiskBadge'
 import ScoreBadge from './ScoreBadge'
@@ -31,8 +32,9 @@ export default function MatchCard({
   const pickSummary = apiPick.pickSummary
   const waitingMarket = providedIsWaitingMarketData ?? (!isFinished && isWaitingForMarketData(match))
   const mode = displayMode || (waitingMarket ? 'waiting' : recommendation === 'BET' ? 'strong' : 'watch')
+  const professional = normalizeProfessionalResultFromAnalysis({ ...match, recommendation })
   const analysisSummary = buildCardSummary(match, recommendation, confidence, waitingMarket)
-  const reasons = buildReasonList(match, finalPick, analysisSummary, waitingMarket || !marketDisplay.hasApiFootballMarket, marketDisplay)
+  const reasons = buildReasonList(match, finalPick, analysisSummary, waitingMarket || !marketDisplay.hasApiFootballMarket, marketDisplay, professional)
   const cardClass = buildCardClass(finalRank ?? match.rank, mode, riskLevel)
   const open = () => onOpen?.(match.id)
   const scoreDisplay = getFinishedScoreDisplay(match)
@@ -75,14 +77,22 @@ export default function MatchCard({
         <RiskBadge level={riskLevel} />
         {marketDisplay.hasApiFootballMarket ? <MarketDirectionBadge signal={waitingMarket ? 'SKIP' : aiPick.signal} compact /> : null}
         <span className="semantic-badge border-white/10 bg-white/[0.04] text-white">AI Score {confidence}%</span>
+        {buildProfessionalBadges(professional).map((badge) => (
+          <span key={badge} className="semantic-badge border-emerald-300/25 bg-emerald-300/10 text-emerald-50">{badge}</span>
+        ))}
       </div>
 
+      <ProfessionalMetrics professional={professional} confidence={confidence} riskLevel={riskLevel} />
       <SystemPickSummaryBox summary={pickSummary} confidence={confidence} hasMarket={marketDisplay.hasApiFootballMarket} />
 
-      {reasons[0] ? (
-        <p className="text-clamp-2 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-semibold leading-5 text-slate-300">
-          {reasons[0]}
-        </p>
+      {reasons.length ? (
+        <div className="mt-2 grid gap-1.5">
+          {reasons.slice(0, 3).map((reason) => (
+            <p key={reason} className="text-clamp-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-1.5 text-xs font-semibold leading-5 text-slate-300">
+              {reason}
+            </p>
+          ))}
+        </div>
       ) : null}
 
       <button
@@ -97,6 +107,21 @@ export default function MatchCard({
         <ArrowRight size={16} />
       </button>
     </article>
+  )
+}
+
+function ProfessionalMetrics({ professional, confidence, riskLevel }) {
+  const scores = professional?.scores ?? {}
+  const riskLabel = String(riskLevel ?? '').toUpperCase() || '-'
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-1.5">
+      <SummaryMetric label="Professional Score" value={`${Math.round(professional?.totalScore ?? 0)}%`} />
+      <SummaryMetric label="Confidence" value={`${Math.round(confidence ?? professional?.confidenceScore ?? 0)}%`} />
+      <SummaryMetric label="Risk Level" value={riskLabel} muted={riskLabel === 'HIGH'} />
+      <SummaryMetric label="Value Edge" value={`${Math.round(scores.valueEdge ?? 0)}%`} muted={(scores.valueEdge ?? 0) < 55} />
+      <SummaryMetric label="Market Quality" value={`${Math.round(scores.marketQuality ?? 0)}%`} muted={(scores.marketQuality ?? 0) < 45} />
+      <SummaryMetric label="Data Quality" value={`${Math.round(scores.dataQuality ?? 0)}%`} muted={(scores.dataQuality ?? 0) < 50} />
+    </div>
   )
 }
 
@@ -141,15 +166,22 @@ function SummaryMetric({ label, value, muted = false }) {
   )
 }
 
-function buildReasonList(match, finalPick, analysisSummary, waitingMarket, marketDisplay) {
+function buildReasonList(match, finalPick, analysisSummary, waitingMarket, marketDisplay, professional) {
   if (waitingMarket) return [marketDisplay.reason]
   const pickSummary = match.aiFinalPick?.finalSummary ?? finalPick.pickReason
-  const rawReasons = [pickSummary, analysisSummary, finalPick.valueReason]
+  const rawReasons = [...(professional?.reasons ?? []), pickSummary, analysisSummary, finalPick.valueReason]
     .filter(Boolean)
     .map((item) => sanitizeUserText(item))
     .filter(Boolean)
 
-  return [...new Set(rawReasons)].slice(0, 1)
+  return [...new Set(rawReasons)].slice(0, 3)
+}
+
+function buildProfessionalBadges(professional) {
+  const recommendation = String(professional?.recommendation ?? '').toUpperCase()
+  if (recommendation === 'BET') return ['AI BET', 'Value Found', 'Risk OK']
+  if (recommendation === 'LEAN') return ['รอดูราคา', 'มีทรงแต่ยังไม่สุด']
+  return ['ผ่านการวิเคราะห์แล้ว แต่ไม่คุ้มเสี่ยง']
 }
 
 function buildCardSummary(match, recommendation, confidence, waitingMarket) {

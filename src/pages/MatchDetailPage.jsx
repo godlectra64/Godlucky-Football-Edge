@@ -77,6 +77,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
       <HeroHeader detail={detail} />
       <FinalDecisionSection detail={detail} heroSelection={heroSelection} />
       <SystemPickSummarySection detail={detail} />
+      <ProfessionalPipelineSection detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <DetailAccordion open={detailsOpen} onToggle={() => setDetailsOpen((value) => !value)}>
       <AiFinalPickAnalysisSection detail={detail} />
@@ -251,6 +252,66 @@ function SystemPickSummarySection({ detail }) {
           <DecisionMetric label="เหตุผลย่อ" value={summary.reason} muted={!hasMarket} />
         </div>
       </div>
+    </Section>
+  )
+}
+
+function ProfessionalPipelineSection({ detail }) {
+  const pipeline = detail.professionalPipeline ?? {}
+  const scores = pipeline.scores ?? {}
+  const gates = pipeline.gates ?? {}
+  const scoreItems = [
+    ['League Quality', scores.leagueQuality],
+    ['Data Quality', scores.dataQuality],
+    ['Market Quality', scores.marketQuality],
+    ['Statistical Edge', scores.statisticalEdge],
+    ['Tactical Edge', scores.tacticalEdge],
+    ['Motivation', scores.motivation],
+    ['Risk Control', scores.riskControl],
+    ['Value Edge', scores.valueEdge],
+    ['AI Confidence', scores.aiConfidence],
+  ]
+  const reasons = pipeline.reasons?.length ? pipeline.reasons : [detail.analysisSummary]
+  const risks = [
+    ...(pipeline.warnings ?? []),
+    ...Object.entries(gates)
+      .filter(([, passed]) => !passed)
+      .map(([key]) => `Gate ${key} ยังไม่ผ่าน`),
+  ]
+
+  return (
+    <Section title="Professional Pipeline Breakdown" icon={ListChecks} accent>
+      <div className="grid grid-cols-2 gap-2">
+        <Metric label="Professional Score" value={`${Math.round(pipeline.totalScore ?? 0)}/100`} />
+        <Metric label="Recommendation" value={pipeline.recommendation ?? detail.recommendation} />
+        <Metric label="Pipeline Stage" value={pipeline.pipelineStage ?? '-'} />
+        <Metric label="Confidence" value={`${Math.round(pipeline.confidenceScore ?? detail.confidence ?? 0)}/100`} />
+      </div>
+      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {scoreItems.map(([label, value]) => (
+          <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-black text-slate-300">{label}</p>
+              <span className={`semantic-badge ${Number(value ?? 0) >= 70 ? 'badge-positive' : Number(value ?? 0) >= 50 ? 'badge-medium' : 'badge-high'}`}>
+                {Math.round(value ?? 0)}/100
+              </span>
+            </div>
+            <ProgressBar value={Number(value ?? 0)} tone={Number(value ?? 0) >= 70 ? 'good' : Number(value ?? 0) >= 50 ? 'medium' : 'risk'} />
+          </div>
+        ))}
+      </div>
+      <TwoColumnLists
+        leftTitle="ทำไมคู่นี้ถูกเลือก"
+        leftItems={uniqueTextItems(reasons).slice(0, 5)}
+        rightTitle="เหตุผลของ BET / LEAN / NO BET"
+        rightItems={[buildProfessionalDecisionText(pipeline), ...(pipeline.finalPick?.reason ? [pipeline.finalPick.reason] : [])]}
+      />
+      <TwoColumnLists
+        leftTitle="ความเสี่ยงหลัก"
+        leftItems={uniqueTextItems(risks).slice(0, 5)}
+        rightTitle="Data Warnings"
+        rightItems={uniqueTextItems(pipeline.warnings ?? []).slice(0, 5)}
+      />
     </Section>
   )
 }
@@ -1069,6 +1130,23 @@ function formatMarketValue(value) {
   if (typeof value === 'object') return 'พร้อมใช้งาน'
   return String(value)
 }
+function buildProfessionalDecisionText(pipeline = {}) {
+  const recommendation = String(pipeline.recommendation ?? 'NO BET').toUpperCase()
+  const total = Math.round(pipeline.totalScore ?? 0)
+  const confidence = Math.round(pipeline.confidenceScore ?? 0)
+  const value = Math.round(pipeline.scores?.valueEdge ?? 0)
+  const risk = Math.round(pipeline.scores?.riskControl ?? 0)
+  if (recommendation === 'BET') return `จัดเป็น BET เพราะคะแนนรวม ${total}/100, confidence ${confidence}/100, value edge ${value}/100 และ risk control ${risk}/100 ผ่านเกณฑ์`
+  if (recommendation === 'LEAN') return `จัดเป็น LEAN เพราะภาพรวมดีพอให้ติดตาม แต่ value/risk/confidence ยังไม่ครบเกณฑ์ BET`
+  return 'จัดเป็น NO BET เพราะผ่านการวิเคราะห์แล้ว แต่คะแนนรวม value ความเสี่ยง หรือ gate สำคัญยังไม่คุ้มพอ'
+}
+
+function uniqueTextItems(items = []) {
+  const normalized = items.map((item) => String(item ?? '').trim()).filter(Boolean)
+  const unique = [...new Set(normalized)]
+  return unique.length ? unique : ['ข้อมูลยังจำกัด']
+}
+
 function sanitizeUiText(value) {
   const fromCodes = (codes) => String.fromCharCode(...codes)
   const replacements = [

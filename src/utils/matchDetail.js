@@ -9,6 +9,7 @@ import {
 import { dataIntelligenceSections, normalizeDataIntelligence } from './dataIntelligence.js'
 import { buildAiFinalPick } from './finalPick.js'
 import { deriveAiPickSide, getAiPickDisplay } from './pickSide.js'
+import { normalizeProfessionalResultFromAnalysis } from './professionalSelectionPipeline.js'
 
 const intelligenceFallback = {
   h2h: { score: 58, confidence: 'low', reason: 'ยังไม่มีข้อมูล H2H เพียงพอ', signals: ['missing_h2h'] },
@@ -124,6 +125,7 @@ export function normalizeDetailPayload(match) {
   const aiPick = deriveAiPickSide(safeMatch)
   const aiPickDisplay = getAiPickDisplay(safeMatch)
   const finalPick = buildAiFinalPick(safeMatch)
+  const professionalPipeline = normalizeProfessionalResultFromAnalysis(safeMatch)
 
   return {
     ...safeMatch,
@@ -139,6 +141,7 @@ export function normalizeDetailPayload(match) {
     pickReason: aiPick.pickReason,
     aiPickDisplay,
     finalPick,
+    professionalPipeline,
     rankReason: safeMatch.rankReason ?? safeMatch.rank_reason ?? 'ข้อมูลอันดับยังจำกัด',
     rankBadges: safeMatch.rankBadges ?? safeMatch.rank_badges ?? [],
     analysisSummary: getAnalysisSummary(safeMatch),

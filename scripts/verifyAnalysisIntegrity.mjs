@@ -197,6 +197,41 @@ const optionalV4Checks = [
   },
 ]
 
+const optionalProfessionalChecks = [
+  {
+    label: 'null professional_score when column exists',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).is('professional_score', null),
+  },
+  {
+    label: 'invalid professional_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('professional_score.lt.0,professional_score.gt.100'),
+  },
+  {
+    label: 'invalid data_quality_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('data_quality_score.lt.0,data_quality_score.gt.100'),
+  },
+  {
+    label: 'invalid market_quality_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('market_quality_score.lt.0,market_quality_score.gt.100'),
+  },
+  {
+    label: 'invalid risk_control_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('risk_control_score.lt.0,risk_control_score.gt.100'),
+  },
+  {
+    label: 'invalid value_edge_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('value_edge_score.lt.0,value_edge_score.gt.100'),
+  },
+  {
+    label: 'top 10 missing professional score',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('is_top_pick', true).is('professional_score', null),
+  },
+  {
+    label: 'friendly/youth low-data BET',
+    query: checkFriendlyYouthLowDataBet,
+  },
+]
+
 const enrichmentTables = [
   'api_football_league_coverage',
   'api_football_fixture_statistics',
@@ -302,6 +337,24 @@ for (const check of optionalV4Checks) {
   }
 
   console.log(`${check.label}: ${count ?? 0}`)
+  if ((count ?? 0) > 0) failed = true
+}
+
+for (const check of optionalProfessionalChecks) {
+  const { count, error, warning } = await check.query()
+  if (error) {
+    if (isOptionalV2Missing(error) || isBlankOptionalProfessionalError(error)) {
+      console.log(`${check.label}: skipped (${error.message})`)
+      continue
+    }
+
+    failed = true
+    console.error(`${check.label}: query failed - ${error.message}`)
+    continue
+  }
+
+  if (warning) console.warn(`${check.label}: ${warning}`)
+  else console.log(`${check.label}: ${count ?? 0}`)
   if ((count ?? 0) > 0) failed = true
 }
 
@@ -471,6 +524,10 @@ function isRestSchemaMissing(error) {
   return error.code === 'PGRST205' || /Could not find the table .* in the schema cache/i.test(message)
 }
 
+function isBlankOptionalProfessionalError(error) {
+  return error && String(error.message ?? '') === '' && !error.code
+}
+
 async function fetchKickoffByMatchId(rows) {
   const ids = [...new Set((rows ?? []).map((row) => row.match_id).filter(Boolean))]
   const map = new Map()
@@ -635,6 +692,41 @@ async function checkMarketReadyDefaultAnalysis() {
     count: 0,
     warning: `Market data exists but analysis appears stale/default: ${stale.length} matches`,
   }
+}
+
+async function checkFriendlyYouthLowDataBet() {
+  const { data, error } = await supabase
+    .from('match_analysis')
+    .select('id, match_id, recommendation, data_quality_score, league_quality_score, raw')
+    .eq('recommendation', 'BET')
+  if (error) return { error }
+
+  const matchIds = [...new Set((data ?? []).map((row) => row.match_id).filter(Boolean))]
+  const { data: matches, error: matchError } = matchIds.length
+    ? await supabase
+      .from('football_matches')
+      .select('id, league:football_leagues(name, country)')
+      .in('id', matchIds)
+    : { data: [], error: null }
+  if (matchError) return { error: matchError }
+
+  const leagueByMatchId = new Map((matches ?? []).map((match) => [match.id, match.league ?? {}]))
+  const riskyRows = (data ?? []).filter((row) => {
+    const league = leagueByMatchId.get(row.match_id) ?? {}
+    const text = [
+      league?.name,
+      league?.country,
+      row.raw?.league?.name,
+      row.raw?.competition?.name,
+      row.raw?.professional_pipeline?.pipelineStage,
+    ].filter(Boolean).join(' ').toLowerCase()
+    const lowTrust = /friendly|test|youth|u17|u18|u19|u20|u21|u23|reserve|amateur/.test(text)
+    const dataQuality = Number(row.data_quality_score ?? row.raw?.professional_pipeline?.scores?.dataQuality ?? 0)
+    const leagueQuality = Number(row.league_quality_score ?? row.raw?.professional_pipeline?.scores?.leagueQuality ?? 0)
+    return lowTrust && (dataQuality < 60 || leagueQuality < 55)
+  })
+
+  return { count: riskyRows.length }
 }
 
 function analysisAppearsDefault(analysis) {

@@ -88,7 +88,17 @@ ${analysisFinalPickSelect},
     latest_odds,
     odds_movement_summary,
     enriched_summary,
-    learning_summary
+    learning_summary,
+    professional_score,
+    data_quality_score,
+    market_quality_score,
+    statistical_edge_score,
+    tactical_edge_score,
+    risk_control_score,
+    value_edge_score,
+    pipeline_stage,
+    pipeline_reasons,
+    pipeline_warnings
 `
 
 export const matchSelect = `

@@ -4,6 +4,11 @@ import {
   getDataIntelligenceRankingAdjustment,
   normalizeDataIntelligence,
 } from './dataIntelligence.js'
+import {
+  compareProfessionalSelections,
+  isProfessionalTopCandidate,
+  normalizeProfessionalResultFromAnalysis,
+} from './professionalSelectionPipeline.js'
 
 export const recommendationLabels = {
   bet: 'BET',
@@ -213,13 +218,14 @@ function enrichStoredTopPick(match, index) {
 
 export function enrichMatch(match) {
   const master = calculateFootballMasterAnalysis(match)
+  const professional = normalizeProfessionalResultFromAnalysis(match)
   const ranking = buildRankingProfile(match, master)
   const confidence = getPickConfidence({
     ...match,
-    confidence: match.calibratedConfidence ?? match.calibrated_confidence_score ?? match.analysis?.calibrated_confidence_score ?? match.confidence ?? match.analysis?.confidence_score ?? master.confidence,
+    confidence: match.calibratedConfidence ?? match.calibrated_confidence_score ?? match.analysis?.calibrated_confidence_score ?? match.confidence ?? match.analysis?.confidence_score ?? professional.confidenceScore ?? master.confidence,
   })
   const riskLevel = normalizeRiskLevel(match.riskLevel ?? match.risk_level ?? match.analysis?.risk_level ?? master.riskLevel)
-  const recommendation = match.recommendation ?? match.analysis?.recommendation ?? getRecommendationFromConfidence(confidence, riskLevel)
+  const recommendation = match.recommendation ?? match.analysis?.recommendation ?? professional.recommendation ?? getRecommendationFromConfidence(confidence, riskLevel)
 
   return {
     ...match,
@@ -229,6 +235,18 @@ export function enrichMatch(match) {
     recommendation,
     riskLevel,
     totalAnalysisScore: confidence,
+    professionalScore: professional.totalScore,
+    professional_score: professional.totalScore,
+    professionalPipeline: professional,
+    professional_pipeline: professional,
+    valueEdgeScore: professional.scores.valueEdge,
+    value_edge_score: professional.scores.valueEdge,
+    marketQualityScore: professional.scores.marketQuality,
+    market_quality_score: professional.scores.marketQuality,
+    dataQualityScore: professional.scores.dataQuality,
+    data_quality_score: professional.scores.dataQuality,
+    riskControlScore: professional.scores.riskControl,
+    risk_control_score: professional.scores.riskControl,
     dataCompleteness: master.dataCompleteness,
     analysisSummary: master.analysisSummary,
     analysisBreakdown: master.analysisBreakdown,
@@ -242,15 +260,12 @@ export function enrichMatch(match) {
 }
 
 export function compareForTopMatches(a, b) {
+  const professionalDiff = compareProfessionalSelections(a, b)
   const marketReadinessDiff = compareMarketReadyMatches(a, b)
-  const recommendationDiff = getRecommendationPriority(a.recommendation) - getRecommendationPriority(b.recommendation)
-  const confidenceDiff = getAiPickConfidence(b) - getAiPickConfidence(a)
-  const scoreDiff = getAiPickScore(b) - getAiPickScore(a)
-  const marketRiskDiff = getAiPickMarketRisk(a) - getAiPickMarketRisk(b)
   const kickoffA = new Date(a.kickoffAt ?? a.kickoff_at ?? 0).getTime()
   const kickoffB = new Date(b.kickoffAt ?? b.kickoff_at ?? 0).getTime()
 
-  return marketReadinessDiff || recommendationDiff || confidenceDiff || scoreDiff || marketRiskDiff || kickoffA - kickoffB
+  return professionalDiff || marketReadinessDiff || kickoffA - kickoffB
 }
 
 export function compareMarketReadyMatches(a, b) {
@@ -383,7 +398,8 @@ export function rankTopMatches(matchesWithAnalysis, limit = 10) {
 export function rankTopAiPicks(matchesWithAnalysis, limit = 10) {
   const maxItems = Math.max(0, limit)
   const enriched = [...(matchesWithAnalysis ?? [])].map((match) => enrichMatch(match))
-  const selected = enriched.sort(compareForTopMatches).slice(0, maxItems)
+  const professionalCandidates = enriched.filter(isProfessionalTopCandidate)
+  const selected = professionalCandidates.sort(compareForTopMatches).slice(0, maxItems)
 
   return selected.map((match, index) => {
     const aiPickRank = index + 1
@@ -457,33 +473,6 @@ function getAiPickConfidence(match) {
   )
 }
 
-function getAiPickScore(match) {
-  return numberValue(
-    match?.analysis?.calibrated_confidence_score ??
-      match?.calibrated_confidence_score ??
-      match?.calibratedConfidence ??
-      match?.ai_score ??
-      match?.aiScore ??
-      match?.score ??
-      match?.rankingScore ??
-      match?.ranking_score ??
-      match?.analysis?.ai_score ??
-      match?.analysis?.score ??
-      0,
-  )
-}
-
-function getAiPickMarketRisk(match) {
-  return numberValue(
-    match?.market_risk_score ??
-      match?.marketRiskScore ??
-      match?.analysis?.market_risk_score ??
-      match?.analysis?.raw?.modules?.marketOddsRisk ??
-      match?.analysis?.raw?.analysis_breakdown?.market_odds_risk?.score ??
-      0,
-  )
-}
-
 export function getModuleConsistencyScore(analysisBreakdown = {}) {
   const scores = getBreakdownScores(analysisBreakdown)
   if (!scores.length) return 58
@@ -510,7 +499,7 @@ function buildRankingProfile(match, precomputedMaster = null) {
   const dataIntelligence = breakdown.data_intelligence ?? {}
   const confidence = numberValue(match?.confidence ?? match?.confidence_score ?? master.confidence)
   const riskLevel = normalizeRiskLevel(match?.riskLevel ?? match?.risk_level ?? master.riskLevel)
-  const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
+  const recommendation = normalizeRecommendationLabel(match?.recommendation ?? match?.analysis?.recommendation) ?? getRecommendationFromConfidence(confidence, riskLevel)
   const dataCompleteness = getDataCompletenessScore({ ...(match ?? {}), dataCompleteness: master.dataCompleteness })
   const consistencyScore = getModuleConsistencyScore(breakdown)
   const marketScore = numberValue(breakdown.market_odds_risk?.score ?? match?.analysis?.market_risk_score ?? 60)
@@ -1385,6 +1374,12 @@ function normalizeRiskLevel(value) {
   if (normalized === 'medium') return riskLabels.medium
   if (normalized === 'high') return riskLabels.high
   return riskLabels.medium
+}
+
+function normalizeRecommendationLabel(value) {
+  const normalized = String(value ?? '').toUpperCase().replace('_', ' ')
+  if ([recommendationLabels.bet, recommendationLabels.lean, recommendationLabels.watch, recommendationLabels.noBet].includes(normalized)) return normalized
+  return null
 }
 
 function numberValue(value) {

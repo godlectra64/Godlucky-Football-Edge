@@ -3633,6 +3633,16 @@ function stripApiFootballPickPayload(payload: Record<string, unknown>) {
     'pick_confidence',
     'market_data_used',
     'analysis_status',
+    'professional_score',
+    'data_quality_score',
+    'market_quality_score',
+    'statistical_edge_score',
+    'tactical_edge_score',
+    'risk_control_score',
+    'value_edge_score',
+    'pipeline_stage',
+    'pipeline_reasons',
+    'pipeline_warnings',
   ]) {
     delete stripped[key]
   }
@@ -6899,6 +6909,16 @@ async function upsertMatchAnalysis(matchId: string, analysis: any) {
     odds_movement_summary: safeAnalysis.odds_movement_summary,
     enriched_summary: safeAnalysis.enriched_summary,
     learning_summary: safeAnalysis.learning_summary,
+    professional_score: safeAnalysis.professional_score,
+    data_quality_score: safeAnalysis.data_quality_score,
+    market_quality_score: safeAnalysis.market_quality_score,
+    statistical_edge_score: safeAnalysis.statistical_edge_score,
+    tactical_edge_score: safeAnalysis.tactical_edge_score,
+    risk_control_score: safeAnalysis.risk_control_score,
+    value_edge_score: safeAnalysis.value_edge_score,
+    pipeline_stage: safeAnalysis.pipeline_stage,
+    pipeline_reasons: safeAnalysis.pipeline_reasons,
+    pipeline_warnings: safeAnalysis.pipeline_warnings,
     analysis_summary: safeAnalysis.analysis_summary,
     thai_reason: safeAnalysis.thai_reason,
     raw: safeAnalysis,
@@ -6968,6 +6988,13 @@ function normalizeAnalysisPayload(analysis: any) {
     confidence_score: confidence,
     pick_side: pick.pick_side,
   })
+  const professional = buildProfessionalSelectionScoreEdge(analysis?.raw_match ?? analysis?.raw ?? analysis ?? {}, {
+    ...(analysis ?? {}),
+    ...selectionV2,
+    confidence_score: confidence,
+    recommendation,
+    risk_level: riskLevel,
+  })
 
   return {
     ...(analysis ?? {}),
@@ -7020,10 +7047,181 @@ function normalizeAnalysisPayload(analysis: any) {
     odds_movement_summary: analysis?.odds_movement_summary ?? null,
     enriched_summary: analysis?.enriched_summary ?? null,
     learning_summary: analysis?.learning_summary ?? null,
+    professional_score: professional.totalScore,
+    data_quality_score: professional.scores.dataQuality,
+    market_quality_score: professional.scores.marketQuality,
+    statistical_edge_score: professional.scores.statisticalEdge,
+    tactical_edge_score: professional.scores.tacticalEdge,
+    risk_control_score: professional.scores.riskControl,
+    value_edge_score: professional.scores.valueEdge,
+    pipeline_stage: professional.pipelineStage,
+    pipeline_reasons: professional.reasons,
+    pipeline_warnings: professional.warnings,
+    professional_pipeline: professional,
     leagueQualitySource: leagueQualityScoringVersion,
     analysis_summary: summary,
     thai_reason: summary,
   }
+}
+
+function buildProfessionalSelectionScoreEdge(match: any = {}, analysis: any = {}) {
+  const leagueQuality = normalizeScore(analysis.league_quality_score ?? getLeagueQualityScore(match))
+  const dataQuality = normalizeScore(analysis.data_quality_score ?? analysis.match_quality_score ?? analysis.data_depth_score ?? calculateProfessionalDataQualityEdge(match, analysis))
+  const marketQuality = normalizeScore(analysis.market_quality_score ?? calculateProfessionalMarketQualityEdge(match, analysis))
+  const statisticalEdge = normalizeScore(analysis.statistical_edge_score ?? weightedAverage([
+    [analysis.team_strength_score, 0.2],
+    [analysis.form_score, 0.2],
+    [analysis.goal_scoring_score, 0.2],
+    [analysis.defensive_stability_score, 0.16],
+    [analysis.home_advantage_score ?? analysis.home_away_score, 0.14],
+    [analysis.away_weakness_score, 0.1],
+  ], 58))
+  const tacticalEdge = normalizeScore(analysis.tactical_edge_score ?? analysis.tactical_matchup_score ?? ((statisticalEdge * 0.65) + (Number(analysis.home_away_score ?? 55) * 0.35)))
+  const motivation = normalizeScore(analysis.motivation_score ?? 55)
+  const riskControl = normalizeScore(analysis.risk_control_score ?? calculateProfessionalRiskControlEdge(match, analysis, { leagueQuality, dataQuality, marketQuality }))
+  const valueEdge = normalizeScore(analysis.value_edge_score ?? calculateProfessionalValueEdgeEdge(analysis, marketQuality, riskControl))
+  const aiConfidence = normalizeScore(calculateProfessionalAiConfidenceEdge({ dataQuality, marketQuality, statisticalEdge, tacticalEdge, motivation, riskControl, valueEdge }))
+  const scores = {
+    leagueQuality,
+    dataQuality,
+    marketQuality,
+    statisticalEdge,
+    tacticalEdge,
+    motivation,
+    riskControl,
+    valueEdge,
+    aiConfidence,
+  }
+  const totalScore = normalizeScore(
+    (leagueQuality * 12 +
+      dataQuality * 12 +
+      marketQuality * 12 +
+      statisticalEdge * 16 +
+      tacticalEdge * 10 +
+      motivation * 10 +
+      riskControl * 10 +
+      valueEdge * 18 +
+      aiConfidence * 10) / 110,
+  )
+  const gates = {
+    passedLeagueFilter: leagueQuality >= 55,
+    passedDataQuality: dataQuality >= 50,
+    passedMarketQuality: marketQuality >= 45,
+    passedRiskFilter: riskControl >= 45,
+    passedValueFilter: valueEdge >= 45,
+    passedConfidenceFilter: aiConfidence >= 55,
+  }
+  const hardGatePassed = gates.passedLeagueFilter && gates.passedDataQuality && gates.passedMarketQuality && gates.passedRiskFilter && gates.passedValueFilter && gates.passedConfidenceFilter
+  const recommendation = hardGatePassed && totalScore >= 82 && aiConfidence >= 80 && valueEdge >= 70 && riskControl >= 60
+    ? 'BET'
+    : gates.passedLeagueFilter && gates.passedDataQuality && gates.passedMarketQuality && gates.passedRiskFilter && totalScore >= 70 && aiConfidence >= 68
+      ? 'LEAN'
+      : 'NO BET'
+  const reasons = [
+    `Professional score ${Math.round(totalScore)}/100 จาก league/data/market/stat/value pipeline`,
+    leagueQuality >= 55 ? 'ลีกผ่านเกณฑ์คุณภาพขั้นต่ำ' : 'ลีกต่ำกว่าเกณฑ์คุณภาพ',
+    valueEdge >= 70 ? 'พบ value edge ชัดเจนจากราคา/โมเดล' : 'value edge ยังไม่ชัดพอ',
+  ]
+  const warnings = [
+    ...(!gates.passedMarketQuality ? ['ข้อมูลตลาดยังไม่แข็งแรงพอสำหรับ BET'] : []),
+    ...(!gates.passedDataQuality ? ['ข้อมูลบางส่วนไม่ครบ ระบบลดความมั่นใจ'] : []),
+    ...(riskControl < 60 ? ['risk control ยังไม่ถึงระดับเสี่ยงต่ำ'] : []),
+  ]
+  return {
+    totalScore,
+    recommendation,
+    confidenceScore: aiConfidence,
+    pipelineStage: getProfessionalPipelineStageEdge(gates, recommendation),
+    scores,
+    gates,
+    reasons,
+    warnings,
+    finalPick: {
+      type: recommendation,
+      side: analysis.value_side ?? analysis.pick_side ?? 'NONE',
+      market: analysis.value_market ?? analysis.market_type ?? null,
+      line: analysis.value_line ?? analysis.market_line ?? null,
+      label: recommendation === 'BET' ? 'AI BET' : recommendation === 'LEAN' ? 'รอดูราคา' : 'ผ่านการวิเคราะห์แล้ว แต่ไม่คุ้มเสี่ยง',
+      reason: recommendation === 'BET' ? 'Value, confidence และ risk ผ่านเกณฑ์' : 'ยังไม่ผ่านครบทุก gate สำคัญ',
+    },
+  }
+}
+
+function calculateProfessionalDataQualityEdge(match: any, analysis: any) {
+  const raw = analysis.raw ?? match.raw ?? {}
+  const checks = [
+    Boolean(match.id || match.api_fixture_id),
+    Boolean(match.homeTeam?.name || match.home_team?.name),
+    Boolean(match.awayTeam?.name || match.away_team?.name),
+    Boolean(match.league?.name || match.competition?.name),
+    Boolean(analysis.form_score || raw.homeForm || raw.awayForm),
+    Boolean(raw.standings || raw.homeStanding || raw.awayStanding),
+    Boolean(raw.h2h || raw.h2hMatches),
+    Boolean(analysis.market_data_used || raw.odds || raw.market || raw.bookmakers),
+  ]
+  return normalizeScore((checks.filter(Boolean).length / checks.length) * 100)
+}
+
+function calculateProfessionalMarketQualityEdge(match: any, analysis: any) {
+  const raw = analysis.raw ?? match.raw ?? {}
+  const hasOdds = Boolean(analysis.market_data_used || analysis.odds_rows_used || raw.odds || raw.market || raw.bookmakers)
+  if (!hasOdds) return 30
+  const marketEdge = Number(analysis.market_edge_score ?? 0)
+  const oddsConfidence = Number(analysis.odds_confidence_score ?? 50)
+  const movement = Number(analysis.odds_movement_score ?? 50)
+  return normalizeScore(42 + Math.min(24, marketEdge * 0.24) + oddsConfidence * 0.24 + movement * 0.1)
+}
+
+function calculateProfessionalRiskControlEdge(match: any, analysis: any, scores: { leagueQuality: number; dataQuality: number; marketQuality: number }) {
+  const leagueText = [
+    match.league?.name,
+    match.competition?.name,
+    match.league?.country,
+    match.competition?.country,
+  ].filter(Boolean).join(' ').toLowerCase()
+  let score = 100
+  if (/friendly|test|youth|u17|u18|u19|u20|u21|u23|reserve|amateur/.test(leagueText)) score -= 24
+  if (scores.leagueQuality < 55) score -= 16
+  if (scores.dataQuality < 50) score -= 16
+  if (scores.marketQuality < 45) score -= 15
+  if (String(analysis.risk_level ?? '').toUpperCase() === 'HIGH') score -= 22
+  if (Number(analysis.risk_score ?? 0) > 65) score -= 12
+  return normalizeScore(score)
+}
+
+function calculateProfessionalValueEdgeEdge(analysis: any, marketQuality: number, riskControl: number) {
+  const marketEdge = Number(analysis.market_edge_score ?? analysis.edge_score ?? 0)
+  const hasOdds = Boolean(analysis.market_data_used || analysis.odds_rows_used || analysis.latest_odds || analysis.value_market)
+  let score = hasOdds ? 48 + marketEdge * 0.42 : 45
+  if (!hasOdds) score = Math.min(score, 55)
+  if (marketQuality >= 70) score += 5
+  if (riskControl < 55) score -= 8
+  if (String(analysis.value_status ?? '').toUpperCase() === 'YES') score += 10
+  return normalizeScore(score)
+}
+
+function calculateProfessionalAiConfidenceEdge(scores: Record<string, number>) {
+  const values = Object.values(scores).map(Number).filter((value) => Number.isFinite(value))
+  const average = values.reduce((total, value) => total + value, 0) / Math.max(values.length, 1)
+  const spread = Math.max(...values) - Math.min(...values)
+  return normalizeScore(average - Math.max(0, spread - 24) * 0.35 + (values.length >= 7 ? 3 : 0))
+}
+
+function getProfessionalPipelineStageEdge(gates: Record<string, boolean>, recommendation: string) {
+  if (!gates.passedLeagueFilter) return 'league-filter'
+  if (!gates.passedDataQuality) return 'data-quality-filter'
+  if (!gates.passedMarketQuality) return 'market-quality-filter'
+  if (!gates.passedRiskFilter) return 'risk-filter'
+  if (!gates.passedValueFilter) return 'value-filter'
+  if (!gates.passedConfidenceFilter) return 'confidence-filter'
+  return recommendation === 'BET' ? 'bet-selected' : recommendation === 'LEAN' ? 'lean-selected' : 'no-bet'
+}
+
+function weightedAverage(items: Array<[unknown, number]>, fallback: number) {
+  const valid = items.filter(([value]) => Number(value) > 0)
+  if (!valid.length) return fallback
+  const weight = valid.reduce((total, [, itemWeight]) => total + itemWeight, 0)
+  return valid.reduce((total, [value, itemWeight]) => total + Number(value) * itemWeight, 0) / Math.max(weight, 1)
 }
 
 async function recordAiPerformance(matchId: string, payload: any) {
@@ -7502,7 +7700,7 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
       has_fixture_detail,
       data_readiness_score,
       data_readiness_status,
-      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_level, risk_score, market_edge_score, data_validation_status, data_validation_notes, raw, ${analysisReadinessMetadataSelect})
+      analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_level, risk_score, market_edge_score, professional_score, value_edge_score, risk_control_score, league_quality_score, data_quality_score, market_quality_score, data_validation_status, data_validation_notes, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', range.startUtc)
     .lt('kickoff_at', range.endUtc)
@@ -7540,14 +7738,15 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
 
   const ranked = rows
     .filter((row: any) => String(row.analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID')
+    .filter((row: any) => isProfessionalRankingCandidate(row))
     .sort((a: any, b: any) => {
-      const readinessDiff = rankingReadinessPriority(a.readiness) - rankingReadinessPriority(b.readiness)
       const recommendationDiff = recommendationPriority(getCoverageAwareRecommendation(a)) - recommendationPriority(getCoverageAwareRecommendation(b))
-      const marketEdgeDiff = Number(b.analysis.market_edge_score ?? 0) - Number(a.analysis.market_edge_score ?? 0)
-      const rankingDiff = Number(b.analysis.ranking_score ?? 0) - Number(a.analysis.ranking_score ?? 0)
+      const professionalDiff = Number(b.analysis.professional_score ?? b.analysis.raw?.professional_pipeline?.totalScore ?? b.analysis.ranking_score ?? 0) - Number(a.analysis.professional_score ?? a.analysis.raw?.professional_pipeline?.totalScore ?? a.analysis.ranking_score ?? 0)
       const confidenceDiff = Number(b.analysis.calibrated_confidence_score ?? b.analysis.confidence_score ?? 0) - Number(a.analysis.calibrated_confidence_score ?? a.analysis.confidence_score ?? 0)
-      const riskDiff = Number(a.analysis.risk_score ?? 100) - Number(b.analysis.risk_score ?? 100)
-      return readinessDiff || recommendationDiff || marketEdgeDiff || rankingDiff || confidenceDiff || riskDiff
+      const valueDiff = Number(b.analysis.value_edge_score ?? b.analysis.market_edge_score ?? 0) - Number(a.analysis.value_edge_score ?? a.analysis.market_edge_score ?? 0)
+      const riskControlDiff = Number(b.analysis.risk_control_score ?? 100 - Number(b.analysis.risk_score ?? 100)) - Number(a.analysis.risk_control_score ?? 100 - Number(a.analysis.risk_score ?? 100))
+      const leagueQualityDiff = Number(b.analysis.league_quality_score ?? 0) - Number(a.analysis.league_quality_score ?? 0)
+      return recommendationDiff || professionalDiff || confidenceDiff || valueDiff || riskControlDiff || leagueQualityDiff
     })
     .slice(0, 10)
 
@@ -7602,6 +7801,15 @@ function getCoverageAwareRecommendation(row: any) {
   const readiness = String(row?.readiness ?? '').toUpperCase()
   if (!['READY', 'PARTIAL'].includes(readiness)) return 'NO BET'
   return String(row?.analysis?.recommendation ?? 'NO BET').toUpperCase()
+}
+
+function isProfessionalRankingCandidate(row: any) {
+  const analysis = row?.analysis ?? {}
+  const pipeline = analysis.raw?.professional_pipeline ?? {}
+  const professionalScore = Number(analysis.professional_score ?? pipeline.totalScore ?? analysis.ranking_score ?? 0)
+  const leagueQuality = Number(analysis.league_quality_score ?? pipeline.scores?.leagueQuality ?? 0)
+  const dataQuality = Number(analysis.data_quality_score ?? pipeline.scores?.dataQuality ?? analysis.match_quality_score ?? 0)
+  return professionalScore >= 55 && leagueQuality >= 55 && dataQuality >= 50
 }
 
 async function markInsufficientMarketDataRows(rows: Array<any>) {
@@ -7738,6 +7946,12 @@ async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc
       risk_level: analysis.risk_level,
       ranking_score: analysis.ranking_score,
     }, oddsRows)
+    const professional = buildProfessionalSelectionScoreEdge(match, {
+      ...(rawAnalysis ?? {}),
+      ...(analysis ?? {}),
+      ...next,
+      ...marketAware,
+    })
     const nextPayload = {
         league_quality_score: next.league_quality_score,
         match_quality_score: next.match_quality_score,
@@ -7755,6 +7969,16 @@ async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc
         data_validation_status: next.data_validation_status,
         data_validation_notes: next.data_validation_notes,
         analysis_summary: marketAware.enriched_summary ?? next.analysis_summary,
+        professional_score: professional.totalScore,
+        data_quality_score: professional.scores.dataQuality,
+        market_quality_score: professional.scores.marketQuality,
+        statistical_edge_score: professional.scores.statisticalEdge,
+        tactical_edge_score: professional.scores.tacticalEdge,
+        risk_control_score: professional.scores.riskControl,
+        value_edge_score: professional.scores.valueEdge,
+        pipeline_stage: professional.pipelineStage,
+        pipeline_reasons: professional.reasons,
+        pipeline_warnings: professional.warnings,
         raw: {
           ...rawAnalysis,
           ...(marketAware.raw && typeof marketAware.raw === 'object' ? marketAware.raw : {}),
@@ -7762,6 +7986,7 @@ async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc
           confidence_score: marketAware.confidence_score,
           ranking_score: marketAware.ranking_score,
           recommendation: marketAware.recommendation,
+          professional_pipeline: professional,
           leagueQualitySource: leagueQualityScoringVersion,
         },
       }

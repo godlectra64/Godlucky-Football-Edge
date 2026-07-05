@@ -62,6 +62,7 @@ import {
 } from '../src/utils/leagueQualityScoring.js'
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
+import { buildProfessionalSelectionScore } from '../src/utils/professionalSelectionPipeline.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 import { buildTodayMatchBuckets, buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
@@ -341,6 +342,70 @@ const baseMatch = {
   ],
 }
 
+const professionalStrong = buildProfessionalSelectionScore({
+  ...baseMatch,
+  league: { name: 'Premier League', country: 'England' },
+  odds: [
+    { id: 'odds-ah', match_id: 'match-1', market_name: 'Asian Handicap', selection: 'Home -0.5', price: 2.15, is_latest: true },
+    { id: 'odds-ou', match_id: 'match-1', market_name: 'Goals Over/Under', selection: 'Over 2.5', price: 1.92, is_latest: true },
+    { id: 'odds-1x2', match_id: 'match-1', market_name: 'Match Winner', selection: 'Home', price: 2.05, is_latest: true },
+  ],
+  h2h: [{ home_goals: 2, away_goals: 1 }],
+  recentMatches: [{ id: 'recent-1' }],
+  homeStats: { goals_for: 12 },
+  awayStats: { goals_against: 10 },
+  analysis: {
+    team_strength_score: 82,
+    form_score: 80,
+    goal_scoring_score: 84,
+    defensive_stability_score: 78,
+    home_advantage_score: 82,
+    away_weakness_score: 76,
+    market_edge_score: 88,
+    odds_movement_score: 58,
+    confidence_score: 82,
+    value_status: 'YES',
+  },
+})
+assert.ok(['BET', 'LEAN'].includes(professionalStrong.recommendation), 'complete big-team case should be BET or high LEAN')
+assert.ok(professionalStrong.totalScore >= 70, 'complete big-team case should score high')
+
+const professionalFriendlyLowData = buildProfessionalSelectionScore({
+  ...baseMatch,
+  id: 'professional-friendly-low-data',
+  league: { name: 'Club Friendly' },
+  homeForm: null,
+  awayForm: null,
+  standings: [],
+  odds: [],
+})
+assert.equal(professionalFriendlyLowData.recommendation, 'NO BET', 'friendly with little data should be NO BET')
+assert.equal(professionalFriendlyLowData.gates.passedLeagueFilter, false)
+
+const professionalNoOdds = buildProfessionalSelectionScore({
+  ...baseMatch,
+  odds: [],
+  h2h: [{ home_goals: 1, away_goals: 1 }],
+  recentMatches: [{ id: 'recent-2' }],
+})
+assert.ok(professionalNoOdds.scores.valueEdge <= 55, 'no odds should cap valueEdge at 55')
+assert.notEqual(professionalNoOdds.recommendation, 'BET', 'no odds should not be promoted to BET')
+
+const professionalHighRisk = buildProfessionalSelectionScore({
+  ...baseMatch,
+  odds: [{ id: 'short-price', market_name: 'Match Winner', selection: 'Home', price: 1.18 }],
+  analysis: { confidence_score: 86, market_edge_score: 84, odds_movement_score: 20 },
+})
+assert.notEqual(professionalHighRisk.recommendation, 'BET', 'high risk should downgrade away from BET')
+
+const professionalLowData = buildProfessionalSelectionScore({
+  id: 'professional-low-data',
+  league: { name: 'Premier League', country: 'England' },
+  homeTeam: { name: 'Home FC' },
+  awayTeam: { name: 'Away FC' },
+})
+assert.ok(professionalLowData.confidenceScore < professionalStrong.confidenceScore, 'low data should reduce confidence')
+
 const missingH2H = calculateFootballMasterAnalysis(baseMatch)
 assert.equal(missingH2H.analysisBreakdown.football_intelligence.h2h.reason, 'ยังไม่มีข้อมูล H2H เพียงพอ')
 assert.notEqual(missingH2H.riskLevel, 'HIGH', 'missing H2H alone must not force high risk')
@@ -413,6 +478,16 @@ const betCandidate = {
   confidence: 82,
   recommendation: 'BET',
   riskLevel: 'medium',
+  analysis: {
+    recommendation: 'BET',
+    confidence_score: 82,
+    professional_score: 82,
+    league_quality_score: 95,
+    data_quality_score: 78,
+    market_quality_score: 72,
+    value_edge_score: 76,
+    risk_control_score: 72,
+  },
 }
 const noBetCandidate = {
   ...baseMatch,
@@ -420,6 +495,37 @@ const noBetCandidate = {
   confidence: 58,
   recommendation: 'NO BET',
   riskLevel: 'medium',
+  analysis: {
+    recommendation: 'NO BET',
+    confidence_score: 58,
+    professional_score: 62,
+    league_quality_score: 95,
+    data_quality_score: 72,
+    market_quality_score: 58,
+    value_edge_score: 48,
+    risk_control_score: 64,
+  },
+}
+
+function withProfessionalCandidate(match, patch = {}) {
+  const confidence = Number(patch.confidence ?? match.confidence ?? match.analysis?.confidence_score ?? 70)
+  const recommendation = patch.recommendation ?? match.recommendation ?? match.analysis?.recommendation ?? 'LEAN'
+  return {
+    ...match,
+    ...patch,
+    analysis: {
+      ...(match.analysis ?? {}),
+      ...(patch.analysis ?? {}),
+      recommendation,
+      confidence_score: confidence,
+      professional_score: Number(patch.analysis?.professional_score ?? match.analysis?.professional_score ?? confidence),
+      league_quality_score: Number(patch.analysis?.league_quality_score ?? match.analysis?.league_quality_score ?? 95),
+      data_quality_score: Number(patch.analysis?.data_quality_score ?? match.analysis?.data_quality_score ?? 74),
+      market_quality_score: Number(patch.analysis?.market_quality_score ?? match.analysis?.market_quality_score ?? 62),
+      value_edge_score: Number(patch.analysis?.value_edge_score ?? match.analysis?.value_edge_score ?? 60),
+      risk_control_score: Number(patch.analysis?.risk_control_score ?? match.analysis?.risk_control_score ?? 66),
+    },
+  }
 }
 assert.ok(calculateRankingScore(betCandidate) > calculateRankingScore(noBetCandidate), 'BET high confidence should rank above NO BET')
 
@@ -439,8 +545,8 @@ assert.deepEqual(ranked.map((match) => match.id), ['rank-1', 'rank-2', 'no-bet-c
 assert.ok(ranked.every((match) => match.rankingScore >= 0 && match.rankingScore <= 100), 'ranked scores are bounded')
 
 const calibratedRanked = rankTopMatches([
-  { ...betCandidate, id: 'stored-confidence-high', confidence: 90, analysis: { calibrated_confidence_score: 55, confidence_score: 90 } },
-  { ...betCandidate, id: 'calibrated-high', confidence: 62, analysis: { calibrated_confidence_score: 88, confidence_score: 62 } },
+  { ...betCandidate, id: 'stored-confidence-high', confidence: 90, analysis: { ...betCandidate.analysis, calibrated_confidence_score: 55, confidence_score: 90, professional_score: 76 } },
+  { ...betCandidate, id: 'calibrated-high', confidence: 62, analysis: { ...betCandidate.analysis, calibrated_confidence_score: 88, confidence_score: 62, professional_score: 84 } },
 ], 2)
 assert.equal(calibratedRanked[0].id, 'calibrated-high', 'Top picks should prefer v4 calibrated confidence when present')
 
@@ -450,19 +556,19 @@ const sixMatches = Array.from({ length: 6 }, (_, index) => ({
   confidence: 70 + index,
   recommendation: index % 2 ? 'LEAN' : 'NO BET',
   riskLevel: 'medium',
-}))
+})).map((match) => withProfessionalCandidate(match))
 assert.equal(rankTopMatches(sixMatches, 10).length, 6, 'six matches should render six, not fake ten')
 
 const phase2Candidates = [
-  { ...baseMatch, id: 'high-risk-99', confidence: 99, recommendation: 'BET', riskLevel: 'HIGH' },
+  withProfessionalCandidate({ ...baseMatch, id: 'high-risk-99', confidence: 99, recommendation: 'BET', riskLevel: 'HIGH' }, { analysis: { professional_score: 99, risk_control_score: 42 } }),
   ...Array.from({ length: 10 }, (_, index) => ({
     ...baseMatch,
     id: `safe-bet-${index}`,
     confidence: 80 - index,
     recommendation: index < 5 ? 'BET' : 'LEAN',
     riskLevel: index === 0 ? 'LOW' : 'MEDIUM',
-  })),
-  { ...baseMatch, id: 'no-bet-low', confidence: 90, recommendation: 'NO BET', riskLevel: 'LOW' },
+  })).map((match) => withProfessionalCandidate(match)),
+  withProfessionalCandidate({ ...baseMatch, id: 'no-bet-low', confidence: 90, recommendation: 'NO BET', riskLevel: 'LOW' }, { analysis: { professional_score: 90 } }),
 ]
 const phase2Ranked = rankTopMatches(phase2Candidates, 10)
 assert.equal(phase2Ranked.length, 10)
@@ -472,16 +578,16 @@ assert.ok(phase2Ranked[0].rankBadges.includes('HIGH CONFIDENCE'))
 assert.ok(phase2Ranked[0].rankBadges.includes('NO BET'))
 
 const highRiskFallback = rankTopMatches([
-  { ...baseMatch, id: 'only-high-1', confidence: 89, recommendation: 'BET', riskLevel: 'HIGH' },
-  { ...baseMatch, id: 'only-high-2', confidence: 70, recommendation: 'LEAN', riskLevel: 'HIGH' },
+  withProfessionalCandidate({ ...baseMatch, id: 'only-high-1', confidence: 89, recommendation: 'BET', riskLevel: 'HIGH' }, { analysis: { professional_score: 89, risk_control_score: 40 } }),
+  withProfessionalCandidate({ ...baseMatch, id: 'only-high-2', confidence: 70, recommendation: 'LEAN', riskLevel: 'HIGH' }, { analysis: { professional_score: 70, risk_control_score: 40 } }),
 ], 10)
 assert.deepEqual(highRiskFallback.map((match) => match.id), ['only-high-1', 'only-high-2'])
 assert.ok(highRiskFallback[0].rankBadges.includes('NO BET'), 'HIGH risk fallback should be clearly badged as NO BET')
 
 const mixedRecommendationPool = [
-  ...Array.from({ length: 2 }, (_, index) => ({ ...baseMatch, id: `mix-bet-${index}`, confidence: 80 - index, recommendation: 'BET', riskLevel: 'MEDIUM' })),
-  ...Array.from({ length: 5 }, (_, index) => ({ ...baseMatch, id: `mix-lean-${index}`, confidence: 75 - index, recommendation: 'LEAN', riskLevel: 'LOW' })),
-  ...Array.from({ length: 10 }, (_, index) => ({ ...baseMatch, id: `mix-no-bet-${index}`, confidence: 95 - index, recommendation: 'NO BET', riskLevel: 'LOW' })),
+  ...Array.from({ length: 2 }, (_, index) => withProfessionalCandidate({ ...baseMatch, id: `mix-bet-${index}`, confidence: 80 - index, recommendation: 'BET', riskLevel: 'MEDIUM' })),
+  ...Array.from({ length: 5 }, (_, index) => withProfessionalCandidate({ ...baseMatch, id: `mix-lean-${index}`, confidence: 75 - index, recommendation: 'LEAN', riskLevel: 'LOW' })),
+  ...Array.from({ length: 10 }, (_, index) => withProfessionalCandidate({ ...baseMatch, id: `mix-no-bet-${index}`, confidence: 95 - index, recommendation: 'NO BET', riskLevel: 'LOW' }, { analysis: { professional_score: 65 + index } })),
 ]
 const mixedTop10 = rankTopMatches(mixedRecommendationPool, 10)
 assert.equal(mixedTop10.filter((match) => match.recommendation === 'BET').length, 2)
@@ -829,7 +935,7 @@ assert.doesNotThrow(() => analyzeModelPerformance([]))
 const modelExplainability = buildModelExplainability(modelPerformance)
 assert.ok(modelExplainability.message.length > 0)
 
-const noBetRanking = rankTopMatches([{ ...baseMatch, id: 'no-bet-ranking', league: { name: 'Club Friendly' }, homeForm: null, awayForm: null, standings: [] }], 1)[0]
+const noBetRanking = rankTopMatches([withProfessionalCandidate({ ...baseMatch, id: 'no-bet-ranking', recommendation: 'NO BET', confidence: 66, riskLevel: 'LOW' }, { analysis: { recommendation: 'NO BET', professional_score: 66, value_edge_score: 42 } })], 1)[0]
 assert.equal(noBetRanking.recommendation, 'NO BET')
 assert.ok(!noBetRanking.rankBadges.includes('คู่เด่น'), 'NO BET should not receive BET-like featured badge')
 assert.ok(!noBetRanking.rankReason.includes('เหมาะเป็น'), 'NO BET rank reason should not read like a BET recommendation')
@@ -890,6 +996,12 @@ const marketReadyMatches = Array.from({ length: 3 }, (_, index) => ({
     calibrated_confidence_score: 82 - index,
     risk_level: 'LOW',
     market_edge_score: 80 - index,
+    professional_score: 82 - index,
+    league_quality_score: 95,
+    data_quality_score: 78,
+    market_quality_score: 72,
+    value_edge_score: 74 - index,
+    risk_control_score: 76,
     market_data_used: true,
     odds_rows_used: 1,
     data_validation_status: 'VALID',
@@ -912,6 +1024,12 @@ const waitingMarketMatches = Array.from({ length: 7 }, (_, index) => ({
     calibrated_confidence_score: 90,
     risk_level: 'LOW',
     market_edge_score: 100,
+    professional_score: 60,
+    league_quality_score: 95,
+    data_quality_score: 62,
+    market_quality_score: 30,
+    value_edge_score: 45,
+    risk_control_score: 58,
     market_data_used: false,
     odds_rows_used: 0,
     data_validation_status: 'PARTIAL',
