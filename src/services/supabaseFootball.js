@@ -264,6 +264,8 @@ export function normalizeMatch(row = {}) {
     waiting_market_data: waitingMarketData,
     aiFinalPick,
     ai_final_pick: aiFinalPick,
+    bettingDecision: aiFinalPick.bettingDecision,
+    betting_decision: aiFinalPick.bettingDecision,
     enrichment: normalizeEnrichment(source.enrichment),
     confidence: calibratedConfidence,
     calibratedConfidence: activeAnalysis?.calibrated_confidence_score,

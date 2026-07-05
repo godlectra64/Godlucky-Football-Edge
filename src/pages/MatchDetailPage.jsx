@@ -75,11 +75,12 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
       <FinalDecisionSection detail={detail} />
-      <SystemPickSummarySection detail={detail} />
-      <ProfessionalPipelineSection detail={detail} />
-      <AiVerdictSection detail={detail} verdict={verdict} />
+      <MatchViewSection detail={detail} />
+      <MarketDecisionSection detail={detail} />
       <DetailAccordion open={detailsOpen} onToggle={() => setDetailsOpen((value) => !value)}>
+      <SystemPickSummarySection detail={detail} />
       <AiFinalPickAnalysisSection detail={detail} />
+      <AiVerdictSection detail={detail} verdict={verdict} />
       <AiSelectionBreakdownSection detail={detail} />
       <DataIntelligenceV4Section detail={detail} />
       <FootballEnrichmentSection detail={detail} />
@@ -90,6 +91,7 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
       <ContextSection title="บริบทผลงาน AI" icon={Star} body={performanceContext || 'กำลังเก็บข้อมูล'} />
       <PredictionReliabilitySection reliability={predictionReliability} />
       <RiskAnalysisSection detail={detail} riskLabel={riskLabel} riskFactors={riskFactors} />
+      <ProfessionalPipelineSection detail={detail} />
       <RankingSection detail={detail} />
       <DataQualitySection dataQuality={detail.dataQuality} />
       <DataPlatformCoverageSection coverage={dataCoverage} />
@@ -110,7 +112,7 @@ function BackButton({ onBack }) {
 }
 
 function HeroHeader({ detail }) {
-  const rankContext = detail.aiPickLabel ?? (detail.rank ? `AI PICK #${detail.rank}` : detail.rankingScore ? 'คู่เด่นบนบอร์ด' : 'บอร์ดวิเคราะห์')
+  const rankContext = detail.aiPickLabel ?? (detail.rank ? `AI PICK #${detail.rank}` : detail.rankingScore ? 'อยู่ในบอร์ดวันนี้' : 'บอร์ดวิเคราะห์')
   const venue = getVenueText(detail)
 
   return (
@@ -195,10 +197,40 @@ function FinalDecisionSection({ detail }) {
 
   return (
     <Section title="Final Decision" icon={Sparkles} accent>
+      <div className={`rounded-2xl border p-3 ${decisionPanelTone(decision.status)}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase text-slate-400">Best Pick</p>
+            <p className="mt-1 text-clamp-2 text-2xl font-black leading-7 text-white">{decision.final_pick.label}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{decision.final_pick.reason}</p>
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-1.5">
+            <span className={`semantic-badge ${recommendationBadgeTone(decision.status)}`}>{decision.status}</span>
+            <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{decision.confidence}%</span>
+          </div>
+        </div>
+      </div>
+    </Section>
+  )
+}
+
+function MatchViewSection({ detail }) {
+  const view = detail.bettingDecision.match_view
+  const sourceLabel = view.source === 'MARKET_MODEL' ? 'Market model' : view.source === 'FIXTURE_MODEL' ? 'Fixture model' : 'Insufficient data'
+  return (
+    <Section title="Match View" icon={Users} accent>
+      <DecisionPanel title="ฝั่งที่ระบบมองเหนือกว่า" pick={view.label} confidence={view.confidence} reason={view.reason} badge={sourceLabel} status={detail.bettingDecision.status} />
+    </Section>
+  )
+}
+
+function MarketDecisionSection({ detail }) {
+  const decision = detail.bettingDecision
+  return (
+    <Section title="AH / O-U Analysis" icon={Gauge} accent>
       <div className="grid gap-2">
-        <DecisionPanel title="AH Analysis" pick={decision.ah_pick} confidence={decision.ah_confidence} reason={decision.ah_reason} />
-        <DecisionPanel title="O/U Analysis" pick={decision.ou_pick} confidence={decision.ou_confidence} reason={decision.ou_reason} />
-        <DecisionPanel title="Final Decision" pick={getBestDecisionLabel(decision)} confidence={getFinalDecisionConfidence(decision)} reason={decision.final_reason} recommendation={decision.final_recommendation} finalPick={decision.final_pick} />
+        <DecisionPanel title="AH Analysis" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence ?? 0} reason={decision.ah_pick.reason} status={decision.status} />
+        <DecisionPanel title="O/U Analysis" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence ?? 0} reason={decision.ou_pick.reason} status={decision.status} />
       </div>
     </Section>
   )
@@ -298,15 +330,14 @@ function DecisionMetric({ label, value, muted = false }) {
   )
 }
 
-function DecisionPanel({ title, pick, confidence, reason, recommendation = '', finalPick = '' }) {
-  const status = recommendation || getRecommendationFromDecisionConfidence(confidence)
+function DecisionPanel({ title, pick, confidence, reason, badge = '', status = 'WATCH' }) {
   return (
     <div className={`rounded-2xl border p-3 ${decisionPanelTone(status)}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-black text-white">{title}</p>
           <p className="mt-1 text-clamp-2 text-xl font-black leading-6 text-white">{pick}</p>
-          {finalPick ? <p className="mt-1 text-[11px] font-black uppercase text-slate-400">Final Pick: {finalPick}</p> : null}
+          {badge ? <p className="mt-1 text-[11px] font-black uppercase text-slate-400">{badge}</p> : null}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
           <span className={`semantic-badge ${recommendationBadgeTone(status)}`}>{status}</span>
@@ -318,34 +349,17 @@ function DecisionPanel({ title, pick, confidence, reason, recommendation = '', f
   )
 }
 
-function getBestDecisionLabel(decision) {
-  if (decision.final_pick === 'AH') return decision.ah_pick
-  if (decision.final_pick === 'OU') return decision.ou_pick
-  return 'NO BET'
-}
-
-function getFinalDecisionConfidence(decision) {
-  if (decision.final_pick === 'AH') return decision.ah_confidence
-  if (decision.final_pick === 'OU') return decision.ou_confidence
-  return Math.max(Number(decision.ah_confidence ?? 0), Number(decision.ou_confidence ?? 0))
-}
-
-function getRecommendationFromDecisionConfidence(confidence) {
-  const score = Number(confidence ?? 0)
-  if (score >= 75) return 'BET'
-  if (score >= 60) return 'LEAN'
-  return 'NO BET'
-}
-
-function decisionPanelTone(recommendation) {
-  if (recommendation === 'BET') return 'border-emerald-300/25 bg-emerald-300/10'
-  if (recommendation === 'LEAN') return 'border-amber-300/25 bg-amber-300/10'
+function decisionPanelTone(status) {
+  if (status === 'READY') return 'border-emerald-300/25 bg-emerald-300/10'
+  if (status === 'WATCH') return 'border-amber-300/25 bg-amber-300/10'
+  if (status === 'WAITING_MARKET') return 'border-slate-300/25 bg-slate-300/10'
   return 'border-red-300/25 bg-red-400/10'
 }
 
-function recommendationBadgeTone(recommendation) {
-  if (recommendation === 'BET') return 'badge-bet'
-  if (recommendation === 'LEAN') return 'badge-lean'
+function recommendationBadgeTone(status) {
+  if (status === 'READY') return 'badge-bet'
+  if (status === 'WATCH') return 'badge-lean'
+  if (status === 'WAITING_MARKET') return 'border-slate-300/25 bg-slate-300/10 text-slate-100'
   return 'badge-no-bet'
 }
 

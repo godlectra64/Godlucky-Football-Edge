@@ -229,7 +229,7 @@ function App() {
   }
 
   const titles = {
-    today: 'คู่เด่นวันนี้',
+    today: 'วิเคราะห์วันนี้',
     analysis: 'วิเคราะห์คู่แข่งขัน',
     admin: 'จัดการข้อมูล',
     results: 'ผลย้อนหลัง',

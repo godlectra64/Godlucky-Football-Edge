@@ -964,13 +964,18 @@ const marketReadyFinalPick = generateAiFinalPick({
   ],
 })
 assert.equal(marketReadyFinalPick.signal, 'STRONG_SIGNAL', 'market-ready BET must not be downgraded to SKIP only because sub-market reasons are conservative')
-assert.equal(marketReadyFinalPick.ah_pick, 'HOME -0.5', 'AI final pick must expose a concrete AH pick')
-assert.equal(marketReadyFinalPick.ou_pick, 'UNDER 2.5', 'AI final pick must expose a concrete O/U pick when confidence reaches threshold')
-assert.equal(marketReadyFinalPick.final_pick, 'OU', 'final_pick should choose the higher-confidence market')
-assert.equal(marketReadyFinalPick.final_recommendation, 'BET', 'final recommendation should follow the 75+ BET threshold')
-assert.ok(marketReadyFinalPick.ah_reason.length > 0 && marketReadyFinalPick.ou_reason.length > 0 && marketReadyFinalPick.final_reason.length > 0, 'simple decision reasons must always be present')
+assert.equal(marketReadyFinalPick.ah_pick.label, 'HOME -0.5', 'AI final pick must expose a concrete AH pick')
+assert.equal(marketReadyFinalPick.ou_pick.label, 'UNDER 2.5', 'AI final pick must expose a concrete O/U pick when confidence reaches threshold')
+assert.equal(marketReadyFinalPick.final_pick.type, 'OU', 'final_pick should choose the higher-confidence market')
+assert.equal(marketReadyFinalPick.status, 'READY', 'ready market pick should have READY status')
+assert.ok(marketReadyFinalPick.ah_pick.reason.length > 0 && marketReadyFinalPick.ou_pick.reason.length > 0 && marketReadyFinalPick.final_pick.reason.length > 0, 'simple decision reasons must always be present')
 
 const missingMarketFinalPick = generateAiFinalPick({
+  id: 'missing-market-fixture',
+  kickoffAt: '2026-07-03T18:00:00.000Z',
+  league: { name: 'Test League' },
+  homeTeam: { name: 'Home Test' },
+  awayTeam: { name: 'Away Test' },
   analysis: {
     recommendation: 'BET',
     ranking_score: 89,
@@ -984,8 +989,18 @@ const missingMarketFinalPick = generateAiFinalPick({
   odds: [],
 })
 assert.equal(missingMarketFinalPick.signal, 'SKIP', 'missing market data must stay SKIP even when stored confidence is high')
-assert.equal(missingMarketFinalPick.final_recommendation, 'NO BET', 'final recommendation below 60 must be NO BET')
-assert.equal(missingMarketFinalPick.final_pick, 'NO BET', 'final_pick must be NO BET when AH and O/U are both below threshold')
+assert.equal(missingMarketFinalPick.ah_pick.label, 'รอเส้น AH', 'missing AH odds must wait for AH line')
+assert.equal(missingMarketFinalPick.ou_pick.label, 'รอราคา O/U', 'missing O/U odds must wait for O/U price')
+assert.equal(missingMarketFinalPick.final_pick.type, 'NO_DECISION', 'missing market data must not create a final market pick')
+assert.equal(missingMarketFinalPick.final_pick.label, 'ยังไม่มี Best Pick', 'missing market data must show no Best Pick')
+assert.equal(missingMarketFinalPick.status, 'WAITING_MARKET', 'missing odds with usable fixture data should be WAITING_MARKET')
+assert.equal(missingMarketFinalPick.match_view.source, 'FIXTURE_MODEL', 'no-odds match view should use fixture model')
+assert.ok(missingMarketFinalPick.match_view.confidence <= 60, 'fixture-only match view confidence must be capped at 60')
+
+const lowDataNoOddsPick = generateAiFinalPick({ analysis: { market_data_used: false, odds_rows_used: 0 }, odds: [] })
+assert.equal(lowDataNoOddsPick.status, 'NO_DATA', 'low-data no-odds match should be NO_DATA')
+assert.equal(lowDataNoOddsPick.match_view.label, 'ข้อมูลยังไม่พอประเมินฝั่งชนะ')
+assert.equal(lowDataNoOddsPick.final_pick.label, 'ยังไม่มี Best Pick')
 
 const marketReadyMatches = Array.from({ length: 3 }, (_, index) => ({
   ...baseMatch,
@@ -1248,6 +1263,10 @@ const waitingCardCopy = [
 ].join(' ')
 for (const forbidden of ['ยังไม่มีตลาดหลัก', 'ยังไม่มีทิศทางตลาด', 'NO BET', 'SKIP', 'INSUFFICIENT_MARKET_DATA', 'NO_MARKET_DATA', 'readiness', 'analysis_status', 'ชนะชัวร์', 'ฟันธง', 'ล็อก', 'การันตี']) {
   assert.equal(waitingCardCopy.includes(forbidden), false, `Waiting card market copy should not expose ${forbidden}`)
+}
+const matchCardSource = readFileSync(new URL('../src/components/MatchCard.jsx', import.meta.url), 'utf8')
+for (const forbidden of ['Professional Score', 'Market Quality', 'Data Quality', 'Value Edge', 'ชนะชัวร์', 'ฟันธง', 'ล็อก', 'การันตี']) {
+  assert.equal(matchCardSource.includes(forbidden), false, `MatchCard primary UI should not expose ${forbidden}`)
 }
 
 const finishedTop10Matches = createStatusMatches(10, 'FT', 'finished-top10')

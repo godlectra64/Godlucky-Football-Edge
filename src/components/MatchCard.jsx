@@ -1,6 +1,5 @@
 import { ArrowRight, Clock, Medal } from 'lucide-react'
-import { buildSimpleBettingDecision, getDecisionConfidence } from '../utils/bettingDecision'
-import { getRiskLevel } from '../utils/analysisEngine'
+import { buildSimpleBettingDecision, getDecisionConfidence, getDecisionReason, getBestPickLabel } from '../utils/bettingDecision'
 import { formatKickoffTime } from '../utils/formatters'
 import { getMatchStatusInfo, getScoreDisplay } from '../utils/matchStatus'
 
@@ -19,15 +18,10 @@ export default function MatchCard({
   const decision = buildSimpleBettingDecision(match)
   const confidence = getDecisionConfidence(decision)
   const bestPick = getBestPickLabel(decision)
-  const riskLevel = match.riskLevel ?? getRiskLevel(match)
-  const waitingMarket = providedIsWaitingMarketData ?? false
-  const mode = displayMode || (decision.final_recommendation === 'BET' ? 'strong' : decision.final_recommendation === 'LEAN' ? 'watch' : 'waiting')
-  const cardClass = buildCardClass(finalRank ?? match.rank, mode, riskLevel, waitingMarket)
-  const activeSide = decision.final_pick === 'AH' && decision.ah_pick.startsWith('HOME')
-    ? 'HOME'
-    : decision.final_pick === 'AH' && decision.ah_pick.startsWith('AWAY')
-      ? 'AWAY'
-      : ''
+  const waitingMarket = providedIsWaitingMarketData ?? decision.status === 'WAITING_MARKET'
+  const mode = displayMode || statusMode(decision.status)
+  const cardClass = buildCardClass(finalRank ?? match.rank, mode, waitingMarket)
+  const activeSide = ['HOME', 'AWAY'].includes(decision.match_view.side) ? decision.match_view.side : ''
   const scoreDisplay = getFinishedScoreDisplay(match)
   const open = () => onOpen?.(match.id)
 
@@ -64,22 +58,19 @@ export default function MatchCard({
         </div>
       </div>
 
-      <div className="mt-2.5 grid grid-cols-2 gap-1.5">
-        <DecisionMetric label="AH Pick" value={decision.ah_pick} />
-        <DecisionMetric label="O/U Pick" value={decision.ou_pick} />
-        <DecisionMetric label="Best Pick" value={bestPick} tone={decision.final_recommendation} />
-        <DecisionMetric label="Confidence" value={`${confidence}%`} />
+      <div className="mt-2.5 grid gap-1.5">
+        <DecisionRow label="มุมมองผู้ชนะ" value={decision.match_view.label} strong />
+        <div className="grid grid-cols-2 gap-1.5">
+          <DecisionRow label="AH" value={decision.ah_pick.label} />
+          <DecisionRow label="O/U" value={decision.ou_pick.label} />
+          <DecisionRow label="Best Pick" value={bestPick} />
+          <DecisionRow label="Confidence" value={`${confidence}%`} />
+        </div>
       </div>
 
-      <div className="mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-2">
-        <div className="flex min-w-0 items-center justify-between gap-2">
-          <span className={`semantic-badge shrink-0 ${recommendationTone(decision.final_recommendation)}`}>
-            {decision.final_recommendation}
-          </span>
-          <span className="text-[11px] font-black text-slate-400">{decision.final_pick}</span>
-        </div>
-        <p className="text-clamp-2 mt-1.5 text-xs font-semibold leading-5 text-slate-300">{decision.final_reason}</p>
-      </div>
+      <p className="text-clamp-2 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-2 text-xs font-semibold leading-5 text-slate-300">
+        {getDecisionReason(decision)}
+      </p>
 
       <button
         type="button"
@@ -104,25 +95,19 @@ function TeamName({ name, active = false, align = 'left' }) {
   )
 }
 
-function DecisionMetric({ label, value, tone = '' }) {
+function DecisionRow({ label, value, strong = false }) {
   return (
     <div className="min-w-0 rounded-lg border border-white/10 bg-black/15 px-2 py-1.5">
       <p className="text-[9px] font-black uppercase text-slate-500">{label}</p>
-      <p className={`text-clamp-1 text-[11px] font-black leading-4 ${tone === 'NO BET' ? 'text-slate-300' : 'text-white'}`}>{value || '-'}</p>
+      <p className={`text-clamp-1 font-black leading-4 text-white ${strong ? 'text-[12px]' : 'text-[11px]'}`}>{value || '-'}</p>
     </div>
   )
 }
 
-function getBestPickLabel(decision) {
-  if (decision.final_pick === 'AH') return decision.ah_pick
-  if (decision.final_pick === 'OU') return decision.ou_pick
-  return 'NO BET'
-}
-
-function recommendationTone(recommendation) {
-  if (recommendation === 'BET') return 'badge-bet'
-  if (recommendation === 'LEAN') return 'badge-lean'
-  return 'badge-no-bet'
+function statusMode(status) {
+  if (status === 'READY') return 'strong'
+  if (status === 'WATCH') return 'watch'
+  return 'waiting'
 }
 
 function getFinishedScoreDisplay(match = {}) {
@@ -134,16 +119,12 @@ function getFinishedScoreDisplay(match = {}) {
   })
 }
 
-function buildCardClass(rank, mode, riskLevel, waitingMarket) {
-  const risk = String(riskLevel).toUpperCase()
+function buildCardClass(rank, mode, waitingMarket) {
   const base = 'rounded-[18px] border bg-white/[0.045] shadow-[0_12px_32px_rgba(0,0,0,0.22)]'
   const first = rank === 1 ? 'shadow-[0_18px_44px_rgba(0,0,0,0.3)]' : ''
 
   if (waitingMarket || mode === 'waiting') {
     return `${base} ${first} border-slate-400/24 bg-[linear-gradient(145deg,rgba(148,163,184,0.1),rgba(255,255,255,0.035))]`
-  }
-  if (risk === 'HIGH') {
-    return `${base} ${first} border-amber-300/28 bg-[linear-gradient(145deg,rgba(245,158,11,0.09),rgba(255,255,255,0.035))]`
   }
   if (mode === 'strong') {
     return `${base} ${first} border-emerald-300/35 bg-[linear-gradient(145deg,rgba(52,211,153,0.14),rgba(255,255,255,0.04))]`

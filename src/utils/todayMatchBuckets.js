@@ -1,11 +1,4 @@
-import {
-  getConfidence,
-  getMarketReadinessGroup,
-  getRecommendation,
-  isWaitingForMarketData,
-  marketReadinessGroups,
-  recommendationLabels,
-} from './analysisEngine.js'
+import { buildSimpleBettingDecision } from './bettingDecision.js'
 import { getMatchStatusInfo } from './matchStatus.js'
 
 export function buildTodayMatchBuckets(matches = [], options = {}) {
@@ -13,10 +6,13 @@ export function buildTodayMatchBuckets(matches = [], options = {}) {
   const buckets = rows.reduce((result, match) => {
     const status = getMatchStatusInfo(match)
     const analysis = normalizeAnalysis(match.analysis ?? match.match_analysis ?? {})
+    const decision = buildSimpleBettingDecision({ ...match, analysis })
     const enriched = {
       ...match,
       analysis,
       match_analysis: analysis,
+      bettingDecision: decision,
+      betting_decision: decision,
       matchStatusGroup: status.group,
       isFinished: status.isFinished,
       isPlayable: status.isPlayable,
@@ -37,12 +33,12 @@ export function buildTodayMatchBuckets(matches = [], options = {}) {
 
     result.playableMatches.push(enriched)
 
-    if (isWaitingForMarketData(enriched)) {
+    if (decision.status === 'WAITING_MARKET' || decision.status === 'NO_DATA') {
       result.waitingMatches.push(enriched)
       return result
     }
 
-    if (isStrongTodayPick(enriched)) {
+    if (decision.status === 'READY' && decision.final_pick?.type !== 'NO_DECISION') {
       result.strongMatches.push(enriched)
       return result
     }
@@ -94,24 +90,6 @@ function buildSummary(buckets, options = {}) {
     hasWaitingOnly: totalVisible > 0 && buckets.strongMatches.length === 0 && buckets.watchMatches.length === 0,
     hasFinishedOnly: totalVisible === 0 && (buckets.finishedMatches.length > 0 || Number(options.finishedCount ?? 0) > 0),
   }
-}
-
-function isStrongTodayPick(match = {}) {
-  if (getMarketReadinessGroup(match) !== marketReadinessGroups.ready) return false
-
-  const analysis = normalizeAnalysis(match.analysis ?? match.match_analysis ?? {})
-  const pick = match.aiFinalPick ?? match.ai_final_pick ?? {}
-  const lock = match.dailyTop10Lock ?? match.daily_top10_lock ?? {}
-  const signal = String(pick.signal ?? lock.signal ?? '').toUpperCase()
-  const recommendation = String(match.recommendation ?? analysis.recommendation ?? getRecommendation(match)).toUpperCase().replace('_', ' ')
-  const confidence = Number(match.confidence ?? analysis.calibrated_confidence_score ?? getConfidence(match) ?? 0)
-  const risk = String(match.riskLevel ?? match.risk_level ?? analysis.risk_level ?? '').toUpperCase()
-  const analysisStatus = String(analysis.analysis_status ?? analysis.raw?.analysis_status ?? pick.analysisStatus ?? pick.analysis_status ?? '').toUpperCase()
-
-  if (risk === 'HIGH') return false
-  if (signal === 'STRONG_SIGNAL') return true
-  if (recommendation === recommendationLabels.bet) return true
-  return analysisStatus === 'MARKET_DATA_READY_RECALCULATED' && confidence >= 72
 }
 
 function normalizeAnalysis(analysis = {}) {

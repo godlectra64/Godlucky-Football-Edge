@@ -8,7 +8,7 @@ const styles = {
 }
 
 const modeLabels = {
-  strong: 'คู่เด่น',
+  strong: 'พร้อมตัดสิน',
   watch: 'เฝ้าดู',
   waiting: 'รอข้อมูลจาก API-Football',
 }

@@ -1,86 +1,298 @@
 import { analyzeAsianHandicap } from './ahAnalysisEngine.js'
 import { analyzeOverUnder } from './ouAnalysisEngine.js'
+import { getLatestOddsByMarket, normalizeOddsRows } from './oddsUtils.js'
 
-const finalRecommendations = ['BET', 'LEAN', 'NO BET']
+const statuses = ['READY', 'WATCH', 'WAITING_MARKET', 'NO_DATA']
+const finalTypes = ['TEAM', 'AH', 'OU', 'NO_DECISION']
 
 export function buildSimpleBettingDecision(match = {}) {
   const stored = getStoredDecision(match)
-  if (hasDecisionFields(stored)) return normalizeDecision(stored, match)
+  if (hasNestedDecisionFields(stored)) return normalizeDecision(stored, match)
 
-  const ahAnalysis = match.aiFinalPick?.ahAnalysis ?? match.ai_final_pick?.ah_analysis ?? analyzeAsianHandicap(match)
-  const ouAnalysis = match.aiFinalPick?.ouAnalysis ?? match.ai_final_pick?.ou_analysis ?? analyzeOverUnder(match)
-  const ahConfidence = scoreValue(ahAnalysis.confidenceScore ?? ahAnalysis.confidence_score)
-  const ouConfidence = scoreValue(ouAnalysis.confidenceScore ?? ouAnalysis.confidence_score)
-  const ahPick = buildAhPick(ahAnalysis.direction, ahConfidence)
-  const ouPick = buildOuPick(ouAnalysis.direction, ouConfidence)
-  const ahRecommendation = recommendationFromConfidence(ahConfidence)
-  const ouRecommendation = recommendationFromConfidence(ouConfidence)
-  const selectedMarket = chooseFinalMarket({ ahPick, ahConfidence, ouPick, ouConfidence })
-  const finalConfidence = selectedMarket === 'AH' ? ahConfidence : selectedMarket === 'OU' ? ouConfidence : Math.max(ahConfidence, ouConfidence)
-  const finalRecommendation = selectedMarket === 'NO BET' ? 'NO BET' : recommendationFromConfidence(finalConfidence)
+  const oddsRows = normalizeOddsRows(match)
+  const hasAnyMarket = oddsRows.length > 0
+  const ahRows = getLatestOddsByMarket(match, 'AH')
+  const ouRows = getLatestOddsByMarket(match, 'OU')
+  const matchView = buildMatchView(match, hasAnyMarket)
+  const ahPick = buildAhPick(match, ahRows)
+  const ouPick = buildOuPick(match, ouRows)
+  const finalPick = buildFinalPick({ ahPick, ouPick, matchView, hasAnyMarket, marketQuality: getMarketQualityScore(match) })
+  const status = buildStatus({ hasAnyMarket, matchView, finalPick })
+  const confidence = getDecisionConfidence({ match_view: matchView, ah_pick: ahPick, ou_pick: ouPick, final_pick: finalPick, status })
 
   return {
+    match_view: matchView,
     ah_pick: ahPick,
-    ah_confidence: ahConfidence,
-    ah_reason: buildAhReason(ahPick, ahConfidence, ahRecommendation),
     ou_pick: ouPick,
-    ou_confidence: ouConfidence,
-    ou_reason: buildOuReason(ouPick, ouConfidence, ouRecommendation),
-    final_pick: finalRecommendation === 'NO BET' ? 'NO BET' : selectedMarket,
-    final_recommendation: finalRecommendation,
-    final_reason: buildFinalReason(selectedMarket, finalRecommendation, ahConfidence, ouConfidence),
+    final_pick: finalPick,
+    confidence,
+    status,
   }
-}
-
-export function recommendationFromConfidence(confidence) {
-  const score = scoreValue(confidence)
-  if (score >= 75) return 'BET'
-  if (score >= 60) return 'LEAN'
-  return 'NO BET'
 }
 
 export function getDecisionConfidence(decision = {}) {
-  if (decision.final_pick === 'AH') return scoreValue(decision.ah_confidence)
-  if (decision.final_pick === 'OU') return scoreValue(decision.ou_confidence)
-  return Math.max(scoreValue(decision.ah_confidence), scoreValue(decision.ou_confidence))
+  if (decision.final_pick?.type === 'AH') return scoreValue(decision.ah_pick?.confidence)
+  if (decision.final_pick?.type === 'OU') return scoreValue(decision.ou_pick?.confidence)
+  return scoreValue(decision.match_view?.confidence)
+}
+
+export function getBestPickLabel(decision = {}) {
+  return decision.final_pick?.label ?? 'ยังไม่มี Best Pick'
+}
+
+export function getDecisionReason(decision = {}) {
+  return decision.final_pick?.reason || decision.match_view?.reason || 'ข้อมูลยังไม่พอสำหรับสรุป'
+}
+
+export function getLegacyDecisionFields(decision = {}) {
+  return {
+    ah_pick_label: decision.ah_pick?.label ?? 'รอเส้น AH',
+    ah_confidence: scoreValue(decision.ah_pick?.confidence),
+    ah_reason: decision.ah_pick?.reason ?? 'ยังไม่มีข้อมูล Asian Handicap จาก API-Football',
+    ou_pick_label: decision.ou_pick?.label ?? 'รอราคา O/U',
+    ou_confidence: scoreValue(decision.ou_pick?.confidence),
+    ou_reason: decision.ou_pick?.reason ?? 'ยังไม่มีข้อมูล Over/Under จาก API-Football',
+    final_pick_type: decision.final_pick?.type ?? 'NO_DECISION',
+    final_pick_label: decision.final_pick?.label ?? 'ยังไม่มี Best Pick',
+    final_reason: decision.final_pick?.reason ?? 'รอข้อมูลราคาเพื่อยืนยัน AH/O-U',
+    final_recommendation: statusToRecommendation(decision.status),
+  }
 }
 
 function normalizeDecision(value = {}, match = {}) {
-  const fallback = {
-    ah_pick: null,
-    ah_confidence: null,
-    ah_reason: null,
-    ou_pick: null,
-    ou_confidence: null,
-    ou_reason: null,
-    final_pick: null,
-    final_recommendation: null,
-    final_reason: null,
+  const fresh = buildFreshDecision(match)
+  const matchView = normalizeMatchView(value.match_view ?? value.matchView, fresh.match_view)
+  const ahPick = normalizeAhPick(value.ah_pick ?? value.ahPick, fresh.ah_pick)
+  const ouPick = normalizeOuPick(value.ou_pick ?? value.ouPick, fresh.ou_pick)
+  const finalPick = normalizeFinalPickObject(value.final_pick ?? value.finalPick, fresh.final_pick)
+  const status = statuses.includes(String(value.status ?? '').toUpperCase()) ? String(value.status).toUpperCase() : fresh.status
+  return {
+    match_view: matchView,
+    ah_pick: ahPick,
+    ou_pick: ouPick,
+    final_pick: finalPick,
+    confidence: scoreValue(value.confidence ?? fresh.confidence),
+    status,
   }
-  const merged = { ...fallback, ...value }
-  const ahConfidence = scoreValue(merged.ah_confidence ?? merged.ahConfidence)
-  const ouConfidence = scoreValue(merged.ou_confidence ?? merged.ouConfidence)
-  const ahPick = normalizePickText(merged.ah_pick ?? merged.ahPick) ?? buildAhPick(analyzeAsianHandicap(match).direction, ahConfidence)
-  const ouPick = normalizePickText(merged.ou_pick ?? merged.ouPick) ?? buildOuPick(analyzeOverUnder(match).direction, ouConfidence)
-  const selectedMarket = normalizeFinalPick(merged.final_pick ?? merged.finalPick) ?? chooseFinalMarket({ ahPick, ahConfidence, ouPick, ouConfidence })
-  const finalRecommendation = normalizeFinalRecommendation(merged.final_recommendation ?? merged.finalRecommendation)
-    ?? recommendationFromConfidence(selectedMarket === 'AH' ? ahConfidence : selectedMarket === 'OU' ? ouConfidence : Math.max(ahConfidence, ouConfidence))
+}
+
+function buildFreshDecision(match = {}) {
+  const matchCopy = { ...match }
+  delete matchCopy.bettingDecision
+  delete matchCopy.betting_decision
+  if (matchCopy.aiFinalPick?.bettingDecision) {
+    matchCopy.aiFinalPick = { ...matchCopy.aiFinalPick }
+    delete matchCopy.aiFinalPick.bettingDecision
+  }
+  if (matchCopy.ai_final_pick?.betting_decision) {
+    matchCopy.ai_final_pick = { ...matchCopy.ai_final_pick }
+    delete matchCopy.ai_final_pick.betting_decision
+  }
+  return buildSimpleBettingDecision(matchCopy)
+}
+
+function buildMatchView(match = {}, hasAnyMarket = false) {
+  const analysis = getAnalysis(match)
+  const homeTeam = match.homeTeam ?? match.home_team ?? {}
+  const awayTeam = match.awayTeam ?? match.away_team ?? {}
+  const homeName = homeTeam.name ?? match.home_name ?? 'เจ้าบ้าน'
+  const awayName = awayTeam.name ?? match.away_name ?? 'ทีมเยือน'
+  const dataScore = getFixtureDataScore(match, analysis)
+  if (dataScore < 35) {
+    return {
+      side: 'NONE',
+      team_name: null,
+      label: 'ข้อมูลยังไม่พอประเมินฝั่งชนะ',
+      confidence: 0,
+      reason: 'ข้อมูลทีมและตลาดยังไม่พอสำหรับสรุปฝั่ง',
+      source: 'INSUFFICIENT_DATA',
+    }
+  }
+
+  const homeScore = average([
+    analysis.home_advantage_score,
+    analysis.home_away_score,
+    analysis.team_strength_score,
+    analysis.form_score,
+    100 - Number(analysis.away_weakness_score ?? 45),
+    formSignal(match.homeForm ?? analysis.raw?.homeForm),
+  ], 56)
+  const awayScore = average([
+    100 - Number(analysis.home_advantage_score ?? 56),
+    analysis.team_strength_score ? 100 - Number(analysis.team_strength_score) : null,
+    analysis.form_score ? 100 - Number(analysis.form_score) : null,
+    analysis.away_weakness_score,
+    formSignal(match.awayForm ?? analysis.raw?.awayForm),
+  ], 52)
+  const gap = Math.abs(homeScore - awayScore)
+  const side = gap < 3 ? 'DRAW' : homeScore >= awayScore ? 'HOME' : 'AWAY'
+  const teamName = side === 'HOME' ? homeName : side === 'AWAY' ? awayName : null
+  const source = hasAnyMarket ? 'MARKET_MODEL' : 'FIXTURE_MODEL'
+  const baseConfidence = Math.round(52 + gap * 0.55 + dataScore * 0.08)
+  const confidence = scoreValue(hasAnyMarket ? Math.min(baseConfidence + 6, 82) : Math.min(baseConfidence, 60))
+
+  if (side === 'DRAW') {
+    return {
+      side,
+      team_name: null,
+      label: 'ภาพรวมสูสี',
+      confidence,
+      reason: 'คะแนนทีมใกล้กัน จึงประเมินเป็นเกมสูสี',
+      source,
+    }
+  }
 
   return {
-    ah_pick: ahPick,
-    ah_confidence: ahConfidence,
-    ah_reason: firstText(merged.ah_reason, merged.ahReason) ?? buildAhReason(ahPick, ahConfidence, recommendationFromConfidence(ahConfidence)),
-    ou_pick: ouPick,
-    ou_confidence: ouConfidence,
-    ou_reason: firstText(merged.ou_reason, merged.ouReason) ?? buildOuReason(ouPick, ouConfidence, recommendationFromConfidence(ouConfidence)),
-    final_pick: finalRecommendation === 'NO BET' ? 'NO BET' : selectedMarket,
-    final_recommendation: finalRecommendation,
-    final_reason: firstText(merged.final_reason, merged.finalReason) ?? buildFinalReason(selectedMarket, finalRecommendation, ahConfidence, ouConfidence),
+    side,
+    team_name: teamName,
+    label: `${teamName} มีโอกาสเหนือกว่า${confidence >= 58 ? '' : 'เล็กน้อย'}`,
+    confidence,
+    reason: hasAnyMarket
+      ? 'ประเมินจากข้อมูลทีมร่วมกับตลาดราคาที่มีอยู่'
+      : 'ประเมินจากคุณภาพลีก ข้อมูลทีม และความพร้อมข้อมูลพื้นฐาน',
+    source,
+  }
+}
+
+function buildAhPick(match = {}, rows = []) {
+  if (!rows.length) {
+    return {
+      side: 'NONE',
+      team_name: null,
+      label: 'รอเส้น AH',
+      reason: 'ยังไม่มีข้อมูล Asian Handicap จาก API-Football',
+      requires_market: true,
+    }
+  }
+
+  const analysis = analyzeAsianHandicap(match)
+  const side = String(analysis.direction ?? '').toLowerCase().startsWith('away') ? 'AWAY' : 'HOME'
+  const row = findMarketRow(rows, side === 'HOME' ? 'home' : 'away') ?? rows[0]
+  const line = firstText(row.line, String(row.selection ?? '').match(/[+-]?\d+(?:\.\d+)?/)?.[0], '0')
+  const teamName = side === 'HOME' ? match.homeTeam?.name ?? null : match.awayTeam?.name ?? null
+  const confidence = scoreValue(analysis.confidenceScore)
+
+  return {
+    side,
+    team_name: teamName,
+    label: `${side} ${formatSignedLine(line)}`,
+    reason: confidence >= 60 ? `มีเส้น AH แล้ว ระบบให้น้ำหนักฝั่ง${side === 'HOME' ? 'เจ้าบ้าน' : 'ทีมเยือน'}` : 'มีเส้น AH แล้ว แต่คะแนนยังไม่ผ่านเกณฑ์',
+    requires_market: true,
+    confidence,
+  }
+}
+
+function buildOuPick(match = {}, rows = []) {
+  if (!rows.length) {
+    return {
+      side: 'NONE',
+      label: 'รอราคา O/U',
+      reason: 'ยังไม่มีข้อมูล Over/Under จาก API-Football',
+      requires_market: true,
+    }
+  }
+
+  const analysis = analyzeOverUnder(match)
+  const side = String(analysis.direction ?? '').toLowerCase().startsWith('under') ? 'UNDER' : 'OVER'
+  const row = findMarketRow(rows, side.toLowerCase()) ?? rows[0]
+  const line = firstText(row.line, String(row.selection ?? '').match(/\d+(?:\.\d+)?/)?.[0], '2.5')
+  const confidence = scoreValue(analysis.confidenceScore)
+
+  return {
+    side,
+    label: `${side} ${line}`,
+    reason: confidence >= 60 ? `มีราคา O/U แล้ว ระบบให้น้ำหนักฝั่ง ${side}` : 'มีราคา O/U แล้ว แต่คะแนนยังไม่ผ่านเกณฑ์',
+    requires_market: true,
+    confidence,
+  }
+}
+
+function buildFinalPick({ ahPick, ouPick, matchView, hasAnyMarket, marketQuality }) {
+  if (!hasAnyMarket || (ahPick.side === 'NONE' && ouPick.side === 'NONE')) {
+    return {
+      type: 'NO_DECISION',
+      label: 'ยังไม่มี Best Pick',
+      reason: 'รอข้อมูลราคาเพื่อยืนยัน AH/O-U',
+    }
+  }
+
+  const candidates = [
+    ahPick.side !== 'NONE' && scoreValue(ahPick.confidence) >= 60 && marketQuality >= 60 ? { type: 'AH', label: ahPick.label, confidence: scoreValue(ahPick.confidence) } : null,
+    ouPick.side !== 'NONE' && scoreValue(ouPick.confidence) >= 60 && marketQuality >= 60 ? { type: 'OU', label: ouPick.label, confidence: scoreValue(ouPick.confidence) } : null,
+  ].filter(Boolean)
+
+  if (!candidates.length) {
+    return {
+      type: 'NO_DECISION',
+      label: 'ยังไม่ผ่านเกณฑ์',
+      reason: 'ข้อมูลตลาดมีแล้ว แต่คะแนนความคุ้มค่า/ความเสี่ยงยังไม่ผ่าน',
+    }
+  }
+
+  const best = candidates.sort((a, b) => b.confidence - a.confidence)[0]
+  return {
+    type: best.type,
+    label: best.label,
+    reason: `เลือก ${best.type} เพราะคะแนนตลาดนี้สูงสุด และมุมมองผู้ชนะคือ ${matchView.label}`,
+  }
+}
+
+function getMarketQualityScore(match = {}) {
+  const analysis = getAnalysis(match)
+  return scoreValue(analysis.market_edge_score ?? analysis.market_quality_score ?? analysis.raw?.market_edge_score ?? 60)
+}
+
+function buildStatus({ hasAnyMarket, matchView, finalPick }) {
+  if (hasAnyMarket && finalPick.type !== 'NO_DECISION') return 'READY'
+  if (hasAnyMarket) return 'WATCH'
+  if (matchView.source === 'INSUFFICIENT_DATA') return 'NO_DATA'
+  if (!hasAnyMarket) return 'WAITING_MARKET'
+  return 'READY'
+}
+
+function normalizeMatchView(value = {}, fallback) {
+  return {
+    side: ['HOME', 'AWAY', 'DRAW', 'NONE'].includes(String(value.side ?? '').toUpperCase()) ? String(value.side).toUpperCase() : fallback.side,
+    team_name: value.team_name ?? value.teamName ?? fallback.team_name,
+    label: firstText(value.label, fallback.label),
+    confidence: scoreValue(value.confidence ?? fallback.confidence),
+    reason: firstText(value.reason, fallback.reason),
+    source: ['MARKET_MODEL', 'FIXTURE_MODEL', 'INSUFFICIENT_DATA'].includes(String(value.source ?? '').toUpperCase()) ? String(value.source).toUpperCase() : fallback.source,
+  }
+}
+
+function normalizeAhPick(value = {}, fallback) {
+  return {
+    side: ['HOME', 'AWAY', 'NONE'].includes(String(value.side ?? '').toUpperCase()) ? String(value.side).toUpperCase() : fallback.side,
+    team_name: value.team_name ?? value.teamName ?? fallback.team_name,
+    label: firstText(value.label, fallback.label),
+    reason: firstText(value.reason, fallback.reason),
+    requires_market: true,
+    confidence: scoreValue(value.confidence ?? fallback.confidence),
+  }
+}
+
+function normalizeOuPick(value = {}, fallback) {
+  return {
+    side: ['OVER', 'UNDER', 'NONE'].includes(String(value.side ?? '').toUpperCase()) ? String(value.side).toUpperCase() : fallback.side,
+    label: firstText(value.label, fallback.label),
+    reason: firstText(value.reason, fallback.reason),
+    requires_market: true,
+    confidence: scoreValue(value.confidence ?? fallback.confidence),
+  }
+}
+
+function normalizeFinalPickObject(value = {}, fallback) {
+  const type = String(value.type ?? '').toUpperCase()
+  return {
+    type: finalTypes.includes(type) ? type : fallback.type,
+    label: firstText(value.label, fallback.label),
+    reason: firstText(value.reason, fallback.reason),
   }
 }
 
 function getStoredDecision(match = {}) {
-  const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis ?? match.match_analysis ?? {}
+  const analysis = getAnalysis(match)
   return match.bettingDecision
     ?? match.betting_decision
     ?? match.aiFinalPick?.bettingDecision
@@ -90,76 +302,58 @@ function getStoredDecision(match = {}) {
     ?? null
 }
 
-function hasDecisionFields(value) {
-  if (!value || typeof value !== 'object') return false
-  return Boolean(
-    value.ah_pick
-      ?? value.ahPick
-      ?? value.ou_pick
-      ?? value.ouPick
-      ?? value.final_pick
-      ?? value.finalPick,
-  )
+function hasNestedDecisionFields(value) {
+  return Boolean(value && typeof value === 'object' && (value.match_view || value.matchView || value.final_pick?.type || value.finalPick?.type))
 }
 
-function buildAhPick(direction, confidence) {
-  if (scoreValue(confidence) < 60) return 'NO BET'
-  const text = String(direction ?? '').trim()
-  const side = text.toLowerCase().startsWith('away') ? 'AWAY' : 'HOME'
-  const line = text.match(/[+-]?\d+(?:\.\d+)?/)?.[0] ?? '+0.25'
-  return `${side} ${line.startsWith('-') || line.startsWith('+') ? line : `+${line}`}`
+function getAnalysis(match = {}) {
+  const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis ?? match.match_analysis ?? {}
+  return analysis ?? {}
 }
 
-function buildOuPick(direction, confidence) {
-  if (scoreValue(confidence) < 60) return 'NO BET'
-  const text = String(direction ?? '').trim()
-  const side = text.toLowerCase().startsWith('under') ? 'UNDER' : 'OVER'
-  const line = text.match(/\d+(?:\.\d+)?/)?.[0] ?? '2.5'
-  return `${side} ${line}`
+function getFixtureDataScore(match, analysis) {
+  const checks = [
+    Boolean(match.id),
+    Boolean(match.kickoffAt ?? match.kickoff_at),
+    Boolean(match.league?.name ?? match.competition?.name),
+    Boolean(match.homeTeam?.name),
+    Boolean(match.awayTeam?.name),
+    Boolean(match.homeForm ?? analysis.raw?.homeForm),
+    Boolean(match.awayForm ?? analysis.raw?.awayForm),
+    Boolean(analysis.team_strength_score ?? analysis.form_score ?? analysis.home_advantage_score),
+  ]
+  return Math.round((checks.filter(Boolean).length / checks.length) * 100)
 }
 
-function chooseFinalMarket({ ahPick, ahConfidence, ouPick, ouConfidence }) {
-  const ahAvailable = ahPick !== 'NO BET' && ahConfidence >= 60
-  const ouAvailable = ouPick !== 'NO BET' && ouConfidence >= 60
-  if (!ahAvailable && !ouAvailable) return 'NO BET'
-  if (ahAvailable && !ouAvailable) return 'AH'
-  if (ouAvailable && !ahAvailable) return 'OU'
-  return ahConfidence >= ouConfidence ? 'AH' : 'OU'
+function findMarketRow(rows, pattern) {
+  const text = String(pattern ?? '').toLowerCase()
+  return rows.find((row) => String(row.selection ?? row.raw?.value ?? '').toLowerCase().includes(text)) ?? null
 }
 
-function buildAhReason(pick, confidence, recommendation) {
-  if (pick === 'NO BET' || recommendation === 'NO BET') return `คะแนน AH ${confidence}% ต่ำกว่าเกณฑ์ 60 จึงไม่เลือกฝั่งนี้`
-  const side = pick.startsWith('HOME') ? 'เจ้าบ้าน' : 'ทีมเยือน'
-  return `คะแนน AH ${confidence}% หนุนฝั่ง${side} ชัดกว่าอีกฝั่ง`
+function formSignal(form) {
+  if (!form) return null
+  const played = Number(form.played ?? 0)
+  if (!played) return null
+  const points = Number(form.wins ?? 0) * 3 + Number(form.draws ?? 0)
+  return Math.max(0, Math.min(100, (points / Math.max(played * 3, 1)) * 100))
 }
 
-function buildOuReason(pick, confidence, recommendation) {
-  if (pick === 'NO BET' || recommendation === 'NO BET') return `คะแนน O/U ${confidence}% ต่ำกว่าเกณฑ์ 60 จึงไม่เลือกสูง/ต่ำ`
-  const side = pick.startsWith('UNDER') ? 'Under' : 'Over'
-  return `คะแนน O/U ${confidence}% หนุน ${side} ตามจังหวะเกมและไลน์`
+function average(values, fallback) {
+  const numbers = values.map(Number).filter(Number.isFinite)
+  if (!numbers.length) return fallback
+  return numbers.reduce((total, value) => total + value, 0) / numbers.length
 }
 
-function buildFinalReason(finalPick, finalRecommendation, ahConfidence, ouConfidence) {
-  if (finalRecommendation === 'NO BET' || finalPick === 'NO BET') {
-    return `AH ${ahConfidence}% และ O/U ${ouConfidence}% ยังไม่ถึงเกณฑ์ 60`
-  }
-  const label = finalPick === 'AH' ? 'AH' : 'O/U'
-  return `เลือก ${label} เพราะความมั่นใจสูงกว่าอีกตลาด (${ahConfidence}% vs ${ouConfidence}%)`
+function formatSignedLine(value) {
+  const text = String(value ?? '0').trim()
+  if (!text || text === '0') return '0'
+  return text.startsWith('-') || text.startsWith('+') ? text : `+${text}`
 }
 
-function normalizePickText(value) {
-  const text = firstText(value)
-  return text ? text.toUpperCase().replace(/\s+/g, ' ') : null
-}
-
-function normalizeFinalPick(value) {
-  const text = String(value ?? '').toUpperCase().replace('_', ' ')
-  return ['AH', 'OU', 'NO BET'].includes(text) ? text : null
-}
-
-function normalizeFinalRecommendation(value) {
-  const text = String(value ?? '').toUpperCase().replace('_', ' ')
-  return finalRecommendations.includes(text) ? text : null
+function statusToRecommendation(status) {
+  if (status === 'READY') return 'BET'
+  if (status === 'WATCH') return 'LEAN'
+  return 'NO BET'
 }
 
 function firstText(...values) {
@@ -168,7 +362,7 @@ function firstText(...values) {
     const text = String(value).trim()
     if (text) return text
   }
-  return null
+  return ''
 }
 
 function scoreValue(value) {

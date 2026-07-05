@@ -1,7 +1,7 @@
 import { Brain, ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 import { generateAiFinalPick } from '../utils/aiFinalPickEngine.js'
-import { buildSimpleBettingDecision, getDecisionConfidence } from '../utils/bettingDecision.js'
+import { buildSimpleBettingDecision, getBestPickLabel, getDecisionConfidence } from '../utils/bettingDecision.js'
 import { normalizeOddsRows } from '../utils/oddsUtils.js'
 import { formatMarketFocus } from '../utils/uiLabels.js'
 import MarketDirectionBadge from './MarketDirectionBadge'
@@ -14,7 +14,7 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
   const pick = match?.aiFinalPick ?? generateAiFinalPick(match)
   const decision = pick.bettingDecision ?? buildSimpleBettingDecision(match)
   const odds = normalizeOddsRows(match)
-  const signal = signalFromRecommendation(decision.final_recommendation)
+  const signal = signalFromStatus(decision.status)
   const confidence = getDecisionConfidence(decision)
   const displayPick = getBestPickLabel(decision)
 
@@ -33,13 +33,13 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
         </div>
 
         <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-          <MiniChip label="ตลาด" value={formatMarketFocus(decision.final_pick)} />
+          <MiniChip label="ตลาด" value={formatDecisionMarket(decision.final_pick.type)} />
           <MiniChip label="มั่นใจ" value={`${confidence}%`} />
           <RiskBadge level={pick.riskLevel} compact />
         </div>
 
         <p className="text-clamp-1 mt-2 rounded-lg border border-white/10 bg-black/15 px-2 py-1.5 text-[11px] font-semibold leading-4 text-slate-300">
-          {decision.final_reason}
+          {decision.final_pick.reason}
         </p>
       </section>
     )
@@ -54,7 +54,7 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
             Best Pick
           </p>
           <p className="mt-1 text-clamp-2 text-lg font-black leading-6 text-white">{displayPick}</p>
-          <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{decision.final_reason}</p>
+          <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{decision.final_pick.reason}</p>
         </div>
         <MarketDirectionBadge signal={signal} />
       </div>
@@ -62,7 +62,7 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
       <div className="mt-3 grid grid-cols-[minmax(0,1fr)_84px] items-end gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap gap-1.5">
-            <MiniChip label="ตลาด" value={formatMarketFocus(decision.final_pick)} />
+            <MiniChip label="ตลาด" value={formatDecisionMarket(decision.final_pick.type)} />
             <MiniChip label="ทิศทาง" value={displayPick} wide />
           </div>
         </div>
@@ -88,9 +88,9 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
       {open ? (
         <div className="mt-3 grid gap-3">
           <MarketOddsCard odds={odds} />
-          <AnalysisBlock title="AH Analysis" pick={decision.ah_pick} confidence={decision.ah_confidence} reason={decision.ah_reason} />
-          <AnalysisBlock title="O/U Analysis" pick={decision.ou_pick} confidence={decision.ou_confidence} reason={decision.ou_reason} />
-          <AnalysisBlock title="Final Decision" pick={displayPick} confidence={confidence} reason={decision.final_reason} badge={decision.final_recommendation} />
+          <AnalysisBlock title="AH Analysis" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence} reason={decision.ah_pick.reason} />
+          <AnalysisBlock title="O/U Analysis" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence} reason={decision.ou_pick.reason} />
+          <AnalysisBlock title="Final Decision" pick={displayPick} confidence={confidence} reason={decision.final_pick.reason} badge={decision.status} />
         </div>
       ) : null}
     </section>
@@ -124,16 +124,16 @@ function MiniChip({ label, value, wide = false }) {
   )
 }
 
-function getBestPickLabel(decision) {
-  if (decision.final_pick === 'AH') return decision.ah_pick
-  if (decision.final_pick === 'OU') return decision.ou_pick
-  return 'NO BET'
+function signalFromStatus(status) {
+  if (status === 'READY') return 'STRONG_SIGNAL'
+  if (status === 'WATCH') return 'WATCH'
+  return 'SKIP'
 }
 
-function signalFromRecommendation(recommendation) {
-  if (recommendation === 'BET') return 'STRONG_SIGNAL'
-  if (recommendation === 'LEAN') return 'WATCH'
-  return 'SKIP'
+function formatDecisionMarket(type) {
+  if (type === 'NO_DECISION') return 'รอราคา'
+  if (type === 'TEAM') return 'มุมมองทีม'
+  return formatMarketFocus(type)
 }
 
 function cardTone(signal, compact) {
@@ -149,8 +149,8 @@ function barTone(signal) {
   return 'bg-gradient-to-r from-slate-400 to-slate-200'
 }
 
-function badgeTone(recommendation) {
-  if (recommendation === 'BET') return 'badge-bet'
-  if (recommendation === 'LEAN') return 'badge-lean'
+function badgeTone(status) {
+  if (status === 'READY') return 'badge-bet'
+  if (status === 'WATCH') return 'badge-lean'
   return 'badge-no-bet'
 }

@@ -1,9 +1,8 @@
 import { CheckCircle2, Eye, Flame, Hourglass, RefreshCcw, Sparkles, Trophy, Zap } from 'lucide-react'
 import { useMemo } from 'react'
 import MatchCard from '../components/MatchCard'
-import { getConfidence } from '../utils/analysisEngine'
+import { getDecisionConfidence } from '../utils/bettingDecision'
 import { formatThaiDate, formatUpdatedAt } from '../utils/formatters'
-import { getApiFootballOddsRows } from '../utils/marketDisplay'
 import { buildTodayMatchBuckets } from '../utils/todayMatchBuckets'
 
 export default function TodayPage({
@@ -39,13 +38,13 @@ export default function TodayPage({
     summary,
   } = buckets
 
-  const avgConfidence = playableMatches.length ? Math.round(playableMatches.reduce((total, match) => total + getConfidence(match), 0) / playableMatches.length) : 0
+  const avgConfidence = playableMatches.length ? Math.round(playableMatches.reduce((total, match) => total + getDecisionConfidence(match.bettingDecision), 0) / playableMatches.length) : 0
   const finishedCount = Math.max(summary.finishedCount, finishedMatches.length)
   const lastUpdated = top10Status?.lastUpdated ?? top10Status?.lockedAt ?? null
   const showFinishedOnlyState = !loading && !error && playableMatches.length === 0 && finishedCount > 0
   const showEmptyState = !loading && !error && playableMatches.length === 0 && finishedCount === 0
   const hasMainSections = !loading && !error && (strongMatches.length || watchMatches.length || waitingMatches.length)
-  const noOddsOnlySelection = !loading && !error && playableMatches.length > 0 && playableMatches.every((match) => getApiFootballOddsRows(match).length === 0)
+  const noReadyDecision = !loading && !error && playableMatches.length > 0 && strongMatches.length === 0
 
   return (
     <main className="app-page theme-today">
@@ -57,7 +56,7 @@ export default function TodayPage({
                 <Sparkles size={13} />
                 AI คัดคู่ประจำวัน
               </p>
-              <h2 className="mt-0.5 text-[1.28rem] font-black leading-7 text-white">คู่เด่นวันนี้</h2>
+              <h2 className="mt-0.5 text-[1.28rem] font-black leading-7 text-white">วิเคราะห์วันนี้</h2>
               <p className="text-clamp-1 mt-0.5 text-[11px] font-bold leading-4 text-slate-400">{formatThaiDate()}</p>
             </div>
             <button type="button" onClick={onRefresh} className="premium-button premium-focus flex min-h-10 shrink-0 items-center justify-center gap-1.5 px-3 text-xs" aria-label="รีเฟรชคู่วันนี้">
@@ -67,22 +66,22 @@ export default function TodayPage({
           </div>
 
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <HeroMetric icon={Flame} label="คู่เด่น" value={strongMatches.length} tone="strong" />
+            <HeroMetric icon={Flame} label="พร้อมตัดสิน" value={strongMatches.length} tone="strong" />
             <HeroMetric icon={Eye} label="เฝ้าดู" value={watchMatches.length} tone="watch" />
-            <HeroMetric icon={Hourglass} label="รอตลาด" value={waitingMatches.length} tone="waiting" />
+            <HeroMetric icon={Hourglass} label="รอราคา" value={waitingMatches.length} tone="waiting" />
             <HeroMetric icon={Trophy} label="จบแล้ว" value={finishedCount} tone="finished" />
           </div>
 
           <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
             <div className="flex min-w-0 items-center justify-between gap-2">
-              <p className="text-clamp-1 text-[12px] font-black text-white">{buildHeroMessage(summary, noOddsOnlySelection)}</p>
+              <p className="text-clamp-1 text-[12px] font-black text-white">{buildHeroMessage(summary, noReadyDecision)}</p>
               <span className="flex shrink-0 items-center gap-1 text-[11px] font-black text-emerald-100">
                 <CheckCircle2 size={12} />
                 พร้อมใช้งาน
               </span>
             </div>
             <p className="text-clamp-2 mt-1 text-[11px] font-semibold leading-4 text-slate-400">
-              {top10Locked || lockedCount ? `ใช้ชุดคัดประจำวันที่ล็อกไว้ ${lockedCount || matches.length}/10` : `ใช้รายการที่พร้อมที่สุดในช่วง ${windowHoursUsed} ชั่วโมง`}
+              {top10Locked || lockedCount ? `ใช้ชุดคัดประจำวันที่บันทึกไว้ ${lockedCount || matches.length}/10` : `ใช้รายการที่พร้อมที่สุดในช่วง ${windowHoursUsed} ชั่วโมง`}
               {totalMatchCount ? ` · จากรายการทั้งหมด ${totalMatchCount} คู่` : ''}
               {avgConfidence ? ` · AI Score เฉลี่ย ${avgConfidence}%` : ''}
               {lastUpdated ? ` · อัปเดต ${formatUpdatedAt(lastUpdated)}` : ''}
@@ -128,15 +127,17 @@ export default function TodayPage({
 
       {hasMainSections ? (
         <div className="mt-3 grid gap-4">
-          {noOddsOnlySelection ? (
-            <NoOddsNotice />
+          {noReadyDecision ? (
+            <NoReadyDecisionNotice />
           ) : null}
 
-          <MatchSection title="คู่เด่นวันนี้" count={strongMatches.length} tone="strong" emptyMessage="วันนี้ยังไม่มีคู่ที่ AI ยกระดับเป็นคู่เด่นแบบชัดเจน">
-            {strongMatches.map((match) => (
-              <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable displayMode="strong" />
-            ))}
-          </MatchSection>
+          {strongMatches.length ? (
+            <MatchSection title="พร้อมตัดสิน" count={strongMatches.length} tone="strong">
+              {strongMatches.map((match) => (
+                <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable displayMode="strong" />
+              ))}
+            </MatchSection>
+          ) : null}
 
           {watchMatches.length ? (
             <MatchSection title="คู่เฝ้าดู" count={watchMatches.length} tone="watch">
@@ -198,11 +199,11 @@ function MatchSection({ title, count, tone = 'strong', emptyMessage = '', childr
   )
 }
 
-function NoOddsNotice() {
+function NoReadyDecisionNotice() {
   return (
     <section className="rounded-[18px] border border-amber-300/24 bg-amber-300/10 p-3">
-      <p className="text-sm font-black text-amber-50">วันนี้ API-Football ยังไม่มีข้อมูลราคาสำหรับคู่ที่เลือก</p>
-      <p className="mt-1 text-xs font-semibold leading-5 text-amber-100">ระบบจะแสดงจาก fixture จริงก่อน และจะอัปเดตมุมมองราคาเมื่อ football_match_odds พร้อมใช้งาน</p>
+      <p className="text-sm font-black text-amber-50">วันนี้ยังไม่มีคู่ที่พร้อมสรุป AH/O-U</p>
+      <p className="mt-1 text-xs font-semibold leading-5 text-amber-100">ระบบพบ fixture จริง แต่ API-Football ยังไม่มีข้อมูลราคาครบ จึงแสดงมุมมองผู้ชนะเบื้องต้นเท่านั้น</p>
     </section>
   )
 }
@@ -266,11 +267,11 @@ function StateBox({ title, message, detail = '', tone = 'default', onRetry, acti
   )
 }
 
-function buildHeroMessage(summary, noOddsOnlySelection = false) {
-  if (noOddsOnlySelection) return 'วันนี้ API-Football ยังไม่มีข้อมูลราคาสำหรับคู่ที่เลือก ระบบจะแสดงจาก fixture จริงก่อน'
-  if (summary.hasStrongPick) return 'วันนี้มีคู่ที่ AI ให้สัญญาณชัด'
+function buildHeroMessage(summary, noReadyDecision = false) {
+  if (noReadyDecision) return 'วันนี้ยังไม่มีคู่ที่พร้อมสรุป AH/O-U'
+  if (summary.hasStrongPick) return 'วันนี้มีคู่ที่พร้อมตัดสิน'
   if (summary.watchCount) return 'วันนี้ยังไม่สุด แต่มีคู่ที่ควรเฝ้าดู'
-  if (summary.waitingCount) return 'รอข้อมูลราคาเพื่อยืนยันคู่เด่น'
+  if (summary.waitingCount) return 'รอข้อมูลราคาเพื่อยืนยัน AH/O-U'
   if (summary.hasFinishedOnly) return 'คู่วันนี้แข่งจบแล้ว'
   return 'กำลังรอข้อมูลที่พร้อมพอสำหรับการคัดคู่'
 }

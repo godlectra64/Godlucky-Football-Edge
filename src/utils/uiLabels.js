@@ -1,5 +1,5 @@
 export const recommendationLabelsTh = {
-  BET: 'คู่เด่น',
+  BET: 'พร้อมตัดสิน',
   LEAN: 'น่าติดตาม',
   WATCH: 'เฝ้าดู',
   'NO BET': 'รอข้อมูลเพิ่ม',
