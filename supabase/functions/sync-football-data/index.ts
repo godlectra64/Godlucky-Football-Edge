@@ -7131,7 +7131,10 @@ function buildProfessionalSelectionScoreEdge(match: any = {}, analysis: any = {}
     totalScore,
     recommendation,
     confidenceScore: aiConfidence,
-    pipelineStage: getProfessionalPipelineStageEdge(gates, recommendation),
+    pipelineStage: getProfessionalPipelineStageEdge(gates, recommendation, {
+      dataQuality,
+      hasOdds: Boolean(analysis.market_data_used || analysis.odds_rows_used || analysis.latest_odds || analysis.value_market),
+    }),
     scores,
     gates,
     reasons,
@@ -7207,7 +7210,9 @@ function calculateProfessionalAiConfidenceEdge(scores: Record<string, number>) {
   return normalizeScore(average - Math.max(0, spread - 24) * 0.35 + (values.length >= 7 ? 3 : 0))
 }
 
-function getProfessionalPipelineStageEdge(gates: Record<string, boolean>, recommendation: string) {
+function getProfessionalPipelineStageEdge(gates: Record<string, boolean>, recommendation: string, context: { dataQuality?: number; hasOdds?: boolean } = {}) {
+  if (Number(context.dataQuality ?? 0) < 35) return 'NO_DATA'
+  if (!context.hasOdds && recommendation !== 'BET') return 'WATCH'
   if (!gates.passedLeagueFilter) return 'league-filter'
   if (!gates.passedDataQuality) return 'data-quality-filter'
   if (!gates.passedMarketQuality) return 'market-quality-filter'

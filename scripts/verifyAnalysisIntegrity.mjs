@@ -215,6 +215,18 @@ const optionalProfessionalChecks = [
     query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('market_quality_score.lt.0,market_quality_score.gt.100'),
   },
   {
+    label: 'invalid statistical_edge_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('statistical_edge_score.lt.0,statistical_edge_score.gt.100'),
+  },
+  {
+    label: 'invalid tactical_edge_score range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('tactical_edge_score.lt.0,tactical_edge_score.gt.100'),
+  },
+  {
+    label: 'invalid motivation_score professional range',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('motivation_score.lt.0,motivation_score.gt.100'),
+  },
+  {
     label: 'invalid risk_control_score range',
     query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('risk_control_score.lt.0,risk_control_score.gt.100'),
   },
@@ -225,6 +237,18 @@ const optionalProfessionalChecks = [
   {
     label: 'top 10 missing professional score',
     query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('is_top_pick', true).is('professional_score', null),
+  },
+  {
+    label: 'daily top10 locked missing professional score',
+    query: checkDailyTop10LockedProfessionalScore,
+  },
+  {
+    label: 'null pipeline_stage when column exists',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).is('pipeline_stage', null),
+  },
+  {
+    label: 'invalid pipeline json arrays',
+    query: checkProfessionalPipelineJsonArrays,
   },
   {
     label: 'friendly/youth low-data BET',
@@ -727,6 +751,58 @@ async function checkFriendlyYouthLowDataBet() {
   })
 
   return { count: riskyRows.length }
+}
+
+async function checkProfessionalPipelineJsonArrays() {
+  const { data, error } = await fetchAllRows((from, to) => supabase
+    .from('match_analysis')
+    .select('id, pipeline_reasons, pipeline_warnings, raw')
+    .range(from, to))
+  if (error) return { error }
+
+  const invalid = (data ?? []).filter((row) => {
+    const reasons = row.pipeline_reasons ?? row.raw?.professional_pipeline?.reasons ?? []
+    const warnings = row.pipeline_warnings ?? row.raw?.professional_pipeline?.warnings ?? []
+    return !Array.isArray(reasons) || !Array.isArray(warnings)
+  })
+
+  return { count: invalid.length }
+}
+
+async function checkDailyTop10LockedProfessionalScore() {
+  const { data: locks, error: lockError } = await fetchAllRows((from, to) => supabase
+    .from('daily_top10_selections')
+    .select('match_id')
+    .not('match_id', 'is', null)
+    .range(from, to))
+  if (lockError) {
+    if (isOptionalV2Missing(lockError)) return { count: 0, warning: lockError.message }
+    return { error: lockError }
+  }
+
+  const matchIds = [...new Set((locks ?? []).map((row) => row.match_id).filter(Boolean))]
+  if (!matchIds.length) return { count: 0 }
+
+  const { data: analysisRows, error } = await supabase
+    .from('match_analysis')
+    .select('match_id, professional_score')
+    .in('match_id', matchIds)
+  if (error) return { error }
+
+  const byMatchId = new Map((analysisRows ?? []).map((row) => [row.match_id, row]))
+  const missing = matchIds.filter((matchId) => !byMatchId.get(matchId)?.professional_score && byMatchId.get(matchId)?.professional_score !== 0)
+  return { count: missing.length }
+}
+
+async function fetchAllRows(queryPage, pageSize = 1000) {
+  const rows = []
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await queryPage(from, from + pageSize - 1)
+    if (error) return { data: rows, error }
+    rows.push(...(data ?? []))
+    if (!data || data.length < pageSize) break
+  }
+  return { data: rows, error: null }
 }
 
 function analysisAppearsDefault(analysis) {

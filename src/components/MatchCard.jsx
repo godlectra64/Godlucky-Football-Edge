@@ -33,6 +33,7 @@ export default function MatchCard({
   const waitingMarket = providedIsWaitingMarketData ?? (!isFinished && isWaitingForMarketData(match))
   const mode = displayMode || (waitingMarket ? 'waiting' : recommendation === 'BET' ? 'strong' : 'watch')
   const professional = normalizeProfessionalResultFromAnalysis({ ...match, recommendation })
+  const hasStoredProfessionalScore = hasStoredProfessionalPipeline(match)
   const analysisSummary = buildCardSummary(match, recommendation, confidence, waitingMarket)
   const reasons = buildReasonList(match, finalPick, analysisSummary, waitingMarket || !marketDisplay.hasApiFootballMarket, marketDisplay, professional)
   const cardClass = buildCardClass(finalRank ?? match.rank, mode, riskLevel)
@@ -82,7 +83,7 @@ export default function MatchCard({
         ))}
       </div>
 
-      <ProfessionalMetrics professional={professional} confidence={confidence} riskLevel={riskLevel} />
+      <ProfessionalMetrics professional={professional} confidence={confidence} riskLevel={riskLevel} hasStoredProfessionalScore={hasStoredProfessionalScore} />
       <SystemPickSummaryBox summary={pickSummary} confidence={confidence} hasMarket={marketDisplay.hasApiFootballMarket} />
 
       {reasons.length ? (
@@ -110,12 +111,12 @@ export default function MatchCard({
   )
 }
 
-function ProfessionalMetrics({ professional, confidence, riskLevel }) {
+function ProfessionalMetrics({ professional, confidence, riskLevel, hasStoredProfessionalScore }) {
   const scores = professional?.scores ?? {}
   const riskLabel = String(riskLevel ?? '').toUpperCase() || '-'
   return (
     <div className="mt-2 grid grid-cols-2 gap-1.5">
-      <SummaryMetric label="Professional Score" value={`${Math.round(professional?.totalScore ?? 0)}%`} />
+      <SummaryMetric label="Professional Score" value={hasStoredProfessionalScore ? `${Math.round(professional?.totalScore ?? 0)}%` : 'รอประเมิน Pipeline'} muted={!hasStoredProfessionalScore} />
       <SummaryMetric label="Confidence" value={`${Math.round(confidence ?? professional?.confidenceScore ?? 0)}%`} />
       <SummaryMetric label="Risk Level" value={riskLabel} muted={riskLabel === 'HIGH'} />
       <SummaryMetric label="Value Edge" value={`${Math.round(scores.valueEdge ?? 0)}%`} muted={(scores.valueEdge ?? 0) < 55} />
@@ -123,6 +124,11 @@ function ProfessionalMetrics({ professional, confidence, riskLevel }) {
       <SummaryMetric label="Data Quality" value={`${Math.round(scores.dataQuality ?? 0)}%`} muted={(scores.dataQuality ?? 0) < 50} />
     </div>
   )
+}
+
+function hasStoredProfessionalPipeline(match = {}) {
+  const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis ?? match.match_analysis ?? {}
+  return analysis?.professional_score !== null && analysis?.professional_score !== undefined
 }
 
 function TeamName({ name, active = false, align = 'left' }) {

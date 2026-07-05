@@ -86,7 +86,10 @@ export function buildProfessionalSelectionScore(input = {}) {
   const hardGatePassed = gates.passedLeagueFilter && gates.passedDataQuality && gates.passedMarketQuality && gates.passedRiskFilter && gates.passedValueFilter && gates.passedConfidenceFilter
   const recommendation = getProfessionalRecommendation({ totalScore, confidenceScore, scores, gates, hardGatePassed })
   const finalPick = buildFinalPick(normalized, recommendation, value, market)
-  const pipelineStage = getPipelineStage(gates, recommendation)
+  const pipelineStage = getPipelineStage(gates, recommendation, {
+    scores,
+    hasOdds: normalized.oddsRows.length > 0,
+  })
 
   if (!hardGatePassed) warnings.push('คู่นี้ไม่ผ่าน gate สำคัญบางส่วน ระบบจึงลดระดับคำแนะนำ')
   if (!normalized.oddsRows.length) warnings.push('ไม่มีข้อมูลราคา ระบบจำกัด Value Edge และไม่ยกระดับเป็น BET')
@@ -399,7 +402,9 @@ function getProfessionalRecommendation({ totalScore, confidenceScore, scores, ga
   return 'NO BET'
 }
 
-function getPipelineStage(gates, recommendation) {
+function getPipelineStage(gates, recommendation, context = {}) {
+  if (numberValue(context.scores?.dataQuality) < 35) return 'NO_DATA'
+  if (!context.hasOdds && recommendation !== 'BET') return 'WATCH'
   if (!gates.passedLeagueFilter) return 'league-filter'
   if (!gates.passedDataQuality) return 'data-quality-filter'
   if (!gates.passedMarketQuality) return 'market-quality-filter'

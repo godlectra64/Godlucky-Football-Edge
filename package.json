@@ -8,6 +8,7 @@
     "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/dailySyncAuth.unit.test.mjs && node scripts/resultSettlement.smoke.test.mjs",
     "verify:analysis": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:professional-pipeline": "node scripts/verifyAnalysisIntegrity.mjs",
+    "backfill:professional-pipeline": "node scripts/backfillProfessionalPipeline.mjs",
     "verify:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:daily-sync": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:daily-sync-orchestrator": "node scripts/verifyAnalysisIntegrity.mjs",
