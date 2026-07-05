@@ -1,4 +1,5 @@
 import { analyzeAsianHandicap } from './ahAnalysisEngine.js'
+import { buildSimpleBettingDecision, getDecisionConfidence } from './bettingDecision.js'
 import { analyzeOverUnder } from './ouAnalysisEngine.js'
 import { derivePickTeamFromApiFootballOdds } from './marketDisplay.js'
 import { getPrimaryBookmaker, getPrimaryOddText, normalizeOddsRows } from './oddsUtils.js'
@@ -26,6 +27,8 @@ export function generateAiFinalPick(match = {}) {
   const apiPick = derivePickTeamFromApiFootballOdds(match, oddsRows)
   const marketEdgeScore = scoreValue(analysis.market_edge_score ?? analysis.raw?.market_edge_score, 0)
   const recommendation = normalizeRecommendation(analysis.recommendation ?? match.recommendation)
+  const bettingDecision = buildSimpleBettingDecision({ ...match, aiFinalPick: { ...(match.aiFinalPick ?? {}), ahAnalysis, ouAnalysis } })
+  const decisionConfidence = getDecisionConfidence(bettingDecision)
   const signal = resolveSignal({
     recommendation,
     totalAnalysisScore,
@@ -42,18 +45,18 @@ export function generateAiFinalPick(match = {}) {
     warningSigns,
   })
 
-  const safeMarketFocus = signal === 'SKIP' && !hasOdds ? 'NONE' : selected.marketFocus
-  const direction = signal === 'SKIP' && !hasOdds ? 'No market direction' : selected.direction
   return {
+    ...bettingDecision,
+    bettingDecision,
     signal,
-    marketFocus: safeMarketFocus,
-    direction,
-    confidenceScore: signal === 'SKIP' && !hasOdds ? Math.min(confidenceScore, 54) : confidenceScore,
+    marketFocus: bettingDecision.final_pick === 'NO BET' ? 'NONE' : bettingDecision.final_pick,
+    direction: bettingDecision.final_pick === 'AH' ? bettingDecision.ah_pick : bettingDecision.final_pick === 'OU' ? bettingDecision.ou_pick : 'NO BET',
+    confidenceScore: bettingDecision.final_recommendation === 'NO BET' ? Math.min(decisionConfidence, 59) : decisionConfidence,
     riskLevel,
     keyReasons,
     warningSigns,
     marketSignal: hasOdds ? selected.marketSignal : 'ยังไม่มีข้อมูลตลาดราคา',
-    finalSummary: buildFinalSummary(signal, safeMarketFocus, direction, confidenceScore, riskLevel, hasOdds),
+    finalSummary: bettingDecision.final_reason,
     ahAnalysis,
     ouAnalysis,
     primaryBookmaker: getPrimaryBookmaker(match),
@@ -67,23 +70,29 @@ export function generateAiFinalPick(match = {}) {
     pickMarketId: apiPick.pickMarketId,
     pickSelection: apiPick.pickSelection,
     pickPrice: apiPick.pickPrice,
-    pickConfidence: signal === 'SKIP' && !hasOdds ? null : confidenceScore,
+    pickConfidence: bettingDecision.final_recommendation === 'NO BET' ? null : decisionConfidence,
     pickReason: apiPick.reason,
   }
 }
 
 export function normalizeStoredAiFinalPick(row, match = {}) {
   if (!row) return generateAiFinalPick(match)
+  const bettingDecision = buildSimpleBettingDecision({
+    ...match,
+    bettingDecision: row.betting_decision ?? row.bettingDecision ?? row,
+  })
   return {
+    ...bettingDecision,
+    bettingDecision,
     signal: normalizeSignal(row.signal),
-    marketFocus: row.market_focus ?? row.marketFocus ?? 'NONE',
-    direction: row.direction ?? 'No market direction',
-    confidenceScore: clamp(Math.round(Number(row.confidence_score ?? row.confidenceScore ?? 0)), 0, 100),
+    marketFocus: bettingDecision.final_pick === 'NO BET' ? 'NONE' : bettingDecision.final_pick,
+    direction: bettingDecision.final_pick === 'AH' ? bettingDecision.ah_pick : bettingDecision.final_pick === 'OU' ? bettingDecision.ou_pick : 'NO BET',
+    confidenceScore: getDecisionConfidence(bettingDecision),
     riskLevel: normalizeRiskLevel(row.risk_level ?? row.riskLevel),
     keyReasons: toArray(row.key_reasons ?? row.keyReasons),
     warningSigns: toArray(row.warning_signs ?? row.warningSigns),
     marketSignal: row.market_signal ?? row.marketSignal ?? 'ยังไม่มีข้อมูลตลาดราคา',
-    finalSummary: row.final_summary ?? row.finalSummary ?? '',
+    finalSummary: bettingDecision.final_reason,
     ahAnalysis: row.ah_analysis ?? row.ahAnalysis ?? null,
     ouAnalysis: row.ou_analysis ?? row.ouAnalysis ?? null,
     primaryBookmaker: row.primary_bookmaker ?? row.primaryBookmaker ?? null,
@@ -147,13 +156,6 @@ function resolveSignal({ recommendation, totalAnalysisScore, selectionScore, con
     return 'STRONG_SIGNAL'
   }
   return 'WATCH'
-}
-
-function buildFinalSummary(signal, marketFocus, direction, confidenceScore, riskLevel, hasOdds) {
-  if (!hasOdds) return 'ยังไม่มีข้อมูลตลาดราคา AI Final Pick จึงจำกัดสัญญาณสูงสุดไม่ให้เป็น Strong Signal'
-  if (signal === 'STRONG_SIGNAL') return `Strong Signal on ${marketFocus} ${direction} with ${confidenceScore}% confidence and ${riskLevel} risk.`
-  if (signal === 'WATCH') return `Watch ${marketFocus} ${direction}. Data direction is useful but still needs confirmation.`
-  return `Skip ${marketFocus} ${direction}. Risk or data conflict is too high for a final signal.`
 }
 
 function getRiskFromWarnings(warnings = []) {

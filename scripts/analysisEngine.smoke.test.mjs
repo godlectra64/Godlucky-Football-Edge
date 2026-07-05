@@ -964,6 +964,11 @@ const marketReadyFinalPick = generateAiFinalPick({
   ],
 })
 assert.equal(marketReadyFinalPick.signal, 'STRONG_SIGNAL', 'market-ready BET must not be downgraded to SKIP only because sub-market reasons are conservative')
+assert.equal(marketReadyFinalPick.ah_pick, 'HOME -0.5', 'AI final pick must expose a concrete AH pick')
+assert.equal(marketReadyFinalPick.ou_pick, 'UNDER 2.5', 'AI final pick must expose a concrete O/U pick when confidence reaches threshold')
+assert.equal(marketReadyFinalPick.final_pick, 'OU', 'final_pick should choose the higher-confidence market')
+assert.equal(marketReadyFinalPick.final_recommendation, 'BET', 'final recommendation should follow the 75+ BET threshold')
+assert.ok(marketReadyFinalPick.ah_reason.length > 0 && marketReadyFinalPick.ou_reason.length > 0 && marketReadyFinalPick.final_reason.length > 0, 'simple decision reasons must always be present')
 
 const missingMarketFinalPick = generateAiFinalPick({
   analysis: {
@@ -979,6 +984,8 @@ const missingMarketFinalPick = generateAiFinalPick({
   odds: [],
 })
 assert.equal(missingMarketFinalPick.signal, 'SKIP', 'missing market data must stay SKIP even when stored confidence is high')
+assert.equal(missingMarketFinalPick.final_recommendation, 'NO BET', 'final recommendation below 60 must be NO BET')
+assert.equal(missingMarketFinalPick.final_pick, 'NO BET', 'final_pick must be NO BET when AH and O/U are both below threshold')
 
 const marketReadyMatches = Array.from({ length: 3 }, (_, index) => ({
   ...baseMatch,

@@ -1,6 +1,7 @@
 import { Brain, ChevronDown } from 'lucide-react'
 import { useState } from 'react'
 import { generateAiFinalPick } from '../utils/aiFinalPickEngine.js'
+import { buildSimpleBettingDecision, getDecisionConfidence } from '../utils/bettingDecision.js'
 import { normalizeOddsRows } from '../utils/oddsUtils.js'
 import { formatMarketFocus } from '../utils/uiLabels.js'
 import MarketDirectionBadge from './MarketDirectionBadge'
@@ -11,59 +12,58 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
   const isCompact = compact || variant === 'compact'
   const [open, setOpen] = useState(defaultOpen)
   const pick = match?.aiFinalPick ?? generateAiFinalPick(match)
+  const decision = pick.bettingDecision ?? buildSimpleBettingDecision(match)
   const odds = normalizeOddsRows(match)
-  const reasons = (pick.keyReasons ?? []).slice(0, isCompact ? 1 : 5)
-  const warnings = (pick.warningSigns ?? []).slice(0, isCompact ? 1 : 5)
-  const confidence = Math.round(pick.confidenceScore ?? 0)
+  const signal = signalFromRecommendation(decision.final_recommendation)
+  const confidence = getDecisionConfidence(decision)
+  const displayPick = getBestPickLabel(decision)
 
   if (isCompact) {
     return (
-      <section className={`rounded-xl border px-2.5 py-2 ${cardTone(pick.signal, true)}`}>
+      <section className={`rounded-xl border px-2.5 py-2 ${cardTone(signal, true)}`}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 text-[10px] font-black uppercase text-slate-400">
               <Brain size={13} className="text-[var(--page-accent)]" />
-              บทสรุป AI
+              Best Pick
             </p>
-            <p className="mt-1 text-clamp-1 text-sm font-black leading-5 text-white">{formatDirection(pick.direction)}</p>
+            <p className="mt-1 text-clamp-1 text-sm font-black leading-5 text-white">{displayPick}</p>
           </div>
-          <MarketDirectionBadge signal={pick.signal} compact />
+          <MarketDirectionBadge signal={signal} compact />
         </div>
 
         <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-          <MiniChip label="ตลาด" value={formatMarketFocus(pick.marketFocus)} />
+          <MiniChip label="ตลาด" value={formatMarketFocus(decision.final_pick)} />
           <MiniChip label="มั่นใจ" value={`${confidence}%`} />
           <RiskBadge level={pick.riskLevel} compact />
         </div>
 
-        {reasons.length ? (
-          <p className="text-clamp-1 mt-2 rounded-lg border border-white/10 bg-black/15 px-2 py-1.5 text-[11px] font-semibold leading-4 text-slate-300">
-            {reasons[0]}
-          </p>
-        ) : null}
+        <p className="text-clamp-1 mt-2 rounded-lg border border-white/10 bg-black/15 px-2 py-1.5 text-[11px] font-semibold leading-4 text-slate-300">
+          {decision.final_reason}
+        </p>
       </section>
     )
   }
 
   return (
-    <section className={`rounded-2xl border p-3 ${cardTone(pick.signal, isCompact)}`}>
+    <section className={`rounded-2xl border p-3 ${cardTone(signal, isCompact)}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-400">
             <Brain size={14} className="text-[var(--page-accent)]" />
-            บทสรุป AI
+            Best Pick
           </p>
-          <p className={`${isCompact ? 'text-[1.05rem] leading-6' : 'text-lg leading-6'} mt-1 text-clamp-2 font-black text-white`}>{formatDirection(pick.direction)}</p>
-          <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{pick.marketSignal}</p>
+          <p className="mt-1 text-clamp-2 text-lg font-black leading-6 text-white">{displayPick}</p>
+          <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{decision.final_reason}</p>
         </div>
-        <MarketDirectionBadge signal={pick.signal} />
+        <MarketDirectionBadge signal={signal} />
       </div>
 
       <div className="mt-3 grid grid-cols-[minmax(0,1fr)_84px] items-end gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap gap-1.5">
-            <MiniChip label="ตลาด" value={formatMarketFocus(pick.marketFocus)} />
-            <MiniChip label="ทิศทาง" value={formatDirection(pick.direction)} wide />
+            <MiniChip label="ตลาด" value={formatMarketFocus(decision.final_pick)} />
+            <MiniChip label="ทิศทาง" value={displayPick} wide />
           </div>
         </div>
         <div className="text-right">
@@ -76,66 +76,41 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
         <RiskBadge level={pick.riskLevel} />
         <div className="min-w-0 flex-1">
           <div className="progress-bar">
-            <span className={barTone(pick.signal)} style={{ width: `${Math.max(4, Math.min(100, confidence))}%` }} />
+            <span className={barTone(signal)} style={{ width: `${Math.max(4, Math.min(100, confidence))}%` }} />
           </div>
         </div>
       </div>
 
-      {reasons.length ? (
-        <div className="mt-3 grid gap-1.5">
-          {reasons.map((reason) => (
-            <p key={reason} className="text-clamp-2 rounded-xl border border-emerald-300/18 bg-emerald-300/10 px-3 py-2 text-xs leading-5 text-emerald-50">{reason}</p>
-          ))}
+      <button type="button" onClick={() => setOpen((value) => !value)} className="premium-focus mt-3 flex min-h-11 w-full items-center justify-between rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-black text-white">
+        รายละเอียด
+        <ChevronDown size={16} className={`transition ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open ? (
+        <div className="mt-3 grid gap-3">
+          <MarketOddsCard odds={odds} />
+          <AnalysisBlock title="AH Analysis" pick={decision.ah_pick} confidence={decision.ah_confidence} reason={decision.ah_reason} />
+          <AnalysisBlock title="O/U Analysis" pick={decision.ou_pick} confidence={decision.ou_confidence} reason={decision.ou_reason} />
+          <AnalysisBlock title="Final Decision" pick={displayPick} confidence={confidence} reason={decision.final_reason} badge={decision.final_recommendation} />
         </div>
-      ) : null}
-
-      {!isCompact ? (
-        <>
-          <button type="button" onClick={() => setOpen((value) => !value)} className="premium-focus mt-3 flex min-h-11 w-full items-center justify-between rounded-xl border border-white/10 bg-white/[0.04] px-3 text-xs font-black text-white">
-            ดูบทวิเคราะห์เต็ม
-            <ChevronDown size={16} className={`transition ${open ? 'rotate-180' : ''}`} />
-          </button>
-          {open ? (
-            <div className="mt-3 grid gap-3">
-              <MarketOddsCard odds={odds} />
-              <AnalysisBlock title="วิเคราะห์ AH · ราคาต่อรอง" analysis={pick.ahAnalysis} />
-              <AnalysisBlock title="วิเคราะห์ OU · สูง/ต่ำ" analysis={pick.ouAnalysis} />
-              <ListBlock title="สัญญาณเตือน" items={warnings} tone="warning" />
-              <p className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{pick.finalSummary}</p>
-            </div>
-          ) : null}
-        </>
       ) : null}
     </section>
   )
 }
 
-function AnalysisBlock({ title, analysis }) {
-  if (!analysis) return null
+function AnalysisBlock({ title, pick, confidence, reason, badge = '' }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-sm font-black text-white">{title}</p>
-          <p className="mt-1 text-xs font-semibold text-slate-400">{analysis.direction}</p>
+          <p className="mt-1 text-xs font-semibold text-slate-400">{pick}</p>
         </div>
-        <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{Math.round(analysis.confidenceScore ?? 0)}%</span>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          {badge ? <span className={`semantic-badge ${badgeTone(badge)}`}>{badge}</span> : null}
+          <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{Math.round(confidence ?? 0)}%</span>
+        </div>
       </div>
-      <ListBlock title="ทิศทางจากข้อมูล" items={(analysis.reasons ?? []).slice(0, 3)} />
-    </div>
-  )
-}
-
-function ListBlock({ title, items = [], tone = 'positive' }) {
-  const displayItems = items.length ? items : ['ยังไม่มีสัญญาณสำคัญเพิ่มเติม']
-  return (
-    <div className="mt-2">
-      <p className="text-xs font-black text-white">{title}</p>
-      <div className="mt-2 grid gap-1.5">
-        {displayItems.map((item) => (
-          <p key={item} className={`rounded-xl border px-3 py-2 text-xs leading-5 ${tone === 'warning' ? 'border-amber-300/20 bg-amber-300/10 text-amber-50' : 'border-cyan-300/20 bg-cyan-300/10 text-cyan-50'}`}>{item}</p>
-        ))}
-      </div>
+      <p className="mt-2 rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs leading-5 text-cyan-50">{reason}</p>
     </div>
   )
 }
@@ -147,6 +122,18 @@ function MiniChip({ label, value, wide = false }) {
       <span className="truncate">{value || '-'}</span>
     </span>
   )
+}
+
+function getBestPickLabel(decision) {
+  if (decision.final_pick === 'AH') return decision.ah_pick
+  if (decision.final_pick === 'OU') return decision.ou_pick
+  return 'NO BET'
+}
+
+function signalFromRecommendation(recommendation) {
+  if (recommendation === 'BET') return 'STRONG_SIGNAL'
+  if (recommendation === 'LEAN') return 'WATCH'
+  return 'SKIP'
 }
 
 function cardTone(signal, compact) {
@@ -162,8 +149,8 @@ function barTone(signal) {
   return 'bg-gradient-to-r from-slate-400 to-slate-200'
 }
 
-function formatDirection(value) {
-  const text = String(value ?? '').trim()
-  if (!text || text.toLowerCase() === 'no market direction') return 'ยังไม่มีทิศทางตลาด'
-  return text
+function badgeTone(recommendation) {
+  if (recommendation === 'BET') return 'badge-bet'
+  if (recommendation === 'LEAN') return 'badge-lean'
+  return 'badge-no-bet'
 }

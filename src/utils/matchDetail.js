@@ -7,6 +7,7 @@ import {
   getRiskLevel,
 } from './analysisEngine.js'
 import { dataIntelligenceSections, normalizeDataIntelligence } from './dataIntelligence.js'
+import { buildSimpleBettingDecision } from './bettingDecision.js'
 import { buildAiFinalPick } from './finalPick.js'
 import { deriveAiPickSide, getAiPickDisplay } from './pickSide.js'
 import { normalizeProfessionalResultFromAnalysis } from './professionalSelectionPipeline.js'
@@ -125,6 +126,7 @@ export function normalizeDetailPayload(match) {
   const aiPick = deriveAiPickSide(safeMatch)
   const aiPickDisplay = getAiPickDisplay(safeMatch)
   const finalPick = buildAiFinalPick(safeMatch)
+  const bettingDecision = buildSimpleBettingDecision(safeMatch)
   const professionalPipeline = normalizeProfessionalResultFromAnalysis(safeMatch)
 
   return {
@@ -141,6 +143,7 @@ export function normalizeDetailPayload(match) {
     pickReason: aiPick.pickReason,
     aiPickDisplay,
     finalPick,
+    bettingDecision,
     professionalPipeline,
     rankReason: safeMatch.rankReason ?? safeMatch.rank_reason ?? 'ข้อมูลอันดับยังจำกัด',
     rankBadges: safeMatch.rankBadges ?? safeMatch.rank_badges ?? [],

@@ -28,7 +28,7 @@ const moduleSubtitles = {
   'Overall Risk': 'ความเสี่ยงรวม',
 }
 
-export default function MatchDetailPage({ match, oneBestPick = null, loading = false, error = '', performanceContext = 'กำลังเก็บข้อมูล', predictionReliability = null, onBack, onGoToday }) {
+export default function MatchDetailPage({ match, loading = false, error = '', performanceContext = 'กำลังเก็บข้อมูล', predictionReliability = null, onBack, onGoToday }) {
   const [detailsOpen, setDetailsOpen] = useState(false)
 
   if (loading) {
@@ -62,7 +62,6 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
   }
 
   const detail = normalizeDetailPayload(match)
-  const heroSelection = oneBestPick?.match && String(oneBestPick.match.id) === String(detail.id) && oneBestPick.heroType !== 'NO_CLEAR_PICK' ? oneBestPick : null
   const verdict = buildAiVerdict(detail)
   const riskFactors = buildRiskFactors(detail)
   const riskLabel = getRiskLabel(detail.riskLevel)
@@ -75,7 +74,7 @@ export default function MatchDetailPage({ match, oneBestPick = null, loading = f
     <main className="app-page theme-analysis">
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
-      <FinalDecisionSection detail={detail} heroSelection={heroSelection} />
+      <FinalDecisionSection detail={detail} />
       <SystemPickSummarySection detail={detail} />
       <ProfessionalPipelineSection detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
@@ -191,41 +190,15 @@ function AiVerdictSection({ detail, verdict }) {
   )
 }
 
-function FinalDecisionSection({ detail, heroSelection }) {
-  const finalPick = detail.finalPick
+function FinalDecisionSection({ detail }) {
+  const decision = detail.bettingDecision
 
   return (
-    <Section title="บทสรุปสุดท้ายของ AI" icon={Sparkles} accent>
-      <div className={`rounded-2xl border p-3 ${finalDecisionClass(finalPick)}`}>
-        {heroSelection ? (
-          <div className="mb-3 rounded-2xl border border-amber-300/30 bg-amber-300/10 p-2.5">
-            <span className="semantic-badge border-amber-300/35 bg-amber-300/12 text-amber-50">ตัวเลือกหลักของวันนี้</span>
-            <p className="mt-2 text-sm font-bold leading-6 text-amber-50">{heroSelection.subtitle}</p>
-          </div>
-        ) : null}
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-[10px] font-black uppercase text-slate-400">AI เลือก</p>
-            <p className={`mt-1 text-clamp-2 text-2xl font-black leading-7 ${finalPick.canHighlight ? 'text-white' : 'text-slate-300'}`}>
-              {finalPick.canHighlight ? finalPick.pickTeam : finalPick.pickLabel}
-            </p>
-            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{sanitizeUiText(finalPick.pickReason)}</p>
-          </div>
-          <div className="flex shrink-0 flex-col items-end gap-1.5">
-            <ScoreBadge recommendation={finalPick.recommendation} />
-            <RiskBadge level={finalPick.riskLevel} />
-            <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{finalPick.confidence}%</span>
-          </div>
-        </div>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <DecisionMetric label="ตลาดที่ระบบโฟกัส" value={finalPick.marketTypeLabel} muted={!finalPick.marketType} />
-          <DecisionMetric label="ราคา/ไลน์" value={finalPick.marketLineLabel} muted={!finalPick.marketLine} />
-          <DecisionMetric label={finalPick.probabilitySource === 'confidence_estimate' ? 'โอกาสจากโมเดล' : 'โอกาสชนะ'} value={finalPick.probabilityLabel} />
-          <DecisionMetric label="เส้นประเมินกลาง" value={finalPick.fairLineLabel} muted={!finalPick.fairLine} />
-          <DecisionMetric label="สถานะ Value" value={finalPick.valueStatusLabel} muted={finalPick.valueStatus !== 'YES'} />
-          <DecisionMetric label="เหตุผลการสรุปผล" value={sanitizeUiText(finalPick.valueReason)} muted={finalPick.valueStatus !== 'YES'} />
-        </div>
-        <p className="text-clamp-2 mt-2 text-sm leading-6 text-slate-300">{sanitizeUiText(detail.analysisSummary || 'ข้อมูลวิเคราะห์ยังจำกัด')}</p>
+    <Section title="Final Decision" icon={Sparkles} accent>
+      <div className="grid gap-2">
+        <DecisionPanel title="AH Analysis" pick={decision.ah_pick} confidence={decision.ah_confidence} reason={decision.ah_reason} />
+        <DecisionPanel title="O/U Analysis" pick={decision.ou_pick} confidence={decision.ou_confidence} reason={decision.ou_reason} />
+        <DecisionPanel title="Final Decision" pick={getBestDecisionLabel(decision)} confidence={getFinalDecisionConfidence(decision)} reason={decision.final_reason} recommendation={decision.final_recommendation} finalPick={decision.final_pick} />
       </div>
     </Section>
   )
@@ -325,14 +298,55 @@ function DecisionMetric({ label, value, muted = false }) {
   )
 }
 
-function finalDecisionClass(finalPick) {
-  if (finalPick.riskLevel === 'HIGH' || finalPick.recommendation === 'NO BET') {
-    return 'border-red-300/25 bg-red-400/10'
-  }
-  if (finalPick.recommendation === 'BET') {
-    return 'border-emerald-300/25 bg-emerald-300/10'
-  }
-  return 'border-amber-300/25 bg-amber-300/10'
+function DecisionPanel({ title, pick, confidence, reason, recommendation = '', finalPick = '' }) {
+  const status = recommendation || getRecommendationFromDecisionConfidence(confidence)
+  return (
+    <div className={`rounded-2xl border p-3 ${decisionPanelTone(status)}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-black text-white">{title}</p>
+          <p className="mt-1 text-clamp-2 text-xl font-black leading-6 text-white">{pick}</p>
+          {finalPick ? <p className="mt-1 text-[11px] font-black uppercase text-slate-400">Final Pick: {finalPick}</p> : null}
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <span className={`semantic-badge ${recommendationBadgeTone(status)}`}>{status}</span>
+          <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{Math.round(confidence ?? 0)}%</span>
+        </div>
+      </div>
+      <p className="mt-2 text-sm font-semibold leading-6 text-slate-200">{reason}</p>
+    </div>
+  )
+}
+
+function getBestDecisionLabel(decision) {
+  if (decision.final_pick === 'AH') return decision.ah_pick
+  if (decision.final_pick === 'OU') return decision.ou_pick
+  return 'NO BET'
+}
+
+function getFinalDecisionConfidence(decision) {
+  if (decision.final_pick === 'AH') return decision.ah_confidence
+  if (decision.final_pick === 'OU') return decision.ou_confidence
+  return Math.max(Number(decision.ah_confidence ?? 0), Number(decision.ou_confidence ?? 0))
+}
+
+function getRecommendationFromDecisionConfidence(confidence) {
+  const score = Number(confidence ?? 0)
+  if (score >= 75) return 'BET'
+  if (score >= 60) return 'LEAN'
+  return 'NO BET'
+}
+
+function decisionPanelTone(recommendation) {
+  if (recommendation === 'BET') return 'border-emerald-300/25 bg-emerald-300/10'
+  if (recommendation === 'LEAN') return 'border-amber-300/25 bg-amber-300/10'
+  return 'border-red-300/25 bg-red-400/10'
+}
+
+function recommendationBadgeTone(recommendation) {
+  if (recommendation === 'BET') return 'badge-bet'
+  if (recommendation === 'LEAN') return 'badge-lean'
+  return 'badge-no-bet'
 }
 
 function AiSelectionBreakdownSection({ detail }) {
