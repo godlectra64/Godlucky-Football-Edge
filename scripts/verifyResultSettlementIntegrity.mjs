@@ -116,6 +116,11 @@ async function checkAnomalies() {
     else ok('result rows missing match join', '0')
   }
 
+  const duplicateFinalPickResults = await findDuplicateAiFinalPickResults()
+  if (duplicateFinalPickResults.error) warn('duplicate ai_final_pick results', duplicateFinalPickResults.error.message)
+  else if (duplicateFinalPickResults.count) fail('duplicate ai_final_pick results', String(duplicateFinalPickResults.count))
+  else ok('duplicate ai_final_pick results', '0')
+
   const staleScheduled = await supabase
     .from('football_matches')
     .select('id', { count: 'exact', head: true })
@@ -123,6 +128,23 @@ async function checkAnomalies() {
     .lt('kickoff_at', new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString())
     .or(`api_fixture_last_checked_at.is.null,api_fixture_last_checked_at.lt.${new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()}`)
   reportQuery('stale scheduled matches', staleScheduled, 'warn')
+}
+
+async function findDuplicateAiFinalPickResults() {
+  const { data, error } = await supabase
+    .from('football_ai_pick_results')
+    .select('id, ai_final_pick_id')
+    .not('ai_final_pick_id', 'is', null)
+    .limit(5000)
+  if (error) return { count: 0, error }
+
+  const seen = new Set()
+  let duplicates = 0
+  for (const row of data ?? []) {
+    if (seen.has(row.ai_final_pick_id)) duplicates += 1
+    else seen.add(row.ai_final_pick_id)
+  }
+  return { count: duplicates }
 }
 
 function reportQuery(label, result, severity) {
@@ -133,6 +155,10 @@ function reportQuery(label, result, severity) {
 }
 
 function checkUiFiles() {
+  const edgeSource = readText('supabase/functions/sync-football-data/index.ts')
+  if (!edgeSource.includes(".upsert(rows, { onConflict: 'ai_final_pick_id' })")) fail('result-refresh conflict target', 'missing ai_final_pick_id upsert')
+  else ok('result-refresh conflict target', 'ai_final_pick_id')
+
   const resultPage = readText('src/pages/ResultTrackerPage.jsx')
   const headingCount = countOccurrences(resultPage, 'ติดตามผลย้อนหลัง')
   if (headingCount !== 1) fail('ResultTracker duplicate heading', `found ${headingCount}`)

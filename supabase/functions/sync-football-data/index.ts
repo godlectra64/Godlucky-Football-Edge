@@ -1976,7 +1976,7 @@ async function backfillAiPickResults(body: Record<string, unknown>, dayRange: Re
   if (finalPicks.error) throw finalPicks.error
   const pickByMatch = new Map((finalPicks.data ?? []).map((pick: any) => [pick.match_id, pick]))
 
-  const rows = (top10.data ?? []).map((row: any) => {
+  const candidateRows = (top10.data ?? []).map((row: any) => {
     const pick = pickByMatch.get(row.match_id) ?? {}
     return {
       selection_date: row.selection_date ?? selectionDate,
@@ -1990,14 +1990,40 @@ async function backfillAiPickResults(body: Record<string, unknown>, dayRange: Re
       risk_level: pick.risk_level ?? row.risk_level ?? null,
     }
   })
+  const rows = uniqueRowsByAiFinalPickId(candidateRows)
+  const skippedMissingFinalPick = candidateRows.length - rows.length
 
-  if (!rows.length) return { processed: 0, provider: 'supabase', totalCandidates: 0, rowsSaved: 0, inserted: 0, updated: 0, selectionDate }
+  if (!rows.length) return { processed: 0, provider: 'supabase', totalCandidates: candidateRows.length, rowsSaved: 0, inserted: 0, updated: 0, skippedMissingFinalPick, selectionDate }
+  const existingResultPickIds = await fetchExistingResultPickIds(rows.map((row: any) => row.ai_final_pick_id).filter(Boolean))
   const upsert = await withResultStage('upsert football_ai_pick_results', 'RESULT_BACKFILL_UPSERT_FAILED', () => supabase
     .from('football_ai_pick_results')
-    .upsert(rows, { onConflict: 'match_id,selection_date' })
-    .select('id'))
+    .upsert(rows, { onConflict: 'ai_final_pick_id' })
+    .select('id, ai_final_pick_id'))
   if (upsert.error) throw upsert.error
-  return { processed: rows.length, provider: 'supabase', totalCandidates: rows.length, rowsSaved: rows.length, inserted: rows.length, updated: 0, selectionDate }
+  const updated = rows.filter((row: any) => existingResultPickIds.has(row.ai_final_pick_id)).length
+  const inserted = rows.length - updated
+  return { processed: rows.length, provider: 'supabase', totalCandidates: candidateRows.length, rowsSaved: rows.length, inserted, updated, skippedMissingFinalPick, selectionDate }
+}
+
+function uniqueRowsByAiFinalPickId(rows: Array<Record<string, unknown>>) {
+  const byPickId = new Map<string, Record<string, unknown>>()
+  for (const row of rows) {
+    const pickId = typeof row.ai_final_pick_id === 'string' ? row.ai_final_pick_id : ''
+    if (!pickId) continue
+    byPickId.set(pickId, row)
+  }
+  return [...byPickId.values()]
+}
+
+async function fetchExistingResultPickIds(pickIds: Array<string>) {
+  const ids = [...new Set(pickIds.filter(Boolean))]
+  if (!ids.length) return new Set<string>()
+  const existing = await withResultStage('query existing football_ai_pick_results', 'RESULT_BACKFILL_EXISTING_RESULTS_FAILED', () => supabase
+    .from('football_ai_pick_results')
+    .select('ai_final_pick_id')
+    .in('ai_final_pick_id', ids))
+  if (existing.error) throw existing.error
+  return new Set((existing.data ?? []).map((row: any) => row.ai_final_pick_id).filter(Boolean))
 }
 
 async function settleAiPickResults(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
