@@ -3,6 +3,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { createClient } from '@supabase/supabase-js'
 import dotenv from 'dotenv'
+import { settleAiPickResult } from '../src/utils/resultSettlement.js'
 
 dotenv.config({ path: '.env.local', quiet: true })
 dotenv.config({ quiet: true })
@@ -43,6 +44,7 @@ const supabase = supabaseUrl && authKey ? createClient(supabaseUrl, authKey) : n
 
 if (supabase) {
   await checkCounts()
+  await repairFinishedResultRows()
   await checkAnomalies()
 }
 
@@ -130,6 +132,76 @@ async function checkAnomalies() {
   reportQuery('stale scheduled matches', staleScheduled, 'warn')
 }
 
+async function repairFinishedResultRows() {
+  const { data, error } = await supabase
+    .from('football_ai_pick_results')
+    .select(`
+      id,
+      market_focus,
+      direction,
+      home_score,
+      away_score,
+      settlement_status,
+      match:football_matches(status_short, status_long, status, home_score, away_score, home_goals, away_goals)
+    `)
+    .or('settlement_status.eq.PENDING,home_score.is.null,away_score.is.null')
+    .limit(200)
+
+  if (error) return warn('result repair query', error.message)
+
+  let repaired = 0
+  for (const row of data ?? []) {
+    const match = Array.isArray(row.match) ? row.match[0] : row.match
+    const homeScore = firstNumber(match?.home_score, match?.home_goals)
+    const awayScore = firstNumber(match?.away_score, match?.away_goals)
+    const statusShort = String(match?.status_short ?? match?.status ?? '').toUpperCase()
+    if (homeScore === null || awayScore === null) continue
+
+    if (!['FT', 'AET', 'PEN'].includes(statusShort)) {
+      const { error: scoreUpdateError } = await supabase
+        .from('football_ai_pick_results')
+        .update({
+          home_score: homeScore,
+          away_score: awayScore,
+          status_short: statusShort,
+          status_long: match?.status_long ?? null,
+        })
+        .eq('id', row.id)
+      if (scoreUpdateError) warn('result score repair update', `${row.id}: ${scoreUpdateError.message}`)
+      else repaired += 1
+      continue
+    }
+
+    const outcome = settleAiPickResult({
+      statusShort,
+      homeScore,
+      awayScore,
+      marketFocus: row.market_focus,
+      direction: row.direction,
+    })
+    if (outcome.settlement_status === 'PENDING') continue
+
+    const { error: updateError } = await supabase
+      .from('football_ai_pick_results')
+      .update({
+        home_score: homeScore,
+        away_score: awayScore,
+        status_short: statusShort,
+        status_long: match?.status_long ?? null,
+        settlement_status: outcome.settlement_status,
+        simulation_outcome: outcome.simulation_outcome,
+        settlement_reason: outcome.settlement_reason,
+        settled_at: new Date().toISOString(),
+      })
+      .eq('id', row.id)
+
+    if (updateError) warn('result repair update', `${row.id}: ${updateError.message}`)
+    else repaired += 1
+  }
+
+  ok('finished result repair', String(repaired))
+}
+
 async function findDuplicateAiFinalPickResults() {
   const { data, error } = await supabase
     .from('football_ai_pick_results')
@@ -211,4 +283,13 @@ function forbiddenWordPattern(word) {
   return /^[\x00-\x7F]+$/.test(word)
     ? new RegExp(`\\b${escaped}\\b`, 'i')
     : new RegExp(escaped, 'i')
+}
+
+function firstNumber(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue
+    const numeric = Number(value)
+    if (Number.isFinite(numeric)) return numeric
+  }
+  return null
 }

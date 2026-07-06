@@ -2040,11 +2040,10 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
       settlement_status,
       match:football_matches(id, api_fixture_id, api_sports_fixture_id, status_short, status_long, status, home_score, away_score, home_goals, away_goals)
     `)
-    .eq('settlement_status', 'PENDING')
-    .limit(Math.max(1, Math.min(Number(body.limit ?? dayRange ? 20 : 20), 20)))
+    .or('settlement_status.eq.PENDING,home_score.is.null,away_score.is.null')
+    .limit(Math.max(1, Math.min(Number(body.limit ?? 100), 100)))
 
   if (selectionDate) query = query.eq('selection_date', selectionDate)
-  else query = query.gte('selection_date', dayRange.dateFrom).lte('selection_date', dayRange.dateTo)
 
   const result = await withResultStage('query football_ai_pick_results', 'RESULT_SETTLE_QUERY_FAILED', async () => {
     const rows = await query
@@ -2066,14 +2065,31 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
       failures.push({ id: row.id, reason: 'match join not found' })
       continue
     }
+    const matchHomeScore = nullableNumber(match.home_score ?? match.home_goals)
+    const matchAwayScore = nullableNumber(match.away_score ?? match.away_goals)
+    const matchStatusShort = normalizeResultStatusShort(match.status_short ?? match.status)
     const outcome = settleResultRow({
       market_focus: row.market_focus,
       direction: row.direction,
-      status_short: match.status_short ?? match.status,
-      home_score: match.home_score ?? match.home_goals,
-      away_score: match.away_score ?? match.away_goals,
+      status_short: matchStatusShort,
+      home_score: matchHomeScore,
+      away_score: matchAwayScore,
     })
     if (outcome.settlement_status === 'PENDING') {
+      if (matchHomeScore !== null && matchAwayScore !== null) {
+        const scoreUpdate = await withResultStage('refresh pending result score', 'RESULT_SETTLE_SCORE_UPDATE_FAILED', () => supabase
+          .from('football_ai_pick_results')
+          .update({
+            api_fixture_id: normalizeResultFixtureId(row.api_fixture_id ?? match.api_fixture_id ?? match.api_sports_fixture_id),
+            home_score: matchHomeScore,
+            away_score: matchAwayScore,
+            status_short: matchStatusShort,
+            status_long: match.status_long ?? null,
+          })
+          .eq('id', row.id))
+        if (scoreUpdate.error) throw scoreUpdate.error
+        settledRows += 1
+      }
       pending += 1
       continue
     }
@@ -2081,9 +2097,9 @@ async function settleAiPickResults(body: Record<string, unknown>, dayRange: Retu
       .from('football_ai_pick_results')
       .update({
         api_fixture_id: normalizeResultFixtureId(row.api_fixture_id ?? match.api_fixture_id ?? match.api_sports_fixture_id),
-        home_score: nullableNumber(match.home_score ?? match.home_goals),
-        away_score: nullableNumber(match.away_score ?? match.away_goals),
-        status_short: normalizeResultStatusShort(match.status_short ?? match.status),
+        home_score: matchHomeScore,
+        away_score: matchAwayScore,
+        status_short: matchStatusShort,
         status_long: match.status_long ?? null,
         settlement_status: outcome.settlement_status,
         simulation_outcome: outcome.simulation_outcome,
