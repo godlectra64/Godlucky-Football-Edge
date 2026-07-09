@@ -101,6 +101,7 @@ const footballEnrichmentModes = [
   'sync-odds',
   'sync-fixture-odds',
   'sync-today-odds',
+  'sync-today-odds-finalize',
   'diagnose-sync-today-odds',
   'recompute-ai-final-picks',
   'recompute-ai-final-picks-date',
@@ -212,10 +213,18 @@ Deno.serve(async (request) => {
         failedFixtures: modeResult.failedFixtures,
         emptyFixtures: modeResult.emptyFixtures,
         processedFixtureIds: modeResult.processedFixtureIds,
+        processedFixtureId: modeResult.processedFixtureId,
         skippedFixtureIds: modeResult.skippedFixtureIds,
         failures: modeResult.failures ?? [],
+        warnings: modeResult.warnings ?? [],
+        offset: modeResult.offset,
         nextOffset: modeResult.nextOffset,
         hasMore: modeResult.hasMore,
+        oddsRowsSaved: modeResult.oddsRowsSaved,
+        oddsRowsInserted: modeResult.oddsRowsInserted,
+        marketsSaved: modeResult.marketsSaved,
+        hasAh: modeResult.hasAh,
+        hasOu: modeResult.hasOu,
         locked: modeResult.locked,
         alreadyLocked: modeResult.alreadyLocked,
         lockedCount: modeResult.lockedCount,
@@ -657,13 +666,22 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       partial: result.partial ?? false,
       responseStatus: result.responseStatus,
       processedFixtures: result.processedFixtures,
+      processedFixtureId: result.processedFixtureId,
       savedOdds: result.savedOdds,
       failedFixtures: result.failedFixtures,
       emptyFixtures: result.emptyFixtures,
       processedFixtureIds: result.processedFixtureIds,
       skippedFixtureIds: result.skippedFixtureIds,
+      warnings: result.warnings,
+      offset: result.offset,
       nextOffset: result.nextOffset,
       hasMore: result.hasMore,
+      oddsRowsSaved: result.oddsRowsSaved,
+      oddsRowsInserted: result.oddsRowsInserted,
+      marketsSaved: result.marketsSaved,
+      hasAh: result.hasAh,
+      hasOu: result.hasOu,
+      nextRequestExample: result.nextRequestExample,
       locked: result.locked,
       alreadyLocked: result.alreadyLocked,
       lockedCount: result.lockedCount,
@@ -1073,7 +1091,7 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
   } else if (phase === 'league-enrichment') {
     results.push(await executeFootballEnrichmentMode('top-players', body, dayRange, context))
   } else if (phase === 'odds-sync') {
-    results.push(await syncTodayOdds(body, dayRange, context, { recomputeAfterSync: false }))
+    results.push(await syncTodayOdds(body, dayRange, context))
   } else if (phase === 'ranking') {
     results.push(await runDailyRankingStep(dayRange, context))
   } else {
@@ -1785,7 +1803,8 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'sync-bookmakers') return syncApiFootballBookmakers(context)
   if (mode === 'sync-odds') return syncApiFootballOdds(body, dayRange, context)
   if (mode === 'sync-fixture-odds') return syncApiFootballFixtureOdds(body, dayRange, context)
-  if (mode === 'sync-today-odds') return syncTodayOdds(body, dayRange, context, { recomputeAfterSync: true })
+  if (mode === 'sync-today-odds') return syncTodayOdds(body, dayRange, context)
+  if (mode === 'sync-today-odds-finalize') return finalizeTodayOddsSync(dayRange, context)
   if (mode === 'diagnose-sync-today-odds') return diagnoseSyncTodayOdds(dayRange, context)
   if (mode === 'recompute-ai-final-picks') return recomputeAiFinalPicks(dayRange, context)
   if (mode === 'recompute-ai-final-picks-date') return recomputeAiFinalPicksForSelectionDate(dayRange, context)
@@ -2950,47 +2969,102 @@ async function syncApiFootballFixtureOdds(body: Record<string, unknown>, dayRang
   })
 }
 
-async function syncTodayOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, options: { recomputeAfterSync: boolean }) {
-  const requestedLimit = getPositiveLimit(body.maxFixturesPerRun ?? body.limit ?? context.limit, 10, maxFootballEnrichmentLimit)
-  const candidates = await withRetryableSyncOperation('supabase', 'load_today_fixtures', () => fetchDbMatchCandidates(dayRange, requestedLimit, true))
-  const result = await withSyncOperation('unknown', 'sync_today_odds_batch', () => runOddsBatch(candidates.rows, candidates.totalCandidates, context, {
-    offset: 0,
-    batchSize: requestedLimit,
-    hardStopMs: 18000,
-  }))
-  const oddsSummary = await withRetryableSyncOperation('supabase', 'count_today_odds', () => getDailyOddsSummary(dayRange))
+async function syncTodayOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const requestedFixtureId = nullableNumber(body.fixtureId ?? body.apiFixtureId ?? body.api_fixture_id)
+  const offset = Math.max(0, getSyncOffset(body.offset))
+  const skipRecompute = body.skipRecompute !== false
+  const candidates = await withRetryableSyncOperation('supabase', 'load_today_fixtures', () => fetchTodayOddsFixtureCandidates(dayRange))
+  const playable = candidates.rows.filter((match: any) => isTodayOddsPlayableFixture(match))
+  const target = requestedFixtureId
+    ? playable.find((match: any) => Number(match.api_sports_fixture_id ?? 0) === requestedFixtureId) ?? null
+    : playable[offset] ?? null
   const warnings: Array<string> = []
-  if (result.oddsAttempted > 0 && result.oddsRowsSaved === 0 && result.failed === 0) {
-    warnings.push('No odds returned for today fixtures')
-  }
-  if (result.hasMore) warnings.push(`Processed ${result.oddsAttempted}/${candidates.totalCandidates} fixtures; rerun sync-today-odds for remaining fixtures`)
-  throwIfAllOddsFixturesFailed(result)
 
-  let recompute: any = null
-  if (options.recomputeAfterSync) {
-    const rankedSelectionRows = await withRetryableSyncOperation('database', 'recompute_ranking', () => updateDailySelectionRanks(dayRange))
-    const finalPickRows = await withRetryableSyncOperation('database', 'recompute_ai_final_picks', () => recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks-date' }))
-    recompute = {
-      rankedSelectionRows,
-      aiFinalPickRows: finalPickRows.rowsSaved ?? 0,
-      failed: finalPickRows.failed ?? 0,
+  if (!skipRecompute) warnings.push('skipRecompute=false ignored; run sync-today-odds-finalize after odds batches')
+  if (!target) {
+    return {
+      status: 'success',
+      processed: 0,
+      totalCandidates: candidates.totalFixtures,
+      totalFetched: candidates.totalFixtures,
+      rowsSaved: 0,
+      failed: 0,
+      skipped: 0,
+      dateKey: dayRange.dateKey,
+      processedFixtures: 0,
+      processedFixtureId: null,
+      offset,
+      nextOffset: null,
+      totalFixtures: candidates.totalFixtures,
+      oddsRowsSaved: 0,
+      oddsRowsInserted: 0,
+      marketsSaved: [],
+      hasAh: false,
+      hasOu: false,
+      partial: false,
+      hasMore: false,
+      warnings: [
+        ...warnings,
+        requestedFixtureId ? `Fixture ${requestedFixtureId} not found in playable Bangkok-date fixtures` : 'No playable fixture found for this offset',
+      ],
+      failures: [],
+      nextRequestExample: { mode: 'sync-today-odds-finalize', selectionDate: dayRange.dateKey },
     }
   }
 
+  const result = await withSyncOperation('unknown', 'sync_today_odds_fixture', () => syncOddsForMatch(target, context, { usefulMarketsOnly: true, maxInsertChunkSize: 100 }))
+  if (result.rowsSaved === 0) warnings.push('No odds returned for this fixture')
+  if (result.rowsSaved > 0 && (!result.hasAh || !result.hasOu)) warnings.push('No AH/O-U market returned for this fixture')
+  const nextOffset = requestedFixtureId ? null : offset + 1 < playable.length ? offset + 1 : null
+  const hasMore = nextOffset !== null
+  const partial = context.mode === 'sync-today-odds' ? hasMore || Boolean(result.partial) : Boolean(result.partial)
+
   return {
-    ...result,
     status: result.failed > 0 ? 'partial_success' : 'success',
-    partial: result.failed > 0 || context.rateLimited,
+    processed: result.processed,
+    totalCandidates: candidates.totalFixtures,
+    totalFetched: candidates.totalFixtures,
+    rowsSaved: result.rowsSaved,
+    failed: result.failed,
+    skipped: result.empty,
     dateKey: dayRange.dateKey,
-    totalFixtures: oddsSummary.totalFixtures,
-    processedFixtures: result.processedFixtures,
-    oddsRowsInserted: result.oddsRowsSaved,
-    fixturesWithOdds: oddsSummary.fixturesWithOdds,
-    fixturesWithAh: oddsSummary.fixturesWithAh,
-    fixturesWithOu: oddsSummary.fixturesWithOu,
+    processedFixtures: result.processed,
+    processedFixtureId: result.fixtureId,
+    offset,
+    nextOffset,
+    totalFixtures: candidates.totalFixtures,
+    playableFixtures: playable.length,
+    oddsRowsSaved: result.rowsSaved,
+    oddsRowsInserted: result.rowsSaved,
+    marketsSaved: result.marketsSaved ?? [],
+    hasAh: Boolean(result.hasAh),
+    hasOu: Boolean(result.hasOu),
+    partial,
+    hasMore,
     warnings,
-    message: warnings[0] ?? null,
-    recompute,
+    failures: result.failure ? [result.failure] : [],
+    nextRequestExample: hasMore
+      ? { mode: 'sync-today-odds', selectionDate: dayRange.dateKey, offset: nextOffset, skipRecompute: true }
+      : { mode: 'sync-today-odds-finalize', selectionDate: dayRange.dateKey },
+  }
+}
+
+async function finalizeTodayOddsSync(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const rankedSelectionRows = await withRetryableSyncOperation('database', 'recompute_ranking', () => updateDailySelectionRanks(dayRange))
+  const finalPickRows = await withRetryableSyncOperation('database', 'recompute_ai_final_picks', () => recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks-date' }))
+  return {
+    status: finalPickRows.failed > 0 ? 'partial_success' : 'success',
+    processed: rankedSelectionRows + Number(finalPickRows.processed ?? 0),
+    totalCandidates: rankedSelectionRows,
+    totalFetched: rankedSelectionRows,
+    rowsSaved: rankedSelectionRows + Number(finalPickRows.rowsSaved ?? 0),
+    failed: Number(finalPickRows.failed ?? 0),
+    skipped: 0,
+    dateKey: dayRange.dateKey,
+    rankedSelectionRows,
+    aiFinalPickRows: finalPickRows.rowsSaved ?? 0,
+    failures: finalPickRows.failures ?? [],
+    partial: Number(finalPickRows.failed ?? 0) > 0,
   }
 }
 
@@ -3060,6 +3134,34 @@ async function diagnoseSyncTodayOdds(dayRange: ReturnType<typeof getBangkokDayRa
     apiFootballError,
     likelySource,
   }
+}
+
+async function fetchTodayOddsFixtureCandidates(dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      kickoff_at,
+      status,
+      status_short,
+      match_status,
+      raw
+    `, { count: 'exact' })
+    .gte('kickoff_at', dayRange.startUtc)
+    .lt('kickoff_at', dayRange.endUtc)
+    .not('api_sports_fixture_id', 'is', null)
+    .order('kickoff_at', { ascending: true })
+    .limit(1000)
+
+  if (result.error) throw result.error
+  const rows = result.data ?? []
+  return { rows, totalFixtures: result.count ?? rows.length }
+}
+
+function isTodayOddsPlayableFixture(match: any) {
+  const status = match.status_short ?? match.status ?? match.match_status
+  return !isResultFinishedStatus(status) && !isResultVoidStatus(status)
 }
 
 async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: FootballEnrichmentContext, options: { offset: number; batchSize: number; hardStopMs: number }) {
@@ -3145,7 +3247,7 @@ async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: 
   }
 }
 
-async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) {
+async function syncOddsForMatch(match: any, context: FootballEnrichmentContext, options: { usefulMarketsOnly?: boolean; maxInsertChunkSize?: number } = {}) {
   const fixtureId = Number(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id ?? 0)
   if (!fixtureId) return { processed: 0, rowsSaved: 0, failed: 0, empty: 0, fixtureId: null, skipped: true, failure: null }
 
@@ -3185,10 +3287,18 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) 
         ...buildOperationFailure(operationError),
         rateLimited: Boolean(response?.rateLimited),
       },
+      marketsSaved: [],
+      hasAh: false,
+      hasOu: false,
     }
   }
 
-  const normalized = await withSyncOperation('unknown', 'parse_api_football_odds', () => Promise.resolve(normalizeMatchOddsRows(match, fixtureId, response.data ?? [])))
+  const normalized = await withSyncOperation('unknown', 'parse_api_football_odds', () => Promise.resolve(normalizeMatchOddsRows(match, fixtureId, response.data ?? [], {
+    allowedMarketFocuses: options.usefulMarketsOnly ? ['AH', 'OU', 'MATCH_WINNER'] : undefined,
+  })))
+  const marketsSaved = [...new Set(normalized.rows.map((row: any) => row.market_focus).filter(Boolean))]
+  const hasAh = marketsSaved.includes('AH')
+  const hasOu = marketsSaved.includes('OU')
   if (!normalized.rows.length) {
     await withRetryableSyncOperation('supabase', 'update_match_readiness_no_market_data', () => updateMatchReadinessMetadata(match.id, {
       fixtureId,
@@ -3196,11 +3306,11 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) 
       hasMarketData: false,
       status: 'NO_MARKET_DATA',
     }))
-    return { processed: 1, rowsSaved: 0, failed: 0, empty: 1, fixtureId, skipped: true, failure: null }
+    return { processed: 1, rowsSaved: 0, failed: 0, empty: 1, fixtureId, skipped: true, failure: null, marketsSaved, hasAh, hasOu }
   }
 
   await withRetryableSyncOperation('supabase', 'upsert_football_bookmakers', () => storeFootballBookmakers(normalized.bookmakers))
-  await withRetryableSyncOperation('supabase', 'upsert_football_match_odds', () => storeFootballMatchOdds(match.id, normalized.rows))
+  await withRetryableSyncOperation('supabase', 'upsert_football_match_odds', () => storeFootballMatchOdds(match.id, normalized.rows, { chunkSize: options.maxInsertChunkSize ?? 100 }))
   addEndpointRowsSaved(context, '/odds', normalized.rows.length)
   await withRetryableSyncOperation('supabase', 'update_match_readiness_market_ready', () => updateMatchReadinessMetadata(match.id, {
     fixtureId,
@@ -3208,7 +3318,7 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) 
     hasMarketData: true,
     status: 'READY',
   }))
-  return { processed: 1, rowsSaved: normalized.rows.length, failed: 0, empty: 0, fixtureId, skipped: false, failure: null }
+  return { processed: 1, rowsSaved: normalized.rows.length, failed: 0, empty: 0, fixtureId, skipped: false, failure: null, marketsSaved, hasAh, hasOu }
 }
 
 async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
@@ -5943,9 +6053,10 @@ async function storeOddsSnapshots(match: any, fixtureId: number, response: any) 
   return normalized
 }
 
-function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<any>) {
+function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<any>, options: { allowedMarketFocuses?: Array<string> } = {}) {
   const rows: Array<any> = []
   const bookmakers = new Map<number, any>()
+  const allowedMarketFocuses = options.allowedMarketFocuses?.length ? new Set(options.allowedMarketFocuses) : null
   for (const item of rawRows ?? []) {
     for (const bookmaker of item.bookmakers ?? []) {
       const bookmakerId = nullableNumber(bookmaker.id)
@@ -5958,6 +6069,7 @@ function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<an
       for (const bet of bookmaker.bets ?? []) {
         const marketFocus = normalizeMarketFocus(bet.name)
         if (marketFocus === 'NONE') continue
+        if (allowedMarketFocuses && !allowedMarketFocuses.has(marketFocus)) continue
         for (const value of bet.values ?? []) {
           rows.push({
             match_id: match.id,
@@ -6002,11 +6114,14 @@ async function storeFootballBookmakers(rows: Array<any>) {
   return upsertApiFootballData('football_bookmakers', 'api_bookmaker_id', rows)
 }
 
-async function storeFootballMatchOdds(matchId: string, rows: Array<any>) {
+async function storeFootballMatchOdds(matchId: string, rows: Array<any>, options: { chunkSize?: number } = {}) {
   if (!rows.length) return { count: 0 }
   await supabase.from('football_match_odds').update({ is_latest: false }).eq('match_id', matchId)
-  const result = await supabase.from('football_match_odds').insert(rows)
-  if (result.error) throw result.error
+  const chunkSize = Math.max(1, Math.min(Number(options.chunkSize ?? 100), 100))
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const result = await supabase.from('football_match_odds').insert(rows.slice(index, index + chunkSize))
+    if (result.error) throw result.error
+  }
   return { count: rows.length }
 }
 
@@ -10066,7 +10181,7 @@ function getSupportedSyncModes() {
 
 function getSyncLimit(value: unknown, mode = 'manual') {
   if (mode === 'sync-odds') return getPositiveLimit(value, 10, maxFootballEnrichmentLimit)
-  if (mode === 'sync-today-odds') return getPositiveLimit(value, 10, maxFootballEnrichmentLimit)
+  if (mode === 'sync-today-odds') return 1
   if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
   if (isResultPipelineMode(mode)) return getPositiveLimit(value, 10, 20)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
