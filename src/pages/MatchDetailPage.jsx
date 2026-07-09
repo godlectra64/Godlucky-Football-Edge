@@ -204,7 +204,7 @@ function FinalDecisionSection({ detail }) {
           <div className="min-w-0">
             <p className="text-[10px] font-black uppercase text-slate-400">Best Pick</p>
             <p className="mt-1 text-clamp-2 text-2xl font-black leading-7 text-white">{decision.final_pick.label}</p>
-            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{decision.final_pick.reason}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{formatFinalDecisionReason(decision)}</p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1.5">
             <span className={`semantic-badge ${recommendationBadgeTone(decision.decision)}`}>{decision.decision}</span>
@@ -231,7 +231,7 @@ function AhAnalysisSection({ detail }) {
   const decision = detail.bettingDecision
   return (
     <Section title="AH Analysis" icon={Gauge} accent>
-      <DecisionPanel title="Asian Handicap" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence ?? 0} reason={decision.ah_pick.reason} status={decision.status} />
+      <DecisionPanel title="Asian Handicap" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence ?? 0} reason={formatDetailMarketReason(decision, 'AH')} status={decision.status} />
     </Section>
   )
 }
@@ -240,7 +240,7 @@ function OuAnalysisSection({ detail }) {
   const decision = detail.bettingDecision
   return (
     <Section title="O/U Analysis" icon={Gauge} accent>
-      <DecisionPanel title="Over / Under" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence ?? 0} reason={decision.ou_pick.reason} status={decision.status} />
+      <DecisionPanel title="Over / Under" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence ?? 0} reason={formatDetailMarketReason(decision, 'OU')} status={decision.status} />
     </Section>
   )
 }
@@ -274,6 +274,18 @@ function UnifiedSystemDetailsSection({ detail }) {
       <TwoColumnLists leftTitle="Unified Reasons" leftItems={decision.reasons ?? []} rightTitle="Unified Warnings" rightItems={decision.warnings ?? []} />
     </Section>
   )
+}
+
+function formatDetailMarketReason(decision = {}, market) {
+  if (decision.status === 'WAITING_MARKET') {
+    return market === 'AH' ? 'รอเส้น AH จาก API-Football' : 'รอราคา O/U จาก API-Football'
+  }
+  return market === 'AH' ? decision.ah_pick?.reason : decision.ou_pick?.reason
+}
+
+function formatFinalDecisionReason(decision = {}) {
+  if (decision.status === 'WAITING_MARKET') return 'ยังไม่มีข้อมูลราคาจาก API-Football สำหรับ AH/O-U'
+  return decision.final_pick?.reason ?? 'ข้อมูลยังไม่พอสำหรับสรุป'
 }
 
 function SystemPickSummarySection({ detail }) {

@@ -1,7 +1,6 @@
 import { CheckCircle2, Eye, Flame, Hourglass, RefreshCcw, Sparkles, Trophy, Zap } from 'lucide-react'
 import { useMemo } from 'react'
 import MatchCard from '../components/MatchCard'
-import { getDecisionConfidence } from '../utils/bettingDecision'
 import { formatThaiDate, formatUpdatedAt } from '../utils/formatters'
 import { buildTodayMatchBuckets } from '../utils/todayMatchBuckets'
 
@@ -39,7 +38,6 @@ export default function TodayPage({
     summary,
   } = buckets
 
-  const avgConfidence = playableMatches.length ? Math.round(playableMatches.reduce((total, match) => total + getDecisionConfidence(match.bettingDecision), 0) / playableMatches.length) : 0
   const finishedCount = Math.max(summary.finishedCount, finishedMatches.length)
   const lastUpdated = top10Status?.lastUpdated ?? top10Status?.lockedAt ?? null
   const showFinishedOnlyState = !loading && !error && playableMatches.length === 0 && finishedCount > 0
@@ -75,17 +73,14 @@ export default function TodayPage({
 
           <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
             <div className="flex min-w-0 items-center justify-between gap-2">
-              <p className="text-clamp-1 text-[12px] font-black text-white">{buildHeroMessage(summary, noReadyDecision)}</p>
+              <p className="text-clamp-1 text-[12px] font-black text-white">{buildHeroMessagePolished(summary, noReadyDecision)}</p>
               <span className="flex shrink-0 items-center gap-1 text-[11px] font-black text-emerald-100">
                 <CheckCircle2 size={12} />
                 พร้อมใช้งาน
               </span>
             </div>
             <p className="text-clamp-2 mt-1 text-[11px] font-semibold leading-4 text-slate-400">
-              {top10Locked || lockedCount ? `ใช้ชุดคัดประจำวันที่บันทึกไว้ ${lockedCount || matches.length}/10` : `ใช้รายการที่พร้อมที่สุดในช่วง ${windowHoursUsed} ชั่วโมง`}
-              {totalMatchCount ? ` · จากรายการทั้งหมด ${totalMatchCount} คู่` : ''}
-              {avgConfidence ? ` · AI Score เฉลี่ย ${avgConfidence}%` : ''}
-              {lastUpdated ? ` · อัปเดต ${formatUpdatedAt(lastUpdated)}` : ''}
+              {buildHeroSubtextPolished({ noReadyDecision, waitingCount: waitingMatches.length, lastUpdated })}
             </p>
           </div>
 
@@ -149,7 +144,7 @@ export default function TodayPage({
           ) : null}
 
           {waitingMatches.length ? (
-            <MatchSection title="รอข้อมูลราคา" count={waitingMatches.length} tone="waiting">
+            <MatchSection title="รอราคา" count={waitingMatches.length} tone="waiting">
               {waitingMatches.map((match) => (
                 <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable isWaitingMarketData displayMode="waiting" />
               ))}
@@ -275,6 +270,24 @@ function StateBox({ title, message, detail = '', tone = 'default', onRetry, acti
       <Zap size={18} className="mx-auto mt-2 text-[var(--page-accent)]" />
     </div>
   )
+}
+
+function buildHeroMessagePolished(summary, noReadyDecision = false) {
+  if (!summary) return buildHeroMessage(summary, noReadyDecision)
+  if (noReadyDecision) return 'วันนี้ยังไม่มีคู่พร้อมสรุป AH/O-U'
+  if (summary.hasStrongPick) return 'วันนี้มีคู่พร้อมตัดสิน'
+  if (summary.watchCount) return 'มีคู่ที่น่าเฝ้าดู'
+  if (summary.waitingCount) return 'รอราคา'
+  if (summary.hasFinishedOnly) return 'คู่วันนี้แข่งจบแล้ว'
+  return 'กำลังรอข้อมูลที่พร้อมพอสำหรับการคัดคู่'
+}
+
+function buildHeroSubtextPolished({ noReadyDecision = false, waitingCount = 0, lastUpdated = null } = {}) {
+  const updateText = lastUpdated ? ` · อัปเดต ${formatUpdatedAt(lastUpdated)}` : ''
+  if (noReadyDecision || waitingCount) {
+    return `ระบบยังแสดงมุมมองผู้ชนะจากข้อมูล fixture และจะอัปเดต AH/O-U เมื่อมีข้อมูลราคา${updateText}`
+  }
+  return `จัดอันดับจากมุมมองผู้ชนะ ราคา ความเสี่ยง และความมั่นใจ${updateText}`
 }
 
 function buildHeroMessage(summary, noReadyDecision = false) {

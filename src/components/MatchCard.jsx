@@ -1,7 +1,8 @@
 import { ArrowRight, Clock, Medal } from 'lucide-react'
-import { buildSimpleBettingDecision, getDecisionConfidence, getDecisionReason, getBestPickLabel } from '../utils/bettingDecision'
+import { buildSimpleBettingDecision, getDecisionConfidence } from '../utils/bettingDecision'
 import { formatKickoffTime } from '../utils/formatters'
 import { getMatchStatusInfo, getScoreDisplay } from '../utils/matchStatus'
+import { formatAhCardLabel, formatBestPickCardLabel, formatDecisionReasonLine, formatOuCardLabel } from '../utils/uiLabels'
 
 export default function MatchCard({
   match,
@@ -17,7 +18,10 @@ export default function MatchCard({
   const finalRank = match.finalRank ?? match.final_rank ?? match.analysis?.final_rank ?? match.rank
   const decision = buildSimpleBettingDecision(match)
   const confidence = getDecisionConfidence(decision)
-  const bestPick = getBestPickLabel(decision)
+  const ahLabel = formatAhCardLabel(decision.ah_pick)
+  const ouLabel = formatOuCardLabel(decision.ou_pick)
+  const bestPick = formatBestPickCardLabel(decision.final_pick)
+  const reasonLine = formatDecisionReasonLine(decision)
   const waitingMarket = providedIsWaitingMarketData ?? decision.status === 'WAITING_MARKET'
   const mode = displayMode || statusMode(decision.status)
   const cardClass = buildCardClass(finalRank ?? match.rank, mode, waitingMarket)
@@ -61,15 +65,15 @@ export default function MatchCard({
       <div className="mt-2.5 grid gap-1.5">
         <DecisionRow label="มุมมองผู้ชนะ" value={decision.match_view.label} strong />
         <div className="grid grid-cols-2 gap-1.5">
-          <DecisionRow label="AH" value={decision.ah_pick.label} />
-          <DecisionRow label="O/U" value={decision.ou_pick.label} />
+          <DecisionRow label="AH" value={ahLabel} />
+          <DecisionRow label="O/U" value={ouLabel} />
           <DecisionRow label="Best Pick" value={bestPick} />
-          <DecisionRow label="Confidence" value={`${confidence}%`} />
+          <DecisionRow label="Confidence" value={`มั่นใจ ${confidence}%`} />
         </div>
       </div>
 
-      <p className="text-clamp-2 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-2 text-xs font-semibold leading-5 text-slate-300">
-        {getDecisionReason(decision)}
+      <p className="text-clamp-1 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-2 text-xs font-semibold leading-5 text-slate-300">
+        {reasonLine}
       </p>
 
       <button
@@ -89,7 +93,7 @@ export default function MatchCard({
 
 function TeamName({ name, active = false, align = 'left' }) {
   return (
-    <p className={`text-clamp-1 text-[0.98rem] font-black leading-6 ${align === 'right' ? 'text-right' : ''} ${active ? 'text-emerald-100 underline decoration-emerald-300/60 underline-offset-4' : 'text-white'}`}>
+    <p className={`text-clamp-2 text-[0.98rem] font-black leading-5 ${align === 'right' ? 'text-right' : ''} ${active ? 'text-emerald-100 underline decoration-emerald-300/60 underline-offset-4' : 'text-white'}`}>
       {name}
     </p>
   )

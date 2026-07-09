@@ -33,11 +33,13 @@ export function buildFootballIntelligence(match = {}) {
   const hardFilter = getHardFilterReason(match, statusInfo)
   const scoreBreakdown = buildScoreBreakdown(match, analysis, { hasMarket, hasAhMarket, hasOuMarket })
   const unifiedScore = calculateUnifiedScore(scoreBreakdown)
-  const winnerPrediction = buildWinnerPrediction(match, analysis, { hasMarket, unifiedScore, hardFilter })
+  const rawWinnerPrediction = buildWinnerPrediction(match, analysis, { hasMarket, unifiedScore, hardFilter })
+  const dataState = buildDataState(match, analysis, hardFilter)
   const ahPick = buildAhPick(match, ahRows)
   const ouPick = buildOuPick(match, ouRows)
   const riskLevel = getRiskLevel(analysis, scoreBreakdown.riskControl)
-  const confidence = getUnifiedConfidence({ match, analysis, unifiedScore, winnerPrediction, ahPick, ouPick, hasMarket })
+  const confidence = getUnifiedConfidence({ match, analysis, unifiedScore, winnerPrediction: rawWinnerPrediction, ahPick, ouPick, hasMarket, scoreBreakdown, dataState, statusInfo })
+  const winnerPrediction = polishWinnerPrediction(rawWinnerPrediction, confidence)
   const finalPick = buildFinalPick({ ahPick, ouPick, winnerPrediction, unifiedScore, confidence, riskLevel, hasMarket, scoreBreakdown })
   const status = getUnifiedStatus({ hardFilter, statusInfo, hasMarket, finalPick, unifiedScore })
   const decision = getUnifiedDecision({ status, hasMarket, finalPick, unifiedScore, confidence, riskLevel })
@@ -58,7 +60,7 @@ export function buildFootballIntelligence(match = {}) {
     reasons,
     warnings,
     score_breakdown: scoreBreakdown,
-    data_state: buildDataState(match, analysis, hardFilter),
+    data_state: dataState,
     market_state: buildMarketState({ oddsRows, ahRows, ouRows, scoreBreakdown }),
   }
 }
@@ -318,11 +320,37 @@ function getUnifiedDecision({ status, hasMarket, finalPick, unifiedScore, confid
   return 'NO_BET'
 }
 
-function getUnifiedConfidence({ analysis, unifiedScore, winnerPrediction, ahPick, ouPick, hasMarket }) {
+function getUnifiedConfidence({ analysis, unifiedScore, winnerPrediction, ahPick, ouPick, hasMarket, scoreBreakdown, dataState, statusInfo }) {
+  if (!hasMarket) {
+    return calculateFixtureModelConfidence({ analysis, unifiedScore, winnerPrediction, scoreBreakdown, dataState, statusInfo })
+  }
+
   const marketConfidence = Math.max(scoreValue(ahPick.confidence), scoreValue(ouPick.confidence))
   const stored = scoreValue(analysis.calibrated_confidence_score ?? analysis.confidence_score, 0)
   const base = averageScore([stored || null, unifiedScore, winnerPrediction.confidence, marketConfidence || null], hasMarket ? 58 : 54)
-  return scoreValue(hasMarket ? base : Math.min(base, 60))
+  return scoreValue(base)
+}
+
+export function calculateFixtureModelConfidence({ analysis = {}, unifiedScore = 0, winnerPrediction = {}, scoreBreakdown = {}, dataState = {}, statusInfo = {} } = {}) {
+  if (statusInfo.isFinished || dataState.hard_filter_reason || winnerPrediction.source === 'INSUFFICIENT_DATA') {
+    return clampRounded(42 + Math.min(6, getFixtureCompleteness(dataState) * 6), 42, 48)
+  }
+
+  const edge = numberValue(winnerPrediction.edge, getFixtureEdge(scoreBreakdown))
+  const completeness = getFixtureCompleteness(dataState)
+  const league = scoreValue(scoreBreakdown.leagueQuality, 55)
+  const professional = scoreValue(analysis.professional_score ?? analysis.ranking_score ?? unifiedScore, unifiedScore)
+  const qualityBonus = clamp((league - 55) * 0.035, -1.2, 1.8) + clamp((professional - 55) * 0.035, -1.2, 2)
+  const dataBonus = clamp((completeness - 0.45) * 4, -1.8, 2.2)
+
+  let base
+  if (winnerPrediction.side === 'DRAW' || edge < 3) base = 50
+  else if (edge < 7) base = 54
+  else if (edge < 11) base = 57
+  else base = 59
+
+  const scoreBonus = clamp((numberValue(unifiedScore, 55) - 55) * 0.05, -1.5, 2)
+  return clampRounded(base + qualityBonus + dataBonus + scoreBonus, 42, 60)
 }
 
 function buildReasons({ winnerPrediction, ahPick, ouPick, finalPick, scoreBreakdown, decision, status }) {
@@ -350,14 +378,33 @@ function buildWarnings({ hardFilter, hasMarket, hasAhMarket, hasOuMarket, riskLe
 }
 
 function buildDataState(match, analysis, hardFilter) {
+  const hasFixtureId = Boolean(match.id ?? match.match_id ?? match.matchId ?? match.api_fixture_id ?? match.apiFixtureId)
+  const hasHomeTeam = Boolean(match.homeTeam?.name ?? match.home_team?.name ?? match.home_name)
+  const hasAwayTeam = Boolean(match.awayTeam?.name ?? match.away_team?.name ?? match.away_name)
+  const hasKickoff = Boolean(match.kickoffAt ?? match.kickoff_at)
+  const hasLineups = hasRows(match.lineups ?? match.enrichment?.lineups ?? analysis.raw?.lineups)
+  const hasInjuries = hasRows(match.injuries ?? match.enrichment?.injuries ?? analysis.raw?.injuries)
+  const hasStatistics = hasRows(match.statistics ?? match.enrichment?.statistics ?? analysis.raw?.statistics)
+  const completenessChecks = [
+    hasFixtureId,
+    hasHomeTeam,
+    hasAwayTeam,
+    hasKickoff,
+    Boolean(match.league?.name ?? match.league_name ?? analysis.raw?.league?.name),
+    Boolean(analysis.team_strength_score ?? analysis.form_score ?? analysis.home_advantage_score),
+    hasStatistics,
+    hasLineups || hasInjuries,
+  ]
+
   return {
-    has_fixture_id: Boolean(match.id ?? match.match_id ?? match.matchId ?? match.api_fixture_id ?? match.apiFixtureId),
-    has_home_team: Boolean(match.homeTeam?.name ?? match.home_team?.name ?? match.home_name),
-    has_away_team: Boolean(match.awayTeam?.name ?? match.away_team?.name ?? match.away_name),
-    has_kickoff: Boolean(match.kickoffAt ?? match.kickoff_at),
-    has_lineups: hasRows(match.lineups ?? match.enrichment?.lineups ?? analysis.raw?.lineups),
-    has_injuries: hasRows(match.injuries ?? match.enrichment?.injuries ?? analysis.raw?.injuries),
-    has_statistics: hasRows(match.statistics ?? match.enrichment?.statistics ?? analysis.raw?.statistics),
+    has_fixture_id: hasFixtureId,
+    has_home_team: hasHomeTeam,
+    has_away_team: hasAwayTeam,
+    has_kickoff: hasKickoff,
+    has_lineups: hasLineups,
+    has_injuries: hasInjuries,
+    has_statistics: hasStatistics,
+    fixture_completeness: Math.round((completenessChecks.filter(Boolean).length / completenessChecks.length) * 100) / 100,
     hard_filter_reason: hardFilter,
   }
 }
@@ -371,6 +418,45 @@ function buildMarketState({ oddsRows, ahRows, ouRows, scoreBreakdown }) {
     market_quality: scoreBreakdown.marketQuality,
     value_edge: scoreBreakdown.valueEdge,
   }
+}
+
+function polishWinnerPrediction(prediction = {}, confidence) {
+  return {
+    ...prediction,
+    confidence: scoreValue(confidence ?? prediction.confidence),
+    label: getWinnerPredictionLabel({
+      confidence: scoreValue(confidence ?? prediction.confidence),
+      side: prediction.side,
+      teamName: prediction.team_name,
+    }),
+  }
+}
+
+function getWinnerPredictionLabel({ confidence, side, teamName }) {
+  if (side === 'DRAW') return 'เกมมีโอกาสสูสี'
+  if (!teamName || confidence < 50) return 'ข้อมูลยังไม่พอแยกฝั่งชัดเจน'
+  if (confidence >= 58) return `${teamName} เหนือกว่าชัดเจนเล็กน้อย`
+  if (confidence >= 54) return `${teamName} มีโอกาสเหนือกว่า`
+  return 'เกมค่อนข้างสูสี'
+}
+
+function getFixtureEdge(breakdown = {}) {
+  const homeSignal = averageScore([breakdown.teamStrength, breakdown.homeAway, breakdown.attack], 55)
+  const resistance = averageScore([breakdown.defence, 100 - numberValue(breakdown.riskControl, 60)], 50)
+  return Math.abs(homeSignal - resistance)
+}
+
+function getFixtureCompleteness(dataState = {}) {
+  if (Number.isFinite(Number(dataState.fixture_completeness))) return clamp(Number(dataState.fixture_completeness), 0, 1)
+  const checks = [
+    dataState.has_fixture_id,
+    dataState.has_home_team,
+    dataState.has_away_team,
+    dataState.has_kickoff,
+    dataState.has_statistics,
+    dataState.has_lineups || dataState.has_injuries,
+  ]
+  return checks.filter(Boolean).length / checks.length
 }
 
 function getHardFilterReason(match, statusInfo) {
@@ -454,6 +540,14 @@ function numberValue(value, fallback = 0) {
 
 function scoreValue(value, fallback = 0) {
   return Math.round(clampScore(numberValue(value, fallback)))
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min))
+}
+
+function clampRounded(value, min, max) {
+  return Math.round(clamp(value, min, max))
 }
 
 function clampScore(value) {
