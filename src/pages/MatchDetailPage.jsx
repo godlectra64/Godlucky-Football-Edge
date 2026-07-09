@@ -76,8 +76,10 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
       <HeroHeader detail={detail} />
       <FinalDecisionSection detail={detail} />
       <MatchViewSection detail={detail} />
-      <MarketDecisionSection detail={detail} />
+      <AhAnalysisSection detail={detail} />
+      <OuAnalysisSection detail={detail} />
       <DetailAccordion open={detailsOpen} onToggle={() => setDetailsOpen((value) => !value)}>
+      <UnifiedSystemDetailsSection detail={detail} />
       <SystemPickSummarySection detail={detail} />
       <AiFinalPickAnalysisSection detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
@@ -205,7 +207,8 @@ function FinalDecisionSection({ detail }) {
             <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{decision.final_pick.reason}</p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1.5">
-            <span className={`semantic-badge ${recommendationBadgeTone(decision.status)}`}>{decision.status}</span>
+            <span className={`semantic-badge ${recommendationBadgeTone(decision.decision)}`}>{decision.decision}</span>
+            <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{decision.status}</span>
             <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{decision.confidence}%</span>
           </div>
         </div>
@@ -224,14 +227,51 @@ function MatchViewSection({ detail }) {
   )
 }
 
-function MarketDecisionSection({ detail }) {
+function AhAnalysisSection({ detail }) {
   const decision = detail.bettingDecision
   return (
-    <Section title="AH / O-U Analysis" icon={Gauge} accent>
-      <div className="grid gap-2">
-        <DecisionPanel title="AH Analysis" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence ?? 0} reason={decision.ah_pick.reason} status={decision.status} />
-        <DecisionPanel title="O/U Analysis" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence ?? 0} reason={decision.ou_pick.reason} status={decision.status} />
+    <Section title="AH Analysis" icon={Gauge} accent>
+      <DecisionPanel title="Asian Handicap" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence ?? 0} reason={decision.ah_pick.reason} status={decision.status} />
+    </Section>
+  )
+}
+
+function OuAnalysisSection({ detail }) {
+  const decision = detail.bettingDecision
+  return (
+    <Section title="O/U Analysis" icon={Gauge} accent>
+      <DecisionPanel title="Over / Under" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence ?? 0} reason={decision.ou_pick.reason} status={decision.status} />
+    </Section>
+  )
+}
+
+function UnifiedSystemDetailsSection({ detail }) {
+  const decision = detail.bettingDecision ?? {}
+  const breakdown = decision.score_breakdown ?? {}
+  const market = decision.market_state ?? {}
+  const data = decision.data_state ?? {}
+  const items = [
+    ['Unified Score', decision.unified_score],
+    ['Decision', decision.decision],
+    ['Status', decision.status],
+    ['Market Quality', market.market_quality],
+    ['Data Quality', data.has_statistics || data.has_lineups || data.has_injuries ? 'PARTIAL' : 'BASIC'],
+    ['Risk Control', breakdown.riskControl],
+  ]
+
+  return (
+    <Section title="System Details" icon={ListChecks} accent>
+      <div className="grid grid-cols-2 gap-2">
+        {items.map(([label, value]) => (
+          <Metric key={label} label={label} value={value ?? '-'} />
+        ))}
       </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        {Object.entries(breakdown).map(([key, value]) => (
+          <DecisionMetric key={key} label={key} value={`${Math.round(value ?? 0)}/100`} />
+        ))}
+      </div>
+      <TwoColumnLists leftTitle="Unified Reasons" leftItems={decision.reasons ?? []} rightTitle="Unified Warnings" rightItems={decision.warnings ?? []} />
     </Section>
   )
 }
@@ -357,8 +397,8 @@ function decisionPanelTone(status) {
 }
 
 function recommendationBadgeTone(status) {
-  if (status === 'READY') return 'badge-bet'
-  if (status === 'WATCH') return 'badge-lean'
+  if (status === 'READY' || status === 'BET') return 'badge-bet'
+  if (status === 'WATCH' || status === 'LEAN') return 'badge-lean'
   if (status === 'WAITING_MARKET') return 'border-slate-300/25 bg-slate-300/10 text-slate-100'
   return 'badge-no-bet'
 }
@@ -844,8 +884,8 @@ function DetailAccordion({ open, onToggle, children }) {
         aria-expanded={open}
       >
         <span className="min-w-0">
-          <span className="block">ดูรายละเอียดเพิ่มเติม</span>
-          <span className="mt-0.5 block text-[11px] font-semibold text-slate-500">ราคา, โมดูล, ข้อมูลทีม, ความเสี่ยง และสรุปเต็ม</span>
+          <span className="block">รายละเอียดระบบ</span>
+          <span className="mt-0.5 block text-[11px] font-semibold text-slate-500">unified score, score breakdown, market/data quality, risk control และ legacy fields</span>
         </span>
         <ChevronDown size={18} className={`shrink-0 transition ${open ? 'rotate-180' : ''}`} />
       </button>

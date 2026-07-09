@@ -1,4 +1,5 @@
 import { getMarketReadinessGroup, marketReadinessGroups, recommendationLabels, riskLabels } from './analysisEngine.js'
+import { buildFootballIntelligence, getLegacyDailySelectionFields } from './footballIntelligenceEngine.js'
 import { buildStrictApiFootballCandidate, buildStrictApiFootballSelection, compareStrictApiFootballCandidates } from './marketDisplay.js'
 import { getMatchStatusInfo, matchStatusGroups } from './matchStatus.js'
 
@@ -20,35 +21,37 @@ export const selectionPriorityTiers = {
   finished: 'D',
 }
 
-const hourMs = 60 * 60 * 1000
-
 export function buildUsableDailySelection(matches = [], options = {}) {
   const now = normalizeDate(options.now)
-  const windowHours = positiveNumber(options.windowHours, 36)
-  const maxWindowHours = Math.max(windowHours, positiveNumber(options.maxWindowHours, 48))
-  const minPlayable = positiveNumber(options.minPlayable, 5)
+  const selectionDate = options.selectionDate ?? getBangkokDateKey(now)
   const limit = positiveNumber(options.limit, 10)
   const rows = (Array.isArray(matches) ? matches : []).map((match) => buildSelectionCandidate(match, now))
-
-  const windowStart = now
-  const firstWindowEnd = new Date(windowStart.getTime() + windowHours * hourMs)
-  const maxWindowEnd = new Date(windowStart.getTime() + maxWindowHours * hourMs)
-  const firstWindowRows = rows.filter((row) => isInWindow(row, windowStart, firstWindowEnd))
-  const firstWindowPlayable = firstWindowRows.filter((row) => row.playable)
-  const useExpandedWindow = firstWindowPlayable.length < minPlayable
-  const windowEnd = useExpandedWindow ? maxWindowEnd : firstWindowEnd
-  const windowRows = rows.filter((row) => isInWindow(row, windowStart, windowEnd))
-  const playableRows = windowRows.filter((row) => row.playable)
-  const finishedRows = rows.filter((row) => row.statusGroup === matchStatusGroups.finished)
+  const dateRows = rows.filter((row) => getBangkokDateKey(row.match.kickoffAt ?? row.match.kickoff_at) === selectionDate)
+  const playableRows = dateRows.filter((row) => row.playable)
+  const finishedRows = dateRows.filter((row) => row.statusGroup === matchStatusGroups.finished)
   const selected = playableRows
     .sort(compareSelectionCandidates)
     .slice(0, limit)
     .map((row, index) => ({
       ...normalizeDisplayMatch(row.match),
+      footballIntelligence: row.unified,
+      football_intelligence: row.unified,
+      bettingDecision: row.bettingDecision,
+      betting_decision: row.bettingDecision,
+      decision: row.unified.decision,
+      unifiedScore: row.unified.unified_score,
+      unified_score: row.unified.unified_score,
+      confidence: row.unified.confidence,
+      riskLevel: row.unified.risk_level,
+      risk_level: row.unified.risk_level,
+      ...getLegacyDailySelectionFields(row.unified),
       selectionV2: {
         priorityTier: row.priorityTier,
         marketReadiness: row.marketReadiness,
         statusGroup: row.statusGroup,
+        decision: row.unified.decision,
+        status: row.unified.status,
+        unifiedScore: row.unified.unified_score,
         leagueMarketCoverageScore: row.leagueMarketCoverageScore,
         recentOddsCoverageRate: row.recentOddsCoverageRate,
         marketAvailabilityTier: row.marketAvailabilityTier,
@@ -64,20 +67,21 @@ export function buildUsableDailySelection(matches = [], options = {}) {
       ai_pick_label: `AI PICK #${index + 1}`,
     }))
 
-  const readySelectedCount = selected.filter((match) => match.selectionV2?.priorityTier === selectionPriorityTiers.ready || match.selectionV2?.priorityTier === selectionPriorityTiers.seen).length
-  const waitingSelectedCount = selected.filter((match) => match.selectionV2?.priorityTier === selectionPriorityTiers.waiting).length
-  const marketReadyCandidates = playableRows.filter((row) => row.priorityTier === selectionPriorityTiers.ready).length
-  const waitingMarketCandidates = playableRows.filter((row) => row.priorityTier === selectionPriorityTiers.waiting).length
+  const readySelectedCount = selected.filter((match) => match.selectionV2?.decision === 'BET').length
+  const waitingSelectedCount = selected.filter((match) => match.selectionV2?.status === 'WAITING_MARKET').length
+  const marketReadyCandidates = playableRows.filter((row) => row.unified.decision === 'BET' || row.unified.decision === 'LEAN').length
+  const waitingMarketCandidates = playableRows.filter((row) => row.unified.status === 'WAITING_MARKET').length
 
   return {
     selected,
     candidates: playableRows,
     finishedExcluded: finishedRows,
-    windowStart: windowStart.toISOString(),
-    windowEnd: windowEnd.toISOString(),
-    windowHoursUsed: useExpandedWindow ? maxWindowHours : windowHours,
-    expandedWindow: useExpandedWindow,
-    totalFixturesInWindow: windowRows.length,
+    windowStart: `${selectionDate}T00:00:00+07:00`,
+    windowEnd: `${selectionDate}T23:59:59+07:00`,
+    windowHoursUsed: 24,
+    expandedWindow: false,
+    selectionDate,
+    totalFixturesInWindow: dateRows.length,
     playableCandidates: playableRows.length,
     marketReadyCandidates,
     waitingMarketCandidates,
@@ -93,8 +97,8 @@ export function buildUsableDailySelection(matches = [], options = {}) {
       marketReadyCandidates,
       waitingMarketCandidates,
       finishedExcludedCount: finishedRows.length,
-      expandedWindow: useExpandedWindow,
-      totalFixturesInWindow: windowRows.length,
+      expandedWindow: false,
+      totalFixturesInWindow: dateRows.length,
     }),
     nextSyncSuggestion: marketReadyCandidates > 0 ? 'refresh_display_order' : 'sync_odds_then_reselect',
   }
@@ -106,12 +110,32 @@ export function buildStrictDailyApiFootballSelection(matches = [], options = {})
 
 export function buildSelectionCandidate(match = {}, now = new Date()) {
   const status = getMatchStatusInfo(match)
+  const unified = buildFootballIntelligence(match)
   const marketReadiness = status.isPlayable ? getMarketReadinessGroup(match) : null
   const priorityTier = getPriorityTier(match, status.group, marketReadiness)
   const leagueCoverage = getLeagueCoverage(match)
   const strictApiFootball = buildStrictApiFootballCandidate(match)
   return {
     match,
+    unified,
+    bettingDecision: {
+      match_view: unified.winner_prediction,
+      winner_prediction: unified.winner_prediction,
+      ah_pick: unified.ah_pick,
+      ou_pick: unified.ou_pick,
+      final_pick: unified.final_pick,
+      confidence: unified.confidence,
+      status: unified.status,
+      decision: unified.decision,
+      unified_score: unified.unified_score,
+      risk_level: unified.risk_level,
+      reasons: unified.reasons,
+      warnings: unified.warnings,
+      score_breakdown: unified.score_breakdown,
+      data_state: unified.data_state,
+      market_state: unified.market_state,
+      unified: true,
+    },
     kickoffTime: getKickoffTime(match),
     statusGroup: status.group,
     playable: status.isPlayable,
@@ -129,6 +153,9 @@ export function buildSelectionCandidate(match = {}, now = new Date()) {
     hasApiFootballOdds: strictApiFootball.hasApiFootballOdds,
     hasPrimaryMarket: strictApiFootball.hasPrimaryMarket,
     marketPriority: strictApiFootball.marketPriority,
+    decisionPriority: decisionPriority(unified),
+    unifiedScore: numberValue(unified.unified_score),
+    unifiedConfidence: numberValue(unified.confidence),
     hasPickTeam: Boolean(strictApiFootball.pickTeam),
     strictApiFootball,
     isPast: getKickoffTime(match) < now.getTime(),
@@ -156,20 +183,20 @@ function normalizeDisplayMatch(match = {}) {
 }
 
 export function compareSelectionCandidates(a, b) {
-  const shouldUseStrictApiPriority = a.strictApiFootball?.hasApiFootballOdds || b.strictApiFootball?.hasApiFootballOdds
-  if (shouldUseStrictApiPriority) {
-    const strictDiff = compareStrictApiFootballCandidates(a.strictApiFootball, b.strictApiFootball)
-    if (strictDiff) return strictDiff
-  }
+  const unifiedDiff = a.decisionPriority - b.decisionPriority
+  if (unifiedDiff) return unifiedDiff
   const priorityDiff = a.priorityValue - b.priorityValue
   const coverageDiff = b.leagueMarketCoverageScore - a.leagueMarketCoverageScore
+  const unifiedScoreDiff = b.unifiedScore - a.unifiedScore
+  const unifiedConfidenceDiff = b.unifiedConfidence - a.unifiedConfidence
+  const strictDiff = compareStrictApiFootballCandidates(a.strictApiFootball, b.strictApiFootball)
   const signalDiff = a.signalPriority - b.signalPriority
   const marketEdgeDiff = b.marketEdgeScore - a.marketEdgeScore
   const rankingDiff = b.rankingScore - a.rankingScore
   const confidenceDiff = b.confidenceScore - a.confidenceScore
   const riskDiff = a.riskValue - b.riskValue
   const kickoffDiff = a.kickoffTime - b.kickoffTime
-  return priorityDiff || coverageDiff || signalDiff || marketEdgeDiff || rankingDiff || confidenceDiff || riskDiff || kickoffDiff
+  return unifiedScoreDiff || unifiedConfidenceDiff || priorityDiff || coverageDiff || strictDiff || signalDiff || marketEdgeDiff || rankingDiff || confidenceDiff || riskDiff || kickoffDiff
 }
 
 export function planDailyTop10Persistence(existingRows = [], selectedRows = []) {
@@ -292,10 +319,6 @@ function getSelectionReason(summary) {
   return selectionV2Reasons.noMarketReadyCandidates
 }
 
-function isInWindow(row, start, end) {
-  return row.kickoffTime >= start.getTime() && row.kickoffTime < end.getTime()
-}
-
 function priorityValue(tier) {
   if (tier === selectionPriorityTiers.ready) return 1
   if (tier === selectionPriorityTiers.seen) return 2
@@ -334,6 +357,14 @@ function signalPriority(match) {
   if (signal === 'STRONG_SIGNAL') return 2
   if (signal === 'WATCH' || recommendation === recommendationLabels.lean || recommendation === recommendationLabels.watch) return 3
   return 4
+}
+
+function decisionPriority(unified = {}) {
+  if (unified.decision === 'BET') return 1
+  if (unified.decision === 'LEAN') return 2
+  if (unified.decision === 'WATCH' && unified.status !== 'WAITING_MARKET') return 3
+  if (unified.status === 'WAITING_MARKET') return 4
+  return 5
 }
 
 function riskValue(value) {
@@ -376,4 +407,14 @@ function numberValue(value) {
 function normalizeDate(value) {
   const date = value instanceof Date ? value : new Date(value ?? Date.now())
   return Number.isNaN(date.getTime()) ? new Date() : date
+}
+
+function getBangkokDateKey(value) {
+  const date = normalizeDate(value)
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Bangkok',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
 }

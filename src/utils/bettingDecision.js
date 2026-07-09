@@ -1,11 +1,16 @@
 import { analyzeAsianHandicap } from './ahAnalysisEngine.js'
+import { buildFootballIntelligence, mapUnifiedToBettingDecision } from './footballIntelligenceEngine.js'
 import { analyzeOverUnder } from './ouAnalysisEngine.js'
 import { getLatestOddsByMarket, normalizeOddsRows } from './oddsUtils.js'
 
-const statuses = ['READY', 'WATCH', 'WAITING_MARKET', 'NO_DATA']
+const statuses = ['READY', 'WATCH', 'WAITING_MARKET', 'NO_DATA', 'FINISHED']
 const finalTypes = ['TEAM', 'AH', 'OU', 'NO_DECISION']
 
 export function buildSimpleBettingDecision(match = {}) {
+  return mapUnifiedToBettingDecision(buildFootballIntelligence(match))
+}
+
+export function buildLegacyBettingDecision(match = {}) {
   const stored = getStoredDecision(match)
   if (hasNestedDecisionFields(stored)) return normalizeDecision(stored, match)
 
@@ -31,6 +36,7 @@ export function buildSimpleBettingDecision(match = {}) {
 }
 
 export function getDecisionConfidence(decision = {}) {
+  if (decision.confidence !== undefined) return scoreValue(decision.confidence)
   if (decision.final_pick?.type === 'AH') return scoreValue(decision.ah_pick?.confidence)
   if (decision.final_pick?.type === 'OU') return scoreValue(decision.ou_pick?.confidence)
   return scoreValue(decision.match_view?.confidence)
@@ -55,7 +61,7 @@ export function getLegacyDecisionFields(decision = {}) {
     final_pick_type: decision.final_pick?.type ?? 'NO_DECISION',
     final_pick_label: decision.final_pick?.label ?? 'ยังไม่มี Best Pick',
     final_reason: decision.final_pick?.reason ?? 'รอข้อมูลราคาเพื่อยืนยัน AH/O-U',
-    final_recommendation: statusToRecommendation(decision.status),
+    final_recommendation: decision.decision === 'NO_BET' ? 'NO BET' : decision.decision ?? statusToRecommendation(decision.status),
   }
 }
 
@@ -88,7 +94,7 @@ function buildFreshDecision(match = {}) {
     matchCopy.ai_final_pick = { ...matchCopy.ai_final_pick }
     delete matchCopy.ai_final_pick.betting_decision
   }
-  return buildSimpleBettingDecision(matchCopy)
+  return buildLegacyBettingDecision(matchCopy)
 }
 
 function buildMatchView(match = {}, hasAnyMarket = false) {

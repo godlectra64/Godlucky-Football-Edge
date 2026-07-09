@@ -1,4 +1,5 @@
 import { buildSimpleBettingDecision } from './bettingDecision.js'
+import { buildFootballIntelligence } from './footballIntelligenceEngine.js'
 import { getMatchStatusInfo } from './matchStatus.js'
 
 export function buildTodayMatchBuckets(matches = [], options = {}) {
@@ -6,13 +7,19 @@ export function buildTodayMatchBuckets(matches = [], options = {}) {
   const buckets = rows.reduce((result, match) => {
     const status = getMatchStatusInfo(match)
     const analysis = normalizeAnalysis(match.analysis ?? match.match_analysis ?? {})
-    const decision = buildSimpleBettingDecision({ ...match, analysis })
+    const unified = match.footballIntelligence ?? match.football_intelligence ?? buildFootballIntelligence({ ...match, analysis })
+    const decision = match.bettingDecision ?? match.betting_decision ?? buildSimpleBettingDecision({ ...match, analysis, footballIntelligence: unified })
     const enriched = {
       ...match,
       analysis,
       match_analysis: analysis,
+      footballIntelligence: unified,
+      football_intelligence: unified,
       bettingDecision: decision,
       betting_decision: decision,
+      unifiedScore: unified.unified_score,
+      unified_score: unified.unified_score,
+      decision: unified.decision,
       matchStatusGroup: status.group,
       isFinished: status.isFinished,
       isPlayable: status.isPlayable,
@@ -33,17 +40,22 @@ export function buildTodayMatchBuckets(matches = [], options = {}) {
 
     result.playableMatches.push(enriched)
 
-    if (decision.status === 'WAITING_MARKET' || decision.status === 'NO_DATA') {
+    if (unified.status === 'WAITING_MARKET') {
       result.waitingMatches.push(enriched)
       return result
     }
 
-    if (decision.status === 'READY' && decision.final_pick?.type !== 'NO_DECISION') {
+    if (unified.decision === 'BET') {
       result.strongMatches.push(enriched)
       return result
     }
 
-    result.watchMatches.push(enriched)
+    if (unified.decision === 'LEAN' || unified.decision === 'WATCH') {
+      result.watchMatches.push(enriched)
+      return result
+    }
+
+    result.predictionOnlyMatches.push(enriched)
     return result
   }, createEmptyBuckets())
 
@@ -62,6 +74,7 @@ function createEmptyBuckets() {
     strongMatches: [],
     watchMatches: [],
     waitingMatches: [],
+    predictionOnlyMatches: [],
     finishedMatches: [],
     hiddenMatches: [],
     notPlayableMatches: [],
@@ -70,7 +83,7 @@ function createEmptyBuckets() {
 }
 
 function buildSummary(buckets, options = {}) {
-  const totalVisible = buckets.strongMatches.length + buckets.watchMatches.length + buckets.waitingMatches.length
+  const totalVisible = buckets.strongMatches.length + buckets.watchMatches.length + buckets.waitingMatches.length + buckets.predictionOnlyMatches.length
   const sourceLockedCount = Number(options.lockedCount ?? 0)
   return {
     totalMatches: buckets.allMatches.length,
@@ -79,6 +92,7 @@ function buildSummary(buckets, options = {}) {
     strongCount: buckets.strongMatches.length,
     watchCount: buckets.watchMatches.length,
     waitingCount: buckets.waitingMatches.length,
+    predictionOnlyCount: buckets.predictionOnlyMatches.length,
     finishedCount: Number(options.finishedCount ?? buckets.finishedMatches.length),
     hiddenCount: buckets.hiddenMatches.length,
     visibleCount: totalVisible,

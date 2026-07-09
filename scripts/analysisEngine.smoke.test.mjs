@@ -63,6 +63,7 @@ import {
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { buildProfessionalSelectionScore } from '../src/utils/professionalSelectionPipeline.js'
+import { buildFootballIntelligence } from '../src/utils/footballIntelligenceEngine.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 import { buildTodayMatchBuckets, buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
@@ -155,7 +156,7 @@ assert.ok(syncFootballDataSource.includes('enrichedMatches,'), 'enrich response 
 assert.ok(syncFootballDataSource.includes('rowsSaved'), 'endpoint coverage should include rowsSaved')
 assert.ok(syncFootballDataSource.includes('empty: !failed && dataCount === 0 ? 1 : 0'), 'endpoint coverage should count empty API responses')
 assert.ok(dailyTop10RepositorySource.includes('fetchMatchesByIds(matchIds)'), 'locked daily Top10 must fetch matches by locked match_id instead of only same-day kickoff range')
-assert.ok(dailyTop10RepositorySource.indexOf('const locked = await getLockedTop10(date)') < dailyTop10RepositorySource.indexOf('const usable = await getUsableRollingTop10(date)'), 'locked daily Top10 should be the primary Today source when present')
+assert.ok(dailyTop10RepositorySource.indexOf('const usable = await getUsableRollingTop10(date)') < dailyTop10RepositorySource.indexOf('const locked = await getLockedTop10(date)'), 'Best Matches of the Day should be the primary Today source before locked Top10 fallback')
 assert.ok(syncFootballDataSource.includes("return 'ENRICHED_ODDS_ONLY'"), 'enrichment status should distinguish odds-only enrichment')
 assert.ok(syncFootballDataSource.includes('statsResult.rows.length'), 'per-match enrichment summary should include statistics rows')
 assert.ok(syncFootballDataSource.includes('lineupsResult.rows.length'), 'per-match enrichment summary should include lineups rows')
@@ -942,6 +943,10 @@ assert.ok(!noBetRanking.rankReason.includes('เหมาะเป็น'), 'NO 
 assert.ok(noBetRanking.rankReason.includes('ควรข้าม'), 'NO BET rank reason should clearly recommend skipping')
 
 const marketReadyFinalPick = generateAiFinalPick({
+  id: 'market-ready-final-pick',
+  homeTeam: { name: 'Home' },
+  awayTeam: { name: 'Away' },
+  kickoffAt: '2026-07-04T10:00:00.000Z',
   analysis: {
     recommendation: 'BET',
     ranking_score: 89,
@@ -988,7 +993,7 @@ const missingMarketFinalPick = generateAiFinalPick({
   },
   odds: [],
 })
-assert.equal(missingMarketFinalPick.signal, 'SKIP', 'missing market data must stay SKIP even when stored confidence is high')
+assert.equal(missingMarketFinalPick.signal, 'WATCH', 'missing market data should stay visible as WATCH even when no final pick is available')
 assert.equal(missingMarketFinalPick.ah_pick.label, 'รอเส้น AH', 'missing AH odds must wait for AH line')
 assert.equal(missingMarketFinalPick.ou_pick.label, 'รอราคา O/U', 'missing O/U odds must wait for O/U price')
 assert.equal(missingMarketFinalPick.final_pick.type, 'NO_DECISION', 'missing market data must not create a final market pick')
@@ -1083,9 +1088,9 @@ assert.equal(mixedTodaySections.readyMatches.length, 3, 'Today ready section sho
 assert.equal(mixedTodaySections.waitingMatches.length, 7, 'Today waiting section should render waiting matches alongside ready matches')
 
 const decisiveTodayBuckets = buildTodayMatchBuckets([...marketReadyMatches, ...waitingMarketMatches], { locked: true, lockedCount: 10, windowHours: 36 })
-assert.equal(decisiveTodayBuckets.strongMatches.length, 3, 'Today V2 should put market-ready strong signals in the strong section')
+assert.equal(decisiveTodayBuckets.strongMatches.length, 0, 'Today V2 should reserve strong section for unified BET decisions')
+assert.equal(decisiveTodayBuckets.watchMatches.length, 3, 'Today V2 should put market-ready unified LEAN/WATCH decisions in the watch section')
 assert.equal(decisiveTodayBuckets.waitingMatches.length, 7, 'Today V2 should keep insufficient market-data matches visible in waiting section')
-assert.equal(decisiveTodayBuckets.watchMatches.length, 0, 'Today V2 should not mix strong picks into watch section')
 assert.equal(decisiveTodayBuckets.summary.locked, true, 'Today V2 summary should preserve locked source status')
 assert.equal(decisiveTodayBuckets.summary.windowHours, 36, 'Today V2 summary should expose the selection window')
 
@@ -1094,7 +1099,7 @@ const oneStrongOneWatchOneWaiting = buildTodayMatchBuckets([
     waitingMarketData: false,
     odds: [{ id: 'bucket-strong-odds', match_id: 'bucket-strong-0', market_name: 'Asian Handicap', price: 1.9 }],
     aiFinalPick: { signal: 'STRONG_SIGNAL', confidence_score: 83, risk_level: 'LOW' },
-    analysis: { recommendation: 'BET', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 80, confidence_score: 83, calibrated_confidence_score: 83, risk_level: 'LOW', data_validation_status: 'VALID' },
+    analysis: { recommendation: 'BET', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 88, confidence_score: 86, calibrated_confidence_score: 86, risk_level: 'LOW', data_validation_status: 'VALID', league_quality_score: 96, team_strength_score: 84, form_score: 82, goal_scoring_score: 82, defensive_stability_score: 80, home_advantage_score: 82, motivation_score: 78, ranking_score: 88, value_edge_score: 82, risk_control_score: 82 },
   })[0],
   createStatusMatches(1, 'NS', 'bucket-watch', {
     waitingMarketData: false,
@@ -1111,7 +1116,7 @@ const oneStrongOneWatchOneWaiting = buildTodayMatchBuckets([
 assert.equal(oneStrongOneWatchOneWaiting.strongMatches.length, 1, 'Today V2 should expose strongMatches')
 assert.equal(oneStrongOneWatchOneWaiting.watchMatches.length, 1, 'Today V2 should expose watchMatches')
 assert.equal(oneStrongOneWatchOneWaiting.waitingMatches.length, 1, 'Today V2 should expose waitingMatches')
-assert.deepEqual(Object.keys(oneStrongOneWatchOneWaiting).filter((key) => ['strongMatches', 'watchMatches', 'waitingMatches', 'finishedMatches', 'hiddenMatches', 'summary'].includes(key)).sort(), ['finishedMatches', 'hiddenMatches', 'strongMatches', 'summary', 'waitingMatches', 'watchMatches'], 'Today V2 should expose the required bucket keys')
+assert.deepEqual(Object.keys(oneStrongOneWatchOneWaiting).filter((key) => ['strongMatches', 'watchMatches', 'waitingMatches', 'predictionOnlyMatches', 'finishedMatches', 'hiddenMatches', 'summary'].includes(key)).sort(), ['finishedMatches', 'hiddenMatches', 'predictionOnlyMatches', 'strongMatches', 'summary', 'waitingMatches', 'watchMatches'], 'Today V2 should expose the required bucket keys')
 
 assert.equal(formatRecommendationLabel('NO BET'), 'รอข้อมูลเพิ่ม', 'UI recommendation labels must not expose NO BET')
 assert.equal(formatSignal('STRONG_SIGNAL'), 'สัญญาณเด่น', 'UI signal labels must not expose STRONG_SIGNAL')
@@ -1154,6 +1159,26 @@ assert.equal(noOddsPick.pickSource, 'NONE', 'No API odds must keep pick_source N
 assert.equal(noOddsPick.pickSide, 'NONE', 'No API odds must keep pick_side NONE')
 assert.equal(noOddsPick.pickSummary.market, 'ยังไม่มีข้อมูลราคา', 'No API odds summary should show waiting price copy')
 assert.equal(noOddsPick.predictedOutcomeLabel, 'ยังไม่มีข้อมูลราคา', 'No API odds predicted outcome should not invent a side')
+
+const noOddsUnified = buildFootballIntelligence({
+  ...pickTeamMatch,
+  odds: [],
+  analysis: {
+    league_quality_score: 82,
+    team_strength_score: 72,
+    form_score: 70,
+    home_advantage_score: 68,
+    confidence_score: 88,
+    risk_level: 'LOW',
+  },
+})
+assert.equal(noOddsUnified.status, 'WAITING_MARKET', 'Unified engine should keep no-odds fixtures visible as waiting market')
+assert.equal(noOddsUnified.decision, 'WATCH', 'No odds should not become NO_BET by itself')
+assert.ok(noOddsUnified.winner_prediction.label, 'Winner prediction may still exist without odds')
+assert.equal(noOddsUnified.ah_pick.side, 'NONE', 'No odds should not fake AH')
+assert.equal(noOddsUnified.ou_pick.side, 'NONE', 'No odds should not fake O/U')
+assert.equal(noOddsUnified.final_pick.type, 'NO_DECISION', 'No odds should not create Best Pick')
+assert.ok(noOddsUnified.confidence <= 60, 'No-odds confidence must be capped at 60')
 
 const ahPick = derivePickTeamFromApiFootballOdds({
   ...pickTeamMatch,
@@ -1323,12 +1348,12 @@ const nextWindowReady = createStatusMatches(5, 'NS', 'selection-ready-next', {
   },
 }).map((match, index) => ({ ...match, kickoffAt: `2026-07-05T${13 + index}:00:00.000Z` }))
 const rollingSelection = buildUsableDailySelection([...oneWaitingNow, ...nextWindowReady], { now: selectionNow, windowHours: 36, minPlayable: 5 })
-assert.equal(rollingSelection.windowHoursUsed, 48, 'Selection V2 should expand to 48h when the first 36h has too few playable matches')
-assert.equal(rollingSelection.reason, 'using_next_window_candidates', 'Selection V2 should report using_next_window_candidates when expanded')
-assert.equal(rollingSelection.selectedCount, 6, 'Selection V2 should keep waiting playable matches instead of emptying Today')
-assert.deepEqual(rollingSelection.selected.slice(0, 5).map((match) => match.id), nextWindowReady.map((match) => match.id), 'Selection V2 should rank market-ready matches before waiting matches')
+assert.equal(rollingSelection.windowHoursUsed, 24, 'Selection V2 should stay on the selected Bangkok date')
+assert.equal(rollingSelection.reason, 'waiting_market_data', 'Selection V2 should report waiting market data instead of expanding cross-date')
+assert.equal(rollingSelection.selectedCount, 1, 'Selection V2 should allow fewer than 10 useful same-day matches')
+assert.deepEqual(rollingSelection.selected.map((match) => match.id), oneWaitingNow.map((match) => match.id), 'Selection V2 should not pull next-date fixtures into Today')
 
-const finishedOnlySelection = buildUsableDailySelection(createStatusMatches(10, 'FT', 'selection-finished'), { now: selectionNow })
+const finishedOnlySelection = buildUsableDailySelection(createStatusMatches(10, 'FT', 'selection-finished'), { now: selectionNow, selectionDate: '2026-07-03' })
 assert.equal(finishedOnlySelection.selectedCount, 0, 'Selection V2 must not select finished matches for Today')
 assert.equal(finishedOnlySelection.finishedExcludedCount, 10, 'Selection V2 should count finished rows for Results routing')
 assert.equal(finishedOnlySelection.reason, 'all_matches_finished', 'Selection V2 should explain all-finished boards')

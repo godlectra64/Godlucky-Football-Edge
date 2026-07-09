@@ -1,5 +1,6 @@
 import { analyzeAsianHandicap } from './ahAnalysisEngine.js'
 import { buildSimpleBettingDecision, getDecisionConfidence, getLegacyDecisionFields } from './bettingDecision.js'
+import { getLegacyAiFinalPickFields } from './footballIntelligenceEngine.js'
 import { analyzeOverUnder } from './ouAnalysisEngine.js'
 import { derivePickTeamFromApiFootballOdds } from './marketDisplay.js'
 import { getPrimaryBookmaker, getPrimaryOddText, normalizeOddsRows } from './oddsUtils.js'
@@ -29,8 +30,9 @@ export function generateAiFinalPick(match = {}) {
   const recommendation = normalizeRecommendation(analysis.recommendation ?? match.recommendation)
   const bettingDecision = buildSimpleBettingDecision({ ...match, aiFinalPick: { ...(match.aiFinalPick ?? {}), ahAnalysis, ouAnalysis } })
   const legacyDecision = getLegacyDecisionFields(bettingDecision)
+  const legacyAiFinalPick = getLegacyAiFinalPickFields(bettingDecision)
   const decisionConfidence = getDecisionConfidence(bettingDecision)
-  const signal = resolveSignal({
+  const legacySignal = resolveSignal({
     recommendation,
     totalAnalysisScore,
     selectionScore,
@@ -45,6 +47,7 @@ export function generateAiFinalPick(match = {}) {
     keyReasons,
     warningSigns,
   })
+  const signal = legacySignal === 'SKIP' && legacyAiFinalPick.signal === 'WATCH' ? 'WATCH' : legacySignal
 
   return {
     ...bettingDecision,
@@ -84,11 +87,12 @@ export function normalizeStoredAiFinalPick(row, match = {}) {
     bettingDecision: row.betting_decision ?? row.bettingDecision ?? row,
   })
   const legacyDecision = getLegacyDecisionFields(bettingDecision)
+  const legacyAiFinalPick = getLegacyAiFinalPickFields(bettingDecision)
   return {
     ...bettingDecision,
     ...legacyDecision,
     bettingDecision,
-    signal: normalizeSignal(row.signal),
+    signal: normalizeSignal(row.signal === 'SKIP' && legacyAiFinalPick.signal === 'WATCH' ? 'WATCH' : row.signal ?? legacyAiFinalPick.signal),
     marketFocus: bettingDecision.final_pick.type === 'NO_DECISION' ? 'NONE' : bettingDecision.final_pick.type,
     direction: bettingDecision.final_pick.label,
     confidenceScore: getDecisionConfidence(bettingDecision),

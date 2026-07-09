@@ -107,6 +107,7 @@ function DecisionRow({ label, value, strong = false }) {
 function statusMode(status) {
   if (status === 'READY') return 'strong'
   if (status === 'WATCH') return 'watch'
+  if (status === 'NO_DATA') return 'prediction'
   return 'waiting'
 }
 

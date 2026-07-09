@@ -32,6 +32,7 @@ export default function TodayPage({
     strongMatches,
     watchMatches,
     waitingMatches,
+    predictionOnlyMatches,
     finishedMatches,
     hiddenMatches,
     playableMatches,
@@ -43,7 +44,7 @@ export default function TodayPage({
   const lastUpdated = top10Status?.lastUpdated ?? top10Status?.lockedAt ?? null
   const showFinishedOnlyState = !loading && !error && playableMatches.length === 0 && finishedCount > 0
   const showEmptyState = !loading && !error && playableMatches.length === 0 && finishedCount === 0
-  const hasMainSections = !loading && !error && (strongMatches.length || watchMatches.length || waitingMatches.length)
+  const hasMainSections = !loading && !error && (strongMatches.length || watchMatches.length || waitingMatches.length || predictionOnlyMatches.length)
   const noReadyDecision = !loading && !error && playableMatches.length > 0 && strongMatches.length === 0
 
   return (
@@ -155,6 +156,14 @@ export default function TodayPage({
             </MatchSection>
           ) : null}
 
+          {predictionOnlyMatches.length ? (
+            <MatchSection title="Prediction Only" count={predictionOnlyMatches.length} tone="prediction">
+              {predictionOnlyMatches.map((match) => (
+                <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable displayMode="prediction" />
+              ))}
+            </MatchSection>
+          ) : null}
+
           {finishedCount ? <ResultsCta count={finishedCount} onGoResults={onGoResults} /> : null}
         </div>
       ) : null}
@@ -185,6 +194,7 @@ function MatchSection({ title, count, tone = 'strong', emptyMessage = '', childr
     strong: 'text-emerald-100',
     watch: 'text-cyan-100',
     waiting: 'text-amber-100',
+    prediction: 'text-slate-100',
   }[tone] ?? 'text-white'
   const childRows = Array.isArray(children) ? children.filter(Boolean) : children ? [children] : []
 
