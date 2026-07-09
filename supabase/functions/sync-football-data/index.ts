@@ -101,6 +101,7 @@ const footballEnrichmentModes = [
   'sync-odds',
   'sync-fixture-odds',
   'sync-today-odds',
+  'diagnose-sync-today-odds',
   'recompute-ai-final-picks',
   'recompute-ai-final-picks-date',
   'lock-daily-top10',
@@ -266,6 +267,18 @@ Deno.serve(async (request) => {
         scoreUpdatedRows: modeResult.scoreUpdatedRows,
         settledRows: modeResult.settledRows,
         fixtureDiagnostics: modeResult.fixtureDiagnostics,
+        fixturesCount: modeResult.fixturesCount,
+        playableCount: modeResult.playableCount,
+        finishedCount: modeResult.finishedCount,
+        todayOddsRows: modeResult.todayOddsRows,
+        sampleFixtureIds: modeResult.sampleFixtureIds,
+        env: modeResult.env,
+        apiFootballReachable: modeResult.apiFootballReachable,
+        apiFootballStatus: modeResult.apiFootballStatus,
+        apiFootballOddsItems: modeResult.apiFootballOddsItems,
+        apiFootballMarketsSample: modeResult.apiFootballMarketsSample,
+        apiFootballError: modeResult.apiFootballError,
+        likelySource: modeResult.likelySource,
       }, modeResult.responseStatus ?? 200)
     }
 
@@ -663,6 +676,18 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       watchCount: result.watchCount,
       skipCount: result.skipCount,
       updated: result.updated,
+      fixturesCount: result.fixturesCount,
+      playableCount: result.playableCount,
+      finishedCount: result.finishedCount,
+      todayOddsRows: result.todayOddsRows,
+      sampleFixtureIds: result.sampleFixtureIds,
+      env: result.env,
+      apiFootballReachable: result.apiFootballReachable,
+      apiFootballStatus: result.apiFootballStatus,
+      apiFootballOddsItems: result.apiFootballOddsItems,
+      apiFootballMarketsSample: result.apiFootballMarketsSample,
+      apiFootballError: result.apiFootballError,
+      likelySource: result.likelySource,
     }
   }
 
@@ -1761,6 +1786,7 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'sync-odds') return syncApiFootballOdds(body, dayRange, context)
   if (mode === 'sync-fixture-odds') return syncApiFootballFixtureOdds(body, dayRange, context)
   if (mode === 'sync-today-odds') return syncTodayOdds(body, dayRange, context, { recomputeAfterSync: true })
+  if (mode === 'diagnose-sync-today-odds') return diagnoseSyncTodayOdds(dayRange, context)
   if (mode === 'recompute-ai-final-picks') return recomputeAiFinalPicks(dayRange, context)
   if (mode === 'recompute-ai-final-picks-date') return recomputeAiFinalPicksForSelectionDate(dayRange, context)
   if (mode === 'lock-daily-top10') return lockDailyTop10(dayRange)
@@ -2375,6 +2401,102 @@ class ResultPipelineError extends Error {
   }
 }
 
+class SyncOperationError extends Error {
+  source: string
+  operation: string
+  status: number | null
+  sanitizedMessage: string
+
+  constructor({ source, operation, status = null, message }: { source: string; operation: string; status?: number | null; message: unknown }) {
+    const sanitizedMessage = sanitizeText(message)
+    super(sanitizedMessage)
+    this.name = 'SyncOperationError'
+    this.source = source
+    this.operation = operation
+    this.status = status
+    this.sanitizedMessage = sanitizedMessage
+  }
+}
+
+async function withSyncOperation<T>(source: string, operation: string, worker: () => PromiseLike<T>): Promise<T> {
+  try {
+    return await worker()
+  } catch (error) {
+    throw toSyncOperationError(error, source, operation)
+  }
+}
+
+async function withRetryableSyncOperation<T>(source: string, operation: string, worker: () => PromiseLike<T>, maxRetries = 2): Promise<T> {
+  let lastError: SyncOperationError | null = null
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await worker()
+    } catch (error) {
+      lastError = toSyncOperationError(error, source, operation)
+      if (attempt >= maxRetries || !isRetryableOperationError(lastError)) throw lastError
+      await sleep(250 * (attempt + 1))
+    }
+  }
+  throw lastError ?? createSyncOperationError({ source, operation, message: 'sync operation failed' })
+}
+
+function createSyncOperationError({ source, operation, status = null, message }: { source: string; operation: string; status?: number | null; message: unknown }) {
+  return new SyncOperationError({ source, operation, status, message })
+}
+
+function toSyncOperationError(error: unknown, source: string, operation: string) {
+  if (error instanceof SyncOperationError) return error
+  const raw = error as any
+  return new SyncOperationError({
+    source: raw?.source ? String(raw.source) : source,
+    operation: raw?.operation ? String(raw.operation) : operation,
+    status: normalizeHttpStatus(raw?.status ?? raw?.statusCode),
+    message: raw?.sanitizedMessage ?? raw?.message ?? raw?.error_description ?? raw?.error ?? String(error ?? 'sync operation failed'),
+  })
+}
+
+function buildOperationFailure(error: SyncOperationError, extra: Record<string, unknown> = {}) {
+  return {
+    ...extra,
+    source: error.source,
+    operation: error.operation,
+    status: error.status,
+    sanitizedMessage: error.sanitizedMessage,
+    message: error.sanitizedMessage,
+  }
+}
+
+function isRetryableOperationError(error: SyncOperationError) {
+  const message = String(error.sanitizedMessage ?? '').toLowerCase()
+  return [408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524].includes(Number(error.status ?? 0)) ||
+    message.includes('timeout') ||
+    message.includes('temporarily') ||
+    message.includes('network') ||
+    message.includes('web server is down') ||
+    message.includes('html error response received')
+}
+
+function throwIfAllOddsFixturesFailed(result: any) {
+  const attempted = Number(result?.oddsAttempted ?? 0)
+  const failed = Number(result?.oddsFailedFixtures ?? result?.failedFixtures ?? result?.failed ?? 0)
+  const failures = Array.isArray(result?.failures) ? result.failures : []
+  if (!attempted || failed < attempted || !failures.length) return
+
+  const first = failures[0] ?? {}
+  const sameInfrastructureFailure = failures.every((failure: any) => (
+    String(failure?.source ?? '') === String(first.source ?? '') &&
+    String(failure?.operation ?? '') === String(first.operation ?? '') &&
+    Number(failure?.status ?? 0) === Number(first.status ?? 0)
+  ))
+  if (!sameInfrastructureFailure) return
+  throw createSyncOperationError({
+    source: String(first.source ?? 'unknown'),
+    operation: String(first.operation ?? 'sync_fixture_odds'),
+    status: normalizeHttpStatus(first.status),
+    message: first.sanitizedMessage ?? first.message ?? 'All odds fixtures failed from the same infrastructure error',
+  })
+}
+
 async function withResultStage<T>(errorStage: string, errorCode: string, worker: () => PromiseLike<T>, provider = 'supabase'): Promise<T> {
   try {
     const result = await worker()
@@ -2402,6 +2524,10 @@ function buildSyncErrorResponse(error: unknown, mode: string, fallbackProvider: 
     errorStage: resultError.errorStage,
     errorMessage: sanitizeText(resultError.message || 'sync failed'),
     errorDetails: resultError.errorDetails,
+    source: resultError.errorDetails.source ?? null,
+    operation: resultError.errorDetails.operation ?? null,
+    status: resultError.errorDetails.status ?? null,
+    sanitizedMessage: resultError.errorDetails.sanitizedMessage ?? sanitizeText(resultError.message || 'sync failed'),
     failures: resultError.failures,
   }
 }
@@ -2430,6 +2556,9 @@ function sanitizeErrorDetails(error: unknown): Record<string, unknown> {
     code: raw?.code ? sanitizeText(raw.code) : null,
     status: raw?.status ?? raw?.statusCode ?? null,
     name: raw?.name ? sanitizeText(raw.name) : null,
+    source: raw?.source ? sanitizeText(raw.source) : null,
+    operation: raw?.operation ? sanitizeText(raw.operation) : null,
+    sanitizedMessage: raw?.sanitizedMessage ? sanitizeText(raw.sanitizedMessage) : sanitizeText(raw?.message ?? String(error ?? 'sync failed')),
   }
 }
 
@@ -2446,6 +2575,7 @@ function sanitizeDiagnosticValue(value: unknown): unknown {
 
 function sanitizeText(value: unknown) {
   let text = String(value ?? '')
+  if (looksLikeHtml(text)) return 'HTML error response received'
   const secretValues = [serviceRoleKey, API_FOOTBALL_KEY, FOOTBALL_DATA_TOKEN, ...secretKeys].filter(Boolean)
   for (const secret of secretValues) {
     text = text.split(secret).join('[masked]')
@@ -2455,6 +2585,20 @@ function sanitizeText(value: unknown) {
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [masked]')
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, 'jwt_[masked]')
     .replace(/(api[_-]?key|apikey|secret|token)=([^&\s]+)/gi, '$1=[masked]')
+}
+
+function looksLikeHtml(value: string) {
+  const text = String(value ?? '').trim().slice(0, 400).toLowerCase()
+  return text.startsWith('<!doctype html') ||
+    text.startsWith('<html') ||
+    text.includes('<body') ||
+    text.includes('</html>') ||
+    text.includes('cloudflare') && /<[^>]+>/.test(text)
+}
+
+function normalizeHttpStatus(value: unknown) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric >= 100 && numeric <= 599 ? Math.floor(numeric) : null
 }
 
 function sanitizeProviderName(value: string) {
@@ -2808,23 +2952,24 @@ async function syncApiFootballFixtureOdds(body: Record<string, unknown>, dayRang
 
 async function syncTodayOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, options: { recomputeAfterSync: boolean }) {
   const requestedLimit = getPositiveLimit(body.maxFixturesPerRun ?? body.limit ?? context.limit, 10, maxFootballEnrichmentLimit)
-  const candidates = await fetchDbMatchCandidates(dayRange, requestedLimit, true)
-  const result = await runOddsBatch(candidates.rows, candidates.totalCandidates, context, {
+  const candidates = await withRetryableSyncOperation('supabase', 'load_today_fixtures', () => fetchDbMatchCandidates(dayRange, requestedLimit, true))
+  const result = await withSyncOperation('unknown', 'sync_today_odds_batch', () => runOddsBatch(candidates.rows, candidates.totalCandidates, context, {
     offset: 0,
     batchSize: requestedLimit,
     hardStopMs: 18000,
-  })
-  const oddsSummary = await getDailyOddsSummary(dayRange)
+  }))
+  const oddsSummary = await withRetryableSyncOperation('supabase', 'count_today_odds', () => getDailyOddsSummary(dayRange))
   const warnings: Array<string> = []
   if (result.oddsAttempted > 0 && result.oddsRowsSaved === 0 && result.failed === 0) {
     warnings.push('No odds returned for today fixtures')
   }
   if (result.hasMore) warnings.push(`Processed ${result.oddsAttempted}/${candidates.totalCandidates} fixtures; rerun sync-today-odds for remaining fixtures`)
+  throwIfAllOddsFixturesFailed(result)
 
   let recompute: any = null
   if (options.recomputeAfterSync) {
-    const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
-    const finalPickRows = await recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks-date' })
+    const rankedSelectionRows = await withRetryableSyncOperation('database', 'recompute_ranking', () => updateDailySelectionRanks(dayRange))
+    const finalPickRows = await withRetryableSyncOperation('database', 'recompute_ai_final_picks', () => recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks-date' }))
     recompute = {
       rankedSelectionRows,
       aiFinalPickRows: finalPickRows.rowsSaved ?? 0,
@@ -2846,6 +2991,74 @@ async function syncTodayOdds(body: Record<string, unknown>, dayRange: ReturnType
     warnings,
     message: warnings[0] ?? null,
     recompute,
+  }
+}
+
+async function diagnoseSyncTodayOdds(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const candidates = await withSyncOperation('supabase', 'load_today_fixtures', () => fetchDbMatchCandidates(dayRange, 200, true))
+  const oddsSummary = await withSyncOperation('supabase', 'count_today_odds', () => getDailyOddsSummary(dayRange))
+  const fixtures = candidates.rows ?? []
+  const playableFixtures = fixtures.filter((match: any) => !isResultFinishedStatus(match.status ?? match.status_short ?? match.match_status))
+  const finishedFixtures = fixtures.filter((match: any) => isResultFinishedStatus(match.status ?? match.status_short ?? match.match_status))
+  const fixture = playableFixtures.find((match: any) => Number(match.api_sports_fixture_id ?? 0) > 0) ?? fixtures.find((match: any) => Number(match.api_sports_fixture_id ?? 0) > 0) ?? null
+  const apiFixtureId = Number(fixture?.api_sports_fixture_id ?? 0) || null
+  let apiFootballReachable = false
+  let apiFootballStatus: number | null = null
+  let apiFootballOddsItems = 0
+  let apiFootballMarketsSample: Array<string> = []
+  let apiFootballError: any = null
+
+  if (apiFixtureId) {
+    try {
+      const raw = await withSyncOperation('api-football', 'diagnose_fetch_api_football_odds', () => apiFootballGet('/odds', { fixture: apiFixtureId }))
+      apiFootballReachable = true
+      apiFootballStatus = 200
+      apiFootballOddsItems = Array.isArray(raw?.response) ? raw.response.length : 0
+      apiFootballMarketsSample = getMarketNamesSample(raw?.response ?? [])
+    } catch (error) {
+      const rawOperationError = toSyncOperationError(error, 'api-football', 'diagnose_fetch_api_football_odds')
+      const operationError = createSyncOperationError({ source: rawOperationError.source, operation: 'diagnose_fetch_api_football_odds', status: rawOperationError.status, message: rawOperationError.sanitizedMessage })
+      apiFootballReachable = false
+      apiFootballStatus = operationError.status
+      apiFootballError = buildOperationFailure(operationError)
+    }
+  }
+
+  const likelySource = !supabaseUrl || !serviceRoleKey
+    ? 'supabase'
+    : !API_FOOTBALL_KEY
+      ? 'api-football'
+      : apiFootballError
+        ? apiFootballError.source
+        : oddsSummary.oddsRows === 0
+          ? 'provider-or-not-yet-synced'
+          : 'unknown'
+
+  return {
+    status: 'success',
+    processed: 0,
+    rowsSaved: 0,
+    failed: 0,
+    skipped: 0,
+    totalCandidates: candidates.totalCandidates,
+    mode: 'diagnose-sync-today-odds',
+    dateKey: dayRange.dateKey,
+    fixturesCount: oddsSummary.totalFixtures,
+    playableCount: playableFixtures.length,
+    finishedCount: finishedFixtures.length,
+    sampleFixtureIds: fixtures.slice(0, 2).map((match: any) => Number(match.api_sports_fixture_id ?? 0)).filter(Boolean),
+    todayOddsRows: oddsSummary.oddsRows,
+    env: {
+      supabaseUrlPresent: Boolean(supabaseUrl),
+      supabaseServiceKeyPresent: Boolean(serviceRoleKey),
+      apiFootballKeyPresent: Boolean(API_FOOTBALL_KEY),
+    },
+    apiFootballReachable,
+    apiFootballStatus,
+    apiFootballOddsItems,
+    apiFootballMarketsSample,
+    apiFootballError,
+    likelySource,
   }
 }
 
@@ -2881,8 +3094,9 @@ async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: 
       const fixtureId = Number(match?.api_sports_fixture_id ?? match?.raw?.raw_fixture_id ?? 0) || null
       failedFixtures += 1
       if (fixtureId) skippedFixtureIds.push(fixtureId)
-      const message = formatErrorMessage(error, 'odds fixture sync failed')
-      failures.push({ fixtureId, message })
+      const operationError = toSyncOperationError(error, 'unknown', 'sync_fixture_odds')
+      const message = operationError.sanitizedMessage
+      failures.push(buildOperationFailure(operationError, { fixtureId }))
       await updateMatchReadinessMetadata(match.id, {
         fixtureId,
         odds: endpointAttemptSummary({ attempted: 1, success: 0, rowsSaved: 0, empty: 0, error: 1, message }),
@@ -2937,7 +3151,7 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) 
 
   let response: any = null
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    response = await trackedApiFootballGet(context, '/odds', { fixture: fixtureId }, { apiFixtureId: fixtureId })
+    response = await withSyncOperation('api-football', 'fetch_api_football_odds', () => trackedApiFootballGet(context, '/odds', { fixture: fixtureId }, { apiFixtureId: fixtureId }))
     if (response.ok) break
     const message = String(response.error ?? '')
     const retryable = response.rateLimited || message.includes('api-football 429') || /api-football 5\d\d/i.test(message) || /network|fetch|timeout/i.test(message)
@@ -2946,13 +3160,19 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) 
   }
 
   if (!response?.ok) {
-    await updateMatchReadinessMetadata(match.id, {
+    const operationError = createSyncOperationError({
+      source: response?.source ?? 'api-football',
+      operation: response?.operation ?? 'fetch_api_football_odds',
+      status: response?.status ?? (response?.rateLimited ? 429 : null),
+      message: response?.error ?? 'odds sync failed',
+    })
+    await withRetryableSyncOperation('supabase', 'update_match_readiness_failed_odds', () => updateMatchReadinessMetadata(match.id, {
       fixtureId,
-      odds: endpointAttemptSummary({ attempted: 1, success: 0, rowsSaved: 0, empty: 0, error: 1, message: response?.error ?? 'odds sync failed' }),
+      odds: endpointAttemptSummary({ attempted: 1, success: 0, rowsSaved: 0, empty: 0, error: 1, message: operationError.sanitizedMessage }),
       hasMarketData: false,
       status: 'FAILED',
-      error: response?.error ?? 'odds sync failed',
-    })
+      error: operationError.sanitizedMessage,
+    }))
     return {
       processed: 0,
       rowsSaved: 0,
@@ -2962,32 +3182,32 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) 
       skipped: false,
       failure: {
         fixtureId,
-        message: response?.error ?? 'odds sync failed',
+        ...buildOperationFailure(operationError),
         rateLimited: Boolean(response?.rateLimited),
       },
     }
   }
 
-  const normalized = normalizeMatchOddsRows(match, fixtureId, response.data ?? [])
+  const normalized = await withSyncOperation('unknown', 'parse_api_football_odds', () => Promise.resolve(normalizeMatchOddsRows(match, fixtureId, response.data ?? [])))
   if (!normalized.rows.length) {
-    await updateMatchReadinessMetadata(match.id, {
+    await withRetryableSyncOperation('supabase', 'update_match_readiness_no_market_data', () => updateMatchReadinessMetadata(match.id, {
       fixtureId,
       odds: endpointAttemptSummary({ attempted: 1, success: 1, rowsSaved: 0, empty: 1, error: 0 }),
       hasMarketData: false,
       status: 'NO_MARKET_DATA',
-    })
+    }))
     return { processed: 1, rowsSaved: 0, failed: 0, empty: 1, fixtureId, skipped: true, failure: null }
   }
 
-  await storeFootballBookmakers(normalized.bookmakers)
-  await storeFootballMatchOdds(match.id, normalized.rows)
+  await withRetryableSyncOperation('supabase', 'upsert_football_bookmakers', () => storeFootballBookmakers(normalized.bookmakers))
+  await withRetryableSyncOperation('supabase', 'upsert_football_match_odds', () => storeFootballMatchOdds(match.id, normalized.rows))
   addEndpointRowsSaved(context, '/odds', normalized.rows.length)
-  await updateMatchReadinessMetadata(match.id, {
+  await withRetryableSyncOperation('supabase', 'update_match_readiness_market_ready', () => updateMatchReadinessMetadata(match.id, {
     fixtureId,
     odds: endpointAttemptSummary({ attempted: 1, success: 1, rowsSaved: normalized.rows.length, empty: 0, error: 0 }),
     hasMarketData: true,
     status: 'READY',
-  })
+  }))
   return { processed: 1, rowsSaved: normalized.rows.length, failed: 0, empty: 0, fixtureId, skipped: false, failure: null }
 }
 
@@ -5064,11 +5284,15 @@ async function trackedApiFootballGet(context: FootballEnrichmentContext, endpoin
     await logEnrichmentSync({ mode: context.mode, endpoint, status, results_count: results, started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
     return { ok: true, data: raw?.response ?? [], raw, rateLimited: false }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'api-football request failed'
+    const rawOperationError = toSyncOperationError(error, 'api-football', endpoint === '/odds' ? 'fetch_api_football_odds' : `fetch_api_football:${endpoint}`)
+    const operationError = endpoint === '/odds'
+      ? createSyncOperationError({ source: rawOperationError.source, operation: 'fetch_api_football_odds', status: rawOperationError.status, message: rawOperationError.sanitizedMessage })
+      : rawOperationError
+    const message = operationError.sanitizedMessage
     if (message.includes('api-football 429')) context.rateLimited = true
     bumpEndpoint(context, endpoint, 'failed')
     await logEnrichmentSync({ mode: context.mode, endpoint, status: 'error', error_message: message, started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
-    return { ok: false, data: [], raw: null, error: message, rateLimited: context.rateLimited }
+    return { ok: false, data: [], raw: null, error: message, source: operationError.source, operation: operationError.operation, status: operationError.status, rateLimited: context.rateLimited }
   }
 }
 
@@ -5757,6 +5981,20 @@ function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<an
     }
   }
   return { rows, bookmakers: [...bookmakers.values()] }
+}
+
+function getMarketNamesSample(rawRows: Array<any>) {
+  const names = new Set<string>()
+  for (const item of rawRows ?? []) {
+    for (const bookmaker of item.bookmakers ?? []) {
+      for (const bet of bookmaker.bets ?? []) {
+        const name = String(bet.name ?? '').trim()
+        if (name) names.add(name)
+        if (names.size >= 8) return [...names]
+      }
+    }
+  }
+  return [...names]
 }
 
 async function storeFootballBookmakers(rows: Array<any>) {
@@ -6765,16 +7003,45 @@ async function apiFootballGet(path: string, params: Record<string, string | numb
   })
 
   const text = await response.text()
-  const data = text ? JSON.parse(text) : {}
+  if (looksLikeHtml(text)) {
+    throw createSyncOperationError({
+      source: 'api-football',
+      operation: `api_football_get:${path}`,
+      status: response.status,
+      message: 'HTML error response received',
+    })
+  }
+
+  let data: any = {}
+  try {
+    data = text ? JSON.parse(text) : {}
+  } catch (error) {
+    throw createSyncOperationError({
+      source: 'api-football',
+      operation: `api_football_get:${path}`,
+      status: response.status,
+      message: error instanceof Error ? error.message : 'Non-JSON API-Football response',
+    })
+  }
 
   if (!response.ok) {
     const message = data?.message ?? data?.error ?? text ?? `api-football ${response.status}`
-    throw new Error(`api-football ${response.status}: ${message}`)
+    throw createSyncOperationError({
+      source: 'api-football',
+      operation: `api_football_get:${path}`,
+      status: response.status,
+      message: `api-football ${response.status}: ${message}`,
+    })
   }
 
   const apiErrors = data?.errors
   const hasApiErrors = Array.isArray(apiErrors) ? apiErrors.length > 0 : apiErrors && typeof apiErrors === 'object' ? Object.keys(apiErrors).length > 0 : Boolean(apiErrors)
-  if (hasApiErrors) throw new Error(`api-football error: ${JSON.stringify(apiErrors)}`)
+  if (hasApiErrors) throw createSyncOperationError({
+    source: 'api-football',
+    operation: `api_football_get:${path}`,
+    status: response.status,
+    message: `api-football error: ${JSON.stringify(apiErrors)}`,
+  })
 
   return data
 }
