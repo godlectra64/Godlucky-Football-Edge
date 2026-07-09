@@ -100,6 +100,7 @@ const footballEnrichmentModes = [
   'sync-bookmakers',
   'sync-odds',
   'sync-fixture-odds',
+  'sync-today-odds',
   'recompute-ai-final-picks',
   'recompute-ai-final-picks-date',
   'lock-daily-top10',
@@ -118,7 +119,7 @@ const footballEnrichmentModes = [
 ]
 
 const dailySyncRunMode = 'daily-full-sync-safe'
-const dailySyncPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']
+const dailySyncPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'odds-sync', 'ranking']
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
@@ -1039,7 +1040,6 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     results.push(await executeFootballEnrichmentMode('rounds', body, dayRange, context))
   } else if (phase === 'fixture-enrichment') {
     results.push(await executeFootballEnrichmentMode('fixture-enrich', body, dayRange, context))
-    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('sync-odds', body, dayRange, context))
   } else if (phase === 'team-enrichment') {
     results.push(await executeFootballEnrichmentMode('injuries', body, dayRange, context))
     if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('squads', body, dayRange, context))
@@ -1047,6 +1047,8 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('venues', body, dayRange, context))
   } else if (phase === 'league-enrichment') {
     results.push(await executeFootballEnrichmentMode('top-players', body, dayRange, context))
+  } else if (phase === 'odds-sync') {
+    results.push(await syncTodayOdds(body, dayRange, context, { recomputeAfterSync: false }))
   } else if (phase === 'ranking') {
     results.push(await runDailyRankingStep(dayRange, context))
   } else {
@@ -1057,7 +1059,8 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
   const endpointBreakdown = diffEndpointCounterMap(before, context.endpoints)
   const processed = sumResultField(results, 'processed')
   const totalCandidates = sumResultField(results, 'totalCandidates')
-  const rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
+  let rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
+  if (phase === 'odds-sync') rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved
   const failed = sumResultField(results, 'failed') + endpointDelta.failed
   const skipped = sumResultField(results, 'skipped') + endpointDelta.skipped
   const partial = results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
@@ -1605,6 +1608,7 @@ function getDailyPhaseLimits(body: any) {
     'fixture-enrichment': getPositiveLimit(phaseLimits['fixture-enrichment'], 5, maxFootballEnrichmentLimit),
     'team-enrichment': getPositiveLimit(phaseLimits['team-enrichment'], 10, maxFootballEnrichmentLimit),
     'league-enrichment': getPositiveLimit(phaseLimits['league-enrichment'], 10, maxFootballEnrichmentLimit),
+    'odds-sync': getPositiveLimit(phaseLimits['odds-sync'], 10, maxFootballEnrichmentLimit),
     ranking: getPositiveLimit(phaseLimits.ranking, 10, maxFootballEnrichmentLimit),
   }
 }
@@ -1756,6 +1760,7 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'sync-bookmakers') return syncApiFootballBookmakers(context)
   if (mode === 'sync-odds') return syncApiFootballOdds(body, dayRange, context)
   if (mode === 'sync-fixture-odds') return syncApiFootballFixtureOdds(body, dayRange, context)
+  if (mode === 'sync-today-odds') return syncTodayOdds(body, dayRange, context, { recomputeAfterSync: true })
   if (mode === 'recompute-ai-final-picks') return recomputeAiFinalPicks(dayRange, context)
   if (mode === 'recompute-ai-final-picks-date') return recomputeAiFinalPicksForSelectionDate(dayRange, context)
   if (mode === 'lock-daily-top10') return lockDailyTop10(dayRange)
@@ -2799,6 +2804,49 @@ async function syncApiFootballFixtureOdds(body: Record<string, unknown>, dayRang
     batchSize: fixtureLimit,
     hardStopMs: 18000,
   })
+}
+
+async function syncTodayOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, options: { recomputeAfterSync: boolean }) {
+  const requestedLimit = getPositiveLimit(body.maxFixturesPerRun ?? body.limit ?? context.limit, 10, maxFootballEnrichmentLimit)
+  const candidates = await fetchDbMatchCandidates(dayRange, requestedLimit, true)
+  const result = await runOddsBatch(candidates.rows, candidates.totalCandidates, context, {
+    offset: 0,
+    batchSize: requestedLimit,
+    hardStopMs: 18000,
+  })
+  const oddsSummary = await getDailyOddsSummary(dayRange)
+  const warnings: Array<string> = []
+  if (result.oddsAttempted > 0 && result.oddsRowsSaved === 0 && result.failed === 0) {
+    warnings.push('No odds returned for today fixtures')
+  }
+  if (result.hasMore) warnings.push(`Processed ${result.oddsAttempted}/${candidates.totalCandidates} fixtures; rerun sync-today-odds for remaining fixtures`)
+
+  let recompute: any = null
+  if (options.recomputeAfterSync) {
+    const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+    const finalPickRows = await recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks-date' })
+    recompute = {
+      rankedSelectionRows,
+      aiFinalPickRows: finalPickRows.rowsSaved ?? 0,
+      failed: finalPickRows.failed ?? 0,
+    }
+  }
+
+  return {
+    ...result,
+    status: result.failed > 0 ? 'partial_success' : 'success',
+    partial: result.failed > 0 || context.rateLimited,
+    dateKey: dayRange.dateKey,
+    totalFixtures: oddsSummary.totalFixtures,
+    processedFixtures: result.processedFixtures,
+    oddsRowsInserted: result.oddsRowsSaved,
+    fixturesWithOdds: oddsSummary.fixturesWithOdds,
+    fixturesWithAh: oddsSummary.fixturesWithAh,
+    fixturesWithOu: oddsSummary.fixturesWithOu,
+    warnings,
+    message: warnings[0] ?? null,
+    recompute,
+  }
 }
 
 async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: FootballEnrichmentContext, options: { offset: number; batchSize: number; hardStopMs: number }) {
@@ -5598,6 +5646,22 @@ function buildDailyPhaseDetails(phase: string, results: Array<any>) {
       partial: isFixtureEnrichmentPartial(results, {}),
     }
   }
+  if (phase === 'odds-sync') {
+    const odds = results[0] ?? {}
+    return {
+      dateKey: odds.dateKey ?? null,
+      totalFixtures: Number(odds.totalFixtures ?? odds.totalCandidates ?? 0),
+      processedFixtures: Number(odds.processedFixtures ?? odds.processed ?? 0),
+      oddsAttempted: Number(odds.oddsAttempted ?? 0),
+      oddsRowsSaved: Number(odds.oddsRowsSaved ?? odds.rowsSaved ?? 0),
+      oddsEmptyFixtures: Number(odds.oddsEmptyFixtures ?? odds.emptyFixtures ?? 0),
+      oddsFailedFixtures: Number(odds.oddsFailedFixtures ?? odds.failedFixtures ?? 0),
+      fixturesWithOdds: Number(odds.fixturesWithOdds ?? 0),
+      fixturesWithAh: Number(odds.fixturesWithAh ?? 0),
+      fixturesWithOu: Number(odds.fixturesWithOu ?? 0),
+      warnings: odds.warnings ?? [],
+    }
+  }
   if (phase === 'ranking') {
     return {
       rankingStatus: Number(results[0]?.failed ?? 0) > 0 ? 'failed' : results[0]?.partial ? 'partial' : 'success',
@@ -8107,6 +8171,49 @@ async function getRankingReadinessSummary(range: { startUtc: string; endUtc: str
   return summarizeRankingReadiness(result.data ?? [], oddsIds)
 }
 
+async function getDailyOddsSummary(range: { startUtc: string; endUtc: string }) {
+  const matches = await supabase
+    .from('football_matches')
+    .select('id')
+    .gte('kickoff_at', range.startUtc)
+    .lt('kickoff_at', range.endUtc)
+  if (matches.error) throw matches.error
+
+  const matchIds = (matches.data ?? []).map((row: any) => row.id).filter(Boolean)
+  if (!matchIds.length) {
+    return { totalFixtures: 0, oddsRows: 0, fixturesWithOdds: 0, fixturesWithAh: 0, fixturesWithOu: 0 }
+  }
+
+  const odds = await supabase
+    .from('football_match_odds')
+    .select('match_id, market_focus, market_name')
+    .in('match_id', matchIds)
+  if (odds.error) {
+    if (isMissingColumnError(odds.error)) return { totalFixtures: matchIds.length, oddsRows: 0, fixturesWithOdds: 0, fixturesWithAh: 0, fixturesWithOu: 0 }
+    throw odds.error
+  }
+
+  const fixturesWithOdds = new Set<string>()
+  const fixturesWithAh = new Set<string>()
+  const fixturesWithOu = new Set<string>()
+  for (const row of odds.data ?? []) {
+    if (!row.match_id) continue
+    fixturesWithOdds.add(row.match_id)
+    const focus = String(row.market_focus ?? '').toUpperCase()
+    const name = String(row.market_name ?? '').toLowerCase()
+    if (focus === 'AH' || name.includes('handicap')) fixturesWithAh.add(row.match_id)
+    if (focus === 'OU' || name.includes('over/under') || name.includes('goals over')) fixturesWithOu.add(row.match_id)
+  }
+
+  return {
+    totalFixtures: matchIds.length,
+    oddsRows: odds.data?.length ?? 0,
+    fixturesWithOdds: fixturesWithOdds.size,
+    fixturesWithAh: fixturesWithAh.size,
+    fixturesWithOu: fixturesWithOu.size,
+  }
+}
+
 function summarizeRankingReadiness(rows: Array<any>, oddsIds: Set<string>) {
   const summary = {
     totalFixtures: rows.length,
@@ -9692,6 +9799,7 @@ function getSupportedSyncModes() {
 
 function getSyncLimit(value: unknown, mode = 'manual') {
   if (mode === 'sync-odds') return getPositiveLimit(value, 10, maxFootballEnrichmentLimit)
+  if (mode === 'sync-today-odds') return getPositiveLimit(value, 10, maxFootballEnrichmentLimit)
   if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
   if (isResultPipelineMode(mode)) return getPositiveLimit(value, 10, 20)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit

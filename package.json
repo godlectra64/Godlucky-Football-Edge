@@ -18,6 +18,7 @@
     "verify:strict-daily": "node scripts/verifyStrictDaily.mjs",
     "verify:results": "node scripts/verifyResultSettlementIntegrity.mjs",
     "verify:scheduler": "node scripts/verifyGitHubActionsScheduler.mjs",
+    "diagnose:daily-odds-sync": "node scripts/diagnoseDailyOddsSync.mjs",
     "diagnose:no-bet": "node scripts/auditNoBetDistribution.mjs",
     "diagnose:strict-daily": "node scripts/diagnoseStrictDaily.mjs",
     "test:daily-sync-auth": "node scripts/dailySyncAuth.unit.test.mjs",
