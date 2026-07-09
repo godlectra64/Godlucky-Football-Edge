@@ -68,7 +68,7 @@ export default function MatchCard({
           <DecisionRow label="AH" value={ahLabel} />
           <DecisionRow label="O/U" value={ouLabel} />
           <DecisionRow label="Best Pick" value={bestPick} />
-          <DecisionRow label="Confidence" value={`มั่นใจ ${confidence}%`} />
+          <DecisionRow label="ความมั่นใจ" value={`${confidence}%`} />
         </div>
       </div>
 

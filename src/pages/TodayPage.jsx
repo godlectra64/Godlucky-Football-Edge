@@ -94,7 +94,10 @@ export default function TodayPage({
 
       {!loading && !error && totalMatchCount > selectedCount && selectedCount < 10 ? (
         <section className="mt-3 rounded-[18px] border border-cyan-300/20 bg-cyan-300/10 p-3">
-          <p className="text-sm font-black text-cyan-50">วันนี้มีคู่ที่ผ่านเกณฑ์คุณภาพสูง {selectedCount} คู่ จากทั้งหมด {totalMatchCount} คู่</p>
+          <p className="text-sm font-black text-cyan-50">{buildSelectionSummaryTitle({ noReadyDecision, waitingCount: waitingMatches.length, selectedCount, totalMatchCount })}</p>
+          {noReadyDecision && waitingMatches.length ? (
+            <p className="mt-1 text-xs font-semibold leading-5 text-cyan-100">ยังไม่มีคู่พร้อมสรุป AH/O-U เพราะ API-Football ยังไม่มีข้อมูลราคาครบ</p>
+          ) : null}
         </section>
       ) : null}
 
@@ -288,6 +291,13 @@ function buildHeroSubtextPolished({ noReadyDecision = false, waitingCount = 0, l
     return `ระบบยังแสดงมุมมองผู้ชนะจากข้อมูล fixture และจะอัปเดต AH/O-U เมื่อมีข้อมูลราคา${updateText}`
   }
   return `จัดอันดับจากมุมมองผู้ชนะ ราคา ความเสี่ยง และความมั่นใจ${updateText}`
+}
+
+function buildSelectionSummaryTitle({ noReadyDecision = false, waitingCount = 0, selectedCount = 0, totalMatchCount = 0 } = {}) {
+  if (noReadyDecision && waitingCount > 0) {
+    return `วันนี้ระบบคัดคู่ที่น่าติดตามได้ ${waitingCount} คู่ จากทั้งหมด ${totalMatchCount} คู่`
+  }
+  return `วันนี้ระบบคัดคู่ไว้ ${selectedCount} คู่ จากทั้งหมด ${totalMatchCount} คู่`
 }
 
 function buildHeroMessage(summary, noReadyDecision = false) {

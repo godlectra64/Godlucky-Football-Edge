@@ -63,7 +63,7 @@ import {
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { buildProfessionalSelectionScore } from '../src/utils/professionalSelectionPipeline.js'
-import { buildFootballIntelligence } from '../src/utils/footballIntelligenceEngine.js'
+import { buildFootballIntelligence, calculateFixtureModelConfidence } from '../src/utils/footballIntelligenceEngine.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 import { buildTodayMatchBuckets, buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
@@ -1189,9 +1189,87 @@ const fixtureOnlyConfidenceSamples = [
   buildFootballIntelligence({ id: 'low-data-no-odds', homeTeam: { name: 'Home' }, awayTeam: { name: 'Away' }, kickoffAt: '2026-07-04T09:00:00.000Z', odds: [], analysis: {} }),
 ]
 const fixtureOnlyConfidences = fixtureOnlyConfidenceSamples.map((item) => item.confidence)
-assert.equal(buildFootballIntelligence({ ...pickTeamMatch, id: 'deterministic-no-odds', odds: [], analysis: { league_quality_score: 82, team_strength_score: 72, form_score: 70, home_advantage_score: 68, confidence_score: 88, risk_level: 'LOW' } }).confidence, noOddsUnified.confidence, 'Fixture-only confidence should be deterministic for the same data')
+assert.equal(buildFootballIntelligence({ ...pickTeamMatch, odds: [], analysis: { league_quality_score: 82, team_strength_score: 72, form_score: 70, home_advantage_score: 68, confidence_score: 88, risk_level: 'LOW' } }).confidence, noOddsUnified.confidence, 'Fixture-only confidence should be deterministic for the same fixture')
 assert.ok(fixtureOnlyConfidences.every((value) => value >= 42 && value <= 60), 'Fixture-only confidence should stay within 42-60')
 assert.ok(new Set(fixtureOnlyConfidences).size > 1, 'Fixture-only confidence should not collapse every no-odds sample to 60')
+
+const fixtureConfidenceBase = {
+  match: { id: 'fixture-confidence-base', homeTeam: { name: 'Home' }, awayTeam: { name: 'Away' }, kickoffAt: '2026-07-04T09:00:00.000Z' },
+  analysis: {
+    league_quality_score: 70,
+    team_strength_score: 70,
+    form_score: 68,
+    home_advantage_score: 66,
+    confidence_score: 70,
+    risk_level: 'LOW',
+    data_quality_score: 72,
+  },
+  unifiedScore: 65,
+  winnerPrediction: { side: 'HOME', edge: 5, source: 'FIXTURE_MODEL' },
+  scoreBreakdown: { leagueQuality: 70, riskControl: 74 },
+  dataState: {
+    has_fixture_id: true,
+    has_home_team: true,
+    has_away_team: true,
+    has_kickoff: true,
+    has_statistics: true,
+    has_lineups: true,
+    fixture_completeness: 1,
+  },
+  statusInfo: {},
+}
+const lowDataFixtureConfidence = calculateFixtureModelConfidence({
+  ...fixtureConfidenceBase,
+  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-low-data' },
+  analysis: {},
+  unifiedScore: 45,
+  winnerPrediction: { side: 'HOME', edge: 5, source: 'FIXTURE_MODEL' },
+  scoreBreakdown: {},
+  dataState: { has_fixture_id: true, has_home_team: true, has_away_team: true, has_kickoff: true, fixture_completeness: 0.5 },
+})
+const balancedFixtureConfidence = calculateFixtureModelConfidence({
+  ...fixtureConfidenceBase,
+  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-balanced' },
+  winnerPrediction: { side: 'DRAW', edge: 2, source: 'FIXTURE_MODEL' },
+})
+const slightFixtureConfidence = calculateFixtureModelConfidence({
+  ...fixtureConfidenceBase,
+  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-slight' },
+  winnerPrediction: { side: 'HOME', edge: 5, source: 'FIXTURE_MODEL' },
+})
+const moderateFixtureConfidence = calculateFixtureModelConfidence({
+  ...fixtureConfidenceBase,
+  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-moderate' },
+  winnerPrediction: { side: 'HOME', edge: 8, source: 'FIXTURE_MODEL' },
+})
+const strongHighDataFixtureConfidence = calculateFixtureModelConfidence({
+  ...fixtureConfidenceBase,
+  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-strong-high-data' },
+  analysis: { ...fixtureConfidenceBase.analysis, data_quality_score: 84, league_quality_score: 82, confidence_score: 84 },
+  unifiedScore: 78,
+  winnerPrediction: { side: 'HOME', edge: 13, source: 'FIXTURE_MODEL' },
+  scoreBreakdown: { leagueQuality: 82, riskControl: 78 },
+})
+const dataCappedFixtureConfidence = calculateFixtureModelConfidence({
+  ...fixtureConfidenceBase,
+  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-data-cap' },
+  analysis: { ...fixtureConfidenceBase.analysis, data_quality_score: 58 },
+  winnerPrediction: { side: 'HOME', edge: 13, source: 'FIXTURE_MODEL' },
+})
+const edgeCappedFixtureConfidence = calculateFixtureModelConfidence({
+  ...fixtureConfidenceBase,
+  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-edge-cap' },
+  analysis: { ...fixtureConfidenceBase.analysis, data_quality_score: 84 },
+  winnerPrediction: { side: 'HOME', edge: 2, source: 'FIXTURE_MODEL' },
+})
+assert.ok(lowDataFixtureConfidence <= 48, `Low-data no-odds confidence should stay <= 48, got ${lowDataFixtureConfidence}`)
+assert.ok(balancedFixtureConfidence >= 48 && balancedFixtureConfidence <= 53, `Balanced no-odds confidence should stay 48-53, got ${balancedFixtureConfidence}`)
+assert.ok(slightFixtureConfidence >= 53 && slightFixtureConfidence <= 55, `Slight-edge no-odds confidence should stay 53-55, got ${slightFixtureConfidence}`)
+assert.ok(moderateFixtureConfidence >= 56 && moderateFixtureConfidence <= 58, `Moderate-edge no-odds confidence should stay 56-58, got ${moderateFixtureConfidence}`)
+assert.ok(strongHighDataFixtureConfidence >= 59 && strongHighDataFixtureConfidence <= 60, `Strong high-data no-odds confidence should stay 59-60, got ${strongHighDataFixtureConfidence}`)
+assert.ok(dataCappedFixtureConfidence <= 56, `No-odds confidence should respect data-quality cap, got ${dataCappedFixtureConfidence}`)
+assert.ok(edgeCappedFixtureConfidence <= 53, `No-odds confidence should respect weak-edge cap, got ${edgeCappedFixtureConfidence}`)
+assert.equal(calculateFixtureModelConfidence({ ...fixtureConfidenceBase, match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-slight' }, winnerPrediction: { side: 'HOME', edge: 5, source: 'FIXTURE_MODEL' } }), slightFixtureConfidence, 'Fixture-only confidence helper should be deterministic for identical input')
 
 const ahPick = derivePickTeamFromApiFootballOdds({
   ...pickTeamMatch,

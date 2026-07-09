@@ -195,6 +195,7 @@ function buildWinnerPrediction(match, analysis, context) {
       team_name: null,
       label: 'ภาพรวมสูสี',
       confidence,
+      edge: Math.round(gap * 10) / 10,
       reason: 'คะแนนทีมใกล้กัน จึงประเมินเป็นเกมสูสี',
       source: context.hasMarket ? 'MARKET_MODEL' : 'FIXTURE_MODEL',
     }
@@ -205,6 +206,7 @@ function buildWinnerPrediction(match, analysis, context) {
     team_name: teamName,
     label: `${teamName} มีโอกาสเหนือกว่า${confidence >= 58 ? '' : 'เล็กน้อย'}`,
     confidence,
+    edge: Math.round(gap * 10) / 10,
     reason: context.hasMarket
       ? 'ประเมินจากข้อมูลทีมร่วมกับตลาดราคาที่มีอยู่'
       : 'ประเมินจากคุณภาพลีก ข้อมูลทีม และความพร้อมข้อมูลพื้นฐาน',
@@ -320,9 +322,9 @@ function getUnifiedDecision({ status, hasMarket, finalPick, unifiedScore, confid
   return 'NO_BET'
 }
 
-function getUnifiedConfidence({ analysis, unifiedScore, winnerPrediction, ahPick, ouPick, hasMarket, scoreBreakdown, dataState, statusInfo }) {
+function getUnifiedConfidence({ match, analysis, unifiedScore, winnerPrediction, ahPick, ouPick, hasMarket, scoreBreakdown, dataState, statusInfo }) {
   if (!hasMarket) {
-    return calculateFixtureModelConfidence({ analysis, unifiedScore, winnerPrediction, scoreBreakdown, dataState, statusInfo })
+    return calculateFixtureModelConfidence({ match, analysis, unifiedScore, winnerPrediction, scoreBreakdown, dataState, statusInfo })
   }
 
   const marketConfidence = Math.max(scoreValue(ahPick.confidence), scoreValue(ouPick.confidence))
@@ -331,26 +333,36 @@ function getUnifiedConfidence({ analysis, unifiedScore, winnerPrediction, ahPick
   return scoreValue(base)
 }
 
-export function calculateFixtureModelConfidence({ analysis = {}, unifiedScore = 0, winnerPrediction = {}, scoreBreakdown = {}, dataState = {}, statusInfo = {} } = {}) {
+export function calculateFixtureModelConfidence({ match = {}, analysis = {}, unifiedScore = 0, winnerPrediction = {}, scoreBreakdown = {}, dataState = {}, statusInfo = {} } = {}) {
   if (statusInfo.isFinished || dataState.hard_filter_reason || winnerPrediction.source === 'INSUFFICIENT_DATA') {
     return clampRounded(42 + Math.min(6, getFixtureCompleteness(dataState) * 6), 42, 48)
   }
 
   const edge = numberValue(winnerPrediction.edge, getFixtureEdge(scoreBreakdown))
   const completeness = getFixtureCompleteness(dataState)
+  const dataQuality = getFixtureDataQuality({ analysis, scoreBreakdown, dataState })
+  const tieBreaker = getDeterministicTieBreaker(match)
+  if (dataQuality < 50) {
+    return clampRounded(44 + completeness * 4 + tieBreaker, 42, 48)
+  }
+
   const league = scoreValue(scoreBreakdown.leagueQuality, 55)
   const professional = scoreValue(analysis.professional_score ?? analysis.ranking_score ?? unifiedScore, unifiedScore)
-  const qualityBonus = clamp((league - 55) * 0.035, -1.2, 1.8) + clamp((professional - 55) * 0.035, -1.2, 2)
-  const dataBonus = clamp((completeness - 0.45) * 4, -1.8, 2.2)
+  const qualityBonus = clamp((league - 55) * 0.025, -1, 1.2) + clamp((professional - 55) * 0.02, -1, 1.2)
+  const dataBonus = clamp((dataQuality - 58) * 0.035, -2, 1.4)
 
   let base
   if (winnerPrediction.side === 'DRAW' || edge < 3) base = 50
-  else if (edge < 7) base = 54
-  else if (edge < 11) base = 57
-  else base = 59
+  else if (edge < 7) base = 53
+  else if (edge < 11) base = 56
+  else base = 58
 
-  const scoreBonus = clamp((numberValue(unifiedScore, 55) - 55) * 0.05, -1.5, 2)
-  return clampRounded(base + qualityBonus + dataBonus + scoreBonus, 42, 60)
+  const scoreBonus = clamp((numberValue(unifiedScore, 55) - 55) * 0.025, -1.2, 1.2)
+  const rawConfidence = base + qualityBonus + dataBonus + scoreBonus + tieBreaker
+  const dataQualityCap = getDataQualityCap(getExplicitDataQuality(analysis) ?? dataQuality)
+  const edgeCap = getEdgeCap(edge, winnerPrediction.side)
+  const noOddsCap = 60
+  return clampRounded(Math.min(rawConfidence, noOddsCap, dataQualityCap, edgeCap, 60), 42, 60)
 }
 
 function buildReasons({ winnerPrediction, ahPick, ouPick, finalPick, scoreBreakdown, decision, status }) {
@@ -434,10 +446,86 @@ function polishWinnerPrediction(prediction = {}, confidence) {
 
 function getWinnerPredictionLabel({ confidence, side, teamName }) {
   if (side === 'DRAW') return 'เกมมีโอกาสสูสี'
-  if (!teamName || confidence < 50) return 'ข้อมูลยังไม่พอแยกฝั่งชัดเจน'
-  if (confidence >= 58) return `${teamName} เหนือกว่าชัดเจนเล็กน้อย`
-  if (confidence >= 54) return `${teamName} มีโอกาสเหนือกว่า`
+  if (!teamName || confidence < 49) return 'ข้อมูลยังไม่พอแยกฝั่งชัดเจน'
+  if (confidence >= 59) return `${teamName} เหนือกว่าชัดเจนเล็กน้อย`
+  if (confidence >= 56) return `${teamName} ดูได้เปรียบกว่า`
+  if (confidence >= 53) return `${teamName} มีโอกาสเหนือกว่าเล็กน้อย`
   return 'เกมค่อนข้างสูสี'
+}
+
+function getFixtureDataQuality({ analysis = {}, scoreBreakdown = {}, dataState = {} } = {}) {
+  const storedDataQuality = analysis.data_quality_score ?? analysis.raw?.data_quality_score ?? analysis.raw?.analysis_breakdown?.data_quality?.score
+  const storedDataConfidence = analysis.raw?.analysis_breakdown?.data_intelligence?.data_confidence?.score
+  const evidenceFields = [
+    analysis.league_quality_score,
+    analysis.team_strength_score,
+    analysis.form_score,
+    analysis.home_advantage_score,
+    analysis.confidence_score,
+    analysis.professional_score,
+    analysis.ranking_score,
+  ]
+  const evidenceCount = evidenceFields.filter((value) => value !== null && value !== undefined && value !== '').length
+  const evidenceScore = evidenceCount >= 5 ? 78 : evidenceCount >= 3 ? 68 : evidenceCount >= 1 ? 56 : 42
+  const completenessScore = getFixtureCompleteness(dataState) * 100
+  const informationScore = averageScore([
+    dataState.has_statistics ? 72 : 46,
+    dataState.has_lineups || dataState.has_injuries ? 68 : 48,
+    dataState.has_fixture_id && dataState.has_home_team && dataState.has_away_team && dataState.has_kickoff ? 62 : 45,
+  ], 52)
+  const storedRiskControl = analysis.risk_control_score ?? analysis.risk_score ?? analysis.market_risk_score ?? (analysis.risk_level ? scoreBreakdown.riskControl : null)
+
+  return averageScore([
+    storedDataQuality,
+    storedDataConfidence,
+    completenessScore,
+    informationScore,
+    evidenceScore,
+    storedRiskControl,
+  ], 52)
+}
+
+function getExplicitDataQuality(analysis = {}) {
+  const value = analysis.data_quality_score ?? analysis.raw?.data_quality_score ?? analysis.raw?.analysis_breakdown?.data_quality?.score
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? clampScore(numeric) : null
+}
+
+function getDataQualityCap(dataQuality) {
+  if (dataQuality < 55) return 54
+  if (dataQuality < 65) return 56
+  if (dataQuality < 75) return 58
+  return 60
+}
+
+function getEdgeCap(edge, side) {
+  if (side === 'DRAW' || edge < 3) return 53
+  if (edge < 7) return 55
+  if (edge < 11) return 58
+  return 60
+}
+
+function getDeterministicTieBreaker(match = {}) {
+  const key = [
+    match.match_id,
+    match.matchId,
+    match.id,
+    match.api_fixture_id,
+    match.apiFixtureId,
+    match.homeTeam?.name,
+    match.home_team?.name,
+    match.home_name,
+    match.awayTeam?.name,
+    match.away_team?.name,
+    match.away_name,
+  ].filter(Boolean).join('|')
+
+  if (!key) return 0
+  let hash = 0
+  for (let index = 0; index < key.length; index += 1) {
+    hash = (hash * 31 + key.charCodeAt(index)) % 997
+  }
+  return (hash % 3) - 1
 }
 
 function getFixtureEdge(breakdown = {}) {
