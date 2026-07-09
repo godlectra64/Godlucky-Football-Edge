@@ -7,7 +7,7 @@ import {
   getRiskLevel,
 } from './analysisEngine.js'
 import { dataIntelligenceSections, normalizeDataIntelligence } from './dataIntelligence.js'
-import { buildSimpleBettingDecision } from './bettingDecision.js'
+import { buildCanonicalMatchDecision } from './bettingDecision.js'
 import { buildAiFinalPick } from './finalPick.js'
 import { deriveAiPickSide, getAiPickDisplay } from './pickSide.js'
 import { normalizeProfessionalResultFromAnalysis } from './professionalSelectionPipeline.js'
@@ -126,7 +126,7 @@ export function normalizeDetailPayload(match) {
   const aiPick = deriveAiPickSide(safeMatch)
   const aiPickDisplay = getAiPickDisplay(safeMatch)
   const finalPick = buildAiFinalPick(safeMatch)
-  const bettingDecision = buildSimpleBettingDecision(safeMatch)
+  const bettingDecision = buildCanonicalMatchDecision(safeMatch)
   const professionalPipeline = normalizeProfessionalResultFromAnalysis(safeMatch)
 
   return {

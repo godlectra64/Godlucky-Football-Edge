@@ -1,6 +1,6 @@
 import { analyzeAsianHandicap } from './ahAnalysisEngine.js'
-import { buildSimpleBettingDecision, getDecisionConfidence, getLegacyDecisionFields } from './bettingDecision.js'
-import { getLegacyAiFinalPickFields } from './footballIntelligenceEngine.js'
+import { getDecisionConfidence, getLegacyDecisionFields } from './bettingDecision.js'
+import { buildFootballIntelligence, getLegacyAiFinalPickFields, mapUnifiedToBettingDecision } from './footballIntelligenceEngine.js'
 import { analyzeOverUnder } from './ouAnalysisEngine.js'
 import { derivePickTeamFromApiFootballOdds } from './marketDisplay.js'
 import { getPrimaryBookmaker, getPrimaryOddText, normalizeOddsRows } from './oddsUtils.js'
@@ -28,7 +28,7 @@ export function generateAiFinalPick(match = {}) {
   const apiPick = derivePickTeamFromApiFootballOdds(match, oddsRows)
   const marketEdgeScore = scoreValue(analysis.market_edge_score ?? analysis.raw?.market_edge_score, 0)
   const recommendation = normalizeRecommendation(analysis.recommendation ?? match.recommendation)
-  const bettingDecision = buildSimpleBettingDecision({ ...match, aiFinalPick: { ...(match.aiFinalPick ?? {}), ahAnalysis, ouAnalysis } })
+  const bettingDecision = buildSystemBettingDecision({ ...match, aiFinalPick: { ...(match.aiFinalPick ?? {}), ahAnalysis, ouAnalysis } })
   const legacyDecision = getLegacyDecisionFields(bettingDecision)
   const legacyAiFinalPick = getLegacyAiFinalPickFields(bettingDecision)
   const decisionConfidence = getDecisionConfidence(bettingDecision)
@@ -82,7 +82,7 @@ export function generateAiFinalPick(match = {}) {
 
 export function normalizeStoredAiFinalPick(row, match = {}) {
   if (!row) return generateAiFinalPick(match)
-  const bettingDecision = buildSimpleBettingDecision({
+  const bettingDecision = buildSystemBettingDecision({
     ...match,
     bettingDecision: row.betting_decision ?? row.bettingDecision ?? row,
   })
@@ -116,6 +116,10 @@ export function normalizeStoredAiFinalPick(row, match = {}) {
     pickPrice: row.pick_price ?? row.pickPrice ?? null,
     pickConfidence: row.pick_confidence ?? row.pickConfidence ?? row.confidence_score ?? null,
   }
+}
+
+function buildSystemBettingDecision(match = {}) {
+  return mapUnifiedToBettingDecision(buildFootballIntelligence(match))
 }
 
 function chooseMarketAnalysis(ahAnalysis, ouAnalysis) {

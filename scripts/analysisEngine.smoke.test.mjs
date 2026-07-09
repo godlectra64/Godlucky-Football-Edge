@@ -64,6 +64,7 @@ import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { buildProfessionalSelectionScore } from '../src/utils/professionalSelectionPipeline.js'
 import { buildFootballIntelligence, calculateFixtureModelConfidence } from '../src/utils/footballIntelligenceEngine.js'
+import { buildCanonicalMatchDecision } from '../src/utils/bettingDecision.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 import { buildTodayMatchBuckets, buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
@@ -1095,8 +1096,8 @@ assert.equal(mixedTodaySections.readyMatches.length, 3, 'Today ready section sho
 assert.equal(mixedTodaySections.waitingMatches.length, 7, 'Today waiting section should render waiting matches alongside ready matches')
 
 const decisiveTodayBuckets = buildTodayMatchBuckets([...marketReadyMatches, ...waitingMarketMatches], { locked: true, lockedCount: 10, windowHours: 36 })
-assert.equal(decisiveTodayBuckets.strongMatches.length, 0, 'Today V2 should reserve strong section for unified BET decisions')
-assert.equal(decisiveTodayBuckets.watchMatches.length, 3, 'Today V2 should put market-ready unified LEAN/WATCH decisions in the watch section')
+assert.equal(decisiveTodayBuckets.strongMatches.length, 3, 'Today V2 should use canonical BET decisions for the strong section')
+assert.equal(decisiveTodayBuckets.watchMatches.length, 0, 'Today V2 should not duplicate canonical BET decisions in the watch section')
 assert.equal(decisiveTodayBuckets.waitingMatches.length, 7, 'Today V2 should keep insufficient market-data matches visible in waiting section')
 assert.equal(decisiveTodayBuckets.summary.locked, true, 'Today V2 summary should preserve locked source status')
 assert.equal(decisiveTodayBuckets.summary.windowHours, 36, 'Today V2 summary should expose the selection window')
@@ -1326,6 +1327,64 @@ assert.equal(ouPick.pickTeam, null, 'OU should not assign pick_team')
 assert.equal(ouPick.pickSide, 'OVER')
 assert.equal(ouPick.pickSummary.sideLabel, 'สูง')
 
+const canonicalMarketMatch = {
+  ...pickTeamMatch,
+  status: 'NS',
+  statusShort: 'NS',
+  status_short: 'NS',
+  homeForm: { played: 5, wins: 4, draws: 1, losses: 0, goals_for: 14, goals_against: 4 },
+  awayForm: { played: 5, wins: 1, draws: 1, losses: 3, goals_for: 5, goals_against: 12 },
+  analysis: {
+    team_strength_score: 84,
+    form_score: 82,
+    goal_scoring_score: 82,
+    defensive_stability_score: 42,
+    home_advantage_score: 84,
+    away_weakness_score: 78,
+    market_edge_score: 88,
+    market_quality_score: 88,
+    confidence_score: 84,
+    risk_level: 'LOW',
+  },
+  odds: [
+    { id: 'canon-ah-main', market_name: 'Asian Handicap', market_focus: 'AH', selection: 'Arsenal -0.5', line: '-0.5', price: 1.91, bookmaker_name: 'MainBook', is_latest: true },
+    { id: 'canon-ah-alt', market_name: 'Asian Handicap', market_focus: 'AH', selection: 'Arsenal +1.5', line: '+1.5', price: 1.36, bookmaker_name: 'AltBook', is_latest: true },
+    { id: 'canon-ou-over', market_name: 'Goals Over/Under', market_focus: 'OU', selection: 'Over 4.5', line: '4.5', price: 2.05, bookmaker_name: 'MainBook', is_latest: true },
+    { id: 'canon-ou-under', market_name: 'Goals Over/Under', market_focus: 'OU', selection: 'Under 4.5', line: '4.5', price: 1.78, bookmaker_name: 'MainBook', is_latest: true },
+    { id: 'canon-ou-first-half', market_name: 'Goals Over/Under First Half', market_focus: 'OU', selection: 'Under 1.5', line: '1.5', price: 1.7, bookmaker_name: 'HalfBook', is_latest: true },
+    { id: 'canon-ou-second-half', market_name: 'Goals Over/Under - Second Half', market_focus: 'OU', selection: 'Under 1.5', line: '1.5', price: 1.8, bookmaker_name: 'HalfBook', is_latest: true },
+    { id: 'canon-ou-corners', market_name: 'Corners Over/Under', market_focus: 'OU', selection: 'Under 10.5', line: '10.5', price: 1.9, bookmaker_name: 'CornerBook', is_latest: true },
+    { id: 'canon-ou-cards', market_name: 'Cards Over/Under', market_focus: 'OU', selection: 'Under 4.5', line: '4.5', price: 1.9, bookmaker_name: 'CardBook', is_latest: true },
+  ],
+}
+const canonicalDecision = buildCanonicalMatchDecision(canonicalMarketMatch)
+assert.equal(canonicalDecision.ou_pick.label.includes('10.5'), false, 'canonical O/U must not use corners/cards 10.5 as main football goals O/U')
+assert.equal(canonicalDecision.ou_pick.label.endsWith('4.5'), true, 'canonical O/U must come from full-time Goals Over/Under')
+assert.equal(canonicalDecision.ah_pick.label.includes('-0.5'), true, 'canonical AH should prefer the main line over alternative +1.5')
+assert.equal(canonicalDecision.final_pick.label.includes('10.5'), false, 'Best Pick must not come from a rejected O/U market')
+
+const todayCanonical = buildTodayMatchBuckets([canonicalMarketMatch]).playableMatches[0].bettingDecision
+const detailCanonical = normalizeDetailPayload(canonicalMarketMatch).bettingDecision
+assert.equal(todayCanonical.ah_pick.label, detailCanonical.ah_pick.label, 'Today and Detail must show the same canonical AH line')
+assert.equal(todayCanonical.ou_pick.label, detailCanonical.ou_pick.label, 'Today and Detail must show the same canonical O/U line')
+assert.equal(todayCanonical.final_pick.label, detailCanonical.final_pick.label, 'Today and Detail must show the same canonical Best Pick')
+
+const rejectedOnlyDecision = buildCanonicalMatchDecision({
+  ...canonicalMarketMatch,
+  odds: [
+    { id: 'reject-corners', market_name: 'Corners Over/Under', market_focus: 'OU', selection: 'Under 10.5', line: '10.5', price: 1.9, is_latest: true },
+    { id: 'reject-cards', market_name: 'Cards Over/Under', market_focus: 'OU', selection: 'Under 4.5', line: '4.5', price: 1.8, is_latest: true },
+    { id: 'reject-first-half', market_name: 'Goals Over/Under First Half', market_focus: 'OU', selection: 'Under 1.5', line: '1.5', price: 1.7, is_latest: true },
+    { id: 'reject-second-half', market_name: 'Goals Over/Under Second Half', market_focus: 'OU', selection: 'Under 1.5', line: '1.5', price: 1.7, is_latest: true },
+    { id: 'reject-team-goals', market_name: 'Team Goals Over/Under', market_focus: 'OU', selection: 'Arsenal Over 1.5', line: '1.5', price: 1.7, is_latest: true },
+    { id: 'reject-alternative', market_name: 'Alternative Goals Over/Under', market_focus: 'OU', selection: 'Over 5.5', line: '5.5', price: 2.4, is_latest: true },
+  ],
+})
+assert.equal(rejectedOnlyDecision.status, 'WAITING_MARKET', 'Rejected-only O/U markets must not make the visible decision market-ready')
+assert.equal(rejectedOnlyDecision.ah_pick.label, 'รอเส้น', 'Rejected-only markets should leave AH waiting')
+assert.equal(rejectedOnlyDecision.ou_pick.label, 'รอราคา', 'Rejected-only markets should leave O/U waiting')
+assert.equal(rejectedOnlyDecision.final_pick.label, 'รอตลาด', 'Rejected-only markets should leave Best Pick waiting')
+
 const bttsPick = derivePickTeamFromApiFootballOdds({
   ...pickTeamMatch,
   odds: [{ id: 'btts-1', match_id: 'pick-team-match', market_name: 'Both Teams Score', selection: 'Yes', price: 1.74, is_latest: true }],
@@ -1388,8 +1447,14 @@ for (const forbidden of ['ยังไม่มีตลาดหลัก', '�
   assert.equal(waitingCardCopy.includes(forbidden), false, `Waiting card market copy should not expose ${forbidden}`)
 }
 const matchCardSource = readFileSync(new URL('../src/components/MatchCard.jsx', import.meta.url), 'utf8')
+const todayPageSource = readFileSync(new URL('../src/pages/TodayPage.jsx', import.meta.url), 'utf8')
+const matchDetailPageSource = readFileSync(new URL('../src/pages/MatchDetailPage.jsx', import.meta.url), 'utf8')
 for (const forbidden of ['Professional Score', 'Market Quality', 'Data Quality', 'Value Edge', 'Risk Control', 'Pipeline Stage', 'ชนะชัวร์', 'ฟันธง', 'ล็อก', 'การันตี']) {
   assert.equal(matchCardSource.includes(forbidden), false, `MatchCard primary UI should not expose ${forbidden}`)
+}
+for (const forbidden of ['ชนะชัวร์', 'ฟันธง', 'ล็อก', 'การันตี']) {
+  assert.equal(todayPageSource.includes(forbidden), false, `Today page should not expose overconfident copy ${forbidden}`)
+  assert.equal(matchDetailPageSource.includes(forbidden), false, `Match Detail should not expose overconfident copy ${forbidden}`)
 }
 
 const finishedTop10Matches = createStatusMatches(10, 'FT', 'finished-top10')

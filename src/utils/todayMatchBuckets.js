@@ -1,4 +1,4 @@
-import { buildSimpleBettingDecision } from './bettingDecision.js'
+import { buildCanonicalMatchDecision } from './bettingDecision.js'
 import { buildFootballIntelligence } from './footballIntelligenceEngine.js'
 import { getMatchStatusInfo } from './matchStatus.js'
 
@@ -8,7 +8,7 @@ export function buildTodayMatchBuckets(matches = [], options = {}) {
     const status = getMatchStatusInfo(match)
     const analysis = normalizeAnalysis(match.analysis ?? match.match_analysis ?? {})
     const unified = match.footballIntelligence ?? match.football_intelligence ?? buildFootballIntelligence({ ...match, analysis })
-    const decision = match.bettingDecision ?? match.betting_decision ?? buildSimpleBettingDecision({ ...match, analysis, footballIntelligence: unified })
+    const decision = buildCanonicalMatchDecision({ ...match, analysis, footballIntelligence: unified })
     const enriched = {
       ...match,
       analysis,
@@ -40,17 +40,17 @@ export function buildTodayMatchBuckets(matches = [], options = {}) {
 
     result.playableMatches.push(enriched)
 
-    if (unified.status === 'WAITING_MARKET') {
+    if (decision.status === 'WAITING_MARKET') {
       result.waitingMatches.push(enriched)
       return result
     }
 
-    if (unified.decision === 'BET') {
+    if (decision.decision === 'BET') {
       result.strongMatches.push(enriched)
       return result
     }
 
-    if (unified.decision === 'LEAN' || unified.decision === 'WATCH') {
+    if (decision.decision === 'LEAN' || decision.decision === 'WATCH') {
       result.watchMatches.push(enriched)
       return result
     }

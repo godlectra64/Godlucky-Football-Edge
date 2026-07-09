@@ -1,5 +1,5 @@
 import { ArrowRight, Clock, Medal } from 'lucide-react'
-import { buildSimpleBettingDecision, getDecisionConfidence } from '../utils/bettingDecision'
+import { buildCanonicalMatchDecision, getDecisionConfidence } from '../utils/bettingDecision'
 import { formatKickoffTime } from '../utils/formatters'
 import { getMatchStatusInfo, getScoreDisplay } from '../utils/matchStatus'
 import { formatAhCardLabel, formatBestPickCardLabel, formatDecisionReasonLine, formatOuCardLabel } from '../utils/uiLabels'
@@ -16,7 +16,7 @@ export default function MatchCard({
   const isFinished = providedIsFinished ?? matchStatus.isFinished
   const isPlayable = providedIsPlayable ?? matchStatus.isPlayable
   const finalRank = match.finalRank ?? match.final_rank ?? match.analysis?.final_rank ?? match.rank
-  const decision = buildSimpleBettingDecision(match)
+  const decision = buildCanonicalMatchDecision(match)
   const confidence = getDecisionConfidence(decision)
   const ahLabel = formatAhCardLabel(decision.ah_pick)
   const ouLabel = formatOuCardLabel(decision.ou_pick)
