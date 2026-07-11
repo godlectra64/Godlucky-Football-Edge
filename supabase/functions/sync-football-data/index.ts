@@ -769,7 +769,7 @@ async function runDailySyncOrchestratorMode(mode: string, body: Record<string, u
   }
 
   if (mode === 'daily-sync-auto') {
-    const state = await startDailySyncRun({ ...body, resume: body.resume ?? true }, dayRange)
+    const state = await startDailySyncRun({ ...body, resume: body.resume ?? true, restartCompleted: body.restartCompleted ?? !body.runId }, dayRange)
     const result = await runDailySyncStepBatch(state, body, getBangkokDayRange(state.run.run_date), context, getMaxStepsPerRequest(body))
     result.reusedRunId = Boolean(state.reusedRunId)
     return withDailySyncDateDiagnostics(await buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started), dateDiagnostics, result)
@@ -809,6 +809,7 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
   const enrichmentLimit = getPositiveLimit(body.enrichmentLimit, 20, maxFootballEnrichmentLimit)
   const resume = body.resume === true
   const force = body.force === true
+  const restartCompleted = body.restartCompleted === true
   const existing = await supabase
     .from('api_football_daily_sync_runs')
     .select('*')
@@ -841,7 +842,7 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
     return withDailySyncReuseMeta(await getDailySyncState(run.id), false)
   }
 
-  if (run.status === 'success' && !force) {
+  if (run.status === 'success' && !force && !restartCompleted) {
     return withDailySyncReuseMeta(await getDailySyncState(run.id), true)
   }
 
@@ -849,7 +850,7 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
     return withDailySyncReuseMeta(await getDailySyncState(run.id), true)
   }
 
-  if (force || run.status !== 'success') {
+  if (force || restartCompleted || run.status !== 'success') {
     const updated = await supabase
       .from('api_football_daily_sync_runs')
       .update({

@@ -24,7 +24,7 @@ jobs:
       EDGE_ADMIN_SECRET: ${{ secrets.EDGE_ADMIN_SECRET }}
 
     steps:
-      - name: Run daily sync and result refresh
+      - name: Run daily fixture sync, Top10 odds, and verify
         shell: bash
         run: |
           node <<'NODE'
@@ -124,7 +124,7 @@ jobs:
             await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000))
           }
 
-          let dailySync = await postSync({ mode: 'daily-sync-auto' })
+          let dailySync = await postSync({ mode: 'daily-sync-auto', restartCompleted: true })
           const runId = dailySync.runId
           if (!runId) {
             throw new Error('daily-sync-auto response did not include runId')
@@ -146,6 +146,25 @@ jobs:
           }
 
           await postSync({ mode: 'strict-api-football-daily-picks', limit: 10 })
-          await postSync({ mode: 'result-refresh', limit: 20 })
+
+          let top10Odds = await postSync({ mode: 'sync-daily-top10-odds', limit: 2 })
+          for (let attempt = 1; attempt <= 8 && top10Odds.hasMore; attempt += 1) {
+            const offset = Number(top10Odds.nextOffset ?? 0)
+            console.log(`Continuing sync-daily-top10-odds at offset ${offset}; attempt ${attempt}/8`)
+            top10Odds = await postSync({
+              mode: 'sync-daily-top10-odds',
+              offset,
+              limit: 2,
+            })
+          }
+
+          if (top10Odds.hasMore) {
+            throw new Error(`sync-daily-top10-odds still has more work at offset ${top10Odds.nextOffset ?? 'unknown'}`)
+          }
+
+          await postSync({ mode: 'sync-today-odds-finalize' })
+          await postSync({ mode: 'strict-api-football-daily-picks', limit: 10 })
+          await postSync({ mode: 'get-daily-top10-status' })
+          await postSync({ mode: 'diagnose-sync-today-odds' })
           console.log('Daily football sync workflow completed successfully.')
           NODE
