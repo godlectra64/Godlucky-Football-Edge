@@ -3344,8 +3344,9 @@ async function syncDailyCandidateOdds(body: Record<string, unknown>, dayRange: R
   const targets = requestedFixtureId
     ? candidates.filter((target: any) => Number(target.api_sports_fixture_id ?? 0) === requestedFixtureId)
     : candidates.slice(offset, offset + limit)
-  const initialCoverage = await fetchUsableOddsCoverageForTargets(candidates)
   const warnings: Array<string> = []
+  warnings.push(...await findDuplicateFootballMatchWarnings(targets))
+  const initialCoverage = await fetchUsableOddsCoverageForTargets(targets)
   const failures: Array<any> = []
   const processedFixtureIds: Array<number> = []
   const skippedAlreadyHasOdds: Array<number> = []
@@ -3361,6 +3362,7 @@ async function syncDailyCandidateOdds(body: Record<string, unknown>, dayRange: R
   if (requestedFixtureId && !targets.length) warnings.push(`Fixture ${requestedFixtureId} is not in daily_market_candidates for ${selectionDate}`)
 
   for (const target of targets) {
+    const canonicalMatchId = getCanonicalCandidateMatchId(target)
     const fixtureId = Number(target.api_sports_fixture_id ?? target.raw?.raw_fixture_id ?? 0)
     if (!fixtureId) {
       warnings.push(`Candidate ${target.candidateId ?? target.id ?? 'unknown'} has no API-Football fixture id`)
@@ -3373,15 +3375,23 @@ async function syncDailyCandidateOdds(body: Record<string, unknown>, dayRange: R
     }
     seenFixtureIds.add(fixtureId)
 
-    if (!force && initialCoverage.byMatchId.get(target.id)?.usable) {
+    const existingCoverage = initialCoverage.byMatchId.get(canonicalMatchId)
+    if (!force && classifyCandidateMarketReadiness(existingCoverage) === 'READY') {
       skippedAlreadyHasOdds.push(fixtureId)
       skippedFixtureIds.push(fixtureId)
-      await updateDailyMarketCandidateFromCoverage(target.candidateId, initialCoverage.byMatchId.get(target.id), 'SKIPPED_ALREADY_READY')
+      await updateDailyMarketCandidateFromCoverage(target.candidateId, existingCoverage, 'SKIPPED_ALREADY_READY', {
+        selectionDate,
+        matchId: canonicalMatchId,
+      })
       continue
     }
 
     try {
-      const result = await withSyncOperation('unknown', 'sync_daily_candidate_odds_fixture', () => syncOddsForMatch(target, context, { usefulMarketsOnly: true, maxInsertChunkSize: 100 }))
+      const result = await withSyncOperation('unknown', 'sync_daily_candidate_odds_fixture', () => syncOddsForMatch(target, context, {
+        usefulMarketsOnly: true,
+        maxInsertChunkSize: 100,
+        canonicalMatchId,
+      }))
       processedFixtureIds.push(fixtureId)
       oddsRowsSaved += Number(result.rowsSaved ?? 0)
       failed += Number(result.failed ?? 0)
@@ -3392,19 +3402,25 @@ async function syncDailyCandidateOdds(body: Record<string, unknown>, dayRange: R
       if (result.skipped || Number(result.empty ?? 0) > 0) skippedFixtureIds.push(fixtureId)
       if (result.failure) failures.push(result.failure)
       const coverage = await fetchUsableOddsCoverageForTargets([target])
-      await updateDailyMarketCandidateFromCoverage(target.candidateId, coverage.byMatchId.get(target.id), result.failed ? 'FAILED' : null)
+      await updateDailyMarketCandidateFromCoverage(target.candidateId, coverage.byMatchId.get(canonicalMatchId), result.failed ? 'FAILED' : null, {
+        selectionDate,
+        matchId: canonicalMatchId,
+      })
       if (result.rowsSaved === 0 && !result.failure) warnings.push(`No supported odds returned for candidate fixture ${fixtureId}`)
     } catch (error) {
       failed += 1
       skippedFixtureIds.push(fixtureId)
       const operationError = toSyncOperationError(error, 'unknown', 'sync_daily_candidate_odds_fixture')
       failures.push(buildOperationFailure(operationError, { fixtureId }))
-      await updateDailyMarketCandidatePatch(target.candidateId, { odds_sync_status: 'FAILED' }).catch(() => {})
+      await updateDailyMarketCandidatePatch(target.candidateId, { odds_sync_status: 'FAILED' }, {
+        selectionDate,
+        matchId: canonicalMatchId,
+      }).catch(() => {})
     }
   }
 
-  const finalCoverage = await fetchUsableOddsCoverageForTargets(candidates)
-  const statusCounts = summarizeCandidateCoverage(candidates, finalCoverage)
+  const refreshedCandidates = await fetchDailyMarketCandidateRows(selectionDate)
+  const postSyncState = summarizeDailyMarketCandidateRows(refreshedCandidates)
   const consumedCount = targets.length
   const nextOffset = requestedFixtureId ? null : offset + consumedCount < candidates.length ? offset + consumedCount : null
 
@@ -3426,9 +3442,10 @@ async function syncDailyCandidateOdds(body: Record<string, unknown>, dayRange: R
     hasAh,
     hasOu,
     hasMatchWinner,
-    candidateWithOdds: finalCoverage.fixtureIds,
-    candidateWithoutOdds: candidates.map((target: any) => Number(target.api_sports_fixture_id ?? 0)).filter((fixtureId: number) => fixtureId && !finalCoverage.fixtureIds.includes(fixtureId)),
-    readyCandidateCount: statusCounts.READY,
+    candidateWithOdds: postSyncState.candidateWithOdds,
+    candidateWithoutOdds: postSyncState.candidateWithoutOdds,
+    readyCandidateCount: postSyncState.readyCandidateCount,
+    candidateReadyCount: postSyncState.readyCandidateCount,
     nextOffset,
     hasMore: nextOffset !== null,
     warnings,
@@ -3443,7 +3460,11 @@ async function finalizeMarketReadyCandidates(dayRange: ReturnType<typeof getBang
   const coverage = await fetchUsableOddsCoverageForTargets(candidates)
   let updated = 0
   for (const candidate of candidates) {
-    await updateDailyMarketCandidateFromCoverage(candidate.candidateId, coverage.byMatchId.get(candidate.id), null)
+    const canonicalMatchId = getCanonicalCandidateMatchId(candidate)
+    await updateDailyMarketCandidateFromCoverage(candidate.candidateId, coverage.byMatchId.get(canonicalMatchId), null, {
+      selectionDate,
+      matchId: canonicalMatchId,
+    })
     updated += 1
   }
   const finalPicks = await recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 50, mode: 'recompute-ai-final-picks-date' })
@@ -3712,8 +3733,17 @@ async function fetchUsableTop10OddsCoverage(targets: Array<any>) {
   }
 }
 
+function isSupportedFullTimeOddsRow(row: any) {
+  const marketName = row.market_name ?? row.market_focus
+  const marketFocus = normalizeMarketFocus(row.market_focus ?? row.market_name)
+  return isSupportedFullTimeOddsMarket(marketName, {
+    value: row.selection ?? row.raw?.selection ?? row.raw?.value,
+    line: row.line ?? row.raw?.line,
+  }, marketFocus)
+}
+
 function isUsableFullTimeOddsRow(row: any) {
-  return isSupportedFullTimeOddsMarket(row.market_name ?? row.market_focus, { value: row.selection ?? row.line }, normalizeMarketFocus(row.market_focus ?? row.market_name))
+  return isSupportedFullTimeOddsRow(row)
 }
 
 async function fetchDailyMarketCandidateRows(selectionDate: string) {
@@ -3759,20 +3789,66 @@ async function fetchDailyMarketCandidateTargets(selectionDate: string) {
   const seenFixtureIds = new Set<number>()
   return rows
     .map((candidate: any) => {
-      const match = matchById.get(candidate.match_id)
-      if (!match) return null
+      const canonicalMatchId = String(candidate.match_id ?? '').trim()
+      if (!canonicalMatchId) throw new Error(`daily_market_candidates row ${candidate.id ?? 'unknown'} has no canonical match_id`)
+      const match = matchById.get(canonicalMatchId)
+      if (!match) throw new Error(`daily_market_candidates row ${candidate.id ?? 'unknown'} references missing football_matches.id ${canonicalMatchId}`)
       const fixtureId = nullableNumber(candidate.api_fixture_id ?? match.api_sports_fixture_id ?? match.raw?.raw_fixture_id)
       if (!fixtureId || seenFixtureIds.has(fixtureId)) return null
       seenFixtureIds.add(fixtureId)
       return {
         ...match,
+        id: canonicalMatchId,
+        canonicalMatchId,
         api_sports_fixture_id: fixtureId,
+        footballMatchApiFixtureId: nullableNumber(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id),
         candidateId: candidate.id,
         candidate,
       }
     })
     .filter(Boolean)
     .sort((a: any, b: any) => numericSortValue(a.candidate?.candidate_rank, 999) - numericSortValue(b.candidate?.candidate_rank, 999))
+}
+
+function getCanonicalCandidateMatchId(target: any) {
+  const canonicalMatchId = String(target?.canonicalMatchId ?? target?.candidate?.match_id ?? '').trim()
+  if (!canonicalMatchId) throw new Error(`Candidate ${target?.candidateId ?? target?.candidate?.id ?? 'unknown'} has no canonical match_id`)
+  if (target?.id && String(target.id) !== canonicalMatchId) {
+    throw new Error(`Candidate identity mismatch: candidate.match_id=${canonicalMatchId}, football_matches.id=${target.id}`)
+  }
+  return canonicalMatchId
+}
+
+async function findDuplicateFootballMatchWarnings(targets: Array<any>) {
+  const fixtureIds = [...new Set(targets.map((target: any) => nullableNumber(target.api_sports_fixture_id)).filter((value): value is number => value !== null))]
+  if (!fixtureIds.length) return [] as Array<string>
+  const result = await supabase
+    .from('football_matches')
+    .select('id, api_fixture_id, api_sports_fixture_id')
+    .or(`api_sports_fixture_id.in.(${fixtureIds.join(',')}),api_fixture_id.in.(${fixtureIds.join(',')})`)
+  if (result.error) throw result.error
+  const matchIdsByFixtureId = new Map<number, Array<string>>()
+  const requestedFixtureIds = new Set(fixtureIds)
+  for (const row of result.data ?? []) {
+    if (!row.id) continue
+    const rowFixtureIds = [...new Set([nullableNumber(row.api_sports_fixture_id), nullableNumber(row.api_fixture_id)].filter((value): value is number => value !== null && requestedFixtureIds.has(value)))]
+    for (const fixtureId of rowFixtureIds) {
+      const ids = matchIdsByFixtureId.get(fixtureId) ?? []
+      ids.push(String(row.id))
+      matchIdsByFixtureId.set(fixtureId, ids)
+    }
+  }
+  return targets.flatMap((target: any) => {
+    const fixtureId = nullableNumber(target.api_sports_fixture_id)
+    const matchIds = fixtureId ? [...new Set(matchIdsByFixtureId.get(fixtureId) ?? [])] : []
+    if (!fixtureId) return []
+    const warnings: Array<string> = []
+    if (target.footballMatchApiFixtureId && Number(target.footballMatchApiFixtureId) !== fixtureId) {
+      warnings.push(`Candidate provider identity mismatch for match_id ${getCanonicalCandidateMatchId(target)}: candidate api_fixture_id=${fixtureId}, football_matches api_fixture_id=${target.footballMatchApiFixtureId}; using candidate api_fixture_id for provider lookup`)
+    }
+    if (matchIds.length > 1) warnings.push(`Duplicate football_matches rows for api_fixture_id ${fixtureId}: ${matchIds.join(', ')}; using candidate.match_id ${getCanonicalCandidateMatchId(target)}`)
+    return warnings
+  })
 }
 
 function buildPreSelectionScore(match: any) {
@@ -3817,20 +3893,30 @@ function findDuplicateNumbers(values: Array<number | null>) {
 }
 
 async function fetchUsableOddsCoverageForTargets(targets: Array<any>) {
-  const matchIds = [...new Set(targets.map((target: any) => target.id).filter(Boolean))]
+  const matchIds = [...new Set(targets.map((target: any) => getCanonicalCandidateMatchId(target)))]
   if (!matchIds.length) return { byMatchId: new Map<string, any>(), fixtureIds: [] as Array<number> }
-  const result = await supabase
-    .from('football_match_odds')
-    .select('match_id, api_fixture_id, market_focus, market_name, line, selection, price, is_latest')
-    .in('match_id', matchIds)
-  if (result.error) {
-    if (isMissingColumnError(result.error)) return { byMatchId: new Map<string, any>(), fixtureIds: [] as Array<number> }
-    throw result.error
+  const rows: Array<any> = []
+  const pageSize = 1000
+  for (let from = 0; ; from += pageSize) {
+    const result = await supabase
+      .from('football_match_odds')
+      .select('id, match_id, api_fixture_id, market_focus, market_name, line, selection, price, is_latest')
+      .in('match_id', matchIds)
+      .eq('is_latest', true)
+      .order('id', { ascending: true })
+      .range(from, from + pageSize - 1)
+    if (result.error) {
+      if (isMissingColumnError(result.error)) return { byMatchId: new Map<string, any>(), fixtureIds: [] as Array<number> }
+      throw result.error
+    }
+    const page = result.data ?? []
+    rows.push(...page)
+    if (page.length < pageSize) break
   }
 
-  const targetByMatchId = new Map(targets.map((target: any) => [target.id, target]))
+  const targetByMatchId = new Map(targets.map((target: any) => [getCanonicalCandidateMatchId(target), target]))
   const byMatchId = new Map<string, any>()
-  for (const row of result.data ?? []) {
+  for (const row of rows) {
     if (!row.match_id || !isSupportedFullTimeOddsRow(row)) continue
     const current = byMatchId.get(row.match_id) ?? { matchId: row.match_id, fixtureId: nullableNumber(row.api_fixture_id ?? targetByMatchId.get(row.match_id)?.api_sports_fixture_id), rows: 0, hasAh: false, hasOu: false, hasMatchWinner: false }
     const focus = normalizeMarketFocus(row.market_focus ?? row.market_name)
@@ -3865,6 +3951,27 @@ function countCandidateReadiness(rows: Array<any>) {
   return summary
 }
 
+function summarizeDailyMarketCandidateRows(rows: Array<any>) {
+  const candidateWithOdds: Array<number> = []
+  const candidateWithoutOdds: Array<number> = []
+  const seenFixtureIds = new Set<number>()
+  let readyCandidateCount = 0
+  for (const row of rows) {
+    const fixtureId = Number(row.api_fixture_id ?? 0)
+    if (!fixtureId || seenFixtureIds.has(fixtureId)) continue
+    seenFixtureIds.add(fixtureId)
+    const hasSupportedOdds = Boolean(row.has_usable_ah || row.has_usable_ou || row.has_usable_match_winner || Number(row.odds_rows_count ?? 0) > 0)
+    if (hasSupportedOdds) candidateWithOdds.push(fixtureId)
+    else candidateWithoutOdds.push(fixtureId)
+    if (String(row.market_readiness_status ?? '').toUpperCase() === 'READY') readyCandidateCount += 1
+  }
+  return {
+    candidateWithOdds,
+    candidateWithoutOdds,
+    readyCandidateCount,
+  }
+}
+
 function classifyCandidateMarketReadiness(coverage: any) {
   if (!coverage || Number(coverage.rows ?? 0) <= 0) return 'NO_MARKET_DATA'
   if (coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner) return 'READY'
@@ -3876,7 +3983,12 @@ function candidateMarketReadinessScore(coverage: any) {
   return normalizeScore(Number(coverage.hasAh) * 35 + Number(coverage.hasOu) * 35 + Number(coverage.hasMatchWinner) * 30)
 }
 
-async function updateDailyMarketCandidateFromCoverage(candidateId: string, coverage: any, overrideStatus: string | null) {
+async function updateDailyMarketCandidateFromCoverage(
+  candidateId: string,
+  coverage: any,
+  overrideStatus: string | null,
+  identity: { selectionDate: string; matchId: string },
+) {
   const readiness = classifyCandidateMarketReadiness(coverage)
   const status = overrideStatus ?? readiness
   return updateDailyMarketCandidatePatch(candidateId, {
@@ -3888,13 +4000,29 @@ async function updateDailyMarketCandidateFromCoverage(candidateId: string, cover
     odds_rows_count: Number(coverage?.rows ?? 0),
     odds_synced_at: new Date().toISOString(),
     odds_sync_status: status,
-  })
+  }, identity)
 }
 
-async function updateDailyMarketCandidatePatch(candidateId: string, patch: Record<string, unknown>) {
-  if (!candidateId) return
-  const result = await supabase.from('daily_market_candidates').update(patch).eq('id', candidateId)
+async function updateDailyMarketCandidatePatch(
+  candidateId: string,
+  patch: Record<string, unknown>,
+  identity: { selectionDate: string; matchId: string },
+) {
+  if (!candidateId) throw new Error('Cannot update daily_market_candidates without candidate id')
+  if (!identity?.selectionDate || !identity?.matchId) throw new Error(`Cannot update daily_market_candidates ${candidateId} without canonical identity`)
+  const result = await supabase
+    .from('daily_market_candidates')
+    .update(patch)
+    .eq('id', candidateId)
+    .eq('selection_date', identity.selectionDate)
+    .eq('match_id', identity.matchId)
+    .select('id, match_id')
   if (result.error) throw result.error
+  const updatedRows = result.data ?? []
+  if (updatedRows.length !== 1) {
+    throw new Error(`daily_market_candidates update expected 1 row but affected ${updatedRows.length}: candidate_id=${candidateId}, match_id=${identity.matchId}, selection_date=${identity.selectionDate}`)
+  }
+  return updatedRows[0]
 }
 
 function getMarketFirstReadinessStatus(item: any) {
@@ -4020,7 +4148,12 @@ async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: 
   }
 }
 
-async function syncOddsForMatch(match: any, context: FootballEnrichmentContext, options: { usefulMarketsOnly?: boolean; maxInsertChunkSize?: number } = {}) {
+async function syncOddsForMatch(match: any, context: FootballEnrichmentContext, options: { usefulMarketsOnly?: boolean; maxInsertChunkSize?: number; canonicalMatchId?: string } = {}) {
+  const canonicalMatchId = String(options.canonicalMatchId ?? match.id ?? '').trim()
+  if (!canonicalMatchId) throw new Error('Cannot sync odds without canonical football_matches.id')
+  if (options.canonicalMatchId && match.id && String(match.id) !== canonicalMatchId) {
+    throw new Error(`Odds identity mismatch: canonical match_id=${canonicalMatchId}, supplied football_matches.id=${match.id}`)
+  }
   const fixtureId = Number(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id ?? 0)
   if (!fixtureId) return { processed: 0, rowsSaved: 0, failed: 0, empty: 0, fixtureId: null, skipped: true, failure: null }
 
@@ -4041,7 +4174,7 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext, 
       status: response?.status ?? (response?.rateLimited ? 429 : null),
       message: response?.error ?? 'odds sync failed',
     })
-    await withRetryableSyncOperation('supabase', 'update_match_readiness_failed_odds', () => updateMatchReadinessMetadata(match.id, {
+    await withRetryableSyncOperation('supabase', 'update_match_readiness_failed_odds', () => updateMatchReadinessMetadata(canonicalMatchId, {
       fixtureId,
       odds: endpointAttemptSummary({ attempted: 1, success: 0, rowsSaved: 0, empty: 0, error: 1, message: operationError.sanitizedMessage }),
       hasMarketData: false,
@@ -4068,12 +4201,13 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext, 
 
   const normalized = await withSyncOperation('unknown', 'parse_api_football_odds', () => Promise.resolve(normalizeMatchOddsRows(match, fixtureId, response.data ?? [], {
     allowedMarketFocuses: options.usefulMarketsOnly ? ['AH', 'OU', 'MATCH_WINNER'] : undefined,
+    canonicalMatchId,
   })))
   const marketsSaved = [...new Set(normalized.rows.map((row: any) => row.market_focus).filter(Boolean))]
   const hasAh = marketsSaved.includes('AH')
   const hasOu = marketsSaved.includes('OU')
   if (!normalized.rows.length) {
-    await withRetryableSyncOperation('supabase', 'update_match_readiness_no_market_data', () => updateMatchReadinessMetadata(match.id, {
+    await withRetryableSyncOperation('supabase', 'update_match_readiness_no_market_data', () => updateMatchReadinessMetadata(canonicalMatchId, {
       fixtureId,
       odds: endpointAttemptSummary({ attempted: 1, success: 1, rowsSaved: 0, empty: 1, error: 0 }),
       hasMarketData: false,
@@ -4083,9 +4217,9 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext, 
   }
 
   await withRetryableSyncOperation('supabase', 'upsert_football_bookmakers', () => storeFootballBookmakers(normalized.bookmakers))
-  await withRetryableSyncOperation('supabase', 'upsert_football_match_odds', () => storeFootballMatchOdds(match.id, normalized.rows, { chunkSize: options.maxInsertChunkSize ?? 100 }))
+  await withRetryableSyncOperation('supabase', 'upsert_football_match_odds', () => storeFootballMatchOdds(canonicalMatchId, normalized.rows, { chunkSize: options.maxInsertChunkSize ?? 100 }))
   addEndpointRowsSaved(context, '/odds', normalized.rows.length)
-  await withRetryableSyncOperation('supabase', 'update_match_readiness_market_ready', () => updateMatchReadinessMetadata(match.id, {
+  await withRetryableSyncOperation('supabase', 'update_match_readiness_market_ready', () => updateMatchReadinessMetadata(canonicalMatchId, {
     fixtureId,
     odds: endpointAttemptSummary({ attempted: 1, success: 1, rowsSaved: normalized.rows.length, empty: 0, error: 0 }),
     hasMarketData: true,
@@ -6925,10 +7059,12 @@ async function storeOddsSnapshots(match: any, fixtureId: number, response: any) 
   return normalized
 }
 
-function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<any>, options: { allowedMarketFocuses?: Array<string> } = {}) {
+function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<any>, options: { allowedMarketFocuses?: Array<string>; canonicalMatchId?: string } = {}) {
   const rows: Array<any> = []
   const bookmakers = new Map<number, any>()
   const allowedMarketFocuses = options.allowedMarketFocuses?.length ? new Set(options.allowedMarketFocuses) : null
+  const canonicalMatchId = String(options.canonicalMatchId ?? match.id ?? '').trim()
+  if (!canonicalMatchId) throw new Error('Cannot normalize odds without canonical football_matches.id')
   for (const item of rawRows ?? []) {
     for (const bookmaker of item.bookmakers ?? []) {
       const bookmakerId = nullableNumber(bookmaker.id)
@@ -6945,7 +7081,7 @@ function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<an
         for (const value of bet.values ?? []) {
           if (!isSupportedFullTimeOddsMarket(bet.name, value, marketFocus)) continue
           rows.push({
-            match_id: match.id,
+            match_id: canonicalMatchId,
             api_fixture_id: fixtureId,
             api_bookmaker_id: bookmakerId,
             bookmaker_name: bookmaker.name ?? null,
@@ -6989,6 +7125,8 @@ async function storeFootballBookmakers(rows: Array<any>) {
 
 async function storeFootballMatchOdds(matchId: string, rows: Array<any>, options: { chunkSize?: number } = {}) {
   if (!rows.length) return { count: 0 }
+  const mismatchedRow = rows.find((row: any) => String(row.match_id ?? '') !== String(matchId))
+  if (mismatchedRow) throw new Error(`Refusing to store odds with mismatched match_id: expected ${matchId}, received ${mismatchedRow.match_id ?? 'missing'}`)
   await supabase.from('football_match_odds').update({ is_latest: false }).eq('match_id', matchId)
   const chunkSize = Math.max(1, Math.min(Number(options.chunkSize ?? 100), 100))
   for (let index = 0; index < rows.length; index += chunkSize) {
@@ -7062,6 +7200,10 @@ function normalizeOddsPayload(match: any, response: any) {
 function normalizeMarketFocus(value: unknown) {
   const text = String(value ?? '').toUpperCase()
   if (isUnsupportedMainOddsMarketText(text)) return 'NONE'
+  if (text === 'AH') return 'AH'
+  if (text === 'OU') return 'OU'
+  if (text === 'MATCH_WINNER') return 'MATCH_WINNER'
+  if (text === 'BTTS') return 'BTTS'
   if (text.includes('ASIAN') || text.includes('HANDICAP')) return 'AH'
   if (text.includes('OVER') || text.includes('UNDER') || text.includes('GOALS') || text.includes('TOTAL')) return 'OU'
   if (text.includes('MATCH WINNER') || text.includes('1X2') || text.includes('HOME/AWAY')) return 'MATCH_WINNER'
@@ -7096,7 +7238,7 @@ function isSupportedFullTimeOddsMarket(marketName: unknown, value: any, marketFo
   if (!['MATCH_WINNER', 'AH', 'OU'].includes(marketFocus)) return false
   if (isUnsupportedMainOddsMarketText(marketName) || isUnsupportedMainOddsMarketText(value?.value)) return false
   if (marketFocus === 'OU') {
-    const line = parseBetLine(value?.value ?? value?.line)
+    const line = parseBetLine(value?.value) ?? parseBetLine(value?.line)
     if (line !== null && Math.abs(line) >= 6.5) return false
   }
   return true

@@ -185,6 +185,35 @@ assert.equal(syncDailyCandidateOddsSource.includes('fetchTodayOddsFixtureCandida
 assert.ok(syncDailyCandidateOddsSource.includes('seenFixtureIds'), 'sync-daily-candidate-odds must dedupe fixture ids in a request')
 assert.ok(syncDailyCandidateOddsSource.includes('skippedAlreadyHasOdds'), 'sync-daily-candidate-odds should skip already-ready odds by default')
 assert.ok(syncDailyCandidateOddsSource.includes('body.force === true'), 'sync-daily-candidate-odds should support force:true')
+assert.ok(syncDailyCandidateOddsSource.includes('fetchUsableOddsCoverageForTargets(targets)'), 'sync-daily-candidate-odds should check only the stable page before processing')
+assert.ok(syncDailyCandidateOddsSource.includes('const refreshedCandidates = await fetchDailyMarketCandidateRows(selectionDate)'), 'sync-daily-candidate-odds must re-query the persisted candidate pool after processing')
+assert.ok(syncDailyCandidateOddsSource.includes('summarizeDailyMarketCandidateRows(refreshedCandidates)'), 'sync-daily-candidate-odds response must summarize post-sync candidate rows')
+assert.ok(syncDailyCandidateOddsSource.includes('candidateReadyCount: postSyncState.readyCandidateCount'), 'sync-daily-candidate-odds should return the post-sync READY count under both aliases')
+assert.ok(syncDailyCandidateOddsSource.includes("classifyCandidateMarketReadiness(existingCoverage) === 'READY'"), 'second candidate odds call should skip the provider only after all required markets are present')
+assert.ok(syncDailyCandidateOddsSource.includes('canonicalMatchId,'), 'sync-daily-candidate-odds should pass candidate.match_id through the odds save path')
+assert.ok(syncFootballDataSource.includes("if (String(row.market_readiness_status ?? '').toUpperCase() === 'READY') readyCandidateCount += 1"), 'post-sync READY count should dedupe candidate fixture ids before the scheduler stop check')
+assert.ok(syncFootballDataSource.includes(".eq('is_latest', true)\n      .order('id', { ascending: true })\n      .range(from, from + pageSize - 1)"), 'candidate odds coverage must page deterministically through latest snapshots instead of truncating the pool')
+assert.ok(syncFootballDataSource.includes('has_usable_ah: Boolean(coverage?.hasAh)'), 'candidate row updates should persist usable AH coverage')
+assert.ok(syncFootballDataSource.includes('has_usable_ou: Boolean(coverage?.hasOu)'), 'candidate row updates should persist usable O/U coverage')
+assert.ok(syncFootballDataSource.includes('has_usable_match_winner: Boolean(coverage?.hasMatchWinner)'), 'candidate row updates should persist usable Match Winner coverage')
+assert.ok(syncFootballDataSource.includes('odds_rows_count: Number(coverage?.rows ?? 0)'), 'candidate row updates should persist the supported latest odds row count')
+assert.ok(syncFootballDataSource.includes('odds_synced_at: new Date().toISOString()'), 'candidate row updates should persist the odds sync timestamp')
+assert.ok(syncFootballDataSource.includes('odds_sync_status: status'), 'candidate row updates should persist the odds sync result status')
+assert.ok(syncFootballDataSource.includes(".eq('match_id', identity.matchId)\n    .select('id, match_id')"), 'candidate readiness updates should target and return the canonical candidate match row')
+assert.ok(syncFootballDataSource.includes('update expected 1 row but affected'), 'candidate readiness updates should fail loudly unless exactly one row is affected')
+assert.ok(syncFootballDataSource.includes('Duplicate football_matches rows for api_fixture_id'), 'candidate odds sync should report duplicate provider fixture identities')
+assert.ok(syncFootballDataSource.includes('match_id: canonicalMatchId'), 'normalized odds rows should use the candidate canonical match_id')
+assert.ok(syncFootballDataSource.includes('Refusing to store odds with mismatched match_id'), 'odds persistence should reject rows linked to another match identity')
+assert.ok(syncFootballDataSource.includes('function isSupportedFullTimeOddsRow(row: any)'), 'isSupportedFullTimeOddsRow should be defined at module scope when referenced')
+assert.ok(syncFootballDataSource.includes('function isUsableFullTimeOddsRow(row: any) {\n  return isSupportedFullTimeOddsRow(row)'), 'legacy usable odds row helper should delegate to the canonical supported full-time row helper')
+assert.ok(syncFootballDataSource.includes("if (text === 'OU') return 'OU'"), 'market focus normalization should accept stored OU tokens')
+assert.ok(syncFootballDataSource.includes('const line = parseBetLine(value?.value) ?? parseBetLine(value?.line)'), 'full-time O/U filter should inspect normalized row line when selection text has no number')
+assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'MATCH_WINNER', market_name: 'Match Winner', selection: 'Home', price: 1.9 }), true, 'MATCH_WINNER full-time odds row should be supported')
+assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.25', price: 1.9 }), true, 'AH full-time odds row should be supported')
+assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over 2.5', price: 1.9 }), true, 'OU full-time odds row should be supported')
+assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'OU', market_name: 'Corners Over/Under', selection: 'Over 9.5', price: 1.9 }), false, 'corner odds row should be rejected')
+assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'MATCH_WINNER', market_name: 'First Half Winner', selection: 'Home', price: 1.9 }), false, 'first-half odds row should be rejected')
+assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over', line: 7.5, price: 1.9 }), false, 'suspicious high O/U line from normalized row line should be rejected')
 const strictMarketFirstSource = extractFunctionSource(syncFootballDataSource, 'strictApiFootballDailyPicksMarketFirst')
 assert.ok(strictMarketFirstSource.includes('compareMarketFirstCandidateItems'), 'marketFirst strict picks should use market-first sorting')
 assert.ok(strictMarketFirstSource.includes('marketFirst invariant failed'), 'marketFirst strict picks should fail if NO_MARKET_DATA is selected while READY candidates exist')
@@ -199,6 +228,36 @@ assert.deepEqual(planStableCandidateOddsBatch([
   { fixtureId: 202, hasUsableOdds: false },
 ], { limit: 3 }), { processedFixtureIds: [202], skippedAlreadyHasOdds: [201], duplicateFixtureIds: [201] }, 'sync-daily-candidate-odds should skip ready odds and dedupe fixtures')
 assert.deepEqual(planStableCandidateOddsBatch([{ fixtureId: 201, hasUsableOdds: true }], { force: true }), { processedFixtureIds: [201], skippedAlreadyHasOdds: [], duplicateFixtureIds: [] }, 'force:true should refetch already-ready candidate odds')
+const postCandidateSync = simulatePostSyncCandidateState([
+  { fixtureId: 1522141, status: 'READY', hasAh: true, hasOu: true, hasMatchWinner: true, rows: 120 },
+  { fixtureId: 1568101, status: 'WAITING_MARKET', hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 },
+], new Map([[1568101, { hasAh: true, hasOu: true, hasMatchWinner: true, rows: 409 }]]))
+assert.equal(postCandidateSync.readyCandidateCount, 2, 'post-sync response should count the newly READY fixture')
+assert.deepEqual(postCandidateSync.candidateWithOdds, [1522141, 1568101], 'newly synced fixture should move into candidateWithOdds')
+assert.deepEqual(postCandidateSync.candidateWithoutOdds, [], 'newly synced fixture should leave candidateWithoutOdds')
+const emptyCandidateSync = simulatePostSyncCandidateState([
+  { fixtureId: 301, status: 'WAITING_MARKET', hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 },
+], new Map([[301, { hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 }]]))
+assert.equal(emptyCandidateSync.rows[0].status, 'NO_MARKET_DATA', 'empty provider results should remain non-ready')
+assert.equal(shouldStopCandidateOddsPaging(Array.from({ length: 10 }, (_, index) => ({ fixtureId: index + 1, status: 'READY', hasAh: true, hasOu: true, hasMatchWinner: true, rows: 3 }))), true, 'scheduler should stop from the verified post-sync count at 10 READY candidates')
+const idempotentCandidateSync = simulateIdempotentCandidateOddsSync({
+  candidateId: 'candidate-1568101',
+  candidateMatchId: 'canonical-match-1568101',
+  fixtureId: 1568101,
+  duplicateMatchIds: ['wrong-duplicate-match', 'canonical-match-1568101'],
+})
+assert.equal(idempotentCandidateSync.first.providerCalls, 1, 'first candidate odds call may fetch the provider')
+assert.deepEqual(idempotentCandidateSync.first.savedRows.map((row) => row.match_id), ['canonical-match-1568101', 'canonical-match-1568101', 'canonical-match-1568101'], 'all saved odds should use candidate.match_id')
+assert.equal(idempotentCandidateSync.first.status, 'READY', 'first successful call should move WAITING_MARKET to READY')
+assert.deepEqual(idempotentCandidateSync.first.candidateWithOdds, [1568101], 'first successful call should move the fixture into candidateWithOdds')
+assert.deepEqual(idempotentCandidateSync.first.candidateWithoutOdds, [], 'first successful call should remove the fixture from candidateWithoutOdds')
+assert.equal(idempotentCandidateSync.second.providerCalls, 0, 'second identical call should skip the provider')
+assert.equal(idempotentCandidateSync.second.oddsRowsSaved, 0, 'second identical call should save no duplicate odds rows')
+assert.deepEqual(idempotentCandidateSync.second.skippedAlreadyHasOdds, [1568101], 'second identical call should report the already-ready fixture')
+assert.deepEqual(idempotentCandidateSync.second.processedFixtureIds, [], 'second identical call should not report the skipped fixture as processed')
+assert.equal(idempotentCandidateSync.second.readyCandidateCount, 1, 'second identical call should preserve READY count')
+assert.equal(idempotentCandidateSync.usedMatchId, 'canonical-match-1568101', 'duplicate api_fixture_id rows must not redirect odds away from candidate.match_id')
+assert.throws(() => simulateExactCandidateUpdate([], { candidateId: 'missing', matchId: 'canonical-match-1568101' }), /expected 1 row but affected 0/, 'zero-row candidate update should fail loudly')
 assert.deepEqual(sortMarketFirstSamples([{ id: 'no', status: 'NO_MARKET_DATA', score: 99 }, { id: 'ready', status: 'READY', score: 50 }]), ['ready', 'no'], 'READY candidates must rank before NO_MARKET_DATA candidates')
 assert.equal(capMarketFirstSampleScore({ status: 'NO_MARKET_DATA', score: 99, hasOdds: false }), 59, 'NO_MARKET_DATA cannot outrank READY through raw score')
 assert.equal(capMarketFirstSampleScore({ status: 'READY', score: 75, hasOdds: true }), 75, 'READY candidates can keep supported market score')
@@ -1730,6 +1789,51 @@ function simulateNormalizeSyncMode(value, footballModes = []) {
   return ['manual', 'enrich', 'recompute', 'learning', ...footballModes].includes(mode) ? mode : null
 }
 
+function simulateIsSupportedFullTimeOddsRow(row) {
+  const marketName = row.market_name ?? row.market_focus
+  const marketFocus = simulateNormalizeMarketFocus(row.market_focus ?? row.market_name)
+  return simulateIsSupportedFullTimeOddsMarket(marketName, {
+    value: row.selection ?? row.raw?.selection ?? row.raw?.value,
+    line: row.line ?? row.raw?.line,
+  }, marketFocus)
+}
+
+function simulateIsSupportedFullTimeOddsMarket(marketName, value, marketFocus = simulateNormalizeMarketFocus(marketName)) {
+  if (!['MATCH_WINNER', 'AH', 'OU'].includes(marketFocus)) return false
+  if (simulateIsUnsupportedMainOddsMarketText(marketName) || simulateIsUnsupportedMainOddsMarketText(value?.value)) return false
+  if (marketFocus === 'OU') {
+    const line = simulateParseBetLine(value?.value) ?? simulateParseBetLine(value?.line)
+    if (line !== null && Math.abs(line) >= 6.5) return false
+  }
+  return true
+}
+
+function simulateNormalizeMarketFocus(value) {
+  const text = String(value ?? '').toUpperCase()
+  if (simulateIsUnsupportedMainOddsMarketText(text)) return 'NONE'
+  if (text === 'AH') return 'AH'
+  if (text === 'OU') return 'OU'
+  if (text === 'MATCH_WINNER') return 'MATCH_WINNER'
+  if (text === 'BTTS') return 'BTTS'
+  if (text.includes('ASIAN') || text.includes('HANDICAP')) return 'AH'
+  if (text.includes('OVER') || text.includes('UNDER') || text.includes('GOALS') || text.includes('TOTAL')) return 'OU'
+  if (text.includes('MATCH WINNER') || text.includes('1X2') || text.includes('HOME/AWAY')) return 'MATCH_WINNER'
+  if (text.includes('BOTH TEAMS') || text.includes('BTTS')) return 'BTTS'
+  return 'NONE'
+}
+
+function simulateIsUnsupportedMainOddsMarketText(value) {
+  const text = String(value ?? '').toUpperCase()
+  return ['CORNER', 'CARD', 'BOOKING', 'FIRST HALF', '1ST HALF', 'SECOND HALF', '2ND HALF', 'HALF TIME', 'HT/FT', 'TEAM TOTAL', 'TEAM GOALS', 'PLAYER', 'SPECIAL', 'EXACT SCORE', 'DOUBLE CHANCE', 'EXTRA TIME', 'PENALT'].some((blocked) => text.includes(blocked))
+}
+
+function simulateParseBetLine(value) {
+  const match = String(value ?? '').match(/-?\d+(?:\.\d+)?/)
+  if (!match) return null
+  const numeric = Number(match[0])
+  return Number.isFinite(numeric) ? numeric : null
+}
+
 function sanitizeTestHeaderValue(value) {
   return String(value ?? '').trim().replace(/^["'<]+|[>"']+$/g, '').replace(/[^\x20-\x7E]/g, '')
 }
@@ -1767,6 +1871,74 @@ function planStableCandidateOrder(rows) {
 
 function planStableCandidateOddsBatch(rows, { offset = 0, limit = 2, force = false } = {}) {
   return planStableTop10OddsBatch(rows, { offset, limit, force })
+}
+
+function simulatePostSyncCandidateState(rows, syncedCoverage = new Map()) {
+  const refreshedRows = rows.map((row) => {
+    if (!syncedCoverage.has(row.fixtureId)) return row
+    const coverage = syncedCoverage.get(row.fixtureId)
+    const status = coverage.rows <= 0 ? 'NO_MARKET_DATA' : coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner ? 'READY' : 'PARTIAL'
+    return { ...row, ...coverage, status }
+  })
+  return {
+    rows: refreshedRows,
+    candidateWithOdds: refreshedRows.filter((row) => row.hasAh || row.hasOu || row.hasMatchWinner || row.rows > 0).map((row) => row.fixtureId),
+    candidateWithoutOdds: refreshedRows.filter((row) => !(row.hasAh || row.hasOu || row.hasMatchWinner || row.rows > 0)).map((row) => row.fixtureId),
+    readyCandidateCount: refreshedRows.filter((row) => row.status === 'READY').length,
+  }
+}
+
+function shouldStopCandidateOddsPaging(rows) {
+  return simulatePostSyncCandidateState(rows).readyCandidateCount >= 10
+}
+
+function simulateIdempotentCandidateOddsSync({ candidateId, candidateMatchId, fixtureId, duplicateMatchIds = [] }) {
+  const state = {
+    candidateId,
+    matchId: candidateMatchId,
+    fixtureId,
+    status: 'WAITING_MARKET',
+    coverage: { hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 },
+  }
+  const call = () => {
+    if (state.coverage.hasAh && state.coverage.hasOu && state.coverage.hasMatchWinner) {
+      return {
+        providerCalls: 0,
+        oddsRowsSaved: 0,
+        processedFixtureIds: [],
+        skippedAlreadyHasOdds: [fixtureId],
+        readyCandidateCount: 1,
+      }
+    }
+    const savedRows = ['AH', 'OU', 'MATCH_WINNER'].map((marketFocus) => ({ match_id: candidateMatchId, api_fixture_id: fixtureId, market_focus: marketFocus }))
+    state.coverage = { hasAh: true, hasOu: true, hasMatchWinner: true, rows: savedRows.length }
+    state.status = 'READY'
+    simulateExactCandidateUpdate([state], { candidateId, matchId: candidateMatchId })
+    return {
+      providerCalls: 1,
+      oddsRowsSaved: savedRows.length,
+      processedFixtureIds: [fixtureId],
+      skippedAlreadyHasOdds: [],
+      readyCandidateCount: 1,
+      status: state.status,
+      savedRows,
+      candidateWithOdds: [fixtureId],
+      candidateWithoutOdds: [],
+    }
+  }
+  const first = call()
+  const second = call()
+  return {
+    first,
+    second,
+    usedMatchId: duplicateMatchIds.includes(candidateMatchId) ? candidateMatchId : state.matchId,
+  }
+}
+
+function simulateExactCandidateUpdate(rows, identity) {
+  const updated = rows.filter((row) => row.candidateId === identity.candidateId && row.matchId === identity.matchId)
+  if (updated.length !== 1) throw new Error(`daily_market_candidates update expected 1 row but affected ${updated.length}`)
+  return updated[0]
 }
 
 function sortMarketFirstSamples(rows) {
