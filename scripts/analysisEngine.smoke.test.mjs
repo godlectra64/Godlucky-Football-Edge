@@ -92,6 +92,21 @@ assert.equal(isWithinBangkokDay('2026-06-28T17:00:00.000Z', '2026-06-28'), false
 
 const syncFootballDataSource = readFileSync(new URL('../supabase/functions/sync-football-data/index.ts', import.meta.url), 'utf8')
 const dailyTop10RepositorySource = readFileSync(new URL('../src/repositories/dailyTop10Repository.js', import.meta.url), 'utf8')
+const packageSource = readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+const dailyProductionHealthSource = readFileSync(new URL('./verifyDailyProductionHealth.mjs', import.meta.url), 'utf8')
+const requiredMarketFirstAdminModes = [
+  'diagnose-sync-today-odds',
+  'build-daily-market-candidates',
+  'sync-daily-candidate-odds',
+  'finalize-market-ready-candidates',
+  'sync-daily-top10-odds',
+  'strict-api-football-daily-picks',
+  'daily-sync-auto',
+]
+const marketFirstPipelineAdminModesSource = syncFootballDataSource.slice(
+  syncFootballDataSource.indexOf('const marketFirstPipelineAdminModes = ['),
+  syncFootballDataSource.indexOf('const footballEnrichmentModes = [')
+)
 assert.ok(syncFootballDataSource.includes("Deno.env.get('FOOTBALL_PROVIDER') ?? 'api-football'"), 'sync-football-data should default to API-FOOTBALL')
 assert.ok(syncFootballDataSource.includes('const primaryProvider = getProviderAdapter(requestedProviderName)'), 'sync-football-data should choose the primary provider before fetching')
 assert.ok(syncFootballDataSource.includes("fetchFixtures: ({ dateKey }) => fetchApiFootballFixtures(dateKey)"), 'API-FOOTBALL adapter should fetch fixtures by Bangkok dateKey')
@@ -146,10 +161,47 @@ assert.ok(syncFootballDataSource.includes("restartCompleted: body.restartComplet
 assert.ok(syncFootballDataSource.includes("const restartCompleted = body.restartCompleted === true"), 'daily sync run startup should parse restartCompleted explicitly')
 assert.ok(syncFootballDataSource.includes("run.status === 'success' && !force && !restartCompleted"), 'completed daily sync runs should only be reused when restartCompleted is false')
 assert.ok(syncFootballDataSource.includes("'sync-today-odds'"), 'sync-football-data should expose a safe manual today odds refresh mode')
+assert.ok(packageSource.includes('"verify:daily-production-health": "node scripts/verifyDailyProductionHealth.mjs"'), 'package.json should expose verify:daily-production-health')
+assert.ok(dailyProductionHealthSource.includes('DAILY_MARKET_CANDIDATES_NOT_BUILT'), 'daily production health verifier should report specific candidate-pool root causes')
+assert.ok(dailyProductionHealthSource.includes('process.exit(1)'), 'daily production health verifier should fail hard on unhealthy production state')
+assert.ok(dailyProductionHealthSource.includes("oddsIntegritySource: 'verifyOddsIntegrity-compatible'"), 'daily production health duplicate odds check should declare verifyOddsIntegrity-compatible source')
+assert.ok(dailyProductionHealthSource.includes("report('duplicateLatestOdds', oddsChecks.duplicateLatestOdds"), 'daily production health should report duplicateLatestOdds explicitly')
+assert.ok(dailyProductionHealthSource.includes(".eq('is_latest', true)"), 'daily production health duplicate odds check should only count latest odds rows')
+assert.ok(dailyProductionHealthSource.includes('[row.match_id, row.api_bookmaker_id, row.market_focus, row.market_name, row.selection, row.line].join'), 'daily production health duplicate odds key should match verifyOddsIntegrity')
 assert.ok(syncFootballDataSource.includes("'sync-daily-top10-odds'"), 'sync-football-data should expose a locked daily Top10 odds refresh mode')
+assert.ok(syncFootballDataSource.includes('const marketFirstPipelineAdminModes = ['), 'market-first pipeline admin modes should be registered in one canonical mode list')
+for (const mode of requiredMarketFirstAdminModes) {
+  assert.ok(marketFirstPipelineAdminModesSource.includes(`'${mode}'`), `market-first admin mode list should include ${mode}`)
+}
 assert.ok(syncFootballDataSource.includes("'sync-today-odds-finalize'"), 'sync-football-data should expose a separate odds finalization mode')
 assert.ok(syncFootballDataSource.includes("'diagnose-sync-today-odds'"), 'sync-football-data should expose a read-only today odds diagnosis mode')
 assert.ok(syncFootballDataSource.includes("if (mode === 'sync-today-odds') return 1"), 'sync-today-odds should be hard-capped to one fixture per request')
+assert.ok(syncFootballDataSource.includes('daily_market_candidates'), 'daily market candidate pool should be persisted in the Edge function')
+assert.ok(syncFootballDataSource.includes('forceRebuild:true'), 'candidate pool reuse warning should require forceRebuild:true for changed order')
+const syncDailyCandidateOddsSource = extractFunctionSource(syncFootballDataSource, 'syncDailyCandidateOdds')
+assert.ok(syncDailyCandidateOddsSource.includes('fetchDailyMarketCandidateTargets(selectionDate)'), 'sync-daily-candidate-odds must use the stable daily_market_candidates pool')
+assert.equal(syncDailyCandidateOddsSource.includes('fetchDailyTop10LockCandidates'), false, 'sync-daily-candidate-odds must not use fixture/ranking candidates directly')
+assert.equal(syncDailyCandidateOddsSource.includes('fetchTodayOddsFixtureCandidates'), false, 'sync-daily-candidate-odds must not use dynamic today odds candidates')
+assert.ok(syncDailyCandidateOddsSource.includes('seenFixtureIds'), 'sync-daily-candidate-odds must dedupe fixture ids in a request')
+assert.ok(syncDailyCandidateOddsSource.includes('skippedAlreadyHasOdds'), 'sync-daily-candidate-odds should skip already-ready odds by default')
+assert.ok(syncDailyCandidateOddsSource.includes('body.force === true'), 'sync-daily-candidate-odds should support force:true')
+const strictMarketFirstSource = extractFunctionSource(syncFootballDataSource, 'strictApiFootballDailyPicksMarketFirst')
+assert.ok(strictMarketFirstSource.includes('compareMarketFirstCandidateItems'), 'marketFirst strict picks should use market-first sorting')
+assert.ok(strictMarketFirstSource.includes('marketFirst invariant failed'), 'marketFirst strict picks should fail if NO_MARKET_DATA is selected while READY candidates exist')
+assert.ok(syncFootballDataSource.includes("if (status === 'NO_MARKET_DATA') score = Math.min(score, 59)"), 'NO_MARKET_DATA final selection score should be capped below READY candidates')
+assert.ok(syncFootballDataSource.includes('if (!odds.length) score = Math.min(score, 60)'), 'fixture-only confidence should remain capped at 60')
+assert.ok(syncFootballDataSource.includes('isUnsupportedMainOddsMarketText'), 'main AH/O-U logic should reject unsupported non-full-time markets')
+assert.ok(syncFootballDataSource.includes('Math.abs(line) >= 6.5'), 'main football O/U should reject suspicious high O/U lines')
+assert.deepEqual(planStableCandidateOrder([{ id: 'b', score: 80 }, { id: 'a', score: 90 }]), ['a', 'b'], 'build-daily-market-candidates should create stable score order')
+assert.deepEqual(planStableCandidateOddsBatch([
+  { fixtureId: 201, hasUsableOdds: true },
+  { fixtureId: 201, hasUsableOdds: false },
+  { fixtureId: 202, hasUsableOdds: false },
+], { limit: 3 }), { processedFixtureIds: [202], skippedAlreadyHasOdds: [201], duplicateFixtureIds: [201] }, 'sync-daily-candidate-odds should skip ready odds and dedupe fixtures')
+assert.deepEqual(planStableCandidateOddsBatch([{ fixtureId: 201, hasUsableOdds: true }], { force: true }), { processedFixtureIds: [201], skippedAlreadyHasOdds: [], duplicateFixtureIds: [] }, 'force:true should refetch already-ready candidate odds')
+assert.deepEqual(sortMarketFirstSamples([{ id: 'no', status: 'NO_MARKET_DATA', score: 99 }, { id: 'ready', status: 'READY', score: 50 }]), ['ready', 'no'], 'READY candidates must rank before NO_MARKET_DATA candidates')
+assert.equal(capMarketFirstSampleScore({ status: 'NO_MARKET_DATA', score: 99, hasOdds: false }), 59, 'NO_MARKET_DATA cannot outrank READY through raw score')
+assert.equal(capMarketFirstSampleScore({ status: 'READY', score: 75, hasOdds: true }), 75, 'READY candidates can keep supported market score')
 for (const envSource of [
   "Deno.env.get('EDGE_ADMIN_SECRET')",
   "Deno.env.get('EDGE_ADMIN_SECRET_KEYS')",
@@ -163,15 +215,17 @@ assert.ok(syncFootballDataSource.includes("const bodySecret = sanitizeHeaderValu
 assert.ok(syncFootballDataSource.includes('const bodySecretPath = getTrustedAdminTokenPath(bodySecret)'), 'shared admin auth should validate body sb_secret through trusted token logic')
 assert.ok(syncFootballDataSource.includes("if (value === serviceRoleKey) return 'service_role'"), 'shared admin auth should keep service role key support')
 assert.ok(syncFootballDataSource.includes("if (secretKeys.includes(value)) return 'EDGE_ADMIN_SECRET_KEYS'"), 'shared admin auth should keep configured admin secret key support')
-assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'diagnose-sync-today-odds accepts sb_secret')
+assert.ok(syncFootballDataSource.indexOf('const mode = normalizeSyncMode(body.mode)') < syncFootballDataSource.indexOf('const authError = await getServiceAuthError(request, mode, body)'), 'shared auth should run after requested mode normalization')
+assert.ok(syncFootballDataSource.includes("code: 'UNKNOWN_SYNC_MODE'"), 'unknown modes should remain rejected before admin auth')
+for (const mode of requiredMarketFirstAdminModes) {
+  assert.equal(simulateSharedAdminAuth({ mode, body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, `${mode} accepts valid body sb_secret`)
+}
 assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'sync-today-odds accepts sb_secret')
-assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'strict-api-football-daily-picks accepts sb_secret')
-assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'daily-sync-auto accepts the same sb_secret path')
-assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'sync-daily-top10-odds accepts the same sb_secret path')
-for (const mode of ['diagnose-sync-today-odds', 'sync-today-odds', 'strict-api-football-daily-picks', 'daily-sync-auto', 'sync-daily-top10-odds']) {
+for (const mode of [...requiredMarketFirstAdminModes, 'sync-today-odds']) {
   assert.ok(syncFootballDataSource.includes(`'${mode}'`), `${mode} should be registered as an admin sync mode`)
   assert.equal(simulateSharedAdminAuth({ mode, apiKey: 'sb_publishable_anon', authorization: 'Bearer sb_publishable_anon', configuredSecrets: ['sb_secret_result_admin'] }), false, `${mode} must reject anon/publishable keys without an admin secret`)
 }
+assert.equal(simulateNormalizeSyncMode('unknown-market-first-mode', [...requiredMarketFirstAdminModes, 'sync-today-odds']), null, 'unknown mode remains rejected')
 const syncDailyTop10OddsSource = extractFunctionSource(syncFootballDataSource, 'syncDailyTop10Odds')
 assert.ok(syncDailyTop10OddsSource.includes('fetchLockedDailyTop10OddsTargets(selectionDate)'), 'sync-daily-top10-odds must use the locked Top10 list')
 assert.equal(syncDailyTop10OddsSource.includes('fetchTodayOddsFixtureCandidates'), false, 'sync-daily-top10-odds must not use the dynamic today odds candidate list')
@@ -1671,6 +1725,11 @@ function simulateSharedAdminAuth({ body = {}, apiKey = '', authorization = '', s
   })
 }
 
+function simulateNormalizeSyncMode(value, footballModes = []) {
+  const mode = String(value ?? 'manual').trim().toLowerCase() || 'manual'
+  return ['manual', 'enrich', 'recompute', 'learning', ...footballModes].includes(mode) ? mode : null
+}
+
 function sanitizeTestHeaderValue(value) {
   return String(value ?? '').trim().replace(/^["'<]+|[>"']+$/g, '').replace(/[^\x20-\x7E]/g, '')
 }
@@ -1700,4 +1759,26 @@ function planStableTop10OddsBatch(rows, { offset = 0, limit = 2, force = false }
     processedFixtureIds.push(row.fixtureId)
   }
   return { processedFixtureIds, skippedAlreadyHasOdds, duplicateFixtureIds }
+}
+
+function planStableCandidateOrder(rows) {
+  return [...rows].sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id))).map((row) => row.id)
+}
+
+function planStableCandidateOddsBatch(rows, { offset = 0, limit = 2, force = false } = {}) {
+  return planStableTop10OddsBatch(rows, { offset, limit, force })
+}
+
+function sortMarketFirstSamples(rows) {
+  const gate = { READY: 1, PARTIAL: 2, WAITING_MARKET: 3, NO_MARKET_DATA: 4 }
+  return [...rows]
+    .sort((a, b) => (gate[a.status] ?? 9) - (gate[b.status] ?? 9) || b.score - a.score)
+    .map((row) => row.id)
+}
+
+function capMarketFirstSampleScore({ status, score, hasOdds }) {
+  let value = score
+  if (status === 'NO_MARKET_DATA') value = Math.min(value, 59)
+  if (!hasOdds) value = Math.min(value, 60)
+  return value
 }

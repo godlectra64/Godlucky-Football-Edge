@@ -145,7 +145,25 @@ jobs:
             console.log(`daily-sync-auto stopped without a real failure: status=${dailySync.status ?? 'unknown'}, progressPercent=${dailySync.progressPercent ?? 'unknown'}, nextAction=${dailySync.nextAction ?? 'unknown'}`)
           }
 
-          await postSync({ mode: 'strict-api-football-daily-picks', limit: 10 })
+          await postSync({ mode: 'build-daily-market-candidates', limit: 50 })
+
+          let candidateOdds = await postSync({ mode: 'sync-daily-candidate-odds', limit: 2 })
+          for (let attempt = 1; attempt <= 25 && candidateOdds.hasMore && Number(candidateOdds.readyCandidateCount ?? 0) < 10; attempt += 1) {
+            const offset = Number(candidateOdds.nextOffset ?? 0)
+            console.log(`Continuing sync-daily-candidate-odds at offset ${offset}; ready=${candidateOdds.readyCandidateCount ?? 0}; attempt ${attempt}/25`)
+            candidateOdds = await postSync({
+              mode: 'sync-daily-candidate-odds',
+              offset,
+              limit: 2,
+            })
+          }
+
+          if (candidateOdds.hasMore && Number(candidateOdds.readyCandidateCount ?? 0) < 10) {
+            throw new Error(`candidate odds sync stopped before enough READY candidates: ready=${candidateOdds.readyCandidateCount ?? 0}, nextOffset=${candidateOdds.nextOffset ?? 'unknown'}`)
+          }
+
+          await postSync({ mode: 'finalize-market-ready-candidates' })
+          await postSync({ mode: 'strict-api-football-daily-picks', limit: 10, marketFirst: true })
 
           let top10Odds = await postSync({ mode: 'sync-daily-top10-odds', limit: 2 })
           for (let attempt = 1; attempt <= 8 && top10Odds.hasMore; attempt += 1) {
@@ -163,8 +181,36 @@ jobs:
           }
 
           await postSync({ mode: 'sync-today-odds-finalize' })
-          await postSync({ mode: 'strict-api-football-daily-picks', limit: 10 })
+          await postSync({ mode: 'strict-api-football-daily-picks', limit: 10, marketFirst: true })
           await postSync({ mode: 'get-daily-top10-status' })
           await postSync({ mode: 'diagnose-sync-today-odds' })
           console.log('Daily football sync workflow completed successfully.')
           NODE
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Verify scheduler and data checks when repository context is available
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ ! -f package.json ]; then
+            echo "Repository files are not available; skipping npm verify scripts."
+            exit 0
+          fi
+          npm ci
+          npm run verify:scheduler
+          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            npm run verify:odds
+            npm run verify:daily-top10
+            npm run verify:daily-production-health
+            npm run diagnose:daily-odds-sync
+          else
+            echo "Supabase verify secrets are not available; skipped data verify scripts."
+          fi

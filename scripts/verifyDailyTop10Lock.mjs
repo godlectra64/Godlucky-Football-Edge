@@ -36,8 +36,13 @@ async function checkTableExists() {
 
 async function checkExpectedConstraintDefinitions() {
   const migration = readFileSync(new URL('../supabase/migrations/20260706_add_daily_top10_lock.sql', import.meta.url), 'utf8')
+  const candidateMigration = readFileSync(new URL('../supabase/migrations/20260712_add_daily_market_candidates.sql', import.meta.url), 'utf8')
   report('schema unique rank per selection_date', migration.includes('constraint daily_top10_selections_unique_rank unique (selection_date, rank)') ? 0 : 1)
   report('schema unique match per selection_date', migration.includes('constraint daily_top10_selections_unique_match unique (selection_date, match_id)') ? 0 : 1)
+  report('schema daily market candidates table', candidateMigration.includes('create table if not exists public.daily_market_candidates') ? 0 : 1)
+  report('schema unique candidate rank per selection_date', candidateMigration.includes('constraint daily_market_candidates_unique_rank unique (selection_date, candidate_rank)') ? 0 : 1)
+  report('schema unique candidate match per selection_date', candidateMigration.includes('constraint daily_market_candidates_unique_match unique (selection_date, match_id)') ? 0 : 1)
+  report('schema candidate readiness valid', candidateMigration.includes("market_readiness_status in ('READY', 'PARTIAL', 'WAITING_MARKET', 'NO_MARKET_DATA')") ? 0 : 1)
 }
 
 async function checkDailyInvariants() {

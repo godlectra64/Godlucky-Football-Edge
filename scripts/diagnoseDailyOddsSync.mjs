@@ -30,17 +30,18 @@ const matches = await selectAll('football_matches', `
 
 const matchIds = matches.map((row) => row.id).filter(Boolean)
 const todayOdds = matchIds.length
-  ? await selectAll('football_match_odds', 'id, match_id, market_focus, market_name, snapshot_at, updated_at', (query) => query.in('match_id', matchIds))
+  ? await selectAll('football_match_odds', 'id, match_id, market_focus, market_name, selection, line, snapshot_at, updated_at', (query) => query.in('match_id', matchIds))
   : []
 const selected = await selectAll('daily_top10_selections', 'id, rank, match_id', (query) => query.eq('selection_date', range.dateKey))
 const selectedOrdered = [...selected].sort((a, b) => numericSort(a.rank, 999) - numericSort(b.rank, 999) || String(a.id ?? '').localeCompare(String(b.id ?? '')))
 const selectedMatchIds = selectedOrdered.map((row) => row.match_id).filter(Boolean)
 const selectedOdds = selectedMatchIds.length
-  ? await selectAll('football_match_odds', 'id, match_id, market_focus, market_name', (query) => query.in('match_id', selectedMatchIds))
+  ? await selectAll('football_match_odds', 'id, match_id, market_focus, market_name, selection, line', (query) => query.in('match_id', selectedMatchIds))
   : []
 const selectedMatches = selectedMatchIds.length
   ? await selectAll('football_matches', 'id, api_sports_fixture_id', (query) => query.in('id', selectedMatchIds))
   : []
+const marketCandidates = await selectOptionalAll('daily_market_candidates', 'id, selection_date, match_id, api_fixture_id, candidate_rank, market_readiness_status, has_usable_ah, has_usable_ou, has_usable_match_winner, odds_rows_count', (query) => query.eq('selection_date', range.dateKey).order('candidate_rank', { ascending: true }))
 
 const latestOddsTimestamp = await getLatestOddsTimestamp()
 const latestOddsDates = await getLatestOddsMatchDates()
@@ -57,6 +58,12 @@ const selectedTop10WithoutOddsFixtureIds = selectedMatchIds
   .filter((matchId) => !selectedOddsMatchIds.has(matchId))
   .map((matchId) => Number(selectedMatchById.get(matchId)?.api_sports_fixture_id ?? 0))
   .filter(Boolean)
+const candidateReadyRows = marketCandidates.filter((row) => String(row.market_readiness_status ?? '').toUpperCase() === 'READY')
+const candidatePartialRows = marketCandidates.filter((row) => String(row.market_readiness_status ?? '').toUpperCase() === 'PARTIAL')
+const candidateWaitingRows = marketCandidates.filter((row) => String(row.market_readiness_status ?? '').toUpperCase() === 'WAITING_MARKET')
+const candidateNoMarketRows = marketCandidates.filter((row) => String(row.market_readiness_status ?? '').toUpperCase() === 'NO_MARKET_DATA')
+const candidateWithOddsRows = marketCandidates.filter((row) => Boolean(row.has_usable_ah || row.has_usable_ou || row.has_usable_match_winner || Number(row.odds_rows_count ?? 0) > 0))
+const candidateWithoutOddsRows = marketCandidates.filter((row) => !candidateWithOddsRows.includes(row))
 
 const playableFixtures = matches.filter((match) => isPlayable(match))
 const finishedFixtures = matches.filter((match) => isFinished(match))
@@ -90,6 +97,14 @@ const report = {
   selectedTop10FixtureIds,
   selectedTop10WithOddsFixtureIds,
   selectedTop10WithoutOddsFixtureIds,
+  dailyMarketCandidates: marketCandidates.length,
+  candidateReadyCount: candidateReadyRows.length,
+  candidatePartialCount: candidatePartialRows.length,
+  candidateWaitingMarketCount: candidateWaitingRows.length,
+  candidateNoMarketDataCount: candidateNoMarketRows.length,
+  candidateWithOddsFixtureIds: candidateWithOddsRows.map((row) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
+  candidateWithoutOddsFixtureIds: candidateWithoutOddsRows.map((row) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
+  readyCandidateFixtureIds: candidateReadyRows.map((row) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
   likelyRootCause,
 }
 
@@ -108,6 +123,16 @@ async function selectAll(table, columns, applyQuery = (query) => query) {
     if (!data || data.length < pageSize) break
   }
   return rows
+}
+
+async function selectOptionalAll(table, columns, applyQuery = (query) => query) {
+  try {
+    return await selectAll(table, columns, applyQuery)
+  } catch (error) {
+    const message = String(error?.message ?? error?.details ?? '')
+    if (error?.code === '42P01' || /relation .* does not exist/i.test(message) || /Could not find the table/i.test(message)) return []
+    throw error
+  }
 }
 
 async function getLatestOddsTimestamp() {
@@ -152,6 +177,10 @@ async function getLatestOddsMatchDates() {
 
 function getLikelyRootCause({ todayFixtures, todayOddsRows, todayAhRows, todayOuRows, latestOddsDates }) {
   if (!todayFixtures) return 'UNKNOWN'
+  if (marketCandidates.length === 0) return 'DAILY_MARKET_CANDIDATES_NOT_BUILT'
+  if (candidateReadyRows.length >= 10 && selectedTop10WithOddsFixtureIds.length < 10) return 'TOP10_SELECTED_BEFORE_READY_CANDIDATES'
+  if (candidateReadyRows.length > selectedTop10WithOddsFixtureIds.length) return 'READY_CANDIDATES_EXIST_OUTSIDE_TOP10'
+  if (marketCandidates.length > 0 && candidateReadyRows.length < 10 && candidateWithoutOddsRows.length > 0) return 'CANDIDATE_ODDS_SYNC_INCOMPLETE_OR_PROVIDER_EMPTY'
   if (todayOddsRows > 0 && todayAhRows === 0 && todayOuRows === 0) return 'MARKET_NAME_MAPPING_MISSING'
   if (todayOddsRows > 0) return 'UNKNOWN'
   if (latestOddsDates.length && !latestOddsDates.includes(range.dateKey)) return 'ODDS_SYNC_NOT_RUN_FOR_TODAY'
@@ -160,19 +189,35 @@ function getLikelyRootCause({ todayFixtures, todayOddsRows, todayAhRows, todayOu
 }
 
 function isAhLike(row) {
+  if (isUnsupportedMainOddsMarket(row)) return false
   const focus = String(row.market_focus ?? '').toUpperCase()
   const name = String(row.market_name ?? '').toLowerCase()
   return focus === 'AH' || name.includes('handicap')
 }
 
 function isOuLike(row) {
+  if (isUnsupportedMainOddsMarket(row)) return false
   const focus = String(row.market_focus ?? '').toUpperCase()
   const name = String(row.market_name ?? '').toLowerCase()
+  const line = parseLine(row.line ?? row.selection)
+  if (line !== null && Math.abs(line) >= 6.5) return false
   return focus === 'OU' || name.includes('over/under') || name.includes('goals over')
 }
 
 function isUsableFullTimeOddsRow(row) {
-  return isAhLike(row) || isOuLike(row) || String(row.market_focus ?? '').toUpperCase() === 'MATCH_WINNER' || String(row.market_name ?? '').toLowerCase().includes('match winner')
+  return !isUnsupportedMainOddsMarket(row) && (isAhLike(row) || isOuLike(row) || String(row.market_focus ?? '').toUpperCase() === 'MATCH_WINNER' || String(row.market_name ?? '').toLowerCase().includes('match winner'))
+}
+
+function isUnsupportedMainOddsMarket(row) {
+  const text = `${row.market_focus ?? ''} ${row.market_name ?? ''} ${row.selection ?? ''}`.toUpperCase()
+  return ['CORNER', 'CARD', 'BOOKING', 'FIRST HALF', '1ST HALF', 'SECOND HALF', '2ND HALF', 'HALF TIME', 'HT/FT', 'TEAM TOTAL', 'TEAM GOALS', 'PLAYER', 'SPECIAL', 'EXACT SCORE', 'DOUBLE CHANCE', 'EXTRA TIME', 'PENALT'].some((blocked) => text.includes(blocked))
+}
+
+function parseLine(value) {
+  const match = String(value ?? '').match(/-?\d+(?:\.\d+)?/)
+  if (!match) return null
+  const numeric = Number(match[0])
+  return Number.isFinite(numeric) ? numeric : null
 }
 
 function isFinished(match) {

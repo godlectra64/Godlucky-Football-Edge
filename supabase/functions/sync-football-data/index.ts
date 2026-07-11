@@ -80,6 +80,16 @@ const syncChunkSize = 10
 const enrichChunkSize = 5
 const footballEnrichmentChunkSize = 2
 
+const marketFirstPipelineAdminModes = [
+  'daily-sync-auto',
+  'sync-daily-top10-odds',
+  'build-daily-market-candidates',
+  'sync-daily-candidate-odds',
+  'finalize-market-ready-candidates',
+  'diagnose-sync-today-odds',
+  'strict-api-football-daily-picks',
+]
+
 const footballEnrichmentModes = [
   'coverage',
   'rounds',
@@ -98,14 +108,12 @@ const footballEnrichmentModes = [
   'daily-sync-phase',
   'daily-sync-status',
   'daily-sync-next',
-  'daily-sync-auto',
+  ...marketFirstPipelineAdminModes,
   'sync-bookmakers',
   'sync-odds',
   'sync-fixture-odds',
   'sync-today-odds',
-  'sync-daily-top10-odds',
   'sync-today-odds-finalize',
-  'diagnose-sync-today-odds',
   'recompute-ai-final-picks',
   'recompute-ai-final-picks-date',
   'lock-daily-top10',
@@ -113,7 +121,6 @@ const footballEnrichmentModes = [
   'refresh-locked-top10-signals',
   'refresh-market-ready-top10',
   'select-usable-daily-picks',
-  'strict-api-football-daily-picks',
   'sync-completed-fixtures',
   'backfill-ai-pick-results',
   'settle-ai-pick-results',
@@ -228,10 +235,38 @@ Deno.serve(async (request) => {
         marketsSaved: modeResult.marketsSaved,
         hasAh: modeResult.hasAh,
         hasOu: modeResult.hasOu,
+        hasMatchWinner: modeResult.hasMatchWinner,
         totalTop10: modeResult.totalTop10,
         skippedAlreadyHasOdds: modeResult.skippedAlreadyHasOdds,
         top10WithOdds: modeResult.top10WithOdds,
         top10WithoutOdds: modeResult.top10WithoutOdds,
+        totalFixtures: modeResult.totalFixtures,
+        playableFixtures: modeResult.playableFixtures,
+        candidateLimit: modeResult.candidateLimit,
+        candidatesSaved: modeResult.candidatesSaved,
+        candidateFixtureIds: modeResult.candidateFixtureIds,
+        topCandidateSample: modeResult.topCandidateSample,
+        candidateWithOdds: modeResult.candidateWithOdds,
+        candidateWithoutOdds: modeResult.candidateWithoutOdds,
+        dailyMarketCandidates: modeResult.dailyMarketCandidates,
+        candidateReadyCount: modeResult.candidateReadyCount,
+        candidatePartialCount: modeResult.candidatePartialCount,
+        candidateWaitingMarketCount: modeResult.candidateWaitingMarketCount,
+        candidateNoMarketDataCount: modeResult.candidateNoMarketDataCount,
+        candidateWithOddsFixtureIds: modeResult.candidateWithOddsFixtureIds,
+        candidateWithoutOddsFixtureIds: modeResult.candidateWithoutOddsFixtureIds,
+        readyCandidateFixtureIds: modeResult.readyCandidateFixtureIds,
+        readyCandidateCount: modeResult.readyCandidateCount,
+        candidatesTotal: modeResult.candidatesTotal,
+        readyCandidates: modeResult.readyCandidates,
+        partialCandidates: modeResult.partialCandidates,
+        waitingMarketCandidates: modeResult.waitingMarketCandidates,
+        noMarketDataCandidates: modeResult.noMarketDataCandidates,
+        analysisRowsUpdated: modeResult.analysisRowsUpdated,
+        selectedReadyCount: modeResult.selectedReadyCount,
+        selectedWaitingMarketCount: modeResult.selectedWaitingMarketCount,
+        selectedNoMarketDataCount: modeResult.selectedNoMarketDataCount,
+        selectedFixtureIds: modeResult.selectedFixtureIds,
         locked: modeResult.locked,
         alreadyLocked: modeResult.alreadyLocked,
         lockedCount: modeResult.lockedCount,
@@ -295,6 +330,7 @@ Deno.serve(async (request) => {
         apiFootballMarketsSample: modeResult.apiFootballMarketsSample,
         apiFootballError: modeResult.apiFootballError,
         likelySource: modeResult.likelySource,
+        likelyRootCause: modeResult.likelyRootCause,
       }, modeResult.responseStatus ?? 200)
     }
 
@@ -688,10 +724,38 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       marketsSaved: result.marketsSaved,
       hasAh: result.hasAh,
       hasOu: result.hasOu,
+      hasMatchWinner: result.hasMatchWinner,
       totalTop10: result.totalTop10,
       skippedAlreadyHasOdds: result.skippedAlreadyHasOdds,
       top10WithOdds: result.top10WithOdds,
       top10WithoutOdds: result.top10WithoutOdds,
+      totalFixtures: result.totalFixtures,
+      playableFixtures: result.playableFixtures,
+      candidateLimit: result.candidateLimit,
+      candidatesSaved: result.candidatesSaved,
+      candidateFixtureIds: result.candidateFixtureIds,
+      topCandidateSample: result.topCandidateSample,
+      candidateWithOdds: result.candidateWithOdds,
+      candidateWithoutOdds: result.candidateWithoutOdds,
+      dailyMarketCandidates: result.dailyMarketCandidates,
+      candidateReadyCount: result.candidateReadyCount,
+      candidatePartialCount: result.candidatePartialCount,
+      candidateWaitingMarketCount: result.candidateWaitingMarketCount,
+      candidateNoMarketDataCount: result.candidateNoMarketDataCount,
+      candidateWithOddsFixtureIds: result.candidateWithOddsFixtureIds,
+      candidateWithoutOddsFixtureIds: result.candidateWithoutOddsFixtureIds,
+      readyCandidateFixtureIds: result.readyCandidateFixtureIds,
+      readyCandidateCount: result.readyCandidateCount,
+      candidatesTotal: result.candidatesTotal,
+      readyCandidates: result.readyCandidates,
+      partialCandidates: result.partialCandidates,
+      waitingMarketCandidates: result.waitingMarketCandidates,
+      noMarketDataCandidates: result.noMarketDataCandidates,
+      analysisRowsUpdated: result.analysisRowsUpdated,
+      selectedReadyCount: result.selectedReadyCount,
+      selectedWaitingMarketCount: result.selectedWaitingMarketCount,
+      selectedNoMarketDataCount: result.selectedNoMarketDataCount,
+      selectedFixtureIds: result.selectedFixtureIds,
       nextRequestExample: result.nextRequestExample,
       locked: result.locked,
       alreadyLocked: result.alreadyLocked,
@@ -717,6 +781,7 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       apiFootballMarketsSample: result.apiFootballMarketsSample,
       apiFootballError: result.apiFootballError,
       likelySource: result.likelySource,
+      likelyRootCause: result.likelyRootCause,
     }
   }
 
@@ -1817,6 +1882,9 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'sync-fixture-odds') return syncApiFootballFixtureOdds(body, dayRange, context)
   if (mode === 'sync-today-odds') return syncTodayOdds(body, dayRange, context)
   if (mode === 'sync-daily-top10-odds') return syncDailyTop10Odds(body, dayRange, context)
+  if (mode === 'build-daily-market-candidates') return buildDailyMarketCandidates(body, dayRange)
+  if (mode === 'sync-daily-candidate-odds') return syncDailyCandidateOdds(body, dayRange, context)
+  if (mode === 'finalize-market-ready-candidates') return finalizeMarketReadyCandidates(dayRange, context)
   if (mode === 'sync-today-odds-finalize') return finalizeTodayOddsSync(dayRange, context)
   if (mode === 'diagnose-sync-today-odds') return diagnoseSyncTodayOdds(dayRange, context)
   if (mode === 'recompute-ai-final-picks') return recomputeAiFinalPicks(dayRange, context)
@@ -3169,6 +3237,237 @@ async function syncDailyTop10Odds(body: Record<string, unknown>, dayRange: Retur
   }
 }
 
+async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const selectionDate = dayRange.dateKey
+  const candidateLimit = getPositiveLimit(body.limit, 50, 80)
+  const forceRebuild = body.forceRebuild === true || body.force === true
+  const existing = await fetchDailyMarketCandidateRows(selectionDate)
+  const warnings: Array<string> = []
+
+  if (existing.length && !forceRebuild) {
+    return {
+      status: 'success',
+      processed: 0,
+      totalCandidates: existing.length,
+      rowsSaved: 0,
+      failed: 0,
+      skipped: existing.length,
+      selectionDate,
+      totalFixtures: existing.length,
+      playableFixtures: existing.length,
+      candidateLimit,
+      candidatesSaved: existing.length,
+      candidateFixtureIds: existing.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
+      topCandidateSample: existing.slice(0, 5).map(formatDailyMarketCandidateRow),
+      warnings: ['Reused stable daily_market_candidates; pass forceRebuild:true to rebuild'],
+      failures: [],
+    }
+  }
+
+  const matches = await fetchDailyTop10LockCandidates(dayRange)
+  const playable = matches.filter((match: any) =>
+    isPlayableStatusText(match.status_short ?? match.match_status ?? match.status) &&
+    hasStrictDailyFixtureCompleteness(match) &&
+    nullableNumber(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id)
+  )
+  const ranked = playable
+    .map((match: any) => ({ match, preSelectionScore: buildPreSelectionScore(match) }))
+    .sort((a: any, b: any) =>
+      b.preSelectionScore - a.preSelectionScore ||
+      new Date(a.match?.kickoff_at ?? 0).getTime() - new Date(b.match?.kickoff_at ?? 0).getTime()
+    )
+    .slice(0, candidateLimit)
+
+  const duplicateFixtureIds = findDuplicateNumbers(ranked.map((item: any) => nullableNumber(item.match.api_sports_fixture_id ?? item.match.raw?.raw_fixture_id)))
+  if (duplicateFixtureIds.length) warnings.push(`Duplicate fixture ids removed from candidate pool: ${duplicateFixtureIds.join(', ')}`)
+  const seenFixtureIds = new Set<number>()
+  const rows = ranked
+    .filter((item: any) => {
+      const fixtureId = Number(item.match.api_sports_fixture_id ?? item.match.raw?.raw_fixture_id ?? 0)
+      if (!fixtureId || seenFixtureIds.has(fixtureId)) return false
+      seenFixtureIds.add(fixtureId)
+      return true
+    })
+    .map((item: any, index: number) => ({
+      selection_date: selectionDate,
+      match_id: item.match.id,
+      api_fixture_id: nullableNumber(item.match.api_sports_fixture_id ?? item.match.raw?.raw_fixture_id),
+      candidate_rank: index + 1,
+      pre_selection_score: item.preSelectionScore,
+      market_readiness_status: 'WAITING_MARKET',
+      market_readiness_score: 0,
+      has_usable_ah: false,
+      has_usable_ou: false,
+      has_usable_match_winner: false,
+      odds_rows_count: 0,
+      odds_sync_status: 'PENDING',
+      excluded_reason: null,
+    }))
+
+  if (forceRebuild) {
+    const deleted = await supabase.from('daily_market_candidates').delete().eq('selection_date', selectionDate)
+    if (deleted.error) throw deleted.error
+  }
+  if (rows.length) {
+    const inserted = await supabase.from('daily_market_candidates').insert(rows)
+    if (inserted.error) throw inserted.error
+  }
+
+  return {
+    status: rows.length ? 'success' : 'empty',
+    processed: rows.length,
+    totalCandidates: rows.length,
+    rowsSaved: rows.length,
+    failed: 0,
+    skipped: Math.max(0, playable.length - rows.length),
+    selectionDate,
+    totalFixtures: matches.length,
+    playableFixtures: playable.length,
+    candidateLimit,
+    candidatesSaved: rows.length,
+    candidateFixtureIds: rows.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
+    topCandidateSample: rows.slice(0, 5).map(formatDailyMarketCandidateRow),
+    warnings,
+    failures: [],
+  }
+}
+
+async function syncDailyCandidateOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const selectionDate = dayRange.dateKey
+  const requestedFixtureId = nullableNumber(body.fixtureId ?? body.apiFixtureId ?? body.api_fixture_id)
+  const offset = Math.max(0, getSyncOffset(body.offset))
+  const limit = getPositiveLimit(body.maxFixturesPerRun ?? body.limit, 2, 10)
+  const force = body.force === true
+  const candidates = await fetchDailyMarketCandidateTargets(selectionDate)
+  if (!candidates.length) throw new Error(`daily_market_candidates is empty for ${selectionDate}; run build-daily-market-candidates first`)
+
+  const targets = requestedFixtureId
+    ? candidates.filter((target: any) => Number(target.api_sports_fixture_id ?? 0) === requestedFixtureId)
+    : candidates.slice(offset, offset + limit)
+  const initialCoverage = await fetchUsableOddsCoverageForTargets(candidates)
+  const warnings: Array<string> = []
+  const failures: Array<any> = []
+  const processedFixtureIds: Array<number> = []
+  const skippedAlreadyHasOdds: Array<number> = []
+  const skippedFixtureIds: Array<number> = []
+  const seenFixtureIds = new Set<number>()
+  let oddsRowsSaved = 0
+  let failed = 0
+  let emptyFixtures = 0
+  let hasAh = false
+  let hasOu = false
+  let hasMatchWinner = false
+
+  if (requestedFixtureId && !targets.length) warnings.push(`Fixture ${requestedFixtureId} is not in daily_market_candidates for ${selectionDate}`)
+
+  for (const target of targets) {
+    const fixtureId = Number(target.api_sports_fixture_id ?? target.raw?.raw_fixture_id ?? 0)
+    if (!fixtureId) {
+      warnings.push(`Candidate ${target.candidateId ?? target.id ?? 'unknown'} has no API-Football fixture id`)
+      continue
+    }
+    if (seenFixtureIds.has(fixtureId)) {
+      warnings.push(`Duplicate candidate fixture ${fixtureId} skipped in this request`)
+      skippedFixtureIds.push(fixtureId)
+      continue
+    }
+    seenFixtureIds.add(fixtureId)
+
+    if (!force && initialCoverage.byMatchId.get(target.id)?.usable) {
+      skippedAlreadyHasOdds.push(fixtureId)
+      skippedFixtureIds.push(fixtureId)
+      await updateDailyMarketCandidateFromCoverage(target.candidateId, initialCoverage.byMatchId.get(target.id), 'SKIPPED_ALREADY_READY')
+      continue
+    }
+
+    try {
+      const result = await withSyncOperation('unknown', 'sync_daily_candidate_odds_fixture', () => syncOddsForMatch(target, context, { usefulMarketsOnly: true, maxInsertChunkSize: 100 }))
+      processedFixtureIds.push(fixtureId)
+      oddsRowsSaved += Number(result.rowsSaved ?? 0)
+      failed += Number(result.failed ?? 0)
+      emptyFixtures += Number(result.empty ?? 0)
+      hasAh = hasAh || Boolean(result.hasAh)
+      hasOu = hasOu || Boolean(result.hasOu)
+      hasMatchWinner = hasMatchWinner || Boolean(result.marketsSaved?.includes('MATCH_WINNER'))
+      if (result.skipped || Number(result.empty ?? 0) > 0) skippedFixtureIds.push(fixtureId)
+      if (result.failure) failures.push(result.failure)
+      const coverage = await fetchUsableOddsCoverageForTargets([target])
+      await updateDailyMarketCandidateFromCoverage(target.candidateId, coverage.byMatchId.get(target.id), result.failed ? 'FAILED' : null)
+      if (result.rowsSaved === 0 && !result.failure) warnings.push(`No supported odds returned for candidate fixture ${fixtureId}`)
+    } catch (error) {
+      failed += 1
+      skippedFixtureIds.push(fixtureId)
+      const operationError = toSyncOperationError(error, 'unknown', 'sync_daily_candidate_odds_fixture')
+      failures.push(buildOperationFailure(operationError, { fixtureId }))
+      await updateDailyMarketCandidatePatch(target.candidateId, { odds_sync_status: 'FAILED' }).catch(() => {})
+    }
+  }
+
+  const finalCoverage = await fetchUsableOddsCoverageForTargets(candidates)
+  const statusCounts = summarizeCandidateCoverage(candidates, finalCoverage)
+  const consumedCount = targets.length
+  const nextOffset = requestedFixtureId ? null : offset + consumedCount < candidates.length ? offset + consumedCount : null
+
+  return {
+    status: failed > 0 ? (processedFixtureIds.length ? 'partial_success' : 'failed') : 'success',
+    processed: processedFixtureIds.length,
+    totalCandidates: candidates.length,
+    totalFetched: candidates.length,
+    rowsSaved: oddsRowsSaved,
+    failed,
+    skipped: [...new Set(skippedFixtureIds)].length,
+    partial: failed > 0 || nextOffset !== null,
+    selectionDate,
+    processedFixtureIds,
+    skippedFixtureIds: [...new Set(skippedFixtureIds)],
+    skippedAlreadyHasOdds: [...new Set(skippedAlreadyHasOdds)],
+    oddsRowsSaved,
+    oddsRowsInserted: oddsRowsSaved,
+    hasAh,
+    hasOu,
+    hasMatchWinner,
+    candidateWithOdds: finalCoverage.fixtureIds,
+    candidateWithoutOdds: candidates.map((target: any) => Number(target.api_sports_fixture_id ?? 0)).filter((fixtureId: number) => fixtureId && !finalCoverage.fixtureIds.includes(fixtureId)),
+    readyCandidateCount: statusCounts.READY,
+    nextOffset,
+    hasMore: nextOffset !== null,
+    warnings,
+    failures,
+  }
+}
+
+async function finalizeMarketReadyCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const selectionDate = dayRange.dateKey
+  const candidates = await fetchDailyMarketCandidateTargets(selectionDate)
+  if (!candidates.length) throw new Error(`daily_market_candidates is empty for ${selectionDate}; run build-daily-market-candidates first`)
+  const coverage = await fetchUsableOddsCoverageForTargets(candidates)
+  let updated = 0
+  for (const candidate of candidates) {
+    await updateDailyMarketCandidateFromCoverage(candidate.candidateId, coverage.byMatchId.get(candidate.id), null)
+    updated += 1
+  }
+  const finalPicks = await recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 50, mode: 'recompute-ai-final-picks-date' })
+  const refreshed = await fetchDailyMarketCandidateRows(selectionDate)
+  const counts = countCandidateReadiness(refreshed)
+  return {
+    status: Number(finalPicks.failed ?? 0) > 0 ? 'partial_success' : 'success',
+    processed: updated,
+    totalCandidates: candidates.length,
+    rowsSaved: updated + Number(finalPicks.rowsSaved ?? 0),
+    failed: Number(finalPicks.failed ?? 0),
+    skipped: 0,
+    selectionDate,
+    candidatesTotal: candidates.length,
+    readyCandidates: counts.READY,
+    partialCandidates: counts.PARTIAL,
+    waitingMarketCandidates: counts.WAITING_MARKET,
+    noMarketDataCandidates: counts.NO_MARKET_DATA,
+    analysisRowsUpdated: finalPicks.rowsSaved ?? 0,
+    warnings: counts.READY < 10 ? [`Only ${counts.READY} READY candidates available; strict picks may fill from waiting/no-market fixtures`] : [],
+    failures: finalPicks.failures ?? [],
+  }
+}
+
 async function finalizeTodayOddsSync(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const rankedSelectionRows = await withRetryableSyncOperation('database', 'recompute_ranking', () => updateDailySelectionRanks(dayRange))
   const finalPickRows = await withRetryableSyncOperation('database', 'recompute_ai_final_picks', () => recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks-date' }))
@@ -3191,6 +3490,7 @@ async function finalizeTodayOddsSync(dayRange: ReturnType<typeof getBangkokDayRa
 async function diagnoseSyncTodayOdds(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const candidates = await withSyncOperation('supabase', 'load_today_fixtures', () => fetchDbMatchCandidates(dayRange, 200, true))
   const oddsSummary = await withSyncOperation('supabase', 'count_today_odds', () => getDailyOddsSummary(dayRange))
+  const dailyMarketCandidateRows = await fetchDailyMarketCandidateRows(dayRange.dateKey).catch(() => [])
   const fixtures = candidates.rows ?? []
   const playableFixtures = fixtures.filter((match: any) => !isResultFinishedStatus(match.status ?? match.status_short ?? match.match_status))
   const finishedFixtures = fixtures.filter((match: any) => isResultFinishedStatus(match.status ?? match.status_short ?? match.match_status))
@@ -3227,6 +3527,26 @@ async function diagnoseSyncTodayOdds(dayRange: ReturnType<typeof getBangkokDayRa
         : oddsSummary.oddsRows === 0
           ? 'provider-or-not-yet-synced'
           : 'unknown'
+  const candidateCounts = countCandidateReadiness(dailyMarketCandidateRows)
+  const candidateWithOddsFixtureIds = dailyMarketCandidateRows
+    .filter((row: any) => Boolean(row.has_usable_ah || row.has_usable_ou || row.has_usable_match_winner || Number(row.odds_rows_count ?? 0) > 0))
+    .map((row: any) => Number(row.api_fixture_id ?? 0))
+    .filter(Boolean)
+  const candidateWithoutOddsFixtureIds = dailyMarketCandidateRows
+    .filter((row: any) => !candidateWithOddsFixtureIds.includes(Number(row.api_fixture_id ?? 0)))
+    .map((row: any) => Number(row.api_fixture_id ?? 0))
+    .filter(Boolean)
+  const readyCandidateFixtureIds = dailyMarketCandidateRows
+    .filter((row: any) => String(row.market_readiness_status ?? '').toUpperCase() === 'READY')
+    .map((row: any) => Number(row.api_fixture_id ?? 0))
+    .filter(Boolean)
+  const likelyRootCause = getDailyOddsLikelyRootCause({
+    fixturesCount: oddsSummary.totalFixtures,
+    todayOddsRows: oddsSummary.oddsRows,
+    candidateCount: dailyMarketCandidateRows.length,
+    readyCandidateCount: candidateCounts.READY,
+    candidateWithoutOddsCount: candidateWithoutOddsFixtureIds.length,
+  })
 
   return {
     status: 'success',
@@ -3242,6 +3562,14 @@ async function diagnoseSyncTodayOdds(dayRange: ReturnType<typeof getBangkokDayRa
     finishedCount: finishedFixtures.length,
     sampleFixtureIds: fixtures.slice(0, 2).map((match: any) => Number(match.api_sports_fixture_id ?? 0)).filter(Boolean),
     todayOddsRows: oddsSummary.oddsRows,
+    dailyMarketCandidates: dailyMarketCandidateRows.length,
+    candidateReadyCount: candidateCounts.READY,
+    candidatePartialCount: candidateCounts.PARTIAL,
+    candidateWaitingMarketCount: candidateCounts.WAITING_MARKET,
+    candidateNoMarketDataCount: candidateCounts.NO_MARKET_DATA,
+    candidateWithOddsFixtureIds,
+    candidateWithoutOddsFixtureIds,
+    readyCandidateFixtureIds,
     env: {
       supabaseUrlPresent: Boolean(supabaseUrl),
       supabaseServiceKeyPresent: Boolean(serviceRoleKey),
@@ -3253,7 +3581,17 @@ async function diagnoseSyncTodayOdds(dayRange: ReturnType<typeof getBangkokDayRa
     apiFootballMarketsSample,
     apiFootballError,
     likelySource,
+    likelyRootCause,
   }
+}
+
+function getDailyOddsLikelyRootCause(input: { fixturesCount: number; todayOddsRows: number; candidateCount: number; readyCandidateCount: number; candidateWithoutOddsCount: number }) {
+  if (!input.fixturesCount) return 'UNKNOWN'
+  if (!input.candidateCount) return 'DAILY_MARKET_CANDIDATES_NOT_BUILT'
+  if (input.readyCandidateCount < 10 && input.candidateWithoutOddsCount > 0) return 'CANDIDATE_ODDS_SYNC_INCOMPLETE_OR_PROVIDER_EMPTY'
+  if (input.readyCandidateCount >= 10) return 'READY_CANDIDATES_AVAILABLE'
+  if (input.todayOddsRows > 0) return 'UNKNOWN'
+  return 'ODDS_SYNC_NOT_RUN_FOR_TODAY'
 }
 
 async function fetchTodayOddsFixtureCandidates(dayRange: ReturnType<typeof getBangkokDayRange>) {
@@ -3375,7 +3713,223 @@ async function fetchUsableTop10OddsCoverage(targets: Array<any>) {
 }
 
 function isUsableFullTimeOddsRow(row: any) {
-  return ['MATCH_WINNER', 'AH', 'OU'].includes(normalizeMarketFocus(row.market_focus ?? row.market_name))
+  return isSupportedFullTimeOddsMarket(row.market_name ?? row.market_focus, { value: row.selection ?? row.line }, normalizeMarketFocus(row.market_focus ?? row.market_name))
+}
+
+async function fetchDailyMarketCandidateRows(selectionDate: string) {
+  const result = await supabase
+    .from('daily_market_candidates')
+    .select('*')
+    .eq('selection_date', selectionDate)
+    .order('candidate_rank', { ascending: true })
+  if (result.error) {
+    if (isMissingTableError(result.error)) throw new Error('Missing daily_market_candidates table. Apply migration 20260712_add_daily_market_candidates.sql before running the market-first daily pipeline.')
+    throw result.error
+  }
+  return result.data ?? []
+}
+
+async function fetchDailyMarketCandidateTargets(selectionDate: string) {
+  const rows = await fetchDailyMarketCandidateRows(selectionDate)
+  const matchIds = [...new Set(rows.map((row: any) => row.match_id).filter(Boolean))]
+  if (!matchIds.length) return []
+  const matches = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      kickoff_at,
+      status,
+      status_short,
+      status_long,
+      match_status,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
+      raw,
+      league:football_leagues(id, api_league_id, name, country, priority),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
+    `)
+    .in('id', matchIds)
+  if (matches.error) throw matches.error
+  const matchById = new Map((matches.data ?? []).map((match: any) => [match.id, match]))
+  const seenFixtureIds = new Set<number>()
+  return rows
+    .map((candidate: any) => {
+      const match = matchById.get(candidate.match_id)
+      if (!match) return null
+      const fixtureId = nullableNumber(candidate.api_fixture_id ?? match.api_sports_fixture_id ?? match.raw?.raw_fixture_id)
+      if (!fixtureId || seenFixtureIds.has(fixtureId)) return null
+      seenFixtureIds.add(fixtureId)
+      return {
+        ...match,
+        api_sports_fixture_id: fixtureId,
+        candidateId: candidate.id,
+        candidate,
+      }
+    })
+    .filter(Boolean)
+    .sort((a: any, b: any) => numericSortValue(a.candidate?.candidate_rank, 999) - numericSortValue(b.candidate?.candidate_rank, 999))
+}
+
+function buildPreSelectionScore(match: any) {
+  const analysis = getAnalysis(match)
+  const fixturePriority = getFixtureSyncPriority({
+    league: { name: match.league?.name, country: match.league?.country, id: match.league?.api_league_id },
+    homeTeam: { name: match.homeTeam?.name },
+    awayTeam: { name: match.awayTeam?.name },
+  })
+  const leagueQuality = normalizeScore(analysis?.league_quality_score ?? fixturePriority.leagueQualityScore ?? match.league?.priority ?? 50)
+  const teamMetadata = Number(Boolean(match.homeTeam?.api_team_id)) * 8 + Number(Boolean(match.awayTeam?.api_team_id)) * 8
+  const fixtureIdScore = nullableNumber(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id) ? 12 : -40
+  const detailScore = Number(Boolean(match.has_fixture_detail)) * 8
+  const readiness = String(match.data_readiness_status ?? '').toUpperCase()
+  const readinessScore = readiness === 'READY' ? 10 : readiness === 'PARTIAL' ? 6 : 2
+  return normalizeScore(leagueQuality * 0.55 + fixturePriority.syncPriorityScore * 0.25 + teamMetadata + fixtureIdScore + detailScore + readinessScore)
+}
+
+function formatDailyMarketCandidateRow(row: any) {
+  return {
+    matchId: row.match_id,
+    apiFixtureId: row.api_fixture_id,
+    candidateRank: row.candidate_rank,
+    preSelectionScore: row.pre_selection_score,
+    marketReadinessStatus: row.market_readiness_status,
+    hasUsableAh: Boolean(row.has_usable_ah),
+    hasUsableOu: Boolean(row.has_usable_ou),
+    hasUsableMatchWinner: Boolean(row.has_usable_match_winner),
+    oddsRowsCount: row.odds_rows_count ?? 0,
+  }
+}
+
+function findDuplicateNumbers(values: Array<number | null>) {
+  const seen = new Set<number>()
+  const duplicates = new Set<number>()
+  for (const value of values) {
+    if (!value) continue
+    if (seen.has(value)) duplicates.add(value)
+    else seen.add(value)
+  }
+  return [...duplicates]
+}
+
+async function fetchUsableOddsCoverageForTargets(targets: Array<any>) {
+  const matchIds = [...new Set(targets.map((target: any) => target.id).filter(Boolean))]
+  if (!matchIds.length) return { byMatchId: new Map<string, any>(), fixtureIds: [] as Array<number> }
+  const result = await supabase
+    .from('football_match_odds')
+    .select('match_id, api_fixture_id, market_focus, market_name, line, selection, price, is_latest')
+    .in('match_id', matchIds)
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return { byMatchId: new Map<string, any>(), fixtureIds: [] as Array<number> }
+    throw result.error
+  }
+
+  const targetByMatchId = new Map(targets.map((target: any) => [target.id, target]))
+  const byMatchId = new Map<string, any>()
+  for (const row of result.data ?? []) {
+    if (!row.match_id || !isSupportedFullTimeOddsRow(row)) continue
+    const current = byMatchId.get(row.match_id) ?? { matchId: row.match_id, fixtureId: nullableNumber(row.api_fixture_id ?? targetByMatchId.get(row.match_id)?.api_sports_fixture_id), rows: 0, hasAh: false, hasOu: false, hasMatchWinner: false }
+    const focus = normalizeMarketFocus(row.market_focus ?? row.market_name)
+    current.rows += 1
+    if (focus === 'AH') current.hasAh = true
+    if (focus === 'OU') current.hasOu = true
+    if (focus === 'MATCH_WINNER') current.hasMatchWinner = true
+    current.usable = current.hasAh || current.hasOu || current.hasMatchWinner
+    byMatchId.set(row.match_id, current)
+  }
+  return {
+    byMatchId,
+    fixtureIds: [...new Set([...byMatchId.values()].map((item: any) => Number(item.fixtureId ?? 0)).filter(Boolean))],
+  }
+}
+
+function summarizeCandidateCoverage(targets: Array<any>, coverage: { byMatchId: Map<string, any> }) {
+  const summary: Record<string, number> = { READY: 0, PARTIAL: 0, WAITING_MARKET: 0, NO_MARKET_DATA: 0 }
+  for (const target of targets) {
+    const status = classifyCandidateMarketReadiness(coverage.byMatchId.get(target.id))
+    summary[status] += 1
+  }
+  return summary
+}
+
+function countCandidateReadiness(rows: Array<any>) {
+  const summary: Record<string, number> = { READY: 0, PARTIAL: 0, WAITING_MARKET: 0, NO_MARKET_DATA: 0 }
+  for (const row of rows) {
+    const status = String(row.market_readiness_status ?? 'WAITING_MARKET').toUpperCase()
+    if (status in summary) summary[status] += 1
+  }
+  return summary
+}
+
+function classifyCandidateMarketReadiness(coverage: any) {
+  if (!coverage || Number(coverage.rows ?? 0) <= 0) return 'NO_MARKET_DATA'
+  if (coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner) return 'READY'
+  return 'PARTIAL'
+}
+
+function candidateMarketReadinessScore(coverage: any) {
+  if (!coverage || Number(coverage.rows ?? 0) <= 0) return 0
+  return normalizeScore(Number(coverage.hasAh) * 35 + Number(coverage.hasOu) * 35 + Number(coverage.hasMatchWinner) * 30)
+}
+
+async function updateDailyMarketCandidateFromCoverage(candidateId: string, coverage: any, overrideStatus: string | null) {
+  const readiness = classifyCandidateMarketReadiness(coverage)
+  const status = overrideStatus ?? readiness
+  return updateDailyMarketCandidatePatch(candidateId, {
+    market_readiness_status: readiness,
+    market_readiness_score: candidateMarketReadinessScore(coverage),
+    has_usable_ah: Boolean(coverage?.hasAh),
+    has_usable_ou: Boolean(coverage?.hasOu),
+    has_usable_match_winner: Boolean(coverage?.hasMatchWinner),
+    odds_rows_count: Number(coverage?.rows ?? 0),
+    odds_synced_at: new Date().toISOString(),
+    odds_sync_status: status,
+  })
+}
+
+async function updateDailyMarketCandidatePatch(candidateId: string, patch: Record<string, unknown>) {
+  if (!candidateId) return
+  const result = await supabase.from('daily_market_candidates').update(patch).eq('id', candidateId)
+  if (result.error) throw result.error
+}
+
+function getMarketFirstReadinessStatus(item: any) {
+  return String(item.candidate?.market_readiness_status ?? (item.strict?.hasApiFootballOdds ? 'PARTIAL' : 'NO_MARKET_DATA')).toUpperCase()
+}
+
+function getMarketReadinessGateRank(status: string) {
+  if (status === 'READY') return 1
+  if (status === 'PARTIAL') return 2
+  if (status === 'WAITING_MARKET') return 3
+  return 4
+}
+
+function buildMarketFirstSelectionScore(match: any, odds: Array<any>, strict: any) {
+  const candidate = match.candidate ?? {}
+  const analysis = getAnalysis(match)
+  const status = String(candidate.market_readiness_status ?? 'NO_MARKET_DATA').toUpperCase()
+  const marketReadinessScore = normalizeScore(candidate.market_readiness_score ?? 0)
+  const valueEdgeScore = normalizeScore(analysis?.value_edge_score ?? analysis?.raw?.value_edge_score ?? strict.marketReadinessScore ?? 0)
+  const modelConfidenceScore = normalizeScore(analysis?.calibrated_confidence_score ?? analysis?.confidence_score ?? strict.strictRankingScore ?? 0)
+  const dataQualityScore = normalizeScore(analysis?.data_quality_score ?? analysis?.raw?.data_quality_score ?? strict.dataReadinessScore ?? 0)
+  const leagueQualityScore = normalizeScore(analysis?.league_quality_score ?? match.league?.priority ?? 50)
+  const riskPenalty = riskSortValue(analysis?.risk_level) * 20
+  let score = marketReadinessScore * 0.25 + valueEdgeScore * 0.25 + modelConfidenceScore * 0.2 + dataQualityScore * 0.1 + leagueQualityScore * 0.1 - riskPenalty * 0.1
+  if (status === 'NO_MARKET_DATA') score = Math.min(score, 59)
+  if (!odds.length) score = Math.min(score, 60)
+  return normalizeScore(score)
+}
+
+function compareMarketFirstCandidateItems(a: any, b: any) {
+  const gateDiff = getMarketReadinessGateRank(getMarketFirstReadinessStatus(a)) - getMarketReadinessGateRank(getMarketFirstReadinessStatus(b))
+  if (gateDiff !== 0) return gateDiff
+  const scoreDiff = b.finalSelectionScore - a.finalSelectionScore
+  if (scoreDiff !== 0) return scoreDiff
+  return numericSortValue(a.candidate?.candidate_rank, 999) - numericSortValue(b.candidate?.candidate_rank, 999)
 }
 
 function isTodayOddsPlayableFixture(match: any) {
@@ -4041,6 +4595,8 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
 }
 
 async function strictApiFootballDailyPicks(dayRange: ReturnType<typeof getBangkokDayRange>, body: Record<string, unknown>) {
+  if (body.marketFirst === true) return strictApiFootballDailyPicksMarketFirst(dayRange, body)
+
   const selectionDate = typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : dayRange.dateKey
   const limit = getPositiveNumber(body.limit, 10, 10)
   const strictRange = getBangkokDayRange(selectionDate)
@@ -4119,6 +4675,103 @@ async function strictApiFootballDailyPicks(dayRange: ReturnType<typeof getBangko
     },
     usedRollingWindow: false,
     usedNextDateFallback: false,
+    selectedMatches: selected.map((item: any, index: number) => formatStrictSelectedMatch({ ...item, rank: index + 1 })),
+  }
+}
+
+async function strictApiFootballDailyPicksMarketFirst(dayRange: ReturnType<typeof getBangkokDayRange>, body: Record<string, unknown>) {
+  const selectionDate = typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : dayRange.dateKey
+  const limit = getPositiveNumber(body.limit, 10, 10)
+  const [candidateTargets, existing] = await Promise.all([
+    fetchDailyMarketCandidateTargets(selectionDate),
+    supabase
+      .from('daily_top10_selections')
+      .select('*')
+      .eq('selection_date', selectionDate)
+      .order('rank', { ascending: true }),
+  ])
+  if (existing.error) throw existing.error
+  if (!candidateTargets.length) throw new Error(`daily_market_candidates is empty for ${selectionDate}; run build-daily-market-candidates and finalize-market-ready-candidates before strict marketFirst picks`)
+
+  const matchIds = candidateTargets.map((match: any) => match.id).filter(Boolean)
+  const [picks, oddsByMatchId] = await Promise.all([
+    fetchAiFinalPicksForMatches(matchIds),
+    fetchStoredOddsByMatchIds(matchIds),
+  ])
+  const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
+  const candidates = candidateTargets
+    .map((match: any) => {
+      const odds = oddsByMatchId.get(match.id) ?? []
+      const pickTeam = deriveEdgePickTeamFromApiFootballOdds(match, odds)
+      const strict = buildStrictApiFootballCandidate(match, odds, pickTeam)
+      return {
+        match,
+        analysis: getAnalysis(match),
+        pick: pickByMatch.get(match.id) ?? null,
+        odds,
+        pickTeam,
+        strict,
+        candidate: match.candidate,
+        finalSelectionScore: buildMarketFirstSelectionScore(match, odds, strict),
+      }
+    })
+    .sort(compareMarketFirstCandidateItems)
+
+  const readyCandidates = candidates.filter((item: any) => getMarketFirstReadinessStatus(item) === 'READY')
+  const selected = candidates.slice(0, limit)
+  const selectedReadyCount = selected.filter((item: any) => getMarketFirstReadinessStatus(item) === 'READY').length
+  const selectedPartialCount = selected.filter((item: any) => getMarketFirstReadinessStatus(item) === 'PARTIAL').length
+  const selectedWaitingMarketCount = selected.filter((item: any) => getMarketFirstReadinessStatus(item) === 'WAITING_MARKET').length
+  const selectedNoMarketDataCount = selected.filter((item: any) => getMarketFirstReadinessStatus(item) === 'NO_MARKET_DATA').length
+  const avoidableNoMarketData = readyCandidates.length >= limit && selectedNoMarketDataCount > 0
+  if (avoidableNoMarketData) {
+    throw new Error(`marketFirst invariant failed: selected NO_MARKET_DATA while ${readyCandidates.length} READY candidates exist`)
+  }
+
+  const persistResult = await persistMarketReadyTop10(selectionDate, selected, existing.data ?? [], { cleanupUnselected: true })
+  const selectedStrict = selected.map((item: any) => item.strict)
+  const top10WithOdds = selected.filter((item: any) => item.strict.hasApiFootballOdds).map((item: any) => Number(item.match.api_sports_fixture_id ?? 0)).filter(Boolean)
+  const selectedFixtureIds = selected.map((item: any) => Number(item.match.api_sports_fixture_id ?? 0)).filter(Boolean)
+  const warnings = []
+  if (readyCandidates.length < limit) warnings.push(`Only ${readyCandidates.length} READY candidates available; filled remaining Top10 from lower readiness candidates`)
+
+  return {
+    processed: selected.length,
+    selectedCount: selected.length,
+    totalCandidates: candidates.length,
+    rowsSaved: persistResult.rowsSaved,
+    rowsUpdated: persistResult.rowsUpdated,
+    rowsInserted: persistResult.rowsInserted,
+    rowsSkipped: persistResult.rowsSkipped,
+    rowsDeleted: persistResult.rowsDeleted,
+    duplicateRankResolved: persistResult.duplicateRankResolved,
+    failed: persistResult.failed,
+    failures: persistResult.failures,
+    status: persistResult.failed > 0 ? (persistResult.rowsSaved > 0 ? 'partial_success' : 'failed') : 'success',
+    selectionDate,
+    requestedSelectionDate: selectionDate,
+    resolvedDateKey: selectionDate,
+    readyCandidates: readyCandidates.length,
+    selectedReadyCount,
+    selectedPartialCount,
+    selectedWaitingMarketCount,
+    selectedNoMarketDataCount,
+    top10WithOdds,
+    top10WithoutOdds: selectedFixtureIds.filter((fixtureId: number) => !top10WithOdds.includes(fixtureId)),
+    selectedFixtureIds,
+    selectedWithOddsCount: selectedStrict.filter((item: any) => item.hasApiFootballOdds).length,
+    selectedWithoutOddsCount: selectedStrict.filter((item: any) => !item.hasApiFootballOdds).length,
+    selectedWithPickTeamCount: selectedStrict.filter((item: any) => Boolean(item.pickTeam)).length,
+    selectedWithoutPickTeamCount: selectedStrict.filter((item: any) => !item.pickTeam).length,
+    primaryMarketCount: selectedStrict.filter((item: any) => item.hasPrimaryMarket).length,
+    marketPrioritySummary: summarizeStrictMarketPriority(selectedStrict),
+    pickTeamCoverage: {
+      withPickTeam: selectedStrict.filter((item: any) => Boolean(item.pickTeam)).length,
+      withoutPickTeam: selectedStrict.filter((item: any) => !item.pickTeam).length,
+    },
+    usedRollingWindow: false,
+    usedNextDateFallback: false,
+    warnings,
     selectedMatches: selected.map((item: any, index: number) => formatStrictSelectedMatch({ ...item, rank: index + 1 })),
   }
 }
@@ -6290,6 +6943,7 @@ function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<an
         if (marketFocus === 'NONE') continue
         if (allowedMarketFocuses && !allowedMarketFocuses.has(marketFocus)) continue
         for (const value of bet.values ?? []) {
+          if (!isSupportedFullTimeOddsMarket(bet.name, value, marketFocus)) continue
           rows.push({
             match_id: match.id,
             api_fixture_id: fixtureId,
@@ -6407,11 +7061,45 @@ function normalizeOddsPayload(match: any, response: any) {
 
 function normalizeMarketFocus(value: unknown) {
   const text = String(value ?? '').toUpperCase()
+  if (isUnsupportedMainOddsMarketText(text)) return 'NONE'
   if (text.includes('ASIAN') || text.includes('HANDICAP')) return 'AH'
   if (text.includes('OVER') || text.includes('UNDER') || text.includes('GOALS') || text.includes('TOTAL')) return 'OU'
   if (text.includes('MATCH WINNER') || text.includes('1X2') || text.includes('HOME/AWAY')) return 'MATCH_WINNER'
   if (text.includes('BOTH TEAMS') || text.includes('BTTS')) return 'BTTS'
   return 'NONE'
+}
+
+function isUnsupportedMainOddsMarketText(value: unknown) {
+  const text = String(value ?? '').toUpperCase()
+  return [
+    'CORNER',
+    'CARD',
+    'BOOKING',
+    'FIRST HALF',
+    '1ST HALF',
+    'SECOND HALF',
+    '2ND HALF',
+    'HALF TIME',
+    'HT/FT',
+    'TEAM TOTAL',
+    'TEAM GOALS',
+    'PLAYER',
+    'SPECIAL',
+    'EXACT SCORE',
+    'DOUBLE CHANCE',
+    'EXTRA TIME',
+    'PENALT',
+  ].some((blocked) => text.includes(blocked))
+}
+
+function isSupportedFullTimeOddsMarket(marketName: unknown, value: any, marketFocus = normalizeMarketFocus(marketName)) {
+  if (!['MATCH_WINNER', 'AH', 'OU'].includes(marketFocus)) return false
+  if (isUnsupportedMainOddsMarketText(marketName) || isUnsupportedMainOddsMarketText(value?.value)) return false
+  if (marketFocus === 'OU') {
+    const line = parseBetLine(value?.value ?? value?.line)
+    if (line !== null && Math.abs(line) >= 6.5) return false
+  }
+  return true
 }
 
 function buildEdgeAiFinalPick(match: any) {
@@ -8896,6 +9584,11 @@ function isMissingColumnError(error: any) {
   return error?.code === '42703' || /column .* does not exist/i.test(message) || /Could not find .* column/i.test(message)
 }
 
+function isMissingTableError(error: any) {
+  const message = String(error?.message ?? error?.details ?? '')
+  return error?.code === '42P01' || /relation .* does not exist/i.test(message) || /Could not find the table/i.test(message)
+}
+
 function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority, recentMatches, recentOpponents }: any) {
   const homeStanding = findStanding(standings, match.homeTeam?.id)
   const awayStanding = findStanding(standings, match.awayTeam?.id)
@@ -10402,6 +11095,8 @@ function getSyncLimit(value: unknown, mode = 'manual') {
   if (mode === 'sync-odds') return getPositiveLimit(value, 10, maxFootballEnrichmentLimit)
   if (mode === 'sync-today-odds') return 1
   if (mode === 'sync-daily-top10-odds') return getPositiveLimit(value, 2, 10)
+  if (mode === 'sync-daily-candidate-odds') return getPositiveLimit(value, 2, 10)
+  if (mode === 'build-daily-market-candidates') return getPositiveLimit(value, 50, 80)
   if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
   if (isResultPipelineMode(mode)) return getPositiveLimit(value, 10, 20)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
