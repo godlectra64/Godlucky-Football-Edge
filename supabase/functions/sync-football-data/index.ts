@@ -103,6 +103,7 @@ const footballEnrichmentModes = [
   'sync-odds',
   'sync-fixture-odds',
   'sync-today-odds',
+  'sync-daily-top10-odds',
   'sync-today-odds-finalize',
   'diagnose-sync-today-odds',
   'recompute-ai-final-picks',
@@ -227,6 +228,10 @@ Deno.serve(async (request) => {
         marketsSaved: modeResult.marketsSaved,
         hasAh: modeResult.hasAh,
         hasOu: modeResult.hasOu,
+        totalTop10: modeResult.totalTop10,
+        skippedAlreadyHasOdds: modeResult.skippedAlreadyHasOdds,
+        top10WithOdds: modeResult.top10WithOdds,
+        top10WithoutOdds: modeResult.top10WithoutOdds,
         locked: modeResult.locked,
         alreadyLocked: modeResult.alreadyLocked,
         lockedCount: modeResult.lockedCount,
@@ -683,6 +688,10 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       marketsSaved: result.marketsSaved,
       hasAh: result.hasAh,
       hasOu: result.hasOu,
+      totalTop10: result.totalTop10,
+      skippedAlreadyHasOdds: result.skippedAlreadyHasOdds,
+      top10WithOdds: result.top10WithOdds,
+      top10WithoutOdds: result.top10WithoutOdds,
       nextRequestExample: result.nextRequestExample,
       locked: result.locked,
       alreadyLocked: result.alreadyLocked,
@@ -1806,6 +1815,7 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'sync-odds') return syncApiFootballOdds(body, dayRange, context)
   if (mode === 'sync-fixture-odds') return syncApiFootballFixtureOdds(body, dayRange, context)
   if (mode === 'sync-today-odds') return syncTodayOdds(body, dayRange, context)
+  if (mode === 'sync-daily-top10-odds') return syncDailyTop10Odds(body, dayRange, context)
   if (mode === 'sync-today-odds-finalize') return finalizeTodayOddsSync(dayRange, context)
   if (mode === 'diagnose-sync-today-odds') return diagnoseSyncTodayOdds(dayRange, context)
   if (mode === 'recompute-ai-final-picks') return recomputeAiFinalPicks(dayRange, context)
@@ -3051,6 +3061,113 @@ async function syncTodayOdds(body: Record<string, unknown>, dayRange: ReturnType
   }
 }
 
+async function syncDailyTop10Odds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const selectionDate = dayRange.dateKey
+  const requestedFixtureId = nullableNumber(body.fixtureId ?? body.apiFixtureId ?? body.api_fixture_id)
+  const offset = Math.max(0, getSyncOffset(body.offset))
+  const limit = getPositiveLimit(body.maxFixturesPerRun ?? body.limit, 2, 10)
+  const force = body.force === true
+  const warnings: Array<string> = []
+  const failures: Array<any> = []
+  const processedFixtureIds: Array<number> = []
+  const skippedAlreadyHasOdds: Array<number> = []
+  const skippedFixtureIds: Array<number> = []
+  const seenFixtureIds = new Set<number>()
+  let oddsRowsSaved = 0
+  let failed = 0
+  let emptyFixtures = 0
+  let hasAh = false
+  let hasOu = false
+
+  const lockedTargets = await withRetryableSyncOperation('supabase', 'load_locked_daily_top10_odds_targets', () => fetchLockedDailyTop10OddsTargets(selectionDate))
+  const totalTop10 = lockedTargets.length
+  const requestedTargets = requestedFixtureId
+    ? lockedTargets.filter((target: any) => Number(target.api_sports_fixture_id ?? 0) === requestedFixtureId)
+    : lockedTargets.slice(offset, offset + limit)
+
+  if (requestedFixtureId && !requestedTargets.length) warnings.push(`Fixture ${requestedFixtureId} is not in locked Top10 for ${selectionDate}`)
+
+  const initialCoverage = await fetchUsableTop10OddsCoverage(lockedTargets)
+  for (const target of requestedTargets) {
+    const fixtureId = Number(target.api_sports_fixture_id ?? target.raw?.raw_fixture_id ?? 0)
+    if (!fixtureId) {
+      warnings.push(`Locked Top10 row ${target.selectionId ?? target.id ?? 'unknown'} has no API-Football fixture id`)
+      continue
+    }
+    if (seenFixtureIds.has(fixtureId)) {
+      warnings.push(`Duplicate locked Top10 fixture ${fixtureId} skipped in this request`)
+      skippedFixtureIds.push(fixtureId)
+      continue
+    }
+    seenFixtureIds.add(fixtureId)
+
+    if (!force && initialCoverage.matchIds.has(target.id)) {
+      skippedAlreadyHasOdds.push(fixtureId)
+      skippedFixtureIds.push(fixtureId)
+      continue
+    }
+
+    try {
+      const result = await withSyncOperation('unknown', 'sync_daily_top10_odds_fixture', () => syncOddsForMatch(target, context, { usefulMarketsOnly: true, maxInsertChunkSize: 100 }))
+      processedFixtureIds.push(fixtureId)
+      oddsRowsSaved += Number(result.rowsSaved ?? 0)
+      failed += Number(result.failed ?? 0)
+      emptyFixtures += Number(result.empty ?? 0)
+      hasAh = hasAh || Boolean(result.hasAh)
+      hasOu = hasOu || Boolean(result.hasOu)
+      if (result.skipped || Number(result.empty ?? 0) > 0) skippedFixtureIds.push(fixtureId)
+      if (result.failure) failures.push(result.failure)
+      if (result.rowsSaved === 0 && !result.failure) warnings.push(`No supported odds returned for locked Top10 fixture ${fixtureId}`)
+      if (result.rowsSaved > 0 && (!result.hasAh || !result.hasOu)) warnings.push(`No AH/O-U market returned for locked Top10 fixture ${fixtureId}`)
+    } catch (error) {
+      failed += 1
+      skippedFixtureIds.push(fixtureId)
+      const operationError = toSyncOperationError(error, 'unknown', 'sync_daily_top10_odds_fixture')
+      failures.push(buildOperationFailure(operationError, { fixtureId }))
+    }
+  }
+
+  const finalCoverage = await fetchUsableTop10OddsCoverage(lockedTargets)
+  const consumedCount = requestedTargets.length
+  const nextOffset = requestedFixtureId ? null : offset + consumedCount < totalTop10 ? offset + consumedCount : null
+  const hasMore = nextOffset !== null
+  const skippedAlreadyHasOddsSet = new Set(skippedAlreadyHasOdds)
+  const skippedUnique = [...new Set(skippedFixtureIds)]
+  const processed = processedFixtureIds.length
+  const partial = failed > 0 || hasMore || (processed > 0 && oddsRowsSaved === 0 && emptyFixtures === 0)
+
+  return {
+    status: failed > 0 ? (processed > 0 || oddsRowsSaved > 0 || skippedAlreadyHasOdds.length > 0 ? 'partial_success' : 'failed') : 'success',
+    processed,
+    totalCandidates: totalTop10,
+    totalFetched: totalTop10,
+    rowsSaved: oddsRowsSaved,
+    failed,
+    skipped: skippedUnique.length,
+    partial,
+    selectionDate,
+    totalTop10,
+    processedFixtures: processed,
+    processedFixtureIds,
+    skippedFixtureIds: skippedUnique,
+    skippedAlreadyHasOdds: [...skippedAlreadyHasOddsSet],
+    offset,
+    nextOffset,
+    hasMore,
+    oddsRowsSaved,
+    oddsRowsInserted: oddsRowsSaved,
+    hasAh,
+    hasOu,
+    top10WithOdds: finalCoverage.fixtureIds,
+    top10WithoutOdds: lockedTargets.map((target: any) => Number(target.api_sports_fixture_id ?? 0)).filter((fixtureId: number) => fixtureId && !finalCoverage.fixtureIds.includes(fixtureId)),
+    warnings,
+    failures,
+    nextRequestExample: hasMore
+      ? { mode: 'sync-daily-top10-odds', selectionDate, offset: nextOffset, limit, force }
+      : { mode: 'sync-today-odds-finalize', selectionDate },
+  }
+}
+
 async function finalizeTodayOddsSync(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const rankedSelectionRows = await withRetryableSyncOperation('database', 'recompute_ranking', () => updateDailySelectionRanks(dayRange))
   const finalPickRows = await withRetryableSyncOperation('database', 'recompute_ai_final_picks', () => recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks-date' }))
@@ -3159,6 +3276,105 @@ async function fetchTodayOddsFixtureCandidates(dayRange: ReturnType<typeof getBa
   if (result.error) throw result.error
   const rows = result.data ?? []
   return { rows, totalFixtures: result.count ?? rows.length }
+}
+
+async function fetchLockedDailyTop10OddsTargets(selectionDate: string) {
+  const selections = await supabase
+    .from('daily_top10_selections')
+    .select('id, rank, match_id, api_fixture_id, selection_score')
+    .eq('selection_date', selectionDate)
+    .order('rank', { ascending: true })
+    .order('id', { ascending: true })
+
+  if (selections.error) throw selections.error
+  const rows = selections.data ?? []
+  const matchIds = [...new Set(rows.map((row: any) => row.match_id).filter(Boolean))]
+  if (!matchIds.length) return []
+
+  const matches = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      kickoff_at,
+      status,
+      status_short,
+      match_status,
+      raw,
+      analysis:match_analysis(id, match_id, final_rank, ranking_score, confidence_score, recommendation, risk_level, raw)
+    `)
+    .in('id', matchIds)
+
+  if (matches.error) throw matches.error
+  const matchById = new Map((matches.data ?? []).map((match: any) => [match.id, match]))
+  const seenFixtureIds = new Set<number>()
+
+  return rows
+    .map((selection: any, selectionOrder: number) => {
+      const match = matchById.get(selection.match_id)
+      const fixtureId = nullableNumber(selection.api_fixture_id ?? match?.api_sports_fixture_id ?? match?.raw?.raw_fixture_id)
+      if (!match || !fixtureId) return null
+      const analysis = getAnalysis(match)
+      return {
+        ...match,
+        api_sports_fixture_id: fixtureId,
+        selectionId: selection.id,
+        selectionRank: nullableNumber(selection.rank),
+        selectionOrder,
+        finalRank: nullableNumber(analysis?.final_rank ?? selection.rank),
+      }
+    })
+    .filter(Boolean)
+    .sort(compareLockedDailyTop10OddsTarget)
+    .filter((target: any) => {
+      const fixtureId = Number(target.api_sports_fixture_id ?? 0)
+      if (!fixtureId || seenFixtureIds.has(fixtureId)) return false
+      seenFixtureIds.add(fixtureId)
+      return true
+    })
+}
+
+function compareLockedDailyTop10OddsTarget(a: any, b: any) {
+  const finalRankDiff = numericSortValue(a.finalRank, 999) - numericSortValue(b.finalRank, 999)
+  if (finalRankDiff !== 0) return finalRankDiff
+  const rankDiff = numericSortValue(a.selectionRank, 999) - numericSortValue(b.selectionRank, 999)
+  if (rankDiff !== 0) return rankDiff
+  return numericSortValue(a.selectionOrder, 999) - numericSortValue(b.selectionOrder, 999)
+}
+
+async function fetchUsableTop10OddsCoverage(targets: Array<any>) {
+  const matchIds = [...new Set(targets.map((target: any) => target.id).filter(Boolean))]
+  if (!matchIds.length) return { matchIds: new Set<string>(), fixtureIds: [] as Array<number> }
+
+  const result = await supabase
+    .from('football_match_odds')
+    .select('match_id, api_fixture_id, market_focus, market_name')
+    .in('match_id', matchIds)
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return { matchIds: new Set<string>(), fixtureIds: [] as Array<number> }
+    throw result.error
+  }
+
+  const targetByMatchId = new Map(targets.map((target: any) => [target.id, target]))
+  const matchIdsWithOdds = new Set<string>()
+  const fixtureIdsWithOdds = new Set<number>()
+  for (const row of result.data ?? []) {
+    if (!row.match_id || !isUsableFullTimeOddsRow(row)) continue
+    matchIdsWithOdds.add(row.match_id)
+    const target = targetByMatchId.get(row.match_id)
+    const fixtureId = nullableNumber(row.api_fixture_id ?? target?.api_sports_fixture_id)
+    if (fixtureId) fixtureIdsWithOdds.add(fixtureId)
+  }
+
+  return {
+    matchIds: matchIdsWithOdds,
+    fixtureIds: [...fixtureIdsWithOdds],
+  }
+}
+
+function isUsableFullTimeOddsRow(row: any) {
+  return ['MATCH_WINNER', 'AH', 'OU'].includes(normalizeMarketFocus(row.market_focus ?? row.market_name))
 }
 
 function isTodayOddsPlayableFixture(match: any) {
@@ -10184,6 +10400,7 @@ function getSupportedSyncModes() {
 function getSyncLimit(value: unknown, mode = 'manual') {
   if (mode === 'sync-odds') return getPositiveLimit(value, 10, maxFootballEnrichmentLimit)
   if (mode === 'sync-today-odds') return 1
+  if (mode === 'sync-daily-top10-odds') return getPositiveLimit(value, 2, 10)
   if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
   if (isResultPipelineMode(mode)) return getPositiveLimit(value, 10, 20)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit

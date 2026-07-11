@@ -143,6 +143,7 @@ assert.ok(syncFootballDataSource.includes('const result = await processInChunks(
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/odds'"), 'enrich mode should fetch API-FOOTBALL odds only outside manual sync')
 assert.ok(syncFootballDataSource.includes("'odds-sync'"), 'daily sync should include a dedicated odds-sync phase')
 assert.ok(syncFootballDataSource.includes("'sync-today-odds'"), 'sync-football-data should expose a safe manual today odds refresh mode')
+assert.ok(syncFootballDataSource.includes("'sync-daily-top10-odds'"), 'sync-football-data should expose a locked daily Top10 odds refresh mode')
 assert.ok(syncFootballDataSource.includes("'sync-today-odds-finalize'"), 'sync-football-data should expose a separate odds finalization mode')
 assert.ok(syncFootballDataSource.includes("'diagnose-sync-today-odds'"), 'sync-football-data should expose a read-only today odds diagnosis mode')
 assert.ok(syncFootballDataSource.includes("if (mode === 'sync-today-odds') return 1"), 'sync-today-odds should be hard-capped to one fixture per request')
@@ -163,10 +164,37 @@ assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admi
 assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'sync-today-odds accepts sb_secret')
 assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'strict-api-football-daily-picks accepts sb_secret')
 assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'daily-sync-auto accepts the same sb_secret path')
-for (const mode of ['diagnose-sync-today-odds', 'sync-today-odds', 'strict-api-football-daily-picks', 'daily-sync-auto']) {
+assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'sync-daily-top10-odds accepts the same sb_secret path')
+for (const mode of ['diagnose-sync-today-odds', 'sync-today-odds', 'strict-api-football-daily-picks', 'daily-sync-auto', 'sync-daily-top10-odds']) {
   assert.ok(syncFootballDataSource.includes(`'${mode}'`), `${mode} should be registered as an admin sync mode`)
   assert.equal(simulateSharedAdminAuth({ mode, apiKey: 'sb_publishable_anon', authorization: 'Bearer sb_publishable_anon', configuredSecrets: ['sb_secret_result_admin'] }), false, `${mode} must reject anon/publishable keys without an admin secret`)
 }
+const syncDailyTop10OddsSource = extractFunctionSource(syncFootballDataSource, 'syncDailyTop10Odds')
+assert.ok(syncDailyTop10OddsSource.includes('fetchLockedDailyTop10OddsTargets(selectionDate)'), 'sync-daily-top10-odds must use the locked Top10 list')
+assert.equal(syncDailyTop10OddsSource.includes('fetchTodayOddsFixtureCandidates'), false, 'sync-daily-top10-odds must not use the dynamic today odds candidate list')
+assert.equal(syncDailyTop10OddsSource.includes('fetchDbMatchCandidates'), false, 'sync-daily-top10-odds must not use dynamic DB ranking candidates')
+assert.ok(syncDailyTop10OddsSource.includes('seenFixtureIds'), 'sync-daily-top10-odds must dedupe fixture ids in a request')
+assert.ok(syncDailyTop10OddsSource.includes('skippedAlreadyHasOdds'), 'sync-daily-top10-odds should report already-priced locked fixtures')
+assert.ok(syncDailyTop10OddsSource.includes('body.force === true'), 'sync-daily-top10-odds should support force:true refetch')
+assert.ok(syncDailyTop10OddsSource.includes('usefulMarketsOnly: true'), 'sync-daily-top10-odds should request useful market filtering')
+assert.ok(syncFootballDataSource.includes("allowedMarketFocuses: options.usefulMarketsOnly ? ['AH', 'OU', 'MATCH_WINNER']"), 'locked Top10 odds sync should save only supported full-time markets')
+assert.deepEqual(planStableTop10OddsBatch([
+  { fixtureId: 101, hasUsableOdds: true },
+  { fixtureId: 101, hasUsableOdds: false },
+  { fixtureId: 102, hasUsableOdds: false },
+], { limit: 3, force: false }), {
+  processedFixtureIds: [102],
+  skippedAlreadyHasOdds: [101],
+  duplicateFixtureIds: [101],
+}, 'locked Top10 odds batching should dedupe and skip already-priced fixtures by default')
+assert.deepEqual(planStableTop10OddsBatch([
+  { fixtureId: 101, hasUsableOdds: true },
+  { fixtureId: 102, hasUsableOdds: false },
+], { limit: 2, force: true }), {
+  processedFixtureIds: [101, 102],
+  skippedAlreadyHasOdds: [],
+  duplicateFixtureIds: [],
+}, 'force:true should refetch locked fixtures that already have odds')
 assert.ok(syncFootballDataSource.includes('No odds returned for this fixture'), 'today odds sync should warn instead of failing when provider returns no odds for a fixture')
 assert.ok(syncFootballDataSource.includes('HTML error response received'), 'sync errors should sanitize HTML provider responses')
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/fixtures/statistics'"), 'enrich mode should fetch API-FOOTBALL fixture statistics')
@@ -1642,4 +1670,31 @@ function simulateSharedAdminAuth({ body = {}, apiKey = '', authorization = '', s
 
 function sanitizeTestHeaderValue(value) {
   return String(value ?? '').trim().replace(/^["'<]+|[>"']+$/g, '').replace(/[^\x20-\x7E]/g, '')
+}
+
+function extractFunctionSource(source, functionName) {
+  const start = source.indexOf(`async function ${functionName}`)
+  if (start === -1) throw new Error(`${functionName} source not found`)
+  const next = source.indexOf('\nasync function ', start + 1)
+  return next === -1 ? source.slice(start) : source.slice(start, next)
+}
+
+function planStableTop10OddsBatch(rows, { offset = 0, limit = 2, force = false } = {}) {
+  const seen = new Set()
+  const processedFixtureIds = []
+  const skippedAlreadyHasOdds = []
+  const duplicateFixtureIds = []
+  for (const row of rows.slice(offset, offset + limit)) {
+    if (seen.has(row.fixtureId)) {
+      duplicateFixtureIds.push(row.fixtureId)
+      continue
+    }
+    seen.add(row.fixtureId)
+    if (!force && row.hasUsableOdds) {
+      skippedAlreadyHasOdds.push(row.fixtureId)
+      continue
+    }
+    processedFixtureIds.push(row.fixtureId)
+  }
+  return { processedFixtureIds, skippedAlreadyHasOdds, duplicateFixtureIds }
 }

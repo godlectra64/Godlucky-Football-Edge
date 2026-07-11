@@ -33,16 +33,30 @@ const todayOdds = matchIds.length
   ? await selectAll('football_match_odds', 'id, match_id, market_focus, market_name, snapshot_at, updated_at', (query) => query.in('match_id', matchIds))
   : []
 const selected = await selectAll('daily_top10_selections', 'id, rank, match_id', (query) => query.eq('selection_date', range.dateKey))
-const selectedMatchIds = selected.map((row) => row.match_id).filter(Boolean)
+const selectedOrdered = [...selected].sort((a, b) => numericSort(a.rank, 999) - numericSort(b.rank, 999) || String(a.id ?? '').localeCompare(String(b.id ?? '')))
+const selectedMatchIds = selectedOrdered.map((row) => row.match_id).filter(Boolean)
 const selectedOdds = selectedMatchIds.length
   ? await selectAll('football_match_odds', 'id, match_id, market_focus, market_name', (query) => query.in('match_id', selectedMatchIds))
+  : []
+const selectedMatches = selectedMatchIds.length
+  ? await selectAll('football_matches', 'id, api_sports_fixture_id', (query) => query.in('id', selectedMatchIds))
   : []
 
 const latestOddsTimestamp = await getLatestOddsTimestamp()
 const latestOddsDates = await getLatestOddsMatchDates()
 const todayFixtureIds = new Set(matchIds)
 const oddsMatchIds = new Set(todayOdds.map((row) => row.match_id).filter(Boolean))
-const selectedOddsMatchIds = new Set(selectedOdds.map((row) => row.match_id).filter(Boolean))
+const selectedOddsMatchIds = new Set(selectedOdds.filter(isUsableFullTimeOddsRow).map((row) => row.match_id).filter(Boolean))
+const selectedMatchById = new Map(selectedMatches.map((row) => [row.id, row]))
+const selectedTop10FixtureIds = selectedMatchIds.map((matchId) => Number(selectedMatchById.get(matchId)?.api_sports_fixture_id ?? 0)).filter(Boolean)
+const selectedTop10WithOddsFixtureIds = selectedMatchIds
+  .filter((matchId) => selectedOddsMatchIds.has(matchId))
+  .map((matchId) => Number(selectedMatchById.get(matchId)?.api_sports_fixture_id ?? 0))
+  .filter(Boolean)
+const selectedTop10WithoutOddsFixtureIds = selectedMatchIds
+  .filter((matchId) => !selectedOddsMatchIds.has(matchId))
+  .map((matchId) => Number(selectedMatchById.get(matchId)?.api_sports_fixture_id ?? 0))
+  .filter(Boolean)
 
 const playableFixtures = matches.filter((match) => isPlayable(match))
 const finishedFixtures = matches.filter((match) => isFinished(match))
@@ -73,6 +87,9 @@ const report = {
   dailyTop10SelectedFixtures: selected.length,
   dailyTop10SelectedFixturesWithOdds: selectedOddsMatchIds.size,
   dailyTop10SelectedFixturesWithoutOdds: Math.max(0, selected.length - selectedOddsMatchIds.size),
+  selectedTop10FixtureIds,
+  selectedTop10WithOddsFixtureIds,
+  selectedTop10WithoutOddsFixtureIds,
   likelyRootCause,
 }
 
@@ -154,6 +171,10 @@ function isOuLike(row) {
   return focus === 'OU' || name.includes('over/under') || name.includes('goals over')
 }
 
+function isUsableFullTimeOddsRow(row) {
+  return isAhLike(row) || isOuLike(row) || String(row.market_focus ?? '').toUpperCase() === 'MATCH_WINNER' || String(row.market_name ?? '').toLowerCase().includes('match winner')
+}
+
 function isFinished(match) {
   const status = String(match.status_short ?? match.status ?? match.match_status ?? '').toUpperCase()
   return ['FT', 'AET', 'PEN', 'FINISHED'].includes(status)
@@ -166,4 +187,9 @@ function isPlayable(match) {
 
 function getBangkokToday() {
   return getBangkokDayRange(new Date()).dateKey
+}
+
+function numericSort(value, fallback) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
 }
