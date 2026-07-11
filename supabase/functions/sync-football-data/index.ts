@@ -58,7 +58,9 @@ const API_FOOTBALL_KEY = sanitizeHeaderValue(Deno.env.get('API_FOOTBALL_KEY') ??
 const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
 const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const secretKeys = parseSupabaseSecretKeys([
+  Deno.env.get('EDGE_ADMIN_SECRET'),
   Deno.env.get('EDGE_ADMIN_SECRET_KEYS'),
+  Deno.env.get('RESULT_ADMIN_SECRET'),
   Deno.env.get('SUPABASE_SECRET_KEYS'),
 ])
 

@@ -146,6 +146,27 @@ assert.ok(syncFootballDataSource.includes("'sync-today-odds'"), 'sync-football-d
 assert.ok(syncFootballDataSource.includes("'sync-today-odds-finalize'"), 'sync-football-data should expose a separate odds finalization mode')
 assert.ok(syncFootballDataSource.includes("'diagnose-sync-today-odds'"), 'sync-football-data should expose a read-only today odds diagnosis mode')
 assert.ok(syncFootballDataSource.includes("if (mode === 'sync-today-odds') return 1"), 'sync-today-odds should be hard-capped to one fixture per request')
+for (const envSource of [
+  "Deno.env.get('EDGE_ADMIN_SECRET')",
+  "Deno.env.get('EDGE_ADMIN_SECRET_KEYS')",
+  "Deno.env.get('RESULT_ADMIN_SECRET')",
+  "Deno.env.get('SUPABASE_SECRET_KEYS')",
+]) {
+  assert.ok(syncFootballDataSource.includes(envSource), `admin sb_secret auth should trust configured ${envSource}`)
+}
+assert.ok(syncFootballDataSource.includes("const authError = await getServiceAuthError(request, mode, body)"), 'all sync modes should pass the parsed JSON body into shared admin auth')
+assert.ok(syncFootballDataSource.includes("const bodySecret = sanitizeHeaderValue(typeof body.sb_secret === 'string' ? body.sb_secret : '')"), 'shared admin auth should read sb_secret from the JSON body')
+assert.ok(syncFootballDataSource.includes('const bodySecretPath = getTrustedAdminTokenPath(bodySecret)'), 'shared admin auth should validate body sb_secret through trusted token logic')
+assert.ok(syncFootballDataSource.includes("if (value === serviceRoleKey) return 'service_role'"), 'shared admin auth should keep service role key support')
+assert.ok(syncFootballDataSource.includes("if (secretKeys.includes(value)) return 'EDGE_ADMIN_SECRET_KEYS'"), 'shared admin auth should keep configured admin secret key support')
+assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'diagnose-sync-today-odds accepts sb_secret')
+assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'sync-today-odds accepts sb_secret')
+assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'strict-api-football-daily-picks accepts sb_secret')
+assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'daily-sync-auto accepts the same sb_secret path')
+for (const mode of ['diagnose-sync-today-odds', 'sync-today-odds', 'strict-api-football-daily-picks', 'daily-sync-auto']) {
+  assert.ok(syncFootballDataSource.includes(`'${mode}'`), `${mode} should be registered as an admin sync mode`)
+  assert.equal(simulateSharedAdminAuth({ mode, apiKey: 'sb_publishable_anon', authorization: 'Bearer sb_publishable_anon', configuredSecrets: ['sb_secret_result_admin'] }), false, `${mode} must reject anon/publishable keys without an admin secret`)
+}
 assert.ok(syncFootballDataSource.includes('No odds returned for this fixture'), 'today odds sync should warn instead of failing when provider returns no odds for a fixture')
 assert.ok(syncFootballDataSource.includes('HTML error response received'), 'sync errors should sanitize HTML provider responses')
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/fixtures/statistics'"), 'enrich mode should fetch API-FOOTBALL fixture statistics')
@@ -1608,4 +1629,17 @@ function toResultRows(matches) {
     homeScore: match.homeScore,
     awayScore: match.awayScore,
   }))
+}
+
+function simulateSharedAdminAuth({ body = {}, apiKey = '', authorization = '', serviceRoleKey = 'service_role_key', configuredSecrets = [] } = {}) {
+  const bearerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? ''
+  const bodySecret = typeof body.sb_secret === 'string' ? sanitizeTestHeaderValue(body.sb_secret) : ''
+  return [apiKey, bearerToken, bodySecret].some((value) => {
+    const token = sanitizeTestHeaderValue(value)
+    return token === serviceRoleKey || configuredSecrets.includes(token)
+  })
+}
+
+function sanitizeTestHeaderValue(value) {
+  return String(value ?? '').trim().replace(/^["'<]+|[>"']+$/g, '').replace(/[^\x20-\x7E]/g, '')
 }
