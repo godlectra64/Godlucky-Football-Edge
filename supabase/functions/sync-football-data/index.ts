@@ -1,6 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { getBangkokDayRange } from '../_shared/bangkokDateRange.ts'
 import { calculateSoftRanking, selectDailyTop10, DAILY_SELECTION_ALGORITHM_VERSION } from '../../../src/utils/dailySelectionEngine.js'
+import { buildRankingCompletionState } from '../../../src/utils/dailyRankingCompletion.js'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -663,6 +664,15 @@ type DailyFullSyncStepSummary = {
   endpointBreakdown?: Record<string, FootballEnrichmentEndpointCounter>
   details?: Record<string, unknown>
   rankingReadiness?: Record<string, number>
+  selectionCompleted?: boolean
+  selectionHealth?: string
+  rankingStatus?: string
+  retryable?: boolean
+  retryReasonCode?: string
+  marketReadinessStatus?: string
+  bettingReadiness?: string
+  expectedSelectedCount?: number
+  invariantFailures?: Array<string>
 }
 
 async function runFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
@@ -1142,6 +1152,8 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
   }
 
   const retry = getDailyStepRetryPlan(summary, attemptCount, maxAttempts)
+  summary.retryable = retry.retryable
+  summary.retryReasonCode = retry.retryReasonCode
   const stepStatus = retry.status
   const finishedAt = new Date().toISOString()
   const stepUpdate = await supabase
@@ -1222,8 +1234,17 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
   if (phase === 'odds-sync') rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved
   const failed = sumResultField(results, 'failed') + endpointDelta.failed
   const skipped = sumResultField(results, 'skipped') + endpointDelta.skipped
-  const partial = results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
-  const status = failed > 0 || partial ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
+  const rankingResult = phase === 'ranking' ? results[0] : null
+  const partial = phase === 'ranking'
+    ? Boolean(rankingResult?.retryable && failed > 0)
+    : results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
+  const status = phase === 'ranking'
+    ? rankingResult?.rankingStatus === 'success'
+      ? 'success'
+      : rankingResult?.retryable
+        ? 'partial_success'
+        : 'error'
+    : failed > 0 || partial ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
   await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: status === 'partial_success' ? 'success' : status, results_count: rowsSaved, finished_at: new Date().toISOString() })
   await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'finished', results_count: rowsSaved, finished_at: new Date().toISOString() })
 
@@ -1242,6 +1263,15 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     endpointBreakdown,
     details: buildDailyPhaseDetails(phase, results),
     rankingReadiness: phase === 'ranking' ? results[0]?.rankingReadiness : undefined,
+    selectionCompleted: phase === 'ranking' ? Boolean(results[0]?.selectionCompleted) : undefined,
+    selectionHealth: phase === 'ranking' ? results[0]?.selectionHealth : undefined,
+    rankingStatus: phase === 'ranking' ? results[0]?.rankingStatus : undefined,
+    retryable: phase === 'ranking' ? Boolean(results[0]?.retryable) : undefined,
+    retryReasonCode: phase === 'ranking' ? results[0]?.retryReasonCode : undefined,
+    marketReadinessStatus: phase === 'ranking' ? results[0]?.marketReadinessStatus : undefined,
+    bettingReadiness: phase === 'ranking' ? results[0]?.bettingReadiness : undefined,
+    expectedSelectedCount: phase === 'ranking' ? results[0]?.expectedSelectedCount : undefined,
+    invariantFailures: phase === 'ranking' ? results[0]?.invariantFailures : undefined,
   }
 }
 
@@ -1425,14 +1455,42 @@ function mapDailyStepStatus(summary: DailyFullSyncStepSummary) {
 
 function getDailyStepRetryPlan(summary: DailyFullSyncStepSummary, attemptCount: number, maxAttempts: number) {
   const failed = summary.status === 'error' || summary.status === 'partial_success' || summary.failed > 0
-  if (!failed) return { status: mapDailyStepStatus(summary), nextRetryAt: null }
+  const retryable = isDailyStepRetryable(summary, failed)
+  const retryReasonCode = getDailyStepRetryReasonCode(summary, failed, retryable)
+  if (!failed) return { status: mapDailyStepStatus(summary), nextRetryAt: null, retryable, retryReasonCode }
+  if (!retryable) {
+    return {
+      status: summary.status === 'partial_success' ? 'partial' : mapDailyStepStatus(summary),
+      nextRetryAt: null,
+      retryable,
+      retryReasonCode,
+    }
+  }
   if (attemptCount < maxAttempts) {
     return {
       status: 'pending_retry',
       nextRetryAt: new Date(Date.now() + getRetryDelayMs(attemptCount)).toISOString(),
+      retryable,
+      retryReasonCode,
     }
   }
-  return { status: summary.status === 'partial_success' ? 'partial' : 'failed', nextRetryAt: null }
+  return { status: summary.status === 'partial_success' ? 'partial' : 'failed', nextRetryAt: null, retryable, retryReasonCode }
+}
+
+function isDailyStepRetryable(summary: DailyFullSyncStepSummary, failed: boolean) {
+  if (!failed) return false
+  if (typeof summary.retryable === 'boolean') return summary.retryable
+  return Boolean(summary.rateLimited || summary.status === 'error' || summary.status === 'partial_success' || summary.failed > 0)
+}
+
+function getDailyStepRetryReasonCode(summary: DailyFullSyncStepSummary, failed: boolean, retryable: boolean) {
+  if (!failed) return summary.retryReasonCode ?? 'NONE'
+  if (summary.retryReasonCode) return summary.retryReasonCode
+  if (!retryable) return 'NON_RETRYABLE_FAILURE'
+  if (summary.rateLimited) return 'RATE_LIMITED'
+  if (summary.failed > 0) return 'STEP_FAILED'
+  if (summary.status === 'partial_success') return 'PARTIAL_SUCCESS_RETRYABLE'
+  return 'STEP_ERROR'
 }
 
 function getRetryDelayMs(attemptCount: number) {
@@ -1549,7 +1607,13 @@ function buildFinalDailySummary(steps: Array<any>) {
     topYellowCards: endpointRows['/players/topyellowcards'] ?? 0,
     topRedCards: endpointRows['/players/topredcards'] ?? 0,
     topPlayers: (endpointRows['/players/topscorers'] ?? 0) + (endpointRows['/players/topassists'] ?? 0) + (endpointRows['/players/topyellowcards'] ?? 0) + (endpointRows['/players/topredcards'] ?? 0),
-    ranking: ranking?.status === 'success' || ranking?.status === 'empty' ? 'success' : ranking?.status ?? 'pending',
+    ranking: ranking?.rankingStatus === 'success' || ranking?.status === 'success' || ranking?.status === 'empty' ? 'success' : ranking?.status ?? 'pending',
+    rankingSelectionCompleted: Boolean(ranking?.selectionCompleted),
+    rankingSelectionHealth: ranking?.selectionHealth ?? null,
+    rankingMarketReadinessStatus: ranking?.marketReadinessStatus ?? ranking?.details?.marketReadinessStatus ?? null,
+    bettingReadiness: ranking?.bettingReadiness ?? ranking?.details?.bettingReadiness ?? null,
+    rankingRetryable: Boolean(ranking?.retryable),
+    rankingRetryReasonCode: ranking?.retryReasonCode ?? null,
     rankingReadiness: ranking?.rankingReadiness ?? ranking?.details?.rankingReadiness ?? null,
     fixtureEnrichment: fixtureEnrichment?.details ?? null,
     totalDurationMs: (steps ?? []).reduce((total, step) => total + Number(step.duration_ms ?? step.summary?.durationMs ?? 0), 0),
@@ -1890,20 +1954,39 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
 
 async function runDailyRankingStep(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const readinessBeforeRanking = await getRankingReadinessSummary(dayRange)
-  const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  const rankingWrite = await updateDailySelectionRanks(dayRange)
   const rankingReadiness = await getRankingReadinessSummary(dayRange)
   const finalPickRows = await recomputeAiFinalPicks(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks' })
-  const totalFixtures = Number(rankingReadiness.totalFixtures ?? readinessBeforeRanking.totalFixtures ?? rankedSelectionRows)
-  const readyFixtures = Number(rankingReadiness.ready ?? 0)
-  const partial = totalFixtures > 0 && readyFixtures === 0
+  const rankedSelectionRows = Number(rankingWrite.rowsSaved ?? 0)
+  const eligibleCandidateCount = Number(rankingWrite.eligibleCandidateCount ?? rankingReadiness.totalFixtures ?? readinessBeforeRanking.totalFixtures ?? rankedSelectionRows)
+  const completion = buildRankingCompletionState({
+    selectedCount: rankedSelectionRows,
+    eligibleCandidateCount,
+    writeFailures: Number(finalPickRows.failed ?? 0),
+    invalidScores: rankingWrite.invalidScores,
+    duplicateRanks: rankingWrite.duplicateRanks,
+    duplicateFixtures: rankingWrite.duplicateFixtures,
+    hardFilterViolations: rankingWrite.hardFilterViolations,
+    finalPickViolations: rankingWrite.finalPickViolations,
+    rankingReadiness,
+  })
   return {
     processed: rankedSelectionRows,
-    totalCandidates: rankedSelectionRows,
+    totalCandidates: eligibleCandidateCount,
     rowsSaved: rankedSelectionRows + Number(finalPickRows.rowsSaved ?? 0),
-    failed: Number(finalPickRows.failed ?? 0),
-    partial,
+    failed: completion.retryable ? Number(finalPickRows.failed ?? 0) : 0,
+    partial: false,
     rankingReadiness,
     aiFinalPickRows: finalPickRows.rowsSaved ?? 0,
+    selectionCompleted: completion.selectionCompleted,
+    selectionHealth: completion.selectionHealth,
+    rankingStatus: completion.rankingStatus,
+    retryable: completion.retryable,
+    retryReasonCode: completion.retryReasonCode,
+    marketReadinessStatus: completion.marketReadinessStatus,
+    bettingReadiness: completion.bettingReadiness,
+    expectedSelectedCount: completion.expectedSelectedCount,
+    invariantFailures: completion.invariantFailures,
   }
 }
 
@@ -7544,9 +7627,19 @@ function buildDailyPhaseDetails(phase: string, results: Array<any>) {
     }
   }
   if (phase === 'ranking') {
+    const ranking = results[0] ?? {}
     return {
-      rankingStatus: Number(results[0]?.failed ?? 0) > 0 ? 'failed' : results[0]?.partial ? 'partial' : 'success',
-      rankingReadiness: results[0]?.rankingReadiness ?? null,
+      rankingStatus: ranking.rankingStatus ?? (Number(ranking.failed ?? 0) > 0 ? 'failed' : 'success'),
+      selectionCompleted: Boolean(ranking.selectionCompleted),
+      selectionHealth: ranking.selectionHealth ?? null,
+      expectedSelectedCount: Number(ranking.expectedSelectedCount ?? 0),
+      marketReadinessStatus: ranking.marketReadinessStatus ?? null,
+      bettingReadiness: ranking.bettingReadiness ?? null,
+      retryable: Boolean(ranking.retryable),
+      retryReasonCode: ranking.retryReasonCode ?? null,
+      invariantFailures: ranking.invariantFailures ?? [],
+      aiFinalPickRows: Number(ranking.aiFinalPickRows ?? 0),
+      rankingReadiness: ranking.rankingReadiness ?? null,
     }
   }
   return {}
@@ -9797,12 +9890,12 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
     .lt('kickoff_at', range.endUtc)
 
   if (result.error) {
-    if (isMissingColumnError(result.error)) return 0
+    if (isMissingColumnError(result.error)) return emptyDailyRankingWriteResult()
     throw result.error
   }
 
   const matchIds = (result.data ?? []).map((match: any) => match.id).filter(Boolean)
-  if (!matchIds.length) return 0
+  if (!matchIds.length) return emptyDailyRankingWriteResult()
   const oddsMatchIds = await fetchMatchIdsWithOdds(matchIds)
 
   const rows = (result.data ?? [])
@@ -9830,11 +9923,11 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
     .in('match_id', matchIds)
 
   if (resetResult.error) {
-    if (isMissingColumnError(resetResult.error)) return 0
+    if (isMissingColumnError(resetResult.error)) return emptyDailyRankingWriteResult()
     throw resetResult.error
   }
 
-  if (!rows.length) return 0
+  if (!rows.length) return emptyDailyRankingWriteResult()
   const selectionDate = (range as any).dateKey ?? getBangkokDayRange(range.startUtc).dateKey
   const selection = selectDailyTop10(rows.map((row: any) => row.match), { selectionDate })
   const ranked = selection.selected.map((selected: any) => ({
@@ -9860,13 +9953,53 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
       .eq('match_id', row.matchId)
 
     if (updateResult.error) {
-      if (isMissingColumnError(updateResult.error)) return updated
+      if (isMissingColumnError(updateResult.error)) {
+        return buildDailyRankingWriteResult(selection, updated)
+      }
       throw updateResult.error
     }
     updated += 1
   }
 
-  return updated
+  return buildDailyRankingWriteResult(selection, updated)
+}
+
+function emptyDailyRankingWriteResult() {
+  return {
+    rowsSaved: 0,
+    eligibleCandidateCount: 0,
+    invalidScores: 0,
+    duplicateRanks: 0,
+    duplicateFixtures: 0,
+    hardFilterViolations: 0,
+    finalPickViolations: 0,
+  }
+}
+
+function buildDailyRankingWriteResult(selection: any, rowsSaved: number) {
+  const selected = selection?.selected ?? []
+  return {
+    rowsSaved,
+    eligibleCandidateCount: Number(selection?.summary?.eligibleCandidateCount ?? selected.length),
+    invalidScores: (selection?.candidates ?? []).filter((row: any) => {
+      const score = Number(row?.softRanking?.finalScore)
+      return !Number.isFinite(score) || score < 0 || score > 100
+    }).length,
+    duplicateRanks: countDuplicateValues(selected.map((row: any) => row.rank).filter((rank: any) => rank !== null && rank !== undefined)),
+    duplicateFixtures: countDuplicateValues(selected.map((row: any) => row.fixtureId ?? row.match?.id).filter(Boolean)),
+    hardFilterViolations: selected.filter((row: any) => row?.hardFilter && !row.hardFilter.passed).length,
+    finalPickViolations: selected.filter((row: any) => !row.hasMarketData && row?.softRanking?.finalPickAllowed).length,
+  }
+}
+
+function countDuplicateValues(values: Array<any>) {
+  const seen = new Set()
+  let duplicates = 0
+  for (const value of values) {
+    if (seen.has(value)) duplicates += 1
+    else seen.add(value)
+  }
+  return duplicates
 }
 
 function classifyRankingReadiness(match: any, oddsMatchIds: Set<string>) {

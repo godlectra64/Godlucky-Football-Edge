@@ -2,6 +2,7 @@ import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import { getBangkokDayRange } from '../src/utils/bangkokDateRange.js'
 import { DAILY_SELECTION_ALGORITHM_VERSION, selectDailyTop10 } from '../src/utils/dailySelectionEngine.js'
+import { buildRankingCompletionState } from '../src/utils/dailyRankingCompletion.js'
 
 dotenv.config({ path: '.env.local' })
 dotenv.config({ path: '.env' })
@@ -89,6 +90,27 @@ const selectedHardFilterViolations = top10Rows.filter((row) => {
   return selected ? !selected.hardFilter.passed : false
 }).length
 const invalidFinalScores = selection.candidates.filter((row) => !Number.isFinite(Number(row.softRanking.finalScore)) || Number(row.softRanking.finalScore) < 0 || Number(row.softRanking.finalScore) > 100).length
+const fakeFinalPickRows = top10Rows.filter((row) => !top10WithOddsMatchIds.has(row.match_id) && row.ai_final_pick_id).length
+const rankingCompletion = buildRankingCompletionState({
+  selectedCount: top10Rows.length,
+  eligibleCandidateCount,
+  invalidScores: invalidFinalScores,
+  duplicateRanks: duplicateTop10Ranks,
+  duplicateFixtures: duplicateTop10Matches,
+  hardFilterViolations: selectedHardFilterViolations,
+  finalPickViolations: fakeFinalPickRows,
+  rankingReadiness: {
+    totalFixtures: matches.length,
+    ready: dailyTop10SelectedFixturesWithOdds,
+    partial: candidateCounts.PARTIAL,
+    noMarketData: candidateCounts.NO_MARKET_DATA,
+    pending: candidateCounts.WAITING_MARKET,
+    failed: 0,
+    hasMarketDataCount: dailyTop10SelectedFixturesWithOdds,
+    hasFixtureDetailCount: matches.filter((match) => match.has_fixture_detail).length,
+  },
+})
+const pipelineStatus = rankingCompletion.rankingStatus === 'success' ? 'SUCCESS' : String(rankingCompletion.rankingStatus).toUpperCase()
 const rootCause = determineRootCause({
   fixturesToday: matches.length,
   playableFixtures: playableMatches.length,
@@ -115,6 +137,12 @@ console.log(`secondarySelected: ${selection.summary.secondarySelected}`)
 console.log(`fallbackSelected: ${selection.summary.fallbackSelected}`)
 console.log(`marketReadySelected: ${selection.summary.marketReadySelected}`)
 console.log(`waitingMarketSelected: ${selectedWaitingMarketCount}`)
+console.log(`selectionHealth: ${rankingCompletion.selectionHealth}`)
+console.log(`marketReadinessStatus: ${rankingCompletion.marketReadinessStatus}`)
+console.log(`bettingReadiness: ${rankingCompletion.bettingReadiness}`)
+console.log(`pipelineStatus: ${pipelineStatus}`)
+console.log(`retryable: ${rankingCompletion.retryable}`)
+console.log(`retryReasonCode: ${rankingCompletion.retryReasonCode}`)
 report('fixturesToday', matches.length, { failWhen: (value) => value <= 0 })
 report('playableFixtures', playableMatches.length, { failWhen: (value) => value <= 0 })
 report('dailyTop10 count valid', top10Rows.length === Math.min(10, eligibleCandidateCount) ? 0 : 1, { details: `count ${top10Rows.length}, eligible ${eligibleCandidateCount}` })
@@ -123,6 +151,7 @@ report('duplicate selected Top10 ranks', duplicateTop10Ranks)
 report('duplicate selected Top10 fixtures', duplicateTop10Matches)
 report('aiFinalPick coverage market-ready incomplete', Math.max(0, dailyTop10SelectedFixturesWithOdds - aiFinalPickCoverage), { details: `${aiFinalPickCoverage}/${dailyTop10SelectedFixturesWithOdds} market-ready; waiting-market ${selectedWaitingMarketCount}` })
 report('selected hard-filter violations', selectedHardFilterViolations)
+report('fake final picks for waiting-market selections', fakeFinalPickRows)
 report('invalid final scores', invalidFinalScores)
 report('invalid odds marketFocus', oddsChecks.invalidMarketFocus)
 report('null odds price', oddsChecks.nullPrice)
