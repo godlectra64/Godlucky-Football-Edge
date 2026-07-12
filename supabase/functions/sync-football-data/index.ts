@@ -1,7 +1,14 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { getBangkokDayRange } from '../_shared/bangkokDateRange.ts'
-import { calculateSoftRanking, selectDailyTop10, DAILY_SELECTION_ALGORITHM_VERSION } from '../../../src/utils/dailySelectionEngine.js'
+import { selectDailyTop10, DAILY_SELECTION_ALGORITHM_VERSION } from '../../../src/utils/dailySelectionEngine.js'
 import { buildRankingCompletionState } from '../../../src/utils/dailyRankingCompletion.js'
+import {
+  HYBRID_DAILY_PIPELINE_VERSION,
+  buildHybridCandidatePool,
+  buildHybridPipelineMetadata,
+  getHybridPhaseForDailySyncPhase,
+  getHybridPhaseForMode,
+} from '../../../src/utils/hybridDailyPipeline.js'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -651,6 +658,9 @@ type FootballEnrichmentEndpointCounterKey = keyof FootballEnrichmentEndpointCoun
 type DailyFullSyncStepSummary = {
   step: number
   mode: string
+  pipelineVersion?: string
+  selectionAlgorithmVersion?: string
+  hybridPhase?: string
   status: 'success' | 'empty' | 'partial_success' | 'error' | 'skipped_not_due' | 'pending_retry'
   processed: number
   totalCandidates: number
@@ -946,7 +956,7 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
         total_steps: dailySyncPhases.length,
         limit_value: limitValue,
         enrichment_limit: enrichmentLimit,
-        summary: { phaseLimits: limits },
+        summary: buildDailySyncRunMetadata(dayRange, { phaseLimits: limits }),
       })
       .select('*')
       .single()
@@ -977,7 +987,7 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
         started_at: new Date().toISOString(),
         finished_at: null,
         last_error: null,
-        summary: { phaseLimits: limits },
+        summary: buildDailySyncRunMetadata(dayRange, { phaseLimits: limits }),
       })
       .eq('id', run.id)
       .select('*')
@@ -995,8 +1005,25 @@ function withDailySyncReuseMeta(state: any, reusedRunId: boolean) {
   return { ...state, reusedRunId }
 }
 
-function buildDailySyncDateDiagnostics(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
+function buildDailySyncRunMetadata(dayRange: ReturnType<typeof getBangkokDayRange>, extra: Record<string, unknown> = {}) {
   return {
+    ...buildHybridPipelineMetadata(dayRange.dateKey),
+    phaseLimits: {},
+    dailySyncPhases: dailySyncPhases.map((phase) => ({
+      phase,
+      hybridPhase: getHybridPhaseForDailySyncPhase(phase),
+    })),
+    ...extra,
+  }
+}
+
+function buildDailySyncDateDiagnostics(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
+  const metadata = buildHybridPipelineMetadata(dayRange.dateKey)
+  return {
+    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+    currentPhase: getHybridPhaseForMode(String(body.mode ?? 'daily-sync-auto')),
+    selectionWindow: metadata.selectionWindow,
     requestedSelectionDate: typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : null,
     resolvedDateKey: dayRange.dateKey,
     resolvedDateFrom: dayRange.dateFrom,
@@ -1033,7 +1060,12 @@ async function createDailySyncSteps(runId: string, limits: Record<string, number
     max_attempts: 3,
     next_retry_at: null,
     last_attempt_at: null,
-    summary: { phaseLimit: limits[phase] ?? 10 },
+    summary: {
+      pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+      selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+      hybridPhase: getHybridPhaseForDailySyncPhase(phase),
+      phaseLimit: limits[phase] ?? 10,
+    },
   }))
   const result = await supabase.from('api_football_daily_sync_steps').insert(rows)
   if (result.error) throw result.error
@@ -1139,6 +1171,9 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
     summary = {
       step: step.step_order,
       mode: step.phase,
+      pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+      selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+      hybridPhase: getHybridPhaseForDailySyncPhase(step.phase),
       status: 'error',
       processed: 0,
       totalCandidates: 0,
@@ -1251,6 +1286,9 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
   return {
     step: stepOrder,
     mode: phase,
+    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+    hybridPhase: getHybridPhaseForDailySyncPhase(phase),
     status,
     processed,
     totalCandidates,
@@ -1349,6 +1387,9 @@ async function buildDailySyncStepResponse(mode: string, result: any, providerRes
   const rankingReadiness = summary.rankingReadiness ?? summary.details?.rankingReadiness ?? dbFinalSummary.rankingReadiness ?? null
   return {
     providerResult,
+    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+    currentPhase: summary.hybridPhase ?? getHybridPhaseForMode(mode),
     runId: result?.run?.id ?? null,
     phase: summary.mode ?? result?.step?.phase ?? null,
     status: summary.status === 'pending_retry' || waitingRetry ? 'pending_retry' : result?.run?.status ?? summary.status,
@@ -1386,6 +1427,9 @@ function buildDailySyncSafeResponse(payload: any) {
   const nextPhase = payload.phase ?? progress.nextPhase ?? waitingRetry?.phase ?? null
   return {
     providerResult: { provider: getProviderAdapter('api-football'), fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] },
+    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+    currentPhase: payload.currentPhase ?? getHybridPhaseForMode(payload.mode ?? payload.phase ?? ''),
     runId: payload.runId,
     phase: payload.phase,
     status: payload.status,
@@ -1549,6 +1593,9 @@ function emptyDailyStepSummary(mode: string | null, status: DailyFullSyncStepSum
   return {
     step: 0,
     mode: mode ?? 'daily-sync',
+    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+    hybridPhase: getHybridPhaseForDailySyncPhase(mode ?? 'daily-sync'),
     status,
     processed: 0,
     totalCandidates: 0,
@@ -1591,6 +1638,8 @@ function buildFinalDailySummary(steps: Array<any>) {
   const fixtureEnrichment = findStepSummary(steps, 'fixture-enrichment')
   const ranking = findStepSummary(steps, 'ranking')
   return {
+    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
     fixtures: Number(core?.details?.fixturesProcessed ?? 0),
     coverage: endpointRows['/leagues'] ?? 0,
     rounds: endpointRows['/fixtures/rounds'] ?? 0,
@@ -3361,7 +3410,7 @@ async function syncDailyTop10Odds(body: Record<string, unknown>, dayRange: Retur
 
 async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
   const selectionDate = dayRange.dateKey
-  const candidateLimit = getPositiveLimit(body.limit, 50, 80)
+  const candidateLimit = getPositiveLimit(body.limit, 50, 50)
   const forceRebuild = body.forceRebuild === true || body.force === true
   const existing = await fetchDailyMarketCandidateRows(selectionDate)
   const warnings: Array<string> = []
@@ -3375,10 +3424,16 @@ async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRang
       failed: 0,
       skipped: existing.length,
       selectionDate,
+      pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+      selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+      currentPhase: 'CANDIDATE_POOL_READY',
       totalFixtures: existing.length,
       playableFixtures: existing.length,
       candidateLimit,
       candidatesSaved: existing.length,
+      candidatePoolCount: existing.length,
+      candidateCoreCount: Math.min(existing.length, 30),
+      candidateReserveCount: Math.max(0, existing.length - 30),
       candidateFixtureIds: existing.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
       topCandidateSample: existing.slice(0, 5).map(formatDailyMarketCandidateRow),
       warnings: ['Reused stable daily_market_candidates; pass forceRebuild:true to rebuild'],
@@ -3390,15 +3445,15 @@ async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRang
   const playable = matches.filter((match: any) =>
     isPlayableStatusText(match.status_short ?? match.match_status ?? match.status) &&
     hasStrictDailyFixtureCompleteness(match) &&
-    nullableNumber(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id)
+      nullableNumber(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id)
   )
-  const ranked = playable
-    .map((match: any) => ({ match, preSelectionScore: calculateSoftRanking(match, { selectionDate }).finalScore }))
-    .sort((a: any, b: any) =>
-      b.preSelectionScore - a.preSelectionScore ||
-      new Date(a.match?.kickoff_at ?? 0).getTime() - new Date(b.match?.kickoff_at ?? 0).getTime()
-    )
-    .slice(0, candidateLimit)
+  const candidatePool = buildHybridCandidatePool(playable, { selectionDate, limit: candidateLimit })
+  const ranked = candidatePool.candidates.map((candidate: any) => ({
+    match: candidate.match,
+    preSelectionScore: candidate.preRanking.finalScore,
+    candidateTier: candidate.candidateTier,
+    candidateRank: candidate.candidateRank,
+  }))
 
   const duplicateFixtureIds = findDuplicateNumbers(ranked.map((item: any) => nullableNumber(item.match.api_sports_fixture_id ?? item.match.raw?.raw_fixture_id)))
   if (duplicateFixtureIds.length) warnings.push(`Duplicate fixture ids removed from candidate pool: ${duplicateFixtureIds.join(', ')}`)
@@ -3443,10 +3498,16 @@ async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRang
     failed: 0,
     skipped: Math.max(0, playable.length - rows.length),
     selectionDate,
+    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
+    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+    currentPhase: 'CANDIDATE_POOL_READY',
     totalFixtures: matches.length,
     playableFixtures: playable.length,
     candidateLimit,
     candidatesSaved: rows.length,
+    candidatePoolCount: rows.length,
+    candidateCoreCount: rows.filter((row: any) => Number(row.candidate_rank ?? 0) <= 30).length,
+    candidateReserveCount: rows.filter((row: any) => Number(row.candidate_rank ?? 0) > 30).length,
     candidateFixtureIds: rows.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
     topCandidateSample: rows.slice(0, 5).map(formatDailyMarketCandidateRow),
     warnings,

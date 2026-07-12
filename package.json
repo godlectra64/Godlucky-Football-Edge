@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/dailySelectionEngine.unit.test.mjs && node scripts/dailyRankingCompletion.unit.test.mjs && node scripts/dailySyncAuth.unit.test.mjs && node scripts/resultSettlement.smoke.test.mjs",
+    "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/dailySelectionEngine.unit.test.mjs && node scripts/dailyRankingCompletion.unit.test.mjs && node scripts/hybridDailyPipeline.unit.test.mjs && node scripts/dailySyncAuth.unit.test.mjs && node scripts/resultSettlement.smoke.test.mjs",
     "verify:analysis": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:professional-pipeline": "node scripts/verifyAnalysisIntegrity.mjs",
     "backfill:professional-pipeline": "node scripts/backfillProfessionalPipeline.mjs",

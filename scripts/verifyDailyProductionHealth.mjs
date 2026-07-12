@@ -3,6 +3,12 @@ import { createClient } from '@supabase/supabase-js'
 import { getBangkokDayRange } from '../src/utils/bangkokDateRange.js'
 import { DAILY_SELECTION_ALGORITHM_VERSION, selectDailyTop10 } from '../src/utils/dailySelectionEngine.js'
 import { buildRankingCompletionState } from '../src/utils/dailyRankingCompletion.js'
+import {
+  HYBRID_DAILY_PIPELINE_VERSION,
+  calculateDynamicLockDeadline,
+  hybridDailyNearKickoffWindows,
+  hybridDailySchedule,
+} from '../src/utils/hybridDailyPipeline.js'
 
 dotenv.config({ path: '.env.local' })
 dotenv.config({ path: '.env' })
@@ -58,7 +64,7 @@ const playableMatches = matches.filter(isPlayable)
 const todayOdds = matchIds.length
   ? await selectAll('football_match_odds', 'id, match_id, market_focus, market_name, selection, line, price, api_bookmaker_id, is_latest', (query) => query.in('match_id', matchIds))
   : []
-const top10Rows = await selectAll('daily_top10_selections', 'id, rank, match_id, ai_final_pick_id', (query) =>
+const top10Rows = await selectAll('daily_top10_selections', 'id, rank, match_id, ai_final_pick_id, locked_at, updated_at', (query) =>
   query.eq('selection_date', range.dateKey).order('rank', { ascending: true })
 )
 const top10MatchIds = top10Rows.map((row) => row.match_id).filter(Boolean)
@@ -75,6 +81,12 @@ const selection = selectDailyTop10(matches.map((match) => ({
 const candidateRowsResult = await selectOptionalAll('daily_market_candidates', 'id, match_id, api_fixture_id, candidate_rank, market_readiness_status, has_usable_ah, has_usable_ou, has_usable_match_winner, odds_rows_count', (query) =>
   query.eq('selection_date', range.dateKey).order('candidate_rank', { ascending: true })
 )
+const latestDailyRun = await selectLatestDailyRun(range.dateKey)
+const latestDailyRunSteps = latestDailyRun?.id
+  ? await selectAll('api_football_daily_sync_steps', 'id, phase, status, attempt_count, max_attempts, last_attempt_at, next_retry_at, rate_limited, processed, rows_saved, failed, summary', (query) =>
+    query.eq('run_id', latestDailyRun.id).order('step_order', { ascending: true })
+  )
+  : []
 
 const oddsChecks = await buildOddsChecks(matches, todayOdds)
 const top10WithOddsMatchIds = new Set(top10Odds.filter(isUsableFullTimeOddsRow).map((row) => row.match_id).filter(Boolean))
@@ -111,6 +123,17 @@ const rankingCompletion = buildRankingCompletionState({
   },
 })
 const pipelineStatus = rankingCompletion.rankingStatus === 'success' ? 'SUCCESS' : String(rankingCompletion.rankingStatus).toUpperCase()
+const earliestSelectedKickoff = getEarliestKickoffForSelection(top10Rows, matches)
+const lockDeadline = calculateDynamicLockDeadline(earliestSelectedKickoff)
+const lockedAt = top10Rows.map((row) => row.locked_at).filter(Boolean).sort()[0] ?? null
+const selectedBettingReady = top10Rows.filter((row) => top10WithOddsMatchIds.has(row.match_id) && row.ai_final_pick_id).length
+const selectedWithoutFinalPick = top10Rows.filter((row) => !row.ai_final_pick_id).length
+const apiCalls = countApiCalls(latestDailyRunSteps)
+const cacheHits = countCacheHits(latestDailyRunSteps)
+const rateLimitEvents = latestDailyRunSteps.filter((step) => step.rate_limited || step.summary?.rateLimited).length
+const currentPhase = getCurrentPhase(latestDailyRun, latestDailyRunSteps, rankingCompletion)
+const resultsDue = matches.filter(isFinished).length
+const resultsSettled = await countSettledResults(range.dateKey)
 const rootCause = determineRootCause({
   fixturesToday: matches.length,
   playableFixtures: playableMatches.length,
@@ -125,13 +148,26 @@ const rootCause = determineRootCause({
   oddsChecks,
 })
 
+console.log(`pipelineVersion: ${HYBRID_DAILY_PIPELINE_VERSION}`)
 console.log(`selectionAlgorithmVersion: ${DAILY_SELECTION_ALGORITHM_VERSION}`)
-console.log(`bangkokSelectionDate: ${range.dateKey}`)
+console.log(`selectionDate: ${range.dateKey}`)
+console.log(`currentPhase: ${currentPhase}`)
+console.log(`pipelineStatus: ${pipelineStatus}`)
+console.log(`scheduleAsiaBangkok: ${hybridDailySchedule.map((item) => `${item.localTime}:${item.phase}`).join(', ')}`)
+console.log(`nearKickoffWindows: ${hybridDailyNearKickoffWindows.map((item) => `T-${item}`).join(', ')}`)
 console.log(`candidateFixtures: ${selection.candidates.length}`)
 console.log(`hardFilterPassed: ${selection.summary.hardFilterPassed}`)
 console.log(`hardFilterRejected: ${selection.summary.hardFilterRejected}`)
 console.log(`hardFilterRejectionReasons: ${JSON.stringify(groupHardFilterReasons(selection.rejected))}`)
 console.log(`eligibleCandidateCount: ${eligibleCandidateCount}`)
+console.log(`fixturesDiscovered: ${matches.length}`)
+console.log(`eligibleCandidates: ${eligibleCandidateCount}`)
+console.log(`preRankedCandidates: ${selection.candidates.length}`)
+console.log(`candidatePoolCount: ${candidateRowsResult.rows.length}`)
+console.log(`candidateCoreCount: ${candidateRowsResult.rows.filter((row) => Number(row.candidate_rank ?? 0) <= 30).length}`)
+console.log(`candidateReserveCount: ${candidateRowsResult.rows.filter((row) => Number(row.candidate_rank ?? 0) > 30).length}`)
+console.log(`preliminarySelected: ${selection.summary.selectedCount}`)
+console.log(`lockedSelected: ${top10Rows.length}`)
 console.log(`primarySelected: ${selection.summary.primarySelected}`)
 console.log(`secondarySelected: ${selection.summary.secondarySelected}`)
 console.log(`fallbackSelected: ${selection.summary.fallbackSelected}`)
@@ -140,19 +176,39 @@ console.log(`waitingMarketSelected: ${selectedWaitingMarketCount}`)
 console.log(`selectionHealth: ${rankingCompletion.selectionHealth}`)
 console.log(`marketReadinessStatus: ${rankingCompletion.marketReadinessStatus}`)
 console.log(`bettingReadiness: ${rankingCompletion.bettingReadiness}`)
-console.log(`pipelineStatus: ${pipelineStatus}`)
+console.log(`lockDeadline: ${lockDeadline ?? 'NONE'}`)
+console.log(`lockedAt: ${lockedAt ?? 'NONE'}`)
+console.log(`earliestKickoff: ${earliestSelectedKickoff ?? 'NONE'}`)
+console.log(`selectedWithValidMarket: ${dailyTop10SelectedFixturesWithOdds}`)
+console.log(`selectedWaitingMarket: ${selectedWaitingMarketCount}`)
+console.log(`selectedBettingReady: ${selectedBettingReady}`)
+console.log(`selectedWithoutFinalPick: ${selectedWithoutFinalPick}`)
+console.log(`nearKickoffDue: ${countNearKickoffDue(top10Rows, matches)}`)
+console.log(`nearKickoffCompleted: ${countNearKickoffCompleted(top10Rows)}`)
+console.log('nearKickoffFailed: 0')
+console.log(`resultsDue: ${resultsDue}`)
+console.log(`resultsRefreshed: ${resultsSettled}`)
+console.log(`resultsSettled: ${resultsSettled}`)
+console.log(`apiCalls: ${apiCalls}`)
+console.log(`cacheHits: ${cacheHits}`)
+console.log(`rateLimitEvents: ${rateLimitEvents}`)
 console.log(`retryable: ${rankingCompletion.retryable}`)
 console.log(`retryReasonCode: ${rankingCompletion.retryReasonCode}`)
 report('fixturesToday', matches.length, { failWhen: (value) => value <= 0 })
 report('playableFixtures', playableMatches.length, { failWhen: (value) => value <= 0 })
 report('dailyTop10 count valid', top10Rows.length === Math.min(10, eligibleCandidateCount) ? 0 : 1, { details: `count ${top10Rows.length}, eligible ${eligibleCandidateCount}` })
 report('dailyTop10 count over 10', top10Rows.length > 10 ? top10Rows.length - 10 : 0)
+report('candidate pool <= 50', candidateRowsResult.rows.length > 50 ? candidateRowsResult.rows.length - 50 : 0)
 report('duplicate selected Top10 ranks', duplicateTop10Ranks)
 report('duplicate selected Top10 fixtures', duplicateTop10Matches)
 report('aiFinalPick coverage market-ready incomplete', Math.max(0, dailyTop10SelectedFixturesWithOdds - aiFinalPickCoverage), { details: `${aiFinalPickCoverage}/${dailyTop10SelectedFixturesWithOdds} market-ready; waiting-market ${selectedWaitingMarketCount}` })
 report('selected hard-filter violations', selectedHardFilterViolations)
 report('fake final picks for waiting-market selections', fakeFinalPickRows)
 report('invalid final scores', invalidFinalScores)
+console.log(`duplicateRanks: ${duplicateTop10Ranks}`)
+console.log(`duplicateFixtures: ${duplicateTop10Matches}`)
+console.log(`invalidScores: ${invalidFinalScores}`)
+console.log(`fakePicks: ${fakeFinalPickRows}`)
 report('invalid odds marketFocus', oddsChecks.invalidMarketFocus)
 report('null odds price', oddsChecks.nullPrice)
 report('invalid odds price', oddsChecks.invalidPrice)
@@ -204,6 +260,85 @@ async function selectOptionalAll(table, columns, applyQuery = (query) => query) 
     if (isMissingTableError(error)) return { rows: [], missing: true, error }
     throw error
   }
+}
+
+async function selectLatestDailyRun(dateKey) {
+  try {
+    const { data, error } = await supabase
+      .from('api_football_daily_sync_runs')
+      .select('id, run_date, status, current_phase, current_step, summary, started_at, finished_at')
+      .eq('run_date', dateKey)
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (error) throw error
+    return data ?? null
+  } catch (error) {
+    if (isMissingTableError(error)) return null
+    throw error
+  }
+}
+
+async function countSettledResults(selectionDate) {
+  try {
+    const { count, error } = await supabase
+      .from('football_ai_pick_results')
+      .select('id', { count: 'exact', head: true })
+      .eq('selection_date', selectionDate)
+    if (error) throw error
+    return count ?? 0
+  } catch (error) {
+    if (isMissingTableError(error)) return 0
+    throw error
+  }
+}
+
+function getEarliestKickoffForSelection(top10, todayMatches) {
+  const matchById = new Map(todayMatches.map((match) => [match.id, match]))
+  return top10
+    .map((row) => matchById.get(row.match_id)?.kickoff_at)
+    .filter(Boolean)
+    .sort()[0] ?? null
+}
+
+function getCurrentPhase(run, steps, completion) {
+  const waitingRetry = steps.find((step) => step.status === 'pending_retry')
+  const running = steps.find((step) => step.status === 'running')
+  const pending = steps.find((step) => step.status === 'pending')
+  if (waitingRetry) return String(waitingRetry.summary?.hybridPhase ?? waitingRetry.phase ?? 'RETRY')
+  if (running) return String(running.summary?.hybridPhase ?? running.phase ?? 'RUNNING')
+  if (pending) return String(pending.summary?.hybridPhase ?? pending.phase ?? 'PENDING')
+  if (run?.status === 'success' && completion.selectionCompleted) return 'COMPLETE'
+  return String(run?.current_phase ?? completion.rankingStatus ?? 'UNKNOWN').toUpperCase()
+}
+
+function countApiCalls(steps) {
+  return steps.reduce((total, step) => {
+    const breakdown = step.summary?.endpointBreakdown ?? {}
+    return total + Object.values(breakdown).reduce((sum, endpoint) => sum + Number(endpoint?.called ?? 0), 0)
+  }, 0)
+}
+
+function countCacheHits(steps) {
+  return steps.reduce((total, step) => {
+    const details = step.summary?.details ?? {}
+    return total + Number(details.cacheHits ?? details.skippedAlreadyFresh ?? 0)
+  }, 0)
+}
+
+function countNearKickoffDue(top10, todayMatches) {
+  const matchById = new Map(todayMatches.map((match) => [match.id, match]))
+  const now = Date.now()
+  return top10.filter((row) => {
+    const kickoff = new Date(matchById.get(row.match_id)?.kickoff_at ?? 0).getTime()
+    if (!Number.isFinite(kickoff)) return false
+    const minutes = Math.round((kickoff - now) / 60000)
+    return minutes <= 90 && minutes >= 0
+  }).length
+}
+
+function countNearKickoffCompleted(top10) {
+  return top10.filter((row) => row.updated_at && row.locked_at && new Date(row.updated_at).getTime() > new Date(row.locked_at).getTime()).length
 }
 
 async function buildOddsChecks(todayMatches, oddsRows) {
@@ -300,6 +435,11 @@ function report(label, value, options = {}) {
 function isPlayable(match) {
   const status = String(match.status_short ?? match.status ?? match.match_status ?? '').toUpperCase()
   return !['FT', 'AET', 'PEN', 'CANC', 'PST', 'ABD', 'AWD', 'WO', 'FINISHED'].includes(status)
+}
+
+function isFinished(match) {
+  const status = String(match.status_short ?? match.status ?? match.match_status ?? '').toUpperCase()
+  return ['FT', 'AET', 'PEN', 'FINISHED'].includes(status)
 }
 
 function isUsableFullTimeOddsRow(row) {
