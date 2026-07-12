@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/dailySelectionEngine.unit.test.mjs && node scripts/dailyRankingCompletion.unit.test.mjs && node scripts/hybridDailyPipeline.unit.test.mjs && node scripts/dailySyncAuth.unit.test.mjs && node scripts/resultSettlement.smoke.test.mjs",
+    "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/footballAnalytics.unit.test.mjs && node scripts/marketQuality.unit.test.mjs && node scripts/dailySelectionEngine.unit.test.mjs && node scripts/dailyRankingCompletion.unit.test.mjs && node scripts/hybridDailyPipeline.unit.test.mjs && node scripts/dailySyncAuth.unit.test.mjs && node scripts/resultSettlement.smoke.test.mjs",
     "verify:analysis": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:professional-pipeline": "node scripts/verifyAnalysisIntegrity.mjs",
     "backfill:professional-pipeline": "node scripts/backfillProfessionalPipeline.mjs",
@@ -17,6 +17,8 @@
     "verify:daily-decision-board": "node scripts/verifyDailyDecisionBoard.mjs",
     "verify:daily-top10": "node scripts/verifyDailyTop10Lock.mjs",
     "verify:daily-production-health": "node scripts/verifyDailyProductionHealth.mjs",
+    "verify:alternative-markets": "node scripts/verifyAlternativeMarkets.mjs",
+    "verify:football-analytics": "node scripts/verifyFootballAnalyticsProduction.mjs",
     "verify:strict-daily": "node scripts/verifyStrictDaily.mjs",
     "verify:results": "node scripts/verifyResultSettlementIntegrity.mjs",
     "verify:scheduler": "node scripts/verifyGitHubActionsScheduler.mjs",

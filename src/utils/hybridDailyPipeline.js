@@ -1,7 +1,7 @@
 import { calculateSoftRanking, dailySelectionConfig, DAILY_SELECTION_ALGORITHM_VERSION } from './dailySelectionEngine.js'
 import { getBangkokSelectionWindow } from './bangkokDateRange.js'
 
-export const HYBRID_DAILY_PIPELINE_VERSION = 'market-ready-dynamic-pipeline-v1'
+export const HYBRID_DAILY_PIPELINE_VERSION = 'market-ready-dynamic-pipeline-v2'
 
 export const hybridDailyPipelinePhases = Object.freeze([
   'OPEN_DAY',

@@ -246,16 +246,16 @@ assert.ok(lowResourceRepairSource.includes('expectedPreviousMatchIds'), 'dedicat
 assert.ok(lowResourceRepairSource.includes('fetchLowResourceLockedTop10(selectionDate)'), 'dedicated repair response should re-query persisted Top10 rows')
 assert.ok(lowResourceRepairBlock.includes(".from('football_ai_final_picks')") && lowResourceRepairBlock.includes('.limit(staleMarketRepairSelectionCount)'), 'dedicated repair should verify final-pick coverage with a bounded 10-row query')
 assert.ok(lowResourceRepairBlock.includes(".eq('is_latest', true)"), 'dedicated repair should query latest odds only')
-assert.ok(lowResourceRepairBlock.includes(".eq('market_focus', marketFocus)") && lowResourceRepairBlock.includes("(['AH', 'OU', 'MATCH_WINNER'] as Array<SupportedRepairMarketFocus>)"), 'dedicated repair should query supported full-time markets independently')
+assert.ok(lowResourceRepairBlock.includes(".eq('market_focus', marketFocus)") && lowResourceRepairBlock.includes("(['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'] as Array<SupportedRepairMarketFocus>)"), 'dedicated repair should query supported full-time markets independently')
 assert.equal(lowResourceRepairBlock.includes("snapshot_at, raw'"), false, 'dedicated repair odds query should not load raw odds payloads')
 assert.ok(lowResourceRepairBlock.includes('staleMarketRepairReadyCandidateLimit = 15') || syncFootballDataSource.includes('const staleMarketRepairReadyCandidateLimit = 15'), 'dedicated repair should cap READY candidates at 15')
 assert.ok(syncFootballDataSource.includes('const staleMarketRepairOddsRowLimit = 800'), 'dedicated repair should hard-cap compact latest supported odds rows at 800')
 assert.ok(syncFootballDataSource.includes('const staleMarketRepairOddsRowsPerMarketLimit = 20'), 'dedicated repair should hard-cap final-pick odds rows per selected market')
-assert.ok(lowResourceRepairBlock.includes('fetchLowResourceRequiredMarketProbes(readyMatchIds)'), 'canonical ordering should use deterministic AH/OU/MATCH_WINNER probes per READY candidate')
+assert.ok(lowResourceRepairBlock.includes('fetchLowResourceRequiredMarketProbes(readyMatchIds)'), 'canonical ordering should use deterministic AH/OU/MATCH_WINNER/DOUBLE_CHANCE probes per READY candidate')
 assert.ok(lowResourceRepairBlock.includes('fetchLowResourceMarketOddsProbe') && lowResourceRepairBlock.includes('.limit(1)'), 'market availability probes should use market-specific limit 1 queries')
 assert.equal(lowResourceRepairBlock.includes('.limit(5)'), false, 'market availability must not rely on a generic five-row odds sample')
 assert.ok(lowResourceRepairSource.includes('fetchLowResourceLatestSupportedOdds(selectedMatchIds)'), 'full latest supported odds should be loaded only after the canonical 10 are selected')
-assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairOddsRowsPerMarketLimit)'), 'selected final-pick inputs should load bounded AH, OU, and Match Winner rows independently')
+assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairOddsRowsPerMarketLimit)'), 'selected final-pick inputs should load bounded AH, OU, Match Winner, and Double Chance rows independently')
 assert.equal(lowResourceRepairBlock.includes('trackedApiFootballGet'), false, 'dedicated repair must not call API-Football')
 assert.equal(lowResourceRepairBlock.includes('syncOddsForMatch'), false, 'dedicated repair must not invoke provider odds sync')
 assert.equal(lowResourceRepairBlock.includes('fetchDailyMarketCandidateTargets'), false, 'dedicated repair must not load the full dynamic candidate target pool')
@@ -919,7 +919,10 @@ function v2Match(id, moduleScore, riskScore, recommendationHint = 'NO BET') {
     kickoffAt: `2026-06-26T${String(8 + Number(id.match(/\d+$/)?.[0] ?? 0)).padStart(2, '0')}:00:00Z`,
     league: { name: 'Premier League', country: 'England' },
     has_market_data: true,
-    odds: [{ id: `${id}-odds`, match_id: id, market_name: 'Asian Handicap', price: 1.9 }],
+    odds: [
+      { id: `${id}-odds-home`, match_id: id, market_name: 'Asian Handicap', selection: 'Home -0.5', line: -0.5, price: 1.9 },
+      { id: `${id}-odds-away`, match_id: id, market_name: 'Asian Handicap', selection: 'Away +0.5', line: -0.5, price: 1.95 },
+    ],
     analysis: {
       recommendation: recommendationHint,
       confidence_score: moduleScore,

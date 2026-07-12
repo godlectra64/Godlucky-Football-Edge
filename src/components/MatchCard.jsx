@@ -1,8 +1,8 @@
 import { ArrowRight, Clock, Medal } from 'lucide-react'
-import { buildCanonicalMatchDecision, getDecisionConfidence } from '../utils/bettingDecision'
+import { getAnalysisStatusLabelTh, getAnalysisStatusTone } from '../utils/analysisStatus'
 import { formatKickoffTime } from '../utils/formatters'
+import { buildFootballAnalyticsOutput } from '../utils/footballAnalytics'
 import { getMatchStatusInfo, getScoreDisplay } from '../utils/matchStatus'
-import { formatAhCardLabel, formatBestPickCardLabel, formatDecisionReasonLine, formatOuCardLabel } from '../utils/uiLabels'
 
 export default function MatchCard({
   match,
@@ -16,16 +16,11 @@ export default function MatchCard({
   const isFinished = providedIsFinished ?? matchStatus.isFinished
   const isPlayable = providedIsPlayable ?? matchStatus.isPlayable
   const finalRank = match.finalRank ?? match.final_rank ?? match.analysis?.final_rank ?? match.rank
-  const decision = buildCanonicalMatchDecision(match)
-  const confidence = getDecisionConfidence(decision)
-  const ahLabel = formatAhCardLabel(decision.ah_pick)
-  const ouLabel = formatOuCardLabel(decision.ou_pick)
-  const bestPick = formatBestPickCardLabel(decision.final_pick)
-  const reasonLine = formatDecisionReasonLine(decision)
-  const waitingMarket = providedIsWaitingMarketData ?? decision.status === 'WAITING_MARKET'
-  const mode = displayMode || statusMode(decision.status)
-  const cardClass = buildCardClass(finalRank ?? match.rank, mode, waitingMarket)
-  const activeSide = ['HOME', 'AWAY'].includes(decision.match_view.side) ? decision.match_view.side : ''
+  const analytics = buildFootballAnalyticsOutput(match)
+  const tone = getAnalysisStatusTone(analytics.analysisStatus)
+  const waitingData = providedIsWaitingMarketData ?? analytics.analysisStatus === 'WAITING_DATA'
+  const mode = displayMode || statusMode(tone)
+  const cardClass = buildCardClass(finalRank ?? match.rank, mode, waitingData)
   const scoreDisplay = getFinishedScoreDisplay(match)
   const open = () => onOpen?.(match.id)
 
@@ -56,24 +51,24 @@ export default function MatchCard({
 
       <div className="mt-2.5 rounded-xl border border-white/10 bg-black/18 p-2.5">
         <div className="grid grid-cols-[minmax(0,1fr)_42px_minmax(0,1fr)] items-center gap-2">
-          <TeamName name={match.homeTeam?.name ?? 'ไม่ทราบทีม'} active={activeSide === 'HOME'} />
+          <TeamName name={match.homeTeam?.name ?? 'ไม่ทราบทีม'} />
           <span className="text-center text-xs font-black uppercase text-slate-500">{isFinished && scoreDisplay ? scoreDisplay : 'vs'}</span>
-          <TeamName name={match.awayTeam?.name ?? 'ไม่ทราบทีม'} active={activeSide === 'AWAY'} align="right" />
+          <TeamName name={match.awayTeam?.name ?? 'ไม่ทราบทีม'} align="right" />
         </div>
       </div>
 
       <div className="mt-2.5 grid gap-1.5">
-        <DecisionRow label="มุมมองผู้ชนะ" value={decision.match_view.label} strong />
+        <DecisionRow label="สถานะวิเคราะห์" value={getAnalysisStatusLabelTh(analytics.analysisStatus)} strong />
         <div className="grid grid-cols-2 gap-1.5">
-          <DecisionRow label="AH" value={ahLabel} />
-          <DecisionRow label="O/U" value={ouLabel} />
-          <DecisionRow label="Best Pick" value={bestPick} />
-          <DecisionRow label="ความมั่นใจ" value={`${confidence}%`} />
+          <DecisionRow label="เจ้าบ้าน" value={percent(analytics.matchOutlook.homeWin)} />
+          <DecisionRow label="เสมอ" value={percent(analytics.matchOutlook.draw)} />
+          <DecisionRow label="ทีมเยือน" value={percent(analytics.matchOutlook.awayWin)} />
+          <DecisionRow label="มั่นใจ" value={`${analytics.confidence}%`} />
         </div>
       </div>
 
       <p className="text-clamp-1 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-2 text-xs font-semibold leading-5 text-slate-300">
-        {reasonLine}
+        {analytics.thaiReasons.join(' · ')}
       </p>
 
       <button
@@ -91,9 +86,9 @@ export default function MatchCard({
   )
 }
 
-function TeamName({ name, active = false, align = 'left' }) {
+function TeamName({ name, align = 'left' }) {
   return (
-    <p className={`text-clamp-2 text-[0.98rem] font-black leading-5 ${align === 'right' ? 'text-right' : ''} ${active ? 'text-emerald-100 underline decoration-emerald-300/60 underline-offset-4' : 'text-white'}`}>
+    <p className={`text-clamp-2 text-[0.98rem] font-black leading-5 text-white ${align === 'right' ? 'text-right' : ''}`}>
       {name}
     </p>
   )
@@ -108,11 +103,14 @@ function DecisionRow({ label, value, strong = false }) {
   )
 }
 
-function statusMode(status) {
-  if (status === 'READY') return 'strong'
-  if (status === 'WATCH') return 'watch'
-  if (status === 'NO_DATA') return 'prediction'
+function statusMode(tone) {
+  if (tone === 'good') return 'strong'
+  if (tone === 'watch') return 'watch'
   return 'waiting'
+}
+
+function percent(value) {
+  return `${Math.round(Number(value ?? 0) * 100)}%`
 }
 
 function getFinishedScoreDisplay(match = {}) {
@@ -124,11 +122,11 @@ function getFinishedScoreDisplay(match = {}) {
   })
 }
 
-function buildCardClass(rank, mode, waitingMarket) {
+function buildCardClass(rank, mode, waitingData) {
   const base = 'rounded-[18px] border bg-white/[0.045] shadow-[0_12px_32px_rgba(0,0,0,0.22)]'
   const first = rank === 1 ? 'shadow-[0_18px_44px_rgba(0,0,0,0.3)]' : ''
 
-  if (waitingMarket || mode === 'waiting') {
+  if (waitingData || mode === 'waiting') {
     return `${base} ${first} border-slate-400/24 bg-[linear-gradient(145deg,rgba(148,163,184,0.1),rgba(255,255,255,0.035))]`
   }
   if (mode === 'strong') {

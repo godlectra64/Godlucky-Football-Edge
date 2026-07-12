@@ -1,4 +1,5 @@
 import { getLeagueQualityScore } from './leagueQualityScoring.js'
+import { classifyDecisionFromMarkets } from './marketQuality.js'
 
 export const DAILY_SELECTION_ALGORITHM_VERSION = 'market-ready-dynamic-selection-v1'
 
@@ -147,7 +148,8 @@ export function calculateSoftRanking(candidate = {}, context = {}) {
   const calculatedScore = weightedScore + sumAdjustments(bonuses) - sumAdjustments(penalties)
   const finalScore = roundScore(clamp(calculatedScore, 0, 100))
   const recommendation = normalizeRecommendation(analysis.recommendation ?? match.recommendation)
-  const marketState = hasMarketData(match) ? 'MARKET_READY' : 'WAITING_MARKET'
+  const marketQuality = getMarketDecisionQuality(match)
+  const marketState = marketQuality.status === 'READY_PRIMARY' || marketQuality.status === 'READY_ALTERNATIVE' ? 'MARKET_READY' : 'WAITING_MARKET'
 
   return {
     algorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
@@ -160,6 +162,7 @@ export function calculateSoftRanking(candidate = {}, context = {}) {
     marketState,
     hasMarketData: marketState === 'MARKET_READY',
     finalPickAllowed: marketState === 'MARKET_READY',
+    marketDecisionQuality: marketQuality,
   }
 }
 
@@ -199,7 +202,7 @@ export function selectDailyTop10(matches = [], options = {}) {
   }))
 
   const selectedIds = new Set(selectedRows.map((row) => row.fixtureId || row.match?.id).filter(Boolean))
-  const marketReadyCount = selectedRows.filter((row) => row.decisionStatus === 'READY').length
+  const marketReadyCount = selectedRows.filter(isReadyDecisionStatus).length
   const probedCandidateCount = Math.min(rankedCandidates.length, context.config.maxCandidates)
   const coverageRatio = probedCandidateCount ? marketReadyCount / probedCandidateCount : 0
   const expansionStopReason = getExpansionStopReason({
@@ -213,7 +216,7 @@ export function selectDailyTop10(matches = [], options = {}) {
 
   return {
     algorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-    pipelineVersion: 'market-ready-dynamic-pipeline-v1',
+    pipelineVersion: 'market-ready-dynamic-pipeline-v2',
     selectionDate: context.selectionDate,
     selected: selectedRows,
     candidates: rows.map((row) => ({
@@ -228,14 +231,16 @@ export function selectDailyTop10(matches = [], options = {}) {
       hardFilterPassed: eligible.length,
       hardFilterRejected: rejected.length,
       selectedCount: selectedRows.length,
-      readyCount: selectedRows.filter((row) => row.decisionStatus === 'READY').length,
+      readyCount: selectedRows.filter(isReadyDecisionStatus).length,
+      readyPrimaryCount: selectedRows.filter((row) => row.decisionStatus === 'READY_PRIMARY').length,
+      readyAlternativeCount: selectedRows.filter((row) => row.decisionStatus === 'READY_ALTERNATIVE').length,
       watchCount: selectedRows.filter((row) => row.decisionStatus === 'WATCH').length,
       waitingMarketCount: selectedRows.filter((row) => row.decisionStatus === 'WAITING_MARKET').length,
       rejectedCount: rejected.length + rankedCandidates.filter((row) => row.decisionStatus === 'REJECTED').length,
       primarySelected: selectedRows.filter((row) => row.tier === 'CORE').length,
       secondarySelected: selectedRows.filter((row) => row.tier === 'EXPANDED').length,
       fallbackSelected: selectedRows.filter((row) => row.tier === 'RESERVE').length,
-      marketReadySelected: selectedRows.filter((row) => row.decisionStatus === 'READY').length,
+      marketReadySelected: selectedRows.filter(isReadyDecisionStatus).length,
       waitingMarketSelected: selectedRows.filter((row) => row.decisionStatus === 'WAITING_MARKET').length,
       coreCandidates: rankedCandidates.filter((row) => row.candidateTier === 'CORE').length,
       expandedCandidates: rankedCandidates.filter((row) => row.candidateTier === 'EXPANDED').length,
@@ -289,7 +294,7 @@ function buildDynamicCandidatePool(eligible, config) {
 
 function shouldExpandCandidatePool(rows, config) {
   if (!rows.length) return false
-  const marketReadyCount = rows.filter((row) => row.decisionStatus === 'READY').length
+  const marketReadyCount = rows.filter(isReadyDecisionStatus).length
   return marketReadyCount < config.minMarketReadyTarget &&
     marketReadyCount / rows.length < config.targetMarketCoverageRatio
 }
@@ -318,9 +323,13 @@ function classifyDecision({ match, hardFilter, softRanking, context }) {
   const riskScore = getRiskScore(match)
   const moduleConsistency = getModuleConsistencyScore(match)
   const criticalMissingFields = getCriticalMissingFieldCount(match)
-  const marketReady = softRanking.hasMarketData
+  const marketQuality = softRanking.marketDecisionQuality ?? getMarketDecisionQuality(match)
+  const marketReady = marketQuality.status === 'READY_PRIMARY' || marketQuality.status === 'READY_ALTERNATIVE'
   const gates = {
     market_ready: marketReady,
+    primary_market_ready: marketQuality.primaryMarketReady,
+    alternative_market_ready: marketQuality.alternativeMarketReady,
+    decision_market: marketQuality.decisionMarket,
     data_readiness_score: dataReadinessScore,
     confidence,
     edge_score: edgeScore,
@@ -330,11 +339,12 @@ function classifyDecision({ match, hardFilter, softRanking, context }) {
   }
 
   if (!marketReady) {
+    const status = marketQuality.status === 'INSUFFICIENT_DATA' ? 'INSUFFICIENT_DATA' : 'WAITING_MARKET'
     return {
-      status: 'WAITING_MARKET',
+      status,
       rankEligible: false,
       gates,
-      failedGates: [reason('WAITING_MARKET', 'No valid AH/O-U market is available; final pick is blocked')],
+      failedGates: [reason(status, 'No valid primary or alternative market is available; final pick is blocked')],
       reason: 'Waiting for market availability',
       ahPickStatus: 'รอเส้น AH',
       ouPickStatus: 'รอราคา O/U',
@@ -353,7 +363,7 @@ function classifyDecision({ match, hardFilter, softRanking, context }) {
 
   if (!readyFailures.length) {
     return {
-      status: 'READY',
+      status: marketQuality.status,
       rankEligible: true,
       gates,
       failedGates: [],
@@ -387,9 +397,12 @@ function classifyDecision({ match, hardFilter, softRanking, context }) {
 }
 
 function decisionStatusPriority(status) {
+  if (status === 'READY_PRIMARY') return 5
+  if (status === 'READY_ALTERNATIVE') return 4
   if (status === 'READY') return 4
   if (status === 'WATCH') return 3
   if (status === 'WAITING_MARKET') return 2
+  if (status === 'INSUFFICIENT_DATA') return 1
   return 1
 }
 
@@ -449,22 +462,22 @@ function hasAnalyticalEvidence(match = {}) {
 }
 
 function hasMarketData(match = {}) {
-  const analysis = getAnalysis(match)
-  const rows = match.odds ?? match.matchOdds ?? match.match_odds ?? analysis.raw?.odds ?? []
-  const oddsRowsUsed = Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? 0)
-  return Boolean(
-    (Array.isArray(rows) && rows.some(isUsableDecisionMarket)) ||
-      oddsRowsUsed > 0,
-  )
+  const quality = getMarketDecisionQuality(match)
+  return quality.status === 'READY_PRIMARY' || quality.status === 'READY_ALTERNATIVE'
 }
 
-function isUsableDecisionMarket(row = {}) {
-  const focus = String(row.market_focus ?? '').toUpperCase()
-  const name = String(row.market_name ?? row.name ?? '').toLowerCase()
-  const hasPrice = row.price !== null && row.price !== undefined && Number(row.price) > 0
-  const isAh = focus === 'AH' || name.includes('asian handicap') || name.includes('handicap')
-  const isOu = focus === 'OU' || name.includes('over/under') || name.includes('goals over')
-  return hasPrice && (isAh || isOu)
+function getMarketDecisionQuality(match = {}) {
+  const analysis = getAnalysis(match)
+  const rows = match.odds ?? match.matchOdds ?? match.match_odds ?? analysis.raw?.odds ?? []
+  return classifyDecisionFromMarkets(Array.isArray(rows) ? rows : [], {
+    fixtureId: getFixtureId(match),
+    now: match.now,
+    capturedAt: match.now ?? new Date().toISOString(),
+  })
+}
+
+function isReadyDecisionStatus(row) {
+  return ['READY', 'READY_PRIMARY', 'READY_ALTERNATIVE'].includes(String(row.decisionStatus ?? row.selectionStatus ?? '').toUpperCase())
 }
 
 function getDataQualityScore(match = {}) {

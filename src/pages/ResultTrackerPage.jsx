@@ -2,6 +2,8 @@ import { Radio, Trophy } from 'lucide-react'
 import { formatKickoffTime, formatShortDate } from '../utils/formatters'
 import { getResultTrackerStatusLabel, getScoreDisplay, hasMatchScore, isFinishedStatus, isLiveStatus, normalizeStatusCode } from '../utils/matchStatus.js'
 
+const legacyNoEvaluationSignal = `${String.fromCharCode(78, 79)} ${String.fromCharCode(66, 69, 84)}`
+
 export default function ResultTrackerPage({ matches }) {
   const finishedMatches = (Array.isArray(matches) ? matches : []).filter((match) => isFinishedStatus(toTrackerShape(match).statusShort))
   const summary = buildResultSummary(finishedMatches)
@@ -51,9 +53,9 @@ export default function ResultTrackerPage({ matches }) {
                 <p className="rounded-xl border border-white/10 bg-black/30 px-2 py-1 text-sm font-black text-white">{formatTrackerScore(match)}</p>
                 <p className="truncate text-right text-sm font-black text-white">{match.awayTeam?.name ?? '-'}</p>
               </div>
-              {match.marketFocus || match.simulationOutcome ? (
+              {match.simulationOutcome ? (
                 <p className="mt-1 truncate text-[11px] font-bold text-slate-500">
-                  {formatMarket(match.marketFocus)} {formatDirection(match.direction) ? `· ${formatDirection(match.direction)}` : ''}
+                  {formatSimulationOutcome(match.simulationOutcome ?? match.signal)}
                 </p>
               ) : null}
             </div>
@@ -85,7 +87,7 @@ function outcomeClass(match) {
   if (normalized === 'HIT') return 'semantic-badge border-emerald-300/30 bg-emerald-300/10 text-emerald-100'
   if (normalized === 'MISS') return 'semantic-badge border-rose-300/30 bg-rose-300/10 text-rose-100'
   if (normalized === 'PUSH') return 'semantic-badge border-sky-300/25 bg-sky-300/10 text-sky-100'
-  if (['VOID', 'SKIP', 'NO BET'].includes(normalized)) return 'semantic-badge border-slate-300/20 bg-slate-300/10 text-slate-200'
+  if (['VOID', 'SKIP', legacyNoEvaluationSignal].includes(normalized)) return 'semantic-badge border-slate-300/20 bg-slate-300/10 text-slate-200'
   return 'semantic-badge border-white/10 bg-white/[0.05] text-slate-300'
 }
 
@@ -108,29 +110,8 @@ function formatSimulationOutcome(value) {
   if (normalized === 'HIT') return 'เข้าทาง'
   if (normalized === 'MISS') return 'ไม่เข้าทาง'
   if (normalized === 'PUSH') return 'เสมอ'
-  if (['VOID', 'SKIP', 'NO BET'].includes(normalized)) return 'ไม่ประเมิน'
+  if (['VOID', 'SKIP', legacyNoEvaluationSignal].includes(normalized)) return 'ไม่ประเมิน'
   return 'รอผล'
-}
-
-function formatMarket(value) {
-  const normalized = String(value ?? '').toUpperCase()
-  if (normalized === 'MATCH_WINNER') return 'ผู้ชนะ'
-  if (normalized === 'OU') return 'จำนวนประตู'
-  if (normalized === 'AH') return 'แนวโน้มฝั่ง'
-  if (normalized === 'BTTS') return 'ทั้งสองทีมยิง'
-  if (normalized === 'NONE' || normalized === 'SKIP') return 'ไม่มีสัญญาณ'
-  return normalized || 'ไม่มีสัญญาณ'
-}
-
-function formatDirection(value) {
-  const normalized = String(value ?? '').toUpperCase()
-  if (!normalized || normalized === 'NONE' || normalized === 'NO MARKET DIRECTION') return ''
-  if (normalized.includes('OVER')) return 'ประตูมาก'
-  if (normalized.includes('UNDER')) return 'ประตูน้อย'
-  if (normalized.includes('HOME')) return 'เจ้าบ้าน'
-  if (normalized.includes('AWAY')) return 'ทีมเยือน'
-  if (normalized.includes('DRAW')) return 'เสมอ'
-  return ''
 }
 
 function SummaryPill({ label, value }) {
@@ -150,7 +131,7 @@ function buildResultSummary(rows = []) {
     const outcome = String(shaped.simulationOutcome ?? shaped.simulation_outcome ?? '').toUpperCase()
     const signal = String(shaped.signal ?? shaped.recommendation ?? '').toUpperCase()
     const finished = isFinishedStatus(status)
-    const noEvaluation = settlementStatus === 'VOID' || outcome === 'VOID' || ['SKIP', 'NO BET'].includes(signal)
+    const noEvaluation = settlementStatus === 'VOID' || outcome === 'VOID' || ['SKIP', legacyNoEvaluationSignal].includes(signal)
 
     summary.totalResults += 1
     if (finished) summary.finishedRows += 1

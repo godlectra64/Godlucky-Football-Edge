@@ -8,6 +8,7 @@ import {
 } from './analysisEngine.js'
 import { dataIntelligenceSections, normalizeDataIntelligence } from './dataIntelligence.js'
 import { buildCanonicalMatchDecision } from './bettingDecision.js'
+import { buildFootballAnalyticsOutput } from './footballAnalytics.js'
 import { buildAiFinalPick } from './finalPick.js'
 import { deriveAiPickSide, getAiPickDisplay } from './pickSide.js'
 import { normalizeProfessionalResultFromAnalysis } from './professionalSelectionPipeline.js'
@@ -128,6 +129,7 @@ export function normalizeDetailPayload(match) {
   const finalPick = buildAiFinalPick(safeMatch)
   const bettingDecision = buildCanonicalMatchDecision(safeMatch)
   const professionalPipeline = normalizeProfessionalResultFromAnalysis(safeMatch)
+  const footballAnalytics = buildFootballAnalyticsOutput(safeMatch)
 
   return {
     ...safeMatch,
@@ -145,6 +147,7 @@ export function normalizeDetailPayload(match) {
     finalPick,
     bettingDecision,
     professionalPipeline,
+    footballAnalytics,
     rankReason: safeMatch.rankReason ?? safeMatch.rank_reason ?? 'ข้อมูลอันดับยังจำกัด',
     rankBadges: safeMatch.rankBadges ?? safeMatch.rank_badges ?? [],
     analysisSummary: getAnalysisSummary(safeMatch),
@@ -217,11 +220,11 @@ export function buildAiVerdict(match) {
     intelligence.league_context?.reason,
   ].filter(Boolean)
   const cautions = buildRiskFactors(detail).slice(0, 5)
-  const playable = detail.recommendation === 'BET'
-    ? 'เหมาะพิจารณาเล่นได้ แต่ยังต้องตรวจ lineup และตลาดก่อนแข่ง'
-    : detail.recommendation === 'LEAN'
-      ? 'เหมาะติดตามหรือรอข้อมูลเพิ่ม ยังไม่ใช่จุด BET เต็ม'
-      : 'ไม่เหมาะเล่นก่อนข้อมูลชัดขึ้น'
+  const playable = detail.footballAnalytics.analysisStatus === 'ANALYSIS_READY'
+    ? 'โมเดลมีข้อมูลเพียงพอสำหรับสรุปมุมมองก่อนแข่ง โดยยังควรตรวจรายชื่อผู้เล่นล่าสุด'
+    : detail.footballAnalytics.analysisStatus === 'PARTIAL_ANALYSIS'
+      ? 'โมเดลมีข้อมูลบางส่วน เหมาะสำหรับติดตามภาพรวมและรอข้อมูลประกอบเพิ่มเติม'
+      : 'ข้อมูลยังไม่พอสำหรับสรุปมุมมองเต็มรูปแบบ'
 
   return {
     verdict: detail.recommendation,
@@ -237,12 +240,12 @@ export function buildRiskFactors(detail) {
   const dataIntelligence = detail.dataIntelligence ?? extractDataIntelligence(detail)
   const consistency = detail.analysisBreakdown?.overall_risk?.reason
 
-  if (String(detail.riskLevel).toLowerCase() === 'high') factors.push('ความเสี่ยงรวมอยู่ระดับสูง จึงไม่ควรบังคับเล่น')
+  if (String(detail.riskLevel).toLowerCase() === 'high') factors.push('ความผันผวนรวมอยู่ระดับสูง จึงควรอ่านมุมมองด้วยความระมัดระวัง')
   if (intelligence.h2h?.confidence === 'low') factors.push('ข้อมูล H2H ยังจำกัด')
   if (intelligence.squad_context?.confidence === 'low') factors.push('ยังไม่มีข้อมูลตัวผู้เล่น/อาการบาดเจ็บเพียงพอ')
   if (intelligence.league_context?.risk_modifier > 0) factors.push('บริบทการแข่งขันมีความผันผวน')
   if (intelligence.match_importance?.risk_modifier > 0) factors.push('ความสำคัญของเกมเพิ่ม variance')
-  if (detail.dataQuality?.missing?.includes('Odds movement')) factors.push('ยังไม่มีราคาบอล AH/OU จริงหรือ movement ชัดเจน')
+  if (detail.dataQuality?.missing?.includes('Odds movement')) factors.push('ยังไม่มีข้อมูลความเคลื่อนไหวประกอบการประเมินล่าสุด')
   if (dataIntelligence.data_confidence?.level === 'low') factors.push('Football Data Intelligence ยังมีข้อมูลจริงจำกัด')
   if (consistency) factors.push(consistency)
 

@@ -59,15 +59,15 @@ async function checkDecisionBoard() {
   const rows = data ?? []
   const duplicateRanks = findDuplicates(rows, (row) => row.rank)
   const duplicateFixtures = findDuplicates(rows, (row) => row.match_id)
-  const readyRows = rows.filter((row) => normalizeStatus(row) === 'READY')
+  const readyRows = rows.filter((row) => isReadyStatus(normalizeStatus(row)))
   const watchRows = rows.filter((row) => normalizeStatus(row) === 'WATCH')
   const waitingRows = rows.filter((row) => normalizeStatus(row) === 'WAITING_MARKET')
-  const validStatuses = new Set(['READY', 'WATCH', 'WAITING_MARKET', 'REJECTED', 'FINAL_LOCKED', 'FINISHED'])
+  const validStatuses = new Set(['READY_PRIMARY', 'READY_ALTERNATIVE', 'READY', 'WATCH', 'WAITING_MARKET', 'INSUFFICIENT_DATA', 'REJECTED', 'FINAL_LOCKED', 'FINISHED'])
   const invalidStatuses = rows.filter((row) => row.selection_status && !validStatuses.has(row.selection_status))
   const readyWithoutMarket = readyRows.filter((row) => row.market_ready === false)
   const waitingWithFinalPick = waitingRows.filter((row) => row.ai_final_pick_id)
   const readyWithoutFinalPick = readyRows.filter((row) => !row.ai_final_pick_id)
-  const badPipeline = hasDynamicColumns ? rows.filter((row) => row.pipeline_version && row.pipeline_version !== 'market-ready-dynamic-pipeline-v1') : rows
+  const badPipeline = hasDynamicColumns ? rows.filter((row) => row.pipeline_version && !['football-analytics-pipeline-v1', 'market-ready-dynamic-pipeline-v2', 'market-ready-dynamic-pipeline-v1'].includes(row.pipeline_version)) : rows
   const badAlgorithm = hasDynamicColumns ? rows.filter((row) => row.selection_algorithm_version && row.selection_algorithm_version !== 'market-ready-dynamic-selection-v1') : rows
 
   report('dynamic count valid', rows.length >= 0 ? 0 : 1, `rows=${rows.length}`)
@@ -115,6 +115,10 @@ function normalizeStatus(row) {
   return row.ai_final_pick_id ? 'READY' : 'WAITING_MARKET'
 }
 
+function isReadyStatus(status) {
+  return ['READY_PRIMARY', 'READY_ALTERNATIVE', 'READY'].includes(String(status ?? '').toUpperCase())
+}
+
 function hasValidDecisionMarket(rows) {
   return rows.some((row) => {
     const focus = String(row.market_focus ?? '').toUpperCase()
@@ -123,10 +127,17 @@ function hasValidDecisionMarket(rows) {
     return Number.isFinite(price) && price > 0 && (
       focus === 'AH' ||
       focus === 'OU' ||
+      focus === 'MATCH_WINNER' ||
+      focus === 'MATCH_WINNER_1X2' ||
+      focus === 'DOUBLE_CHANCE' ||
       name.includes('asian handicap') ||
       name.includes('handicap') ||
       name.includes('over/under') ||
-      name.includes('goals over')
+      name.includes('goals over') ||
+      name.includes('match winner') ||
+      name.includes('home/draw/away') ||
+      name.includes('1x2') ||
+      name.includes('double chance')
     )
   })
 }

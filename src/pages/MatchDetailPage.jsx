@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Activity, ArrowLeft, Brain, CalendarClock, ChevronDown, Clock, Gauge, ListChecks, MapPin, ShieldAlert, Sparkles, Star, TrendingUp, Users } from 'lucide-react'
 import AiFinalPickCard from '../components/AiFinalPickCard'
 import RiskBadge from '../components/RiskBadge'
-import ScoreBadge from '../components/ScoreBadge'
 import {
   buildAiVerdict,
   buildRiskFactors,
@@ -13,8 +12,9 @@ import {
 import { formatKickoffTime, formatScore } from '../utils/formatters'
 import { calculateDataCoverage, normalizeDataPlatform } from '../utils/dataPlatform'
 import { buildExplainableAi } from '../utils/explainableAi'
-import { normalizeMarketIntelligence } from '../utils/marketIntelligence'
 import { buildPickSummaryFromApiFootballOdds } from '../utils/marketDisplay'
+import { getAnalysisStatusLabelTh, getAnalysisStatusTone } from '../utils/analysisStatus'
+import { EXPECTED_SCORE_DISCLAIMER_TH } from '../utils/footballAnalytics'
 
 const moduleSubtitles = {
   'Team Strength': 'คุณภาพทีม',
@@ -24,7 +24,7 @@ const moduleSubtitles = {
   'Home Advantage': 'ความได้เปรียบเจ้าบ้าน',
   'Away Weakness': 'จุดอ่อนทีมเยือน',
   'Motivation & Context': 'บริบทการแข่งขัน',
-  'Market Risk': 'ความผันผวนราคา',
+  'Market Risk': 'ความผันผวนข้อมูล',
   'Overall Risk': 'ความเสี่ยงรวม',
 }
 
@@ -68,19 +68,13 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
   const platform = normalizeDataPlatform({ match: detail, analysis: detail.analysis })
   const explainability = buildExplainableAi(platform)
   const dataCoverage = calculateDataCoverage(platform)
-  const marketIntelligence = normalizeMarketIntelligence(detail)
-
   return (
     <main className="app-page theme-analysis">
       <BackButton onBack={onBack} />
       <HeroHeader detail={detail} />
-      <FinalDecisionSection detail={detail} />
-      <MatchViewSection detail={detail} />
-      <AhAnalysisSection detail={detail} />
-      <OuAnalysisSection detail={detail} />
+      <FootballAnalyticsOverviewSection detail={detail} />
       <DetailAccordion open={detailsOpen} onToggle={() => setDetailsOpen((value) => !value)}>
       <UnifiedSystemDetailsSection detail={detail} />
-      <SystemPickSummarySection detail={detail} />
       <AiFinalPickAnalysisSection detail={detail} />
       <AiVerdictSection detail={detail} verdict={verdict} />
       <AiSelectionBreakdownSection detail={detail} />
@@ -93,11 +87,9 @@ export default function MatchDetailPage({ match, loading = false, error = '', pe
       <ContextSection title="บริบทผลงาน AI" icon={Star} body={performanceContext || 'กำลังเก็บข้อมูล'} />
       <PredictionReliabilitySection reliability={predictionReliability} />
       <RiskAnalysisSection detail={detail} riskLabel={riskLabel} riskFactors={riskFactors} />
-      <ProfessionalPipelineSection detail={detail} />
       <RankingSection detail={detail} />
       <DataQualitySection dataQuality={detail.dataQuality} />
       <DataPlatformCoverageSection coverage={dataCoverage} />
-      <MarketIntelligenceSection market={marketIntelligence} />
       <SummarySection detail={detail} />
       </DetailAccordion>
     </main>
@@ -145,7 +137,7 @@ function HeroHeader({ detail }) {
             <div>
               <p className="text-[10px] font-black uppercase text-blue-200/80">ผลประเมิน AI</p>
               <div className="mt-1 flex items-center gap-2">
-                <ScoreBadge recommendation={detail.recommendation} />
+                <span className={`semantic-badge ${analysisToneClass(getAnalysisStatusTone(detail.footballAnalytics.analysisStatus))}`}>{getAnalysisStatusLabelTh(detail.footballAnalytics.analysisStatus)}</span>
                 <RiskBadge level={detail.riskLevel} />
               </div>
             </div>
@@ -178,12 +170,44 @@ function AiFinalPickAnalysisSection({ detail }) {
   )
 }
 
+function FootballAnalyticsOverviewSection({ detail }) {
+  const analytics = detail.footballAnalytics
+  const outlook = analytics.matchOutlook
+  const scoreRows = analytics.expectedScorePredictions
+  return (
+    <Section title="มุมมองจากโมเดล" icon={Brain} accent>
+      <div className="grid grid-cols-3 gap-2">
+        <Metric label="เจ้าบ้าน" value={formatProbability(outlook.homeWin)} />
+        <Metric label="เสมอ" value={formatProbability(outlook.draw)} />
+        <Metric label="ทีมเยือน" value={formatProbability(outlook.awayWin)} />
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <Metric label="ประตูเจ้าบ้าน" value={analytics.expectedGoals.home} />
+        <Metric label="ประตูทีมเยือน" value={analytics.expectedGoals.away} />
+        <Metric label="ประตูรวม" value={analytics.expectedGoals.total} />
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        {scoreRows.map((row) => (
+          <Metric key={row.score} label={row.score} value={formatProbability(row.probability)} />
+        ))}
+      </div>
+      <p className="mt-3 rounded-2xl border border-cyan-300/20 bg-cyan-300/10 p-3 text-sm leading-6 text-cyan-50">{EXPECTED_SCORE_DISCLAIMER_TH}</p>
+      <TwoColumnLists
+        leftTitle="เหตุผลจากโมเดล"
+        leftItems={analytics.thaiReasons}
+        rightTitle="องค์ประกอบความมั่นใจ"
+        rightItems={Object.entries(analytics.confidenceBreakdown).map(([key, value]) => `${formatAnalyticsKey(key)} ${Math.round(value)}/100`)}
+      />
+    </Section>
+  )
+}
+
 function AiVerdictSection({ detail, verdict }) {
   return (
     <Section title="ผลประเมิน AI" icon={Sparkles} accent>
       <div className="rounded-2xl border border-blue-300/25 bg-blue-300/10 p-3">
         <div className="flex items-center justify-between gap-3">
-          <ScoreBadge recommendation={verdict.verdict} />
+          <span className={`semantic-badge ${analysisToneClass(getAnalysisStatusTone(detail.footballAnalytics.analysisStatus))}`}>{getAnalysisStatusLabelTh(detail.footballAnalytics.analysisStatus)}</span>
           <span className="text-sm font-black text-blue-100">ความมั่นใจ {detail.confidence}%</span>
         </div>
         <p className="mt-2 text-sm leading-6 text-slate-200">{detail.rankReason}</p>
@@ -194,15 +218,16 @@ function AiVerdictSection({ detail, verdict }) {
   )
 }
 
+// eslint-disable-next-line no-unused-vars
 function FinalDecisionSection({ detail }) {
   const decision = detail.bettingDecision
 
   return (
-    <Section title="Final Decision" icon={Sparkles} accent>
+    <Section title="มุมมองจากโมเดล" icon={Sparkles} accent>
       <div className={`rounded-2xl border p-3 ${decisionPanelTone(decision.status)}`}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-[10px] font-black uppercase text-slate-400">Best Pick</p>
+            <p className="text-[10px] font-black uppercase text-slate-400">Model Outlook</p>
             <p className="mt-1 text-clamp-2 text-2xl font-black leading-7 text-white">{decision.final_pick.label}</p>
             <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{formatFinalDecisionReason(decision)}</p>
           </div>
@@ -217,6 +242,7 @@ function FinalDecisionSection({ detail }) {
   )
 }
 
+// eslint-disable-next-line no-unused-vars
 function MatchViewSection({ detail }) {
   const view = detail.bettingDecision.match_view
   const sourceLabel = view.source === 'MARKET_MODEL' ? 'Market model' : view.source === 'FIXTURE_MODEL' ? 'Fixture model' : 'Insufficient data'
@@ -227,20 +253,22 @@ function MatchViewSection({ detail }) {
   )
 }
 
+// eslint-disable-next-line no-unused-vars
 function AhAnalysisSection({ detail }) {
   const decision = detail.bettingDecision
   return (
-    <Section title="AH Analysis" icon={Gauge} accent>
-      <DecisionPanel title="Asian Handicap" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence ?? 0} reason={formatDetailMarketReason(decision, 'AH')} status={decision.status} />
+    <Section title="การประเมินแนวโน้มทีม" icon={Gauge} accent>
+      <DecisionPanel title="Team Trend" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence ?? 0} reason={formatDetailMarketReason(decision, 'AH')} status={decision.status} />
     </Section>
   )
 }
 
+// eslint-disable-next-line no-unused-vars
 function OuAnalysisSection({ detail }) {
   const decision = detail.bettingDecision
   return (
-    <Section title="O/U Analysis" icon={Gauge} accent>
-      <DecisionPanel title="Over / Under" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence ?? 0} reason={formatDetailMarketReason(decision, 'OU')} status={decision.status} />
+    <Section title="การประเมินจำนวนประตู" icon={Gauge} accent>
+      <DecisionPanel title="Goal Trend" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence ?? 0} reason={formatDetailMarketReason(decision, 'OU')} status={decision.status} />
     </Section>
   )
 }
@@ -278,16 +306,17 @@ function UnifiedSystemDetailsSection({ detail }) {
 
 function formatDetailMarketReason(decision = {}, market) {
   if (decision.status === 'WAITING_MARKET') {
-    return market === 'AH' ? 'รอเส้น AH จาก API-Football' : 'รอราคา O/U จาก API-Football'
+    return market === 'AH' ? 'รอข้อมูลแนวโน้มทีมจาก API-Football' : 'รอข้อมูลแนวโน้มประตูจาก API-Football'
   }
   return market === 'AH' ? decision.ah_pick?.reason : decision.ou_pick?.reason
 }
 
 function formatFinalDecisionReason(decision = {}) {
-  if (decision.status === 'WAITING_MARKET') return 'ยังไม่มีข้อมูลราคาจาก API-Football สำหรับ AH/O-U'
+  if (decision.status === 'WAITING_MARKET') return 'ยังไม่มีข้อมูลประกอบจาก API-Football สำหรับสรุปเต็ม'
   return decision.final_pick?.reason ?? 'ข้อมูลยังไม่พอสำหรับสรุป'
 }
 
+// eslint-disable-next-line no-unused-vars
 function SystemPickSummarySection({ detail }) {
   const summary = buildPickSummaryFromApiFootballOdds(detail)
   const hasMarket = Boolean(summary?.hasApiFootballOdds)
@@ -313,6 +342,7 @@ function SystemPickSummarySection({ detail }) {
   )
 }
 
+// eslint-disable-next-line no-unused-vars
 function ProfessionalPipelineSection({ detail }) {
   const pipeline = detail.professionalPipeline ?? {}
   const scores = pipeline.scores ?? {}
@@ -360,7 +390,7 @@ function ProfessionalPipelineSection({ detail }) {
       <TwoColumnLists
         leftTitle="ทำไมคู่นี้ถูกเลือก"
         leftItems={uniqueTextItems(reasons).slice(0, 5)}
-        rightTitle="เหตุผลของ BET / LEAN / NO BET"
+        rightTitle="เหตุผลของสถานะโมเดล"
         rightItems={[buildProfessionalDecisionText(pipeline), ...(pipeline.finalPick?.reason ? [pipeline.finalPick.reason] : [])]}
       />
       <TwoColumnLists
@@ -402,15 +432,15 @@ function DecisionPanel({ title, pick, confidence, reason, badge = '', status = '
 }
 
 function decisionPanelTone(status) {
-  if (status === 'READY') return 'border-emerald-300/25 bg-emerald-300/10'
+  if (status === 'READY' || status === 'READY_PRIMARY' || status === 'READY_ALTERNATIVE') return 'border-emerald-300/25 bg-emerald-300/10'
   if (status === 'WATCH') return 'border-amber-300/25 bg-amber-300/10'
   if (status === 'WAITING_MARKET') return 'border-slate-300/25 bg-slate-300/10'
   return 'border-red-300/25 bg-red-400/10'
 }
 
 function recommendationBadgeTone(status) {
-  if (status === 'READY' || status === 'BET') return 'badge-bet'
-  if (status === 'WATCH' || status === 'LEAN') return 'badge-lean'
+  if (status === 'READY' || status === 'READY_PRIMARY' || status === 'READY_ALTERNATIVE' || String(status).startsWith('B')) return 'badge-bet'
+  if (status === 'WATCH' || String(status).startsWith('L')) return 'badge-lean'
   if (status === 'WAITING_MARKET') return 'border-slate-300/25 bg-slate-300/10 text-slate-100'
   return 'badge-no-bet'
 }
@@ -455,8 +485,8 @@ function DataIntelligenceV4Section({ detail }) {
   const items = [
     ['ปรับเทียบแล้ว', analysis.calibrated_confidence_score ?? detail.calibratedConfidence ?? detail.confidence],
     ['ความได้เปรียบตลาด', analysis.market_edge_score ?? detail.marketEdgeScore],
-    ['ความมั่นใจจากราคา', analysis.odds_confidence_score ?? detail.oddsConfidenceScore],
-    ['การขยับราคา', analysis.odds_movement_score ?? detail.oddsMovementScore],
+    ['ความมั่นใจจากข้อมูลประกอบ', analysis.odds_confidence_score ?? detail.oddsConfidenceScore],
+    ['ความเคลื่อนไหวข้อมูล', analysis.odds_movement_score ?? detail.oddsMovementScore],
     ['สถิติทีม', analysis.team_stats_score ?? detail.teamStatsScore],
     ['ตัวเจ็บ', analysis.injuries_score ?? detail.injuriesScore],
     ['รายชื่อผู้เล่น', analysis.lineups_score ?? detail.lineupsScore],
@@ -475,8 +505,8 @@ function DataIntelligenceV4Section({ detail }) {
       <div className="mt-3 grid gap-2">
         <DecisionMetric label="ตลาด Value" value={analysis.value_market ?? '-'} muted={!analysis.value_market} />
         <DecisionMetric label="ฝั่งที่มี Value" value={analysis.value_side ?? '-'} muted={!analysis.value_side} />
-        <DecisionMetric label="ราคา/ไลน์" value={analysis.value_line ?? analysis.latest_line ?? '-'} muted={!analysis.value_line && !analysis.latest_line} />
-        <DecisionMetric label="การขยับราคา" value={analysis.odds_movement_summary ?? '-'} muted={!analysis.odds_movement_summary} />
+        <DecisionMetric label="เส้นข้อมูลประกอบ" value={analysis.value_line ?? analysis.latest_line ?? '-'} muted={!analysis.value_line && !analysis.latest_line} />
+        <DecisionMetric label="ความเคลื่อนไหวข้อมูล" value={analysis.odds_movement_summary ?? '-'} muted={!analysis.odds_movement_summary} />
       </div>
       {analysis.enriched_summary ? <p className="mt-3 rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{analysis.enriched_summary}</p> : null}
     </Section>
@@ -855,13 +885,14 @@ function DataPlatformCoverageSection({ coverage }) {
   )
 }
 
+// eslint-disable-next-line no-unused-vars
 function MarketIntelligenceSection({ market }) {
   return (
     <Section title="ข้อมูลตลาด" icon={TrendingUp}>
       <p className="rounded-2xl border border-white/10 bg-white/[0.04] p-3 text-sm leading-6 text-slate-200">{market.reason}</p>
       <div className="mt-3 grid grid-cols-2 gap-2">
-        <Metric label="AH · ราคาต่อรอง" value={formatMarketValue(market.asian_handicap)} />
-        <Metric label="O/U" value={formatMarketValue(market.over_under)} />
+        <Metric label="แนวโน้มทีม" value={formatMarketValue(market.asian_handicap)} />
+        <Metric label="แนวโน้มประตู" value={formatMarketValue(market.over_under)} />
         <Metric label="1X2" value={formatMarketValue(market.one_x_two)} />
         <Metric label="สถานะ Value" value={formatMarketValue(market.value_rating)} />
       </div>
@@ -1211,14 +1242,29 @@ function formatMarketValue(value) {
   return String(value)
 }
 function buildProfessionalDecisionText(pipeline = {}) {
-  const recommendation = String(pipeline.recommendation ?? 'NO BET').toUpperCase()
+  const recommendation = String(pipeline.recommendation ?? '').toUpperCase()
   const total = Math.round(pipeline.totalScore ?? 0)
   const confidence = Math.round(pipeline.confidenceScore ?? 0)
   const value = Math.round(pipeline.scores?.valueEdge ?? 0)
   const risk = Math.round(pipeline.scores?.riskControl ?? 0)
-  if (recommendation === 'BET') return `จัดเป็น BET เพราะคะแนนรวม ${total}/100, confidence ${confidence}/100, value edge ${value}/100 และ risk control ${risk}/100 ผ่านเกณฑ์`
-  if (recommendation === 'LEAN') return `จัดเป็น LEAN เพราะภาพรวมดีพอให้ติดตาม แต่ value/risk/confidence ยังไม่ครบเกณฑ์ BET`
-  return 'จัดเป็น NO BET เพราะผ่านการวิเคราะห์แล้ว แต่คะแนนรวม value ความเสี่ยง หรือ gate สำคัญยังไม่คุ้มพอ'
+  if (recommendation.startsWith('B')) return `มุมมองพร้อมวิเคราะห์ เพราะคะแนนรวม ${total}/100, confidence ${confidence}/100, value edge ${value}/100 และ risk control ${risk}/100 ผ่านเกณฑ์`
+  if (recommendation.startsWith('L')) return `มุมมองบางส่วน เพราะภาพรวมดีพอให้ติดตาม แต่ value/risk/confidence ยังไม่ครบเกณฑ์เต็ม`
+  return 'ข้อมูลยังไม่พอสำหรับสรุปเต็มรูปแบบหลังผ่านการวิเคราะห์เบื้องต้น'
+}
+
+function formatProbability(value) {
+  return `${Math.round(Number(value ?? 0) * 100)}%`
+}
+
+function formatAnalyticsKey(value) {
+  return String(value).replace(/([A-Z])/g, ' $1').replace(/^./, (letter) => letter.toUpperCase())
+}
+
+function analysisToneClass(tone) {
+  if (tone === 'good') return 'badge-positive'
+  if (tone === 'watch') return 'badge-medium'
+  if (tone === 'risk') return 'badge-high'
+  return 'border-slate-300/25 bg-slate-300/10 text-slate-100'
 }
 
 function uniqueTextItems(items = []) {

@@ -9,6 +9,11 @@ import {
   getHybridPhaseForDailySyncPhase,
   getHybridPhaseForMode,
 } from '../../../src/utils/hybridDailyPipeline.js'
+import {
+  FOOTBALL_ANALYSIS_MODEL_VERSION,
+  FOOTBALL_ANALYTICS_PIPELINE_VERSION,
+  buildFootballAnalyticsOutput,
+} from '../../../src/utils/footballAnalytics.js'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -92,6 +97,7 @@ const staleMarketRepairReadyCandidateLimit = 15
 const staleMarketRepairOddsRowLimit = 800
 const staleMarketRepairOddsRowsPerMarketLimit = 20
 const staleMarketRepairSelectionCount = 10
+const enablePublicMarketAnalysis = String(Deno.env.get('ENABLE_PUBLIC_MARKET_ANALYSIS') ?? 'false').toLowerCase() === 'true'
 
 const marketFirstPipelineAdminModes = [
   'daily-sync-auto',
@@ -2589,6 +2595,14 @@ function settleResultRow(input: any) {
     if (!['HOME', 'AWAY', 'DRAW'].includes(direction)) return resultVoid('match winner pick is missing direction')
     return resultSettled(direction === result ? 'HIT' : 'MISS', `MATCH_WINNER ${direction} vs result ${result}`)
   }
+  if (market === 'DOUBLE_CHANCE') {
+    const result = homeScore > awayScore ? 'HOME' : homeScore < awayScore ? 'AWAY' : 'DRAW'
+    if (!['1X', '12', 'X2'].includes(direction)) return resultVoid('double chance pick is missing direction')
+    const hit = (direction === '1X' && ['HOME', 'DRAW'].includes(result)) ||
+      (direction === '12' && ['HOME', 'AWAY'].includes(result)) ||
+      (direction === 'X2' && ['DRAW', 'AWAY'].includes(result))
+    return resultSettled(hit ? 'HIT' : 'MISS', `DOUBLE_CHANCE ${direction} vs result ${result}`)
+  }
   if (market === 'OU') {
     if (line === null) return resultVoid('finished OU pick is missing line')
     const total = homeScore + awayScore
@@ -2619,6 +2633,7 @@ function normalizeResultDirection(value: unknown) {
   const text = String(value ?? '').toUpperCase()
   if (text.includes('OVER')) return 'OVER'
   if (text.includes('UNDER')) return 'UNDER'
+  if (text === '1X' || text === '12' || text === 'X2') return text
   if (text.includes('HOME')) return 'HOME'
   if (text.includes('AWAY')) return 'AWAY'
   if (text.includes('DRAW')) return 'DRAW'
@@ -4159,13 +4174,13 @@ function summarizeDailyMarketCandidateRows(rows: Array<any>) {
 
 function classifyCandidateMarketReadiness(coverage: any) {
   if (!coverage || Number(coverage.rows ?? 0) <= 0) return 'NO_MARKET_DATA'
-  if (coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner) return 'READY'
+  if (coverage.hasAh || coverage.hasOu || coverage.hasMatchWinner || coverage.hasDoubleChance) return 'READY'
   return 'PARTIAL'
 }
 
 function candidateMarketReadinessScore(coverage: any) {
   if (!coverage || Number(coverage.rows ?? 0) <= 0) return 0
-  return normalizeScore(Number(coverage.hasAh) * 35 + Number(coverage.hasOu) * 35 + Number(coverage.hasMatchWinner) * 30)
+  return normalizeScore(Number(coverage.hasAh) * 35 + Number(coverage.hasOu) * 35 + Number(coverage.hasMatchWinner) * 20 + Number(coverage.hasDoubleChance) * 20)
 }
 
 async function updateDailyMarketCandidateFromCoverage(
@@ -4182,6 +4197,8 @@ async function updateDailyMarketCandidateFromCoverage(
     has_usable_ah: Boolean(coverage?.hasAh),
     has_usable_ou: Boolean(coverage?.hasOu),
     has_usable_match_winner: Boolean(coverage?.hasMatchWinner),
+    has_usable_double_chance: Boolean(coverage?.hasDoubleChance),
+    has_usable_correct_score: Boolean(coverage?.hasCorrectScore),
     odds_rows_count: Number(coverage?.rows ?? 0),
     odds_synced_at: new Date().toISOString(),
     odds_sync_status: status,
@@ -4846,6 +4863,13 @@ async function refreshMarketReadyTop10(dayRange: ReturnType<typeof getBangkokDay
     staleNoMarketLockCount: existingSummary.staleNoMarketLockCount,
     readyMatches: selectedReady.map(formatTop10RefreshMatch),
     waitingMatches: selectedWaiting.map(formatTop10RefreshMatch),
+    summary: buildFootballAnalyticsSummary({
+      fixturesDiscovered: matches.length,
+      playableFixtures: candidates.length,
+      candidates,
+      selected,
+      failedFixtures: failed,
+    }),
     refreshedBecause,
     refreshed: shouldPersist || !existingRows.length,
   }
@@ -4944,6 +4968,13 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
     skippedBecause: null,
     readyMatches: selectedReady.map(formatTop10RefreshMatch),
     waitingMatches: selectedWaiting.map(formatTop10RefreshMatch),
+    summary: buildFootballAnalyticsSummary({
+      fixturesDiscovered: windowMatches.length,
+      playableFixtures: playableMatches.length,
+      candidates,
+      selected,
+      failedFixtures: persistResult.failed,
+    }),
     refreshed: true,
   }
 }
@@ -5265,12 +5296,12 @@ async function fetchLowResourceRepairMatchTargets(candidateRows: Array<any>) {
   return targets
 }
 
-type SupportedRepairMarketFocus = 'AH' | 'OU' | 'MATCH_WINNER'
+type SupportedRepairMarketFocus = 'AH' | 'OU' | 'MATCH_WINNER' | 'DOUBLE_CHANCE'
 
 async function fetchLowResourceRequiredMarketProbes(matchIds: Array<string>) {
   const ids = [...new Set(matchIds.filter(Boolean))]
   if (ids.length > staleMarketRepairReadyCandidateLimit) throw new Error(`Repair odds probe target count exceeds 15: ${ids.length}`)
-  const marketResults = await Promise.all((['AH', 'OU', 'MATCH_WINNER'] as Array<SupportedRepairMarketFocus>)
+  const marketResults = await Promise.all((['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'] as Array<SupportedRepairMarketFocus>)
     .map((marketFocus) => fetchLowResourceMarketOddsProbe(ids, marketFocus)))
   const merged = new Map<string, Array<any>>()
   for (const matchId of ids) {
@@ -5307,7 +5338,7 @@ async function fetchLowResourceLatestSupportedOdds(matchIds: Array<string>) {
     throw new Error(`Low-resource repair odds target count out of bounds: ${ids.length}`)
   }
   const entries = await Promise.all(ids.map(async (matchId) => {
-    const marketEntries = await Promise.all((['AH', 'OU', 'MATCH_WINNER'] as Array<SupportedRepairMarketFocus>).map(async (marketFocus) => {
+    const marketEntries = await Promise.all((['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'] as Array<SupportedRepairMarketFocus>).map(async (marketFocus) => {
       const result = await supabase
         .from('football_match_odds')
         .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at')
@@ -5342,7 +5373,7 @@ function dedupeOddsRowsById(rows: Array<any>) {
 
 function summarizeSupportedOddsRows(rows: Array<any>) {
   const focuses = new Set(rows.filter(isSupportedFullTimeOddsRow).map((row: any) => normalizeMarketFocus(row.market_focus ?? row.market_name)))
-  return { rows: rows.length, hasAh: focuses.has('AH'), hasOu: focuses.has('OU'), hasMatchWinner: focuses.has('MATCH_WINNER') }
+  return { rows: rows.length, hasAh: focuses.has('AH'), hasOu: focuses.has('OU'), hasMatchWinner: focuses.has('MATCH_WINNER'), hasDoubleChance: focuses.has('DOUBLE_CHANCE'), hasCorrectScore: focuses.has('CORRECT_SCORE') }
 }
 
 function summarizeLowResourcePersistedTop10(rows: Array<any>, oddsByMatchId: Map<string, Array<any>>) {
@@ -5678,6 +5709,16 @@ async function persistMarketReadyTop10(selectionDate: string, selected: Array<an
 function buildDailyTop10RowPayload(selectionDate: string, item: any, index: number) {
   const marketReady = hasValidDecisionMarketItem(item)
   const decisionStatus = getDecisionBoardStatus(item)
+  const analytics = buildFootballAnalyticsOutput({
+    ...item.match,
+    analysis: item.analysis ?? item.match?.analysis,
+    odds: item.odds ?? item.match?.odds ?? [],
+    selection_status: decisionStatus,
+    decisionStatus,
+  }, {
+    selectionDate,
+    generatedAt: new Date().toISOString(),
+  })
   return {
     selection_date: selectionDate,
     match_id: item.match.id,
@@ -5697,12 +5738,31 @@ function buildDailyTop10RowPayload(selectionDate: string, item: any, index: numb
     pick_price: marketReady ? nullableNumber(item.strict?.pickPrice ?? item.pickTeam?.pickPrice) : null,
     pick_confidence: marketReady ? nullableNumber(item.pick?.pick_confidence ?? item.pickTeam?.pickConfidence) : null,
     market_data_used: marketReady,
-    analysis_status: marketReady ? item.pick?.analysis_status ?? 'API_FOOTBALL_ODDS_READY' : 'INSUFFICIENT_MARKET_DATA',
+    analysis_status: analytics.analysisStatus,
+    analysis_dimension: marketReady ? 'FULL_ANALYSIS' : 'FIXTURE_ANALYSIS',
+    model_outlook: analytics.modelOutlook,
+    win_draw_loss_probabilities: analytics.matchOutlook,
+    expected_goals: analytics.expectedGoals,
+    expected_score_predictions: analytics.expectedScorePredictions,
+    confidence_breakdown: analytics.confidenceBreakdown,
+    data_quality: analytics.dataQuality,
+    analysis_reason_codes: analytics.reasonCodes,
+    analysis_model_version: FOOTBALL_ANALYSIS_MODEL_VERSION,
+    analysis_generated_at: analytics.generatedAt,
     selection_status: decisionStatus,
     market_ready: marketReady,
-    pipeline_version: HYBRID_DAILY_PIPELINE_VERSION,
+    pipeline_version: FOOTBALL_ANALYTICS_PIPELINE_VERSION,
     selection_algorithm_version: DAILY_SELECTION_ALGORITHM_VERSION,
-    decision_reason: decisionStatus === 'WAITING_MARKET' ? 'No valid AH/O-U market available' : `${decisionStatus} by market-ready dynamic decision board`,
+    decision_market: marketReady ? canonicalDecisionMarket(item.pick?.market_focus ?? item.strict?.pickMarket) : null,
+    market_tier: getDecisionMarketTier(item.pick?.market_focus ?? item.strict?.pickMarket),
+    primary_market_ready: hasPrimaryDecisionMarketItem(item),
+    alternative_market_ready: hasAlternativeDecisionMarketItem(item),
+    available_markets: getAvailableDecisionMarkets(item.odds ?? []),
+    market_quality: buildDecisionMarketAudit(item),
+    market_snapshot_at: latestOddsSnapshotAt(item.odds ?? []),
+    decision_model_version: 'multi-market-decision-v1',
+    market_quality_version: 'market-quality-v2',
+    decision_reason: decisionStatus === 'WAITING_MARKET' || decisionStatus === 'INSUFFICIENT_DATA' ? 'No valid primary or alternative market available' : `${decisionStatus} by market-ready dynamic decision board`,
     decision_audit: {
       candidateRank: item.candidate?.candidate_rank ?? null,
       candidateTier: item.candidate?.candidate_tier ?? null,
@@ -5711,18 +5771,60 @@ function buildDailyTop10RowPayload(selectionDate: string, item: any, index: numb
       hasAhMarket: Boolean(item.candidate?.has_usable_ah),
       hasOuMarket: Boolean(item.candidate?.has_usable_ou),
       oddsRowsCount: item.odds?.length ?? item.candidate?.odds_rows_count ?? 0,
+      publicMarketAnalysisEnabled: enablePublicMarketAnalysis,
+      compatibilityPipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
     },
-    confidence_score: marketReady ? nullableNumber(item.pick?.confidence_score ?? item.analysis?.confidence_score) : null,
+    confidence_score: analytics.confidence,
     risk_level: normalizeRiskLevelText(item.pick?.risk_level ?? item.analysis?.risk_level ?? 'MEDIUM'),
     updated_at: new Date().toISOString(),
   }
+}
+
+function buildFootballAnalyticsSummary({ fixturesDiscovered = 0, playableFixtures = 0, candidates = [], selected = [], failedFixtures = 0 }: {
+  fixturesDiscovered?: number
+  playableFixtures?: number
+  candidates?: Array<any>
+  selected?: Array<any>
+  failedFixtures?: number
+}) {
+  const rows = (selected.length ? selected : candidates).map((item: any) => {
+    const analytics = buildFootballAnalyticsOutput({
+      ...item.match,
+      analysis: item.analysis ?? item.match?.analysis,
+      odds: item.odds ?? item.match?.odds ?? [],
+      selection_status: getDecisionBoardStatus(item),
+    })
+    return analytics.analysisStatus
+  })
+  return {
+    fixturesDiscovered,
+    playableFixtures,
+    candidatesScanned: candidates.length,
+    analysisReady: rows.filter((status: string) => status === 'ANALYSIS_READY').length,
+    partialAnalysis: rows.filter((status: string) => status === 'PARTIAL_ANALYSIS').length,
+    waitingData: rows.filter((status: string) => status === 'WAITING_DATA').length,
+    insufficientData: rows.filter((status: string) => status === 'INSUFFICIENT_DATA').length,
+    finished: rows.filter((status: string) => status === 'FINISHED').length,
+    failedFixtures,
+    duplicateFixtures: countDuplicateValues(candidates.map((item: any) => item.match?.api_sports_fixture_id ?? item.match?.id).filter(Boolean)),
+  }
+}
+
+function countDuplicateValues(values: Array<unknown>) {
+  const seen = new Set()
+  let duplicates = 0
+  for (const value of values) {
+    if (seen.has(value)) duplicates += 1
+    else seen.add(value)
+  }
+  return duplicates
 }
 
 function hasValidDecisionMarketItem(item: any) {
   const rows = Array.isArray(item?.odds) ? item.odds : []
   if (rows.some(isValidDecisionOddsRow)) return true
   const market = String(item?.strict?.pickMarket ?? item?.pickTeam?.pickMarket ?? '').toUpperCase()
-  return ['AH', 'OU'].includes(market) && nullableNumber(item?.strict?.pickPrice ?? item?.pickTeam?.pickPrice) !== null
+  return ['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'].includes(market) && nullableNumber(item?.strict?.pickPrice ?? item?.pickTeam?.pickPrice) !== null
 }
 
 function isValidDecisionOddsRow(row: any) {
@@ -5730,15 +5832,71 @@ function isValidDecisionOddsRow(row: any) {
   const name = String(row?.market_name ?? '').toLowerCase()
   const price = nullableNumber(row?.price)
   if (price === null || price <= 0) return false
-  return focus === 'AH' || focus === 'OU' || name.includes('asian handicap') || name.includes('handicap') || name.includes('over/under') || name.includes('goals over')
+  return focus === 'AH' || focus === 'OU' || focus === 'MATCH_WINNER' || focus === 'DOUBLE_CHANCE' ||
+    name.includes('asian handicap') || name.includes('handicap') || name.includes('over/under') || name.includes('goals over') ||
+    name.includes('match winner') || name.includes('1x2') || name.includes('double chance')
 }
 
 function getDecisionBoardStatus(item: any) {
+  if (hasPrimaryDecisionMarketItem(item)) return 'READY_PRIMARY'
+  if (hasAlternativeDecisionMarketItem(item)) return 'READY_ALTERNATIVE'
   const readiness = getMarketFirstReadinessStatus(item)
-  if (readiness === 'READY') return 'READY'
-  if (readiness === 'PARTIAL') return 'WATCH'
-  if (readiness === 'WAITING_MARKET' || readiness === 'NO_MARKET_DATA') return 'WAITING_MARKET'
+  if (readiness === 'WAITING_MARKET' || readiness === 'NO_MARKET_DATA' || readiness === 'PARTIAL') return 'WAITING_MARKET'
+  if (readiness === 'INSUFFICIENT_DATA') return 'INSUFFICIENT_DATA'
   return 'REJECTED'
+}
+
+function hasPrimaryDecisionMarketItem(item: any) {
+  const markets = getAvailableDecisionMarkets(item?.odds ?? [])
+  return markets.includes('AH') || markets.includes('OU')
+}
+
+function hasAlternativeDecisionMarketItem(item: any) {
+  const markets = getAvailableDecisionMarkets(item?.odds ?? [])
+  return markets.includes('MATCH_WINNER') || markets.includes('DOUBLE_CHANCE')
+}
+
+function getAvailableDecisionMarkets(rows: Array<any>) {
+  return [...new Set((rows ?? [])
+    .filter((row: any) => nullableNumber(row?.price) !== null && Number(row.price) > 1 && isSupportedFullTimeOddsRow(row))
+    .map((row: any) => normalizeMarketFocus(row.market_focus ?? row.market_name))
+    .filter((market: string) => market !== 'NONE'))]
+}
+
+function canonicalDecisionMarket(value: unknown) {
+  const focus = normalizeMarketFocus(value)
+  if (focus === 'AH') return 'ASIAN_HANDICAP'
+  if (focus === 'OU') return 'OVER_UNDER'
+  if (focus === 'MATCH_WINNER') return 'MATCH_WINNER_1X2'
+  if (focus === 'DOUBLE_CHANCE') return 'DOUBLE_CHANCE'
+  return null
+}
+
+function getDecisionMarketTier(value: unknown) {
+  const focus = normalizeMarketFocus(value)
+  if (focus === 'AH' || focus === 'OU') return 'PRIMARY'
+  if (focus === 'MATCH_WINNER' || focus === 'DOUBLE_CHANCE') return 'ALTERNATIVE'
+  return null
+}
+
+function buildDecisionMarketAudit(item: any) {
+  const markets = getAvailableDecisionMarkets(item?.odds ?? [])
+  return {
+    version: 'market-quality-v2',
+    availableMarkets: markets,
+    primaryMarketReady: markets.some((market: string) => market === 'AH' || market === 'OU'),
+    alternativeMarketReady: markets.some((market: string) => market === 'MATCH_WINNER' || market === 'DOUBLE_CHANCE'),
+    supportingOnly: markets.length > 0 && markets.every((market: string) => market === 'CORRECT_SCORE'),
+    oddsRows: item?.odds?.length ?? 0,
+  }
+}
+
+function latestOddsSnapshotAt(rows: Array<any>) {
+  return (rows ?? [])
+    .map((row: any) => row.snapshot_at)
+    .filter(Boolean)
+    .sort((a: string, b: string) => new Date(a).getTime() - new Date(b).getTime())
+    .at(-1) ?? null
 }
 
 async function updateDailyTop10Row(rowId: string, selectionDate: string, payload: Record<string, unknown>) {
@@ -5791,6 +5949,25 @@ function stripApiFootballPickPayload(payload: Record<string, unknown>) {
     'selection_algorithm_version',
     'decision_reason',
     'decision_audit',
+    'decision_market',
+    'market_tier',
+    'primary_market_ready',
+    'alternative_market_ready',
+    'available_markets',
+    'market_quality',
+    'market_snapshot_at',
+    'decision_model_version',
+    'market_quality_version',
+    'analysis_dimension',
+    'model_outlook',
+    'win_draw_loss_probabilities',
+    'expected_goals',
+    'expected_score_predictions',
+    'confidence_breakdown',
+    'data_quality',
+    'analysis_reason_codes',
+    'analysis_model_version',
+    'analysis_generated_at',
   ]) {
     delete stripped[key]
   }
@@ -6010,6 +6187,12 @@ function deriveEdgePickTeamFromApiFootballOdds(match: any, oddsRows: Array<any>)
     if (side === 'AWAY') return withEdgePickSummary({ ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }, match, rows)
     if (isEdgeDrawSelection(selection)) return withEdgePickSummary({ ...base, pickSide: 'DRAW', reason: 'ตลาดนี้เป็นผลเสมอ ไม่มีทีมที่เลือก' }, match, rows)
     return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาด 1X2 ได้' }, match, rows)
+  }
+
+  if (market === 'DOUBLE_CHANCE') {
+    const side = inferEdgeDoubleChanceSide(selection)
+    if (side !== 'NONE') return withEdgePickSummary({ ...base, pickSide: side, reason: 'อ้างอิงราคา Double Chance จริงจาก API-Football' }, match, rows)
+    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุฝั่งจากตลาด Double Chance ได้' }, match, rows)
   }
 
   if (market === 'OU') return withEdgePickSummary({ ...base, pickSide: inferEdgeOverUnderSide(selection), reason: 'ตลาดสูงต่ำไม่มีทีมที่เลือก' }, match, rows)
@@ -6248,7 +6431,9 @@ function getEdgeMarketPriority(value: unknown) {
   if (market === 'AH') return 100
   if (market === 'OU') return 90
   if (market === 'MATCH_WINNER') return 80
+  if (market === 'DOUBLE_CHANCE') return 75
   if (market === 'BTTS') return 70
+  if (market === 'CORRECT_SCORE') return 20
   return market === 'NONE' ? (String(value ?? '').trim() && String(value).toUpperCase() !== 'NONE' ? 50 : 0) : 50
 }
 
@@ -6287,6 +6472,14 @@ function inferEdgeYesNoSide(selection: unknown) {
   const text = normalizeEdgeName(selection)
   if (['yes', 'y'].includes(text) || text.includes('yes')) return 'YES'
   if (['no', 'n'].includes(text) || text.includes('no')) return 'NO'
+  return 'NONE'
+}
+
+function inferEdgeDoubleChanceSide(selection: unknown) {
+  const text = normalizeEdgeName(selection).replace(/\s+/g, '')
+  if (text === '1x' || text.includes('homedraw')) return '1X'
+  if (text === '12' || text.includes('homeaway')) return '12'
+  if (text === 'x2' || text.includes('drawaway')) return 'X2'
   return 'NONE'
 }
 
@@ -7959,7 +8152,11 @@ function normalizeMarketFocus(value: unknown) {
   if (text === 'AH') return 'AH'
   if (text === 'OU') return 'OU'
   if (text === 'MATCH_WINNER') return 'MATCH_WINNER'
+  if (text === 'DOUBLE_CHANCE') return 'DOUBLE_CHANCE'
+  if (text === 'CORRECT_SCORE') return 'CORRECT_SCORE'
   if (text === 'BTTS') return 'BTTS'
+  if (text.includes('DOUBLE CHANCE')) return 'DOUBLE_CHANCE'
+  if (text.includes('CORRECT SCORE') || text.includes('EXACT SCORE')) return 'CORRECT_SCORE'
   if (text.includes('ASIAN') || text.includes('HANDICAP')) return 'AH'
   if (text.includes('OVER') || text.includes('UNDER') || text.includes('GOALS') || text.includes('TOTAL')) return 'OU'
   if (text.includes('MATCH WINNER') || text.includes('1X2') || text.includes('HOME/AWAY')) return 'MATCH_WINNER'
@@ -7983,15 +8180,13 @@ function isUnsupportedMainOddsMarketText(value: unknown) {
     'TEAM GOALS',
     'PLAYER',
     'SPECIAL',
-    'EXACT SCORE',
-    'DOUBLE CHANCE',
     'EXTRA TIME',
     'PENALT',
   ].some((blocked) => text.includes(blocked))
 }
 
 function isSupportedFullTimeOddsMarket(marketName: unknown, value: any, marketFocus = normalizeMarketFocus(marketName)) {
-  if (!['MATCH_WINNER', 'AH', 'OU'].includes(marketFocus)) return false
+  if (!['MATCH_WINNER', 'AH', 'OU', 'DOUBLE_CHANCE', 'CORRECT_SCORE'].includes(marketFocus)) return false
   if (isUnsupportedMainOddsMarketText(marketName) || isUnsupportedMainOddsMarketText(value?.value)) return false
   if (marketFocus === 'OU') {
     const line = parseBetLine(value?.value) ?? parseBetLine(value?.line)
@@ -8007,7 +8202,11 @@ function buildEdgeAiFinalPick(match: any) {
   const selected = chooseEdgeMarket(ahAnalysis, ouAnalysis)
   const odds = match.odds ?? []
   const apiPick = deriveEdgePickTeamFromApiFootballOdds(match, odds)
-  const hasOdds = odds.length > 0 && Boolean(selected.hasMarket)
+  const apiPickMarket = normalizeMarketFocus(apiPick.pickMarket)
+  const hasAlternativeProviderPick = ['MATCH_WINNER', 'DOUBLE_CHANCE'].includes(apiPickMarket) && nullableNumber(apiPick.pickPrice) !== null
+  const hasOdds = odds.length > 0 && (Boolean(selected.hasMarket) || hasAlternativeProviderPick)
+  const decisionMarketFocus = selected.hasMarket ? selected.marketFocus : hasAlternativeProviderPick ? apiPickMarket : selected.marketFocus
+  const decisionDirection = selected.hasMarket ? selected.direction : firstText(apiPick.pickSelection, apiPick.pickSide, 'No market direction')
   const totalAnalysisScore = normalizeScore(analysis.ranking_score ?? analysis.ai_score ?? analysis.confidence_score ?? 0)
   const selectionScore = normalizeScore(selected.confidenceScore)
   const confidenceScore = normalizeScore(Math.max(selectionScore, Number(analysis.calibrated_confidence_score ?? analysis.confidence_score ?? selectionScore)))
@@ -8032,8 +8231,8 @@ function buildEdgeAiFinalPick(match: any) {
   ) signal = 'STRONG_SIGNAL'
   else if (totalAnalysisScore >= 75 && selectionScore >= 70 && confidenceScore >= 70 && bookmakerCount >= 1 && keyReasons.length >= 3) signal = 'STRONG_SIGNAL'
 
-  const marketFocus = signal === 'SKIP' && !hasOdds ? 'NONE' : selected.marketFocus
-  const direction = signal === 'SKIP' && !hasOdds ? 'No market direction' : selected.direction
+  const marketFocus = signal === 'SKIP' && !hasOdds ? 'NONE' : decisionMarketFocus
+  const direction = signal === 'SKIP' && !hasOdds ? 'No market direction' : decisionDirection
   return {
     signal,
     marketFocus,
@@ -8056,7 +8255,7 @@ function buildEdgeAiFinalPick(match: any) {
     pickPrice: apiPick.pickPrice,
     pickConfidence: apiPick.hasApiFootballOdds ? confidenceScore : null,
     primaryBookmaker: odds.find((row: any) => row.bookmaker_name)?.bookmaker_name ?? null,
-    latestOdds: odds.find((row: any) => row.market_focus === selected.marketFocus)?.odd_text ?? null,
+    latestOdds: odds.find((row: any) => row.market_focus === marketFocus)?.odd_text ?? null,
     analysisStatus: analysis.analysis_status ?? analysis.raw?.analysis_status ?? (marketDataUsed ? 'MARKET_DATA_READY_RECALCULATED' : 'INSUFFICIENT_MARKET_DATA'),
     recommendationReason: analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? (marketDataUsed ? 'มีข้อมูลตลาดแล้ว แต่คะแนน edge/risk ยังไม่ผ่านเกณฑ์' : 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ'),
     marketDataUsed,
@@ -8760,6 +8959,8 @@ function normalizeMarketName(value: unknown) {
   if (!text) return null
   if (text.includes('asian')) return 'AH'
   if (text.includes('goals') || text.includes('over') || text.includes('under')) return 'OU'
+  if (text.includes('double chance')) return 'DOUBLE_CHANCE'
+  if (text.includes('correct score') || text.includes('exact score')) return 'CORRECT_SCORE'
   if (text.includes('match winner') || text.includes('1x2') || text.includes('winner')) return 'ML'
   return null
 }

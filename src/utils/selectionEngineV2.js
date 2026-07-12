@@ -78,7 +78,7 @@ export function buildUsableDailySelection(matches = [], options = {}) {
       ai_pick_label: selectionRow.decisionRank ? `AI PICK #${selectionRow.decisionRank}` : statusLabel(selectionRow.decisionStatus),
     }))
 
-  const readySelectedCount = selected.filter((match) => match.selectionV2?.decisionStatus === 'READY').length
+  const readySelectedCount = selected.filter((match) => isReadyDecisionStatus(match.selectionV2?.decisionStatus)).length
   const waitingSelectedCount = selected.filter((match) => match.selectionV2?.decisionStatus === 'WAITING_MARKET').length
   const marketReadyCandidates = playableRows.filter((row) => row.marketReadiness !== marketReadinessGroups.waiting).length
   const waitingMarketCandidates = playableRows.filter((row) => row.unified.status === 'WAITING_MARKET').length
@@ -134,9 +134,15 @@ export function buildUsableDailySelection(matches = [], options = {}) {
 }
 
 function statusLabel(status) {
+  if (status === 'READY_PRIMARY') return 'PRIMARY'
+  if (status === 'READY_ALTERNATIVE') return 'ALT'
   if (status === 'WATCH') return 'WATCH'
   if (status === 'WAITING_MARKET') return 'รอราคา'
   return 'ไม่เข้าเกณฑ์'
+}
+
+function isReadyDecisionStatus(status) {
+  return ['READY_PRIMARY', 'READY_ALTERNATIVE', 'READY'].includes(String(status ?? '').toUpperCase())
 }
 
 export function buildStrictDailyApiFootballSelection(matches = [], options = {}) {

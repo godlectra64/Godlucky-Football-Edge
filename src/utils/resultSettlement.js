@@ -34,6 +34,7 @@ export function settleAiPickResult(input = {}) {
   const line = nullableNumber(input.line ?? input.marketLine ?? input.market_line ?? input.handicap ?? input.totalLine ?? input.total_line)
 
   if (market === 'MATCH_WINNER') return settleMatchWinner(direction, homeScore, awayScore)
+  if (market === 'DOUBLE_CHANCE') return settleDoubleChance(direction, homeScore, awayScore)
   if (market === 'OU') return line === null ? voidOutcome('finished OU pick is missing line') : settleTotal(direction, line, homeScore + awayScore)
   if (market === 'AH') return line === null ? voidOutcome('finished AH pick is missing line') : settleAsianHandicap(direction, line, homeScore, awayScore)
 
@@ -44,6 +45,15 @@ function settleMatchWinner(direction, homeScore, awayScore) {
   const result = homeScore > awayScore ? 'HOME' : homeScore < awayScore ? 'AWAY' : 'DRAW'
   if (!['HOME', 'AWAY', 'DRAW'].includes(direction)) return voidOutcome('match winner pick is missing direction')
   return settled(direction === result ? 'HIT' : 'MISS', `MATCH_WINNER ${direction} vs result ${result}`)
+}
+
+function settleDoubleChance(direction, homeScore, awayScore) {
+  const result = homeScore > awayScore ? 'HOME' : homeScore < awayScore ? 'AWAY' : 'DRAW'
+  if (!['1X', '12', 'X2'].includes(direction)) return voidOutcome('double chance pick is missing 1X/12/X2 direction')
+  const hit = (direction === '1X' && ['HOME', 'DRAW'].includes(result)) ||
+    (direction === '12' && ['HOME', 'AWAY'].includes(result)) ||
+    (direction === 'X2' && ['DRAW', 'AWAY'].includes(result))
+  return settled(hit ? 'HIT' : 'MISS', `DOUBLE_CHANCE ${direction} vs result ${result}`)
 }
 
 function settleTotal(direction, line, total) {
@@ -77,6 +87,7 @@ function normalizeDirection(value) {
   const text = String(value ?? '').trim().toUpperCase()
   if (text.includes('OVER')) return 'OVER'
   if (text.includes('UNDER')) return 'UNDER'
+  if (text === '1X' || text === '12' || text === 'X2') return text
   if (text.includes('HOME') || text.includes('เจ้าบ้าน')) return 'HOME'
   if (text.includes('AWAY') || text.includes('ทีมเยือน')) return 'AWAY'
   if (text.includes('DRAW')) return 'DRAW'

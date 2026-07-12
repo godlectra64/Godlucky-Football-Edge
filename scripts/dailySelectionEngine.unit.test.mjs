@@ -10,17 +10,20 @@ const selectionDate = '2026-07-12'
 
 assert.ok(Math.abs(Object.values(dailySelectionConfig.weights).reduce((total, value) => total + value, 0) - 1) < 0.000001)
 
-const fullMarket = { id: 'odds', match_id: 'x', market_name: 'Asian Handicap', price: 1.9 }
+const fullMarket = [
+  { id: 'odds-home', match_id: 'x', market_name: 'Asian Handicap', selection: 'Home -0.5', line: -0.5, price: 1.9 },
+  { id: 'odds-away', match_id: 'x', market_name: 'Asian Handicap', selection: 'Away +0.5', line: -0.5, price: 1.95 },
+]
 
-const scenario1 = selectDailyTop10(createCandidates(20, { odds: [fullMarket] }), { selectionDate })
+const scenario1 = selectDailyTop10(createCandidates(20, { odds: fullMarket }), { selectionDate, now: `${selectionDate}T06:00:00.000Z` })
 assert.equal(scenario1.selected.length, 20)
 assert.deepEqual(scenario1.selected.map((row) => row.decisionRank), Array.from({ length: 20 }, (_, index) => index + 1))
 assert.equal(new Set(scenario1.selected.map((row) => row.fixtureId)).size, 20)
 assert.ok(scenario1.selected.every((row) => row.candidateTier === 'CORE'))
-assert.ok(scenario1.selected.every((row) => row.decisionStatus === 'READY'))
+assert.ok(scenario1.selected.every((row) => row.decisionStatus === 'READY_PRIMARY'))
 
 const scenario2Rows = [
-  ...createCandidates(10, { odds: [fullMarket], prefix: 'market' }),
+  ...createCandidates(10, { odds: fullMarket, prefix: 'market' }),
   ...createCandidates(6, { odds: [], prefix: 'no-market', scoreOffset: -1 }),
 ]
 const scenario2 = selectDailyTop10(scenario2Rows, { selectionDate })
@@ -30,16 +33,16 @@ assert.ok(scenario2.candidates.some((row) => !row.hasMarketData && row.softRanki
 assert.ok(scenario2.selected.filter((row) => !row.hasMarketData).every((row) => row.selectionStatus === 'WAITING_MARKET'))
 assert.ok(scenario2.selected.filter((row) => !row.hasMarketData).every((row) => row.softRanking.finalPickAllowed === false))
 
-const scenario3 = selectDailyTop10(createCandidates(8, { odds: [fullMarket] }), { selectionDate })
+const scenario3 = selectDailyTop10(createCandidates(8, { odds: fullMarket }), { selectionDate })
 assert.equal(scenario3.selected.length, 8)
 assert.equal(scenario3.summary.healthStatus, 'DYNAMIC_BOARD_READY')
 
-const sameLeague = selectDailyTop10(createCandidates(14, { odds: [fullMarket], league: { name: 'Same League', country: 'England' } }), { selectionDate })
+const sameLeague = selectDailyTop10(createCandidates(14, { odds: fullMarket, league: { name: 'Same League', country: 'England' } }), { selectionDate })
 assert.equal(sameLeague.selected.length, 14)
 assert.ok(sameLeague.selected.every((row) => row.candidateTier === 'CORE'))
 
 for (const status_short of ['CANC', 'PST', 'FT']) {
-  const rejected = evaluateHardFilter(candidate(1, { status_short, odds: [fullMarket] }), buildContext())
+  const rejected = evaluateHardFilter(candidate(1, { status_short, odds: fullMarket }), buildContext())
   assert.equal(rejected.passed, false)
   assert.ok(rejected.reasons.some((item) => item.code === 'INVALID_FIXTURE_STATUS'))
 }
@@ -58,19 +61,19 @@ assert.deepEqual(
 )
 
 const bangkokBoundary = selectDailyTop10([
-  candidate(1, { kickoff_at: '2026-07-11T17:00:00.000Z', odds: [fullMarket] }),
-  candidate(2, { kickoff_at: '2026-07-12T16:59:59.000Z', odds: [fullMarket] }),
-  candidate(3, { kickoff_at: '2026-07-12T17:00:00.000Z', odds: [fullMarket] }),
+  candidate(1, { kickoff_at: '2026-07-11T17:00:00.000Z', odds: fullMarket }),
+  candidate(2, { kickoff_at: '2026-07-12T16:59:59.000Z', odds: fullMarket }),
+  candidate(3, { kickoff_at: '2026-07-12T17:00:00.000Z', odds: fullMarket }),
 ], { selectionDate })
 assert.deepEqual(bangkokBoundary.selected.map((row) => row.fixtureId), ['fixture-match-1', 'fixture-match-2'])
 
-const rerunA = selectDailyTop10(createCandidates(12, { odds: [fullMarket] }), { selectionDate })
-const rerunB = selectDailyTop10(createCandidates(12, { odds: [fullMarket] }), { selectionDate })
+const rerunA = selectDailyTop10(createCandidates(12, { odds: fullMarket }), { selectionDate })
+const rerunB = selectDailyTop10(createCandidates(12, { odds: fullMarket }), { selectionDate })
 assert.deepEqual(rerunA.selected.map((row) => `${row.rank}:${row.fixtureId}`), rerunB.selected.map((row) => `${row.rank}:${row.fixtureId}`))
 
 const malformed = selectDailyTop10([
   candidate(1, {
-    odds: [fullMarket],
+    odds: fullMarket,
     analysis: {
       confidence_score: null,
       risk_score: Number.NaN,

@@ -90,7 +90,7 @@ const latestDailyRunSteps = latestDailyRun?.id
 
 const oddsChecks = await buildOddsChecks(matches, todayOdds)
 const top10WithDecisionMarketMatchIds = new Set(top10Odds.filter(isUsableDecisionMarketOddsRow).map((row) => row.match_id).filter(Boolean))
-const readyTop10Rows = top10Rows.filter((row) => normalizeDecisionStatus(row) === 'READY')
+const readyTop10Rows = top10Rows.filter((row) => isReadyDecisionStatus(normalizeDecisionStatus(row)))
 const waitingTop10Rows = top10Rows.filter((row) => normalizeDecisionStatus(row) === 'WAITING_MARKET')
 const duplicateTop10Ranks = countDuplicates(top10Rows.map((row) => row.rank).filter((rank) => rank !== null && rank !== undefined))
 const duplicateTop10Matches = countDuplicates(top10MatchIds)
@@ -345,7 +345,7 @@ function countNearKickoffCompleted(top10) {
 }
 
 async function buildOddsChecks(todayMatches, oddsRows) {
-  const allowedMarkets = new Set(['AH', 'OU', 'MATCH_WINNER', 'BTTS', 'NONE'])
+  const allowedMarkets = new Set(['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE', 'CORRECT_SCORE', 'BTTS', 'NONE'])
   const oddsMatchIds = new Set(oddsRows.map((row) => row.match_id).filter(Boolean))
 
   return {
@@ -451,7 +451,7 @@ function isUsableFullTimeOddsRow(row) {
 }
 
 function isUsableDecisionMarketOddsRow(row) {
-  return !isUnsupportedMainOddsMarket(row) && (isAhLike(row) || isOuLike(row))
+  return !isUnsupportedMainOddsMarket(row) && (isAhLike(row) || isOuLike(row) || isMatchWinnerLike(row) || isDoubleChanceLike(row))
 }
 
 function normalizeDecisionStatus(row) {
@@ -460,6 +460,10 @@ function normalizeDecisionStatus(row) {
   if (row.market_ready === true) return 'READY'
   if (row.market_ready === false) return 'WAITING_MARKET'
   return row.ai_final_pick_id ? 'READY' : 'WAITING_MARKET'
+}
+
+function isReadyDecisionStatus(status) {
+  return ['READY_PRIMARY', 'READY_ALTERNATIVE', 'READY'].includes(String(status ?? '').toUpperCase())
 }
 
 function isAhLike(row) {
@@ -478,9 +482,23 @@ function isOuLike(row) {
   return focus === 'OU' || name.includes('over/under') || name.includes('goals over')
 }
 
+function isMatchWinnerLike(row) {
+  if (isUnsupportedMainOddsMarket(row)) return false
+  const focus = String(row.market_focus ?? '').toUpperCase()
+  const name = String(row.market_name ?? '').toLowerCase()
+  return focus === 'MATCH_WINNER' || name.includes('match winner') || name.includes('1x2') || name.includes('home/draw/away')
+}
+
+function isDoubleChanceLike(row) {
+  if (isUnsupportedMainOddsMarket(row)) return false
+  const focus = String(row.market_focus ?? '').toUpperCase()
+  const name = String(row.market_name ?? '').toLowerCase()
+  return focus === 'DOUBLE_CHANCE' || name.includes('double chance')
+}
+
 function isUnsupportedMainOddsMarket(row) {
   const text = `${row.market_focus ?? ''} ${row.market_name ?? ''} ${row.selection ?? ''}`.toUpperCase()
-  return ['CORNER', 'CARD', 'BOOKING', 'FIRST HALF', '1ST HALF', 'SECOND HALF', '2ND HALF', 'HALF TIME', 'HT/FT', 'TEAM TOTAL', 'TEAM GOALS', 'PLAYER', 'SPECIAL', 'EXACT SCORE', 'DOUBLE CHANCE', 'EXTRA TIME', 'PENALT'].some((blocked) => text.includes(blocked))
+  return ['CORNER', 'CARD', 'BOOKING', 'FIRST HALF', '1ST HALF', 'SECOND HALF', '2ND HALF', 'HALF TIME', 'HT/FT', 'TEAM TOTAL', 'TEAM GOALS', 'PLAYER', 'SPECIAL', 'EXACT SCORE', 'CORRECT SCORE', 'EXTRA TIME', 'PENALT'].some((blocked) => text.includes(blocked))
 }
 
 function parseLine(value) {

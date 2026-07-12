@@ -39,9 +39,9 @@ function buildSelectionEngineRow(candidate, selected) {
   const hardWarnings = candidate.hardFilter.warnings.map((item) => item.code).join(', ')
   const sourceRecommendation = normalizeRecommendation(analysis.recommendation ?? match.recommendation)
   const recommendation = candidate.hasMarketData || sourceRecommendation !== 'BET' ? sourceRecommendation : 'WATCH'
-  const isTopPick = Boolean(selected)
+  const isTopPick = Boolean(selected && sourceRecommendation !== 'NO BET')
   const decisionRank = selected?.decisionRank ?? selected?.rank ?? null
-  const isFinalPick = Boolean(selected && decisionRank === 1 && selected.hasMarketData && selected.decisionStatus === 'READY')
+  const isFinalPick = Boolean(selected && decisionRank === 1 && selected.hasMarketData && ['READY', 'READY_PRIMARY', 'READY_ALTERNATIVE'].includes(selected.decisionStatus))
 
   return {
     match_id: getMatchId(match),

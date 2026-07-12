@@ -6,6 +6,9 @@ import { getResultTrackerStatusLabel } from '../src/utils/matchStatus.js'
 const cases = [
   ['FT + MATCH_WINNER HOME hit', { statusShort: 'FT', homeScore: 2, awayScore: 1, marketFocus: 'MATCH_WINNER', direction: 'HOME' }, 'HIT', 'SETTLED'],
   ['FT + MATCH_WINNER HOME miss', { statusShort: 'FT', homeScore: 1, awayScore: 2, marketFocus: 'MATCH_WINNER', direction: 'HOME' }, 'MISS', 'SETTLED'],
+  ['Double Chance 1X draw hit', { statusShort: 'FT', homeScore: 1, awayScore: 1, marketFocus: 'DOUBLE_CHANCE', direction: '1X' }, 'HIT', 'SETTLED'],
+  ['Double Chance 12 draw miss', { statusShort: 'FT', homeScore: 1, awayScore: 1, marketFocus: 'DOUBLE_CHANCE', direction: '12' }, 'MISS', 'SETTLED'],
+  ['Double Chance X2 away hit', { statusShort: 'FT', homeScore: 1, awayScore: 2, marketFocus: 'DOUBLE_CHANCE', direction: 'X2' }, 'HIT', 'SETTLED'],
   ['OU OVER 2.5 total 3 hit', { statusShort: 'FT', homeScore: 2, awayScore: 1, marketFocus: 'OU', direction: 'OVER', line: 2.5 }, 'HIT', 'SETTLED'],
   ['OU UNDER 2.5 total 3 miss', { statusShort: 'FT', homeScore: 2, awayScore: 1, marketFocus: 'OU', direction: 'UNDER', line: 2.5 }, 'MISS', 'SETTLED'],
   ['OU line 2 total 2 push', { statusShort: 'FT', homeScore: 1, awayScore: 1, marketFocus: 'OU', direction: 'OVER', line: 2 }, 'PUSH', 'SETTLED'],
@@ -46,6 +49,7 @@ assert.match(edgeSource, /const matchAwayScore = nullableNumber\(match\.away_sco
 assert.match(edgeSource, /home_score: matchHomeScore/, 'settlement must copy normalized home score into result rows')
 assert.match(edgeSource, /away_score: matchAwayScore/, 'settlement must copy normalized away score into result rows')
 assert.match(edgeSource, /settlement_status: outcome\.settlement_status/, 'settlement must update settlement_status')
+assert.match(edgeSource, /DOUBLE_CHANCE/, 'result settlement must support Double Chance picks')
 assert.match(edgeSource, /settledRows/, 'result pipeline response must include settledRows diagnostic')
 assert.match(edgeSource, /scoreUpdatedRows/, 'result pipeline response must include scoreUpdatedRows diagnostic')
 

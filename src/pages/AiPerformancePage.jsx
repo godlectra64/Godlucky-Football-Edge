@@ -1,6 +1,5 @@
 import { Activity, Filter, Microscope, RefreshCw, Target, Trophy } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import ScoreBadge from '../components/ScoreBadge'
 import {
   buildPerformanceGroups,
   buildTrendDatasets,
@@ -117,7 +116,7 @@ function ModelIntelligenceSection({ analysis, exportPreview, dataCoverage }) {
       <ModelExplainabilityPanel explainability={explainability} />
       <CompactList title="เทียบความมั่นใจ" items={confidenceRows.map((item) => `${item.range}: ${item.accuracy}% (${item.predictions})`)} />
       <CompactList title="เทียบตามลีก" items={leagueRows.map((item) => `${item.league}: ${item.accuracy}% (${item.predictions})`)} />
-      <CompactList title="แยกตามสัญญาณ" items={analysis.recommendationPerformance.map((item) => `${item.recommendation}: ${item.accuracy}% (${item.predictions})`)} />
+      <CompactList title="แยกตามสัญญาณ" items={analysis.recommendationPerformance.map((item) => `${formatModelSignal(item.recommendation)}: ${item.accuracy}% (${item.predictions})`)} />
       <CompactList title="แยกตามความเสี่ยง" items={analysis.riskPerformance.map((item) => `${item.riskLevel}: ${item.accuracy}% (${item.predictions})`)} />
       <CompactList title="ประสิทธิภาพโมดูล" items={topModules.map((item) => `${item.label}: ${item.effectivenessScore}/100`)} />
       <CompactList title="ข้อเสนอแนะการปรับเทียบ" items={analysis.calibrationSuggestions.slice(0, 4).map((item) => item.message)} />
@@ -258,7 +257,7 @@ function LatestTable({ rows, onOpenMatch, lastUpdate }) {
                   <p className="text-[11px] font-semibold text-slate-500">{formatShortDate(row.kickoff)} · {row.league ?? '-'}</p>
                   <p className="mt-1 truncate font-black text-white">{row.home_team} vs {row.away_team}</p>
                 </div>
-                <ScoreBadge recommendation={row.recommendation} />
+                <span className={`semantic-badge ${signalBadgeClass(row.recommendation)}`}>{formatModelSignal(row.recommendation)}</span>
               </div>
               <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
                 <Cell label="สถานะการสรุปผล" value={formatEvaluation(row.evaluation?.evaluation_status)} badge={isPending(row.evaluation?.evaluation_status)} />
@@ -312,9 +311,24 @@ function formatModel(version) {
 }
 
 function distributionClass(label) {
-  if (label === 'BET') return 'bg-emerald-400'
-  if (label === 'LEAN') return 'bg-amber-400'
+  const normalized = String(label ?? '').toUpperCase()
+  if (normalized.startsWith('B')) return 'bg-emerald-400'
+  if (normalized.startsWith('L')) return 'bg-amber-400'
   return 'bg-rose-400'
+}
+
+function formatModelSignal(value) {
+  const normalized = String(value ?? '').toUpperCase()
+  if (normalized.startsWith('B')) return 'พร้อมวิเคราะห์'
+  if (normalized.startsWith('L') || normalized === 'WATCH') return 'ติดตามต่อ'
+  return 'รอข้อมูล'
+}
+
+function signalBadgeClass(value) {
+  const normalized = String(value ?? '').toUpperCase()
+  if (normalized.startsWith('B')) return 'badge-positive'
+  if (normalized.startsWith('L') || normalized === 'WATCH') return 'badge-medium'
+  return 'border-slate-300/20 bg-slate-300/10 text-slate-200'
 }
 
 function formatCoverageLevel(level) {

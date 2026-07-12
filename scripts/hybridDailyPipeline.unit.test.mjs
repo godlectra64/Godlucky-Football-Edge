@@ -11,6 +11,10 @@ import { buildRankingCompletionState } from '../src/utils/dailyRankingCompletion
 import { selectDailyTop10 } from '../src/utils/dailySelectionEngine.js'
 
 const selectionDate = '2026-07-12'
+const fullMarket = [
+  { id: 'odds-home', market_name: 'Asian Handicap', selection: 'Home -0.5', line: -0.5, price: 1.9 },
+  { id: 'odds-away', market_name: 'Asian Handicap', selection: 'Away +0.5', line: -0.5, price: 1.95 },
+]
 
 const windowAtMidnight = getBangkokSelectionWindow('2026-07-11T17:00:00.000Z')
 assert.equal(windowAtMidnight.timezone, 'Asia/Bangkok')
@@ -32,7 +36,7 @@ assert.ok(metadata.phases.includes('RESULT_SETTLEMENT'))
 
 const noOddsScore = calculatePreRankingScore(candidate(1, { odds: [] }), { selectionDate }).finalScore
 const withOddsScore = calculatePreRankingScore(candidate(1, {
-  odds: [{ id: 'odds', market_name: 'Asian Handicap', price: 1.9 }],
+  odds: fullMarket,
   has_market_data: true,
   analysis: { market_quality_score: 99, market_edge_score: 99, value_edge_score: 99 },
 }), { selectionDate }).finalScore

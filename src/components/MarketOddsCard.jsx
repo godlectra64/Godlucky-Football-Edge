@@ -41,7 +41,7 @@ export default function MarketOddsCard({ odds = [], compact = false }) {
             ))}
           </div>
           <p className="mt-2 text-clamp-1 text-[11px] font-semibold text-slate-500">
-            เจ้ามือ: {bookmaker} · อัปเดต {latestAt ? formatOddsTime(latestAt) : '-'}
+            แหล่งข้อมูล: {bookmaker} · อัปเดต {latestAt ? formatOddsTime(latestAt) : '-'}
           </p>
         </>
       ) : (
