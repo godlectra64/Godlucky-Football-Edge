@@ -18,14 +18,6 @@ alter table public.daily_top10_selections
 alter table public.daily_top10_selections
   add constraint daily_top10_selections_market_focus_valid
   check (market_focus is null or market_focus in ('AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE', 'CORRECT_SCORE', 'BTTS', 'NONE'));
-
-alter table public.daily_top10_selections
-  drop constraint if exists daily_top10_selections_status_valid;
-
-alter table public.daily_top10_selections
-  add constraint daily_top10_selections_status_valid
-  check (selection_status is null or selection_status in ('READY_PRIMARY', 'READY_ALTERNATIVE', 'WAITING_MARKET', 'INSUFFICIENT_DATA', 'REJECTED', 'FINAL_LOCKED', 'FINISHED'));
-
 alter table public.daily_top10_selections
   add column if not exists decision_market text,
   add column if not exists market_tier text,
