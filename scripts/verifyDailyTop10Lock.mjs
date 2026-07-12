@@ -87,14 +87,24 @@ async function checkDailyInvariants() {
 async function checkTodayCoverage() {
   const { data, error } = await supabase
     .from('daily_top10_selections')
-    .select('id, ai_final_pick_id')
+    .select('id, match_id, ai_final_pick_id')
     .eq('selection_date', bangkokDate)
   if (error) return report('today locked query', 1, error.message)
 
   const rows = data ?? []
   report('today locked count over 10', rows.length > 10 ? rows.length - 10 : 0, `locked ${rows.length}`)
+  const matchIds = rows.map((row) => row.match_id).filter(Boolean)
+  const oddsMatchIds = new Set()
+  if (matchIds.length) {
+    const { data: odds, error: oddsError } = await supabase.from('football_match_odds').select('match_id').in('match_id', matchIds)
+    if (oddsError) return report('today aiFinalPick market-ready coverage', 1, oddsError.message)
+    for (const row of odds ?? []) oddsMatchIds.add(row.match_id)
+  }
   const withPick = rows.filter((row) => row.ai_final_pick_id).length
-  report('today aiFinalPick coverage', withPick < rows.length ? rows.length - withPick : 0, `with pick ${withPick}/${rows.length}`)
+  const marketReadyRows = rows.filter((row) => oddsMatchIds.has(row.match_id))
+  const marketReadyWithPick = marketReadyRows.filter((row) => row.ai_final_pick_id).length
+  report('today aiFinalPick market-ready coverage', marketReadyWithPick < marketReadyRows.length ? marketReadyRows.length - marketReadyWithPick : 0, `with pick ${marketReadyWithPick}/${marketReadyRows.length}; waiting-market ${rows.length - marketReadyRows.length}`)
+  console.log(`today aiFinalPick total coverage: with pick ${withPick}/${rows.length}`)
 }
 
 function report(label, count, message = '') {

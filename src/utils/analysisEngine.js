@@ -6,9 +6,9 @@ import {
 } from './dataIntelligence.js'
 import {
   compareProfessionalSelections,
-  isProfessionalTopCandidate,
   normalizeProfessionalResultFromAnalysis,
 } from './professionalSelectionPipeline.js'
+import { selectDailyTop10 } from './dailySelectionEngine.js'
 
 export const recommendationLabels = {
   bet: 'BET',
@@ -398,8 +398,22 @@ export function rankTopMatches(matchesWithAnalysis, limit = 10) {
 export function rankTopAiPicks(matchesWithAnalysis, limit = 10) {
   const maxItems = Math.max(0, limit)
   const enriched = [...(matchesWithAnalysis ?? [])].map((match) => enrichMatch(match))
-  const professionalCandidates = enriched.filter(isProfessionalTopCandidate)
-  const selected = professionalCandidates.sort(compareForTopMatches).slice(0, maxItems)
+  const selection = selectDailyTop10(enriched, { limit: maxItems })
+  const selectedByKey = new Map(selection.selected.map((row) => [getDailySelectionKey(row.match), row]))
+  const selected = selection.selected
+    .map((row) => ({
+      ...row.match,
+      dailySelection: {
+        algorithmVersion: selection.algorithmVersion,
+        hardFilter: row.hardFilter,
+        softRanking: row.softRanking,
+        selectionStatus: row.selectionStatus,
+        tier: row.tier,
+      },
+      rankingScore: row.softRanking.finalScore,
+      ranking_score: row.softRanking.finalScore,
+    }))
+    .sort((a, b) => Number(selectedByKey.get(getDailySelectionKey(a))?.rank ?? 999) - Number(selectedByKey.get(getDailySelectionKey(b))?.rank ?? 999))
 
   return selected.map((match, index) => {
     const aiPickRank = index + 1
@@ -427,6 +441,10 @@ export function rankTopMatchesLegacy(matchesWithAnalysis, limit = 10) {
       ...match,
       rank: index + 1,
     }))
+}
+
+function getDailySelectionKey(match = {}) {
+  return String(match.api_sports_fixture_id ?? match.api_fixture_id ?? match.fixtureId ?? match.fixture_id ?? match.id ?? match.match_id ?? '')
 }
 
 export function calculateRankingScore(match) {

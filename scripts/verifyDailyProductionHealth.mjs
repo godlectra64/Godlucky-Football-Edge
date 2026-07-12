@@ -1,6 +1,7 @@
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import { getBangkokDayRange } from '../src/utils/bangkokDateRange.js'
+import { DAILY_SELECTION_ALGORITHM_VERSION, selectDailyTop10 } from '../src/utils/dailySelectionEngine.js'
 
 dotenv.config({ path: '.env.local' })
 dotenv.config({ path: '.env' })
@@ -32,7 +33,23 @@ const range = getBangkokDayRange(new Date())
 console.log(`[verify:daily-production-health] project_ref=${getProjectRef(supabaseUrl)}`)
 console.log(`[verify:daily-production-health] bangkokToday=${range.dateKey}`)
 
-const matches = await selectAll('football_matches', 'id, kickoff_at, status, status_short, match_status, api_sports_fixture_id, has_market_data', (query) =>
+const matches = await selectAll('football_matches', `
+  id,
+  kickoff_at,
+  status,
+  status_short,
+  status_long,
+  match_status,
+  api_sports_fixture_id,
+  has_market_data,
+  has_fixture_detail,
+  data_readiness_score,
+  data_readiness_status,
+  league:football_leagues(id, api_league_id, name, country, enabled, priority),
+  homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+  awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+  analysis:match_analysis(id, recommendation, confidence_score, calibrated_confidence_score, ranking_score, risk_score, risk_level, league_quality_score, data_quality_score, market_quality_score, value_edge_score, market_edge_score, tactical_matchup_score, motivation_score, data_validation_status, raw)
+`, (query) =>
   query.gte('kickoff_at', range.startUtc).lt('kickoff_at', range.endUtc)
 )
 const matchIds = matches.map((row) => row.id).filter(Boolean)
@@ -47,6 +64,13 @@ const top10MatchIds = top10Rows.map((row) => row.match_id).filter(Boolean)
 const top10Odds = top10MatchIds.length
   ? await selectAll('football_match_odds', 'match_id, market_focus, market_name, selection, line, price', (query) => query.in('match_id', top10MatchIds))
   : []
+const oddsByMatchId = groupRows(todayOdds, (row) => row.match_id)
+const selection = selectDailyTop10(matches.map((match) => ({
+  ...match,
+  analysis: Array.isArray(match.analysis) ? match.analysis[0] : match.analysis,
+  odds: oddsByMatchId.get(match.id) ?? [],
+  has_market_data: (oddsByMatchId.get(match.id) ?? []).length > 0 || match.has_market_data,
+})), { selectionDate: range.dateKey })
 const candidateRowsResult = await selectOptionalAll('daily_market_candidates', 'id, match_id, api_fixture_id, candidate_rank, market_readiness_status, has_usable_ah, has_usable_ou, has_usable_match_winner, odds_rows_count', (query) =>
   query.eq('selection_date', range.dateKey).order('candidate_rank', { ascending: true })
 )
@@ -58,6 +82,13 @@ const duplicateTop10Matches = countDuplicates(top10MatchIds)
 const aiFinalPickCoverage = top10Rows.filter((row) => row.ai_final_pick_id).length
 const candidateCounts = countCandidateReadiness(candidateRowsResult.rows)
 const dailyTop10SelectedFixturesWithOdds = top10WithOddsMatchIds.size
+const selectedWaitingMarketCount = Math.max(0, top10Rows.length - dailyTop10SelectedFixturesWithOdds)
+const eligibleCandidateCount = selection.summary.eligibleCandidateCount
+const selectedHardFilterViolations = top10Rows.filter((row) => {
+  const selected = selection.selected.find((item) => item.match?.id === row.match_id)
+  return selected ? !selected.hardFilter.passed : false
+}).length
+const invalidFinalScores = selection.candidates.filter((row) => !Number.isFinite(Number(row.softRanking.finalScore)) || Number(row.softRanking.finalScore) < 0 || Number(row.softRanking.finalScore) > 100).length
 const rootCause = determineRootCause({
   fixturesToday: matches.length,
   playableFixtures: playableMatches.length,
@@ -72,14 +103,27 @@ const rootCause = determineRootCause({
   oddsChecks,
 })
 
+console.log(`selectionAlgorithmVersion: ${DAILY_SELECTION_ALGORITHM_VERSION}`)
+console.log(`bangkokSelectionDate: ${range.dateKey}`)
+console.log(`candidateFixtures: ${selection.candidates.length}`)
+console.log(`hardFilterPassed: ${selection.summary.hardFilterPassed}`)
+console.log(`hardFilterRejected: ${selection.summary.hardFilterRejected}`)
+console.log(`hardFilterRejectionReasons: ${JSON.stringify(groupHardFilterReasons(selection.rejected))}`)
+console.log(`eligibleCandidateCount: ${eligibleCandidateCount}`)
+console.log(`primarySelected: ${selection.summary.primarySelected}`)
+console.log(`secondarySelected: ${selection.summary.secondarySelected}`)
+console.log(`fallbackSelected: ${selection.summary.fallbackSelected}`)
+console.log(`marketReadySelected: ${selection.summary.marketReadySelected}`)
+console.log(`waitingMarketSelected: ${selectedWaitingMarketCount}`)
 report('fixturesToday', matches.length, { failWhen: (value) => value <= 0 })
 report('playableFixtures', playableMatches.length, { failWhen: (value) => value <= 0 })
-report('dailyTop10 count valid', top10Rows.length > 0 && top10Rows.length <= 10 ? 0 : 1, { details: `count ${top10Rows.length}` })
+report('dailyTop10 count valid', top10Rows.length === Math.min(10, eligibleCandidateCount) ? 0 : 1, { details: `count ${top10Rows.length}, eligible ${eligibleCandidateCount}` })
 report('dailyTop10 count over 10', top10Rows.length > 10 ? top10Rows.length - 10 : 0)
 report('duplicate selected Top10 ranks', duplicateTop10Ranks)
 report('duplicate selected Top10 fixtures', duplicateTop10Matches)
-report('aiFinalPick coverage incomplete', top10Rows.length - aiFinalPickCoverage, { details: `${aiFinalPickCoverage}/${top10Rows.length}` })
-if (top10Rows.length === 10) report('aiFinalPick coverage 10/10 required', aiFinalPickCoverage === 10 ? 0 : 10 - aiFinalPickCoverage, { details: `${aiFinalPickCoverage}/10` })
+report('aiFinalPick coverage market-ready incomplete', Math.max(0, dailyTop10SelectedFixturesWithOdds - aiFinalPickCoverage), { details: `${aiFinalPickCoverage}/${dailyTop10SelectedFixturesWithOdds} market-ready; waiting-market ${selectedWaitingMarketCount}` })
+report('selected hard-filter violations', selectedHardFilterViolations)
+report('invalid final scores', invalidFinalScores)
 report('invalid odds marketFocus', oddsChecks.invalidMarketFocus)
 report('null odds price', oddsChecks.nullPrice)
 report('invalid odds price', oddsChecks.invalidPrice)
@@ -184,6 +228,27 @@ function countCandidateReadiness(rows) {
     if (status in counts) counts[status] += 1
   }
   return counts
+}
+
+function groupHardFilterReasons(rows) {
+  const counts = {}
+  for (const row of rows) {
+    for (const item of row.hardFilter?.reasons ?? []) {
+      counts[item.code] = (counts[item.code] ?? 0) + 1
+    }
+  }
+  return counts
+}
+
+function groupRows(rows, keyFn) {
+  const grouped = new Map()
+  for (const row of rows ?? []) {
+    const key = keyFn(row)
+    const items = grouped.get(key) ?? []
+    items.push(row)
+    grouped.set(key, items)
+  }
+  return grouped
 }
 
 function countDuplicates(values) {

@@ -891,7 +891,7 @@ const phase2Candidates = [
 const phase2Ranked = rankTopMatches(phase2Candidates, 10)
 assert.equal(phase2Ranked.length, 10)
 assert.equal(phase2Ranked[0].aiPickLabel, 'AI PICK #1')
-assert.equal(phase2Ranked[0].id, 'high-risk-99', 'Top picks should rank BET first even when risk is high')
+assert.notEqual(phase2Ranked[0].id, 'high-risk-99', 'high risk should apply a real soft penalty instead of recommendation-only promotion')
 assert.ok(phase2Ranked[0].rankBadges.includes('HIGH CONFIDENCE'))
 assert.ok(phase2Ranked[0].rankBadges.includes('NO BET'))
 
@@ -908,9 +908,9 @@ const mixedRecommendationPool = [
   ...Array.from({ length: 10 }, (_, index) => withProfessionalCandidate({ ...baseMatch, id: `mix-no-bet-${index}`, confidence: 95 - index, recommendation: 'NO BET', riskLevel: 'LOW' }, { analysis: { professional_score: 65 + index } })),
 ]
 const mixedTop10 = rankTopMatches(mixedRecommendationPool, 10)
-assert.equal(mixedTop10.filter((match) => match.recommendation === 'BET').length, 2)
-assert.equal(mixedTop10.filter((match) => match.recommendation === 'LEAN').length, 5)
-assert.equal(mixedTop10.filter((match) => match.recommendation === 'NO BET').length, 3)
+assert.equal(mixedTop10.length, 10)
+assert.equal(new Set(mixedTop10.map((match) => match.id)).size, 10)
+assert.ok(mixedTop10.some((match) => match.recommendation === 'NO BET'), 'high-scoring NO BET rows can remain in Top 10 without fake promotion')
 
 function v2Match(id, moduleScore, riskScore, recommendationHint = 'NO BET') {
   return {
@@ -918,6 +918,8 @@ function v2Match(id, moduleScore, riskScore, recommendationHint = 'NO BET') {
     id,
     kickoffAt: `2026-06-26T${String(8 + Number(id.match(/\d+$/)?.[0] ?? 0)).padStart(2, '0')}:00:00Z`,
     league: { name: 'Premier League', country: 'England' },
+    has_market_data: true,
+    odds: [{ id: `${id}-odds`, match_id: id, market_name: 'Asian Handicap', price: 1.9 }],
     analysis: {
       recommendation: recommendationHint,
       confidence_score: moduleScore,

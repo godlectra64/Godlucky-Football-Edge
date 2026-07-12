@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { getBangkokDayRange } from '../_shared/bangkokDateRange.ts'
+import { calculateSoftRanking, selectDailyTop10, DAILY_SELECTION_ALGORITHM_VERSION } from '../../../src/utils/dailySelectionEngine.js'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -3309,7 +3310,7 @@ async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRang
     nullableNumber(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id)
   )
   const ranked = playable
-    .map((match: any) => ({ match, preSelectionScore: buildPreSelectionScore(match) }))
+    .map((match: any) => ({ match, preSelectionScore: calculateSoftRanking(match, { selectionDate }).finalScore }))
     .sort((a: any, b: any) =>
       b.preSelectionScore - a.preSelectionScore ||
       new Date(a.match?.kickoff_at ?? 0).getTime() - new Date(b.match?.kickoff_at ?? 0).getTime()
@@ -4491,15 +4492,21 @@ async function lockDailyTop10(dayRange: ReturnType<typeof getBangkokDayRange>) {
     fetchStoredOddsByMatchIds(matchIds),
   ])
   const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
-  const selected = matches
+  const candidates = matches
     .map((match: any) => ({
-      match,
+      match: {
+        ...match,
+        has_market_data: (oddsByMatchId.get(match.id) ?? []).length > 0 || match.has_market_data,
+        analysis: getAnalysis(match),
+        odds: oddsByMatchId.get(match.id) ?? [],
+      },
       analysis: getAnalysis(match),
       pick: pickByMatch.get(match.id) ?? null,
       odds: oddsByMatchId.get(match.id) ?? [],
     }))
-    .sort(compareDailyTop10LockCandidate)
-    .slice(0, 10)
+  const itemByMatchId = new Map(candidates.map((item: any) => [item.match.id, item]))
+  const dailySelection = selectDailyTop10(candidates.map((item: any) => item.match), { selectionDate })
+  const selected = dailySelection.selected.map((row: any) => itemByMatchId.get(row.match.id)).filter(Boolean)
 
   for (const item of selected) {
     try {
@@ -4622,17 +4629,23 @@ async function refreshMarketReadyTop10(dayRange: ReturnType<typeof getBangkokDay
   const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
   const candidates = matches
     .map((match: any) => ({
-      match,
+      match: {
+        ...match,
+        has_market_data: (oddsByMatchId.get(match.id) ?? []).length > 0 || match.has_market_data,
+        analysis: getAnalysis(match),
+        odds: oddsByMatchId.get(match.id) ?? [],
+      },
       analysis: getAnalysis(match),
       pick: pickByMatch.get(match.id) ?? null,
       odds: oddsByMatchId.get(match.id) ?? [],
     }))
     .filter((item: any) => item.analysis)
-    .sort(compareDailyTop10LockCandidate)
+  const itemByMatchId = new Map(candidates.map((item: any) => [item.match.id, item]))
+  const dailySelection = selectDailyTop10(candidates.map((item: any) => item.match), { selectionDate })
+  const selected = dailySelection.selected.map((row: any) => itemByMatchId.get(row.match.id)).filter(Boolean)
 
   const readyCandidates = candidates.filter((item: any) => isMarketReadyCandidate(item))
   const waitingCandidates = candidates.filter((item: any) => isWaitingMarketCandidate(item))
-  const selected = candidates.slice(0, 10)
   const selectedReady = selected.filter((item: any) => isMarketReadyCandidate(item))
   const selectedWaiting = selected.filter((item: any) => isWaitingMarketCandidate(item))
   const existingSummary = summarizeExistingMarketLock(existingRows, oddsByMatchId)
@@ -4711,14 +4724,20 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
   const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
   const candidates = playableMatches
     .map((match: any) => ({
-      match,
+      match: {
+        ...match,
+        has_market_data: (oddsByMatchId.get(match.id) ?? []).length > 0 || match.has_market_data,
+        analysis: getAnalysis(match),
+        odds: oddsByMatchId.get(match.id) ?? [],
+      },
       analysis: getAnalysis(match),
       pick: pickByMatch.get(match.id) ?? null,
       odds: oddsByMatchId.get(match.id) ?? [],
     }))
-    .sort(compareDailyTop10LockCandidate)
+  const itemByMatchId = new Map(candidates.map((item: any) => [item.match.id, item]))
+  const dailySelection = selectDailyTop10(candidates.map((item: any) => item.match), { selectionDate: resolvedDateKey })
+  const selected = dailySelection.selected.map((row: any) => itemByMatchId.get(row.match.id)).filter(Boolean)
 
-  const selected = candidates.slice(0, 10)
   const persistResult = await persistMarketReadyTop10(resolvedDateKey, selected, existing.data ?? [])
   const selectedReady = selected.filter((item: any) => dailyMarketReadinessPriority(item) <= 2)
   const selectedWaiting = selected.filter((item: any) => isWaitingMarketCandidate(item))
@@ -5505,7 +5524,7 @@ function buildDailyTop10RowPayload(selectionDate: string, item: any, index: numb
     match_id: item.match.id,
     api_fixture_id: nullableNumber(item.match.api_sports_fixture_id),
     rank: index + 1,
-    selection_score: nullableNumber(item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
+    selection_score: nullableNumber(dailySelection.selected[index]?.softRanking?.finalScore ?? item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
     ai_final_pick_id: item.pick?.id ?? null,
     signal: item.pick?.signal ?? 'SKIP',
     market_focus: item.pick?.market_focus ?? 'NONE',
@@ -9764,6 +9783,14 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
       has_fixture_detail,
       data_readiness_score,
       data_readiness_status,
+      status,
+      status_short,
+      status_long,
+      match_status,
+      raw,
+      league:football_leagues(id, api_league_id, name, country, enabled, priority),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name, country),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name, country),
       analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_level, risk_score, market_edge_score, professional_score, value_edge_score, risk_control_score, league_quality_score, data_quality_score, market_quality_score, data_validation_status, data_validation_notes, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', range.startUtc)
@@ -9783,7 +9810,17 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
       const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
       if (!analysis) return null
       const readiness = classifyRankingReadiness(match, oddsMatchIds)
-      return { matchId: match.id, analysis, readiness }
+      return {
+        matchId: match.id,
+        match: {
+          ...match,
+          analysis,
+          has_market_data: oddsMatchIds.has(match.id) || match.has_market_data,
+          hasMarketData: oddsMatchIds.has(match.id) || match.has_market_data,
+        },
+        analysis,
+        readiness,
+      }
     })
     .filter(Boolean)
 
@@ -9798,32 +9835,27 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
   }
 
   if (!rows.length) return 0
-  await markInsufficientMarketDataRows(rows)
-
-  const ranked = rows
-    .filter((row: any) => String(row.analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID')
-    .filter((row: any) => isProfessionalRankingCandidate(row))
-    .sort((a: any, b: any) => {
-      const recommendationDiff = recommendationPriority(getCoverageAwareRecommendation(a)) - recommendationPriority(getCoverageAwareRecommendation(b))
-      const professionalDiff = Number(b.analysis.professional_score ?? b.analysis.raw?.professional_pipeline?.totalScore ?? b.analysis.ranking_score ?? 0) - Number(a.analysis.professional_score ?? a.analysis.raw?.professional_pipeline?.totalScore ?? a.analysis.ranking_score ?? 0)
-      const confidenceDiff = Number(b.analysis.calibrated_confidence_score ?? b.analysis.confidence_score ?? 0) - Number(a.analysis.calibrated_confidence_score ?? a.analysis.confidence_score ?? 0)
-      const valueDiff = Number(b.analysis.value_edge_score ?? b.analysis.market_edge_score ?? 0) - Number(a.analysis.value_edge_score ?? a.analysis.market_edge_score ?? 0)
-      const riskControlDiff = Number(b.analysis.risk_control_score ?? 100 - Number(b.analysis.risk_score ?? 100)) - Number(a.analysis.risk_control_score ?? 100 - Number(a.analysis.risk_score ?? 100))
-      const leagueQualityDiff = Number(b.analysis.league_quality_score ?? 0) - Number(a.analysis.league_quality_score ?? 0)
-      return recommendationDiff || professionalDiff || confidenceDiff || valueDiff || riskControlDiff || leagueQualityDiff
-    })
-    .slice(0, 10)
+  const selectionDate = (range as any).dateKey ?? getBangkokDayRange(range.startUtc).dateKey
+  const selection = selectDailyTop10(rows.map((row: any) => row.match), { selectionDate })
+  const ranked = selection.selected.map((selected: any) => ({
+    ...rows.find((row: any) => row.matchId === selected.match.id),
+    selected,
+  })).filter(Boolean)
 
   let updated = 0
   for (const [index, row] of ranked.entries()) {
-    const recommendation = getCoverageAwareRecommendation(row)
+    const recommendation = row.selected?.softRanking?.recommendation ?? row.analysis.recommendation ?? 'NO BET'
     const updateResult = await supabase
       .from('match_analysis')
       .update({
         is_top_pick: true,
-        is_final_pick: index === 0,
+        is_final_pick: index === 0 && Boolean(row.selected?.hasMarketData),
         final_rank: index + 1,
         final_pick_note: index === 0 ? buildFinalPickNoteV2(recommendation) : null,
+        ranking_score: row.selected?.softRanking?.finalScore ?? row.analysis.ranking_score,
+        analysis_version: DAILY_SELECTION_ALGORITHM_VERSION,
+        data_validation_status: row.selected?.hardFilter?.passed ? (row.selected?.hardFilter?.warnings?.length ? 'PARTIAL' : 'VALID') : 'INVALID',
+        data_validation_notes: row.selected?.hardFilter?.warnings?.map((item: any) => item.code).join(', ') || row.analysis.data_validation_notes,
       })
       .eq('match_id', row.matchId)
 

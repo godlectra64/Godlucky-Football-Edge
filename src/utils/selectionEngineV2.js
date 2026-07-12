@@ -2,6 +2,7 @@ import { getMarketReadinessGroup, marketReadinessGroups, recommendationLabels, r
 import { buildFootballIntelligence, getLegacyDailySelectionFields } from './footballIntelligenceEngine.js'
 import { buildStrictApiFootballCandidate, buildStrictApiFootballSelection, compareStrictApiFootballCandidates } from './marketDisplay.js'
 import { getMatchStatusInfo, matchStatusGroups } from './matchStatus.js'
+import { selectDailyTop10 } from './dailySelectionEngine.js'
 
 export const selectionV2Reasons = {
   marketReadyCandidatesAvailable: 'market_ready_candidates_available',
@@ -29,10 +30,12 @@ export function buildUsableDailySelection(matches = [], options = {}) {
   const dateRows = rows.filter((row) => getBangkokDateKey(row.match.kickoffAt ?? row.match.kickoff_at) === selectionDate)
   const playableRows = dateRows.filter((row) => row.playable)
   const finishedRows = dateRows.filter((row) => row.statusGroup === matchStatusGroups.finished)
-  const selected = playableRows
-    .sort(compareSelectionCandidates)
-    .slice(0, limit)
-    .map((row, index) => ({
+  const dailySelection = selectDailyTop10(playableRows.map((row) => row.match), { now, selectionDate, limit })
+  const candidateByKey = new Map(playableRows.map((row) => [getCandidateKey(row.match), row]))
+  const selected = dailySelection.selected
+    .map((selectionRow) => ({ selectionRow, row: candidateByKey.get(getCandidateKey(selectionRow.match)) }))
+    .filter((item) => item.row)
+    .map(({ row, selectionRow }, index) => ({
       ...normalizeDisplayMatch(row.match),
       footballIntelligence: row.unified,
       football_intelligence: row.unified,
@@ -46,8 +49,13 @@ export function buildUsableDailySelection(matches = [], options = {}) {
       risk_level: row.unified.risk_level,
       ...getLegacyDailySelectionFields(row.unified),
       selectionV2: {
+        algorithmVersion: dailySelection.algorithmVersion,
         priorityTier: row.priorityTier,
         marketReadiness: row.marketReadiness,
+        hardFilter: selectionRow.hardFilter,
+        softRanking: selectionRow.softRanking,
+        selectionStatus: selectionRow.selectionStatus,
+        selectionTier: selectionRow.tier,
         statusGroup: row.statusGroup,
         decision: row.unified.decision,
         status: row.unified.status,
@@ -68,7 +76,7 @@ export function buildUsableDailySelection(matches = [], options = {}) {
     }))
 
   const readySelectedCount = selected.filter((match) => match.selectionV2?.decision === 'BET').length
-  const waitingSelectedCount = selected.filter((match) => match.selectionV2?.status === 'WAITING_MARKET').length
+  const waitingSelectedCount = selected.filter((match) => match.selectionV2?.selectionStatus === 'SELECTED_WAITING_MARKET' || match.selectionV2?.status === 'WAITING_MARKET').length
   const marketReadyCandidates = playableRows.filter((row) => row.unified.decision === 'BET' || row.unified.decision === 'LEAN').length
   const waitingMarketCandidates = playableRows.filter((row) => row.unified.status === 'WAITING_MARKET').length
 
@@ -83,10 +91,17 @@ export function buildUsableDailySelection(matches = [], options = {}) {
     selectionDate,
     totalFixturesInWindow: dateRows.length,
     playableCandidates: playableRows.length,
+    eligibleCandidateCount: dailySelection.summary.eligibleCandidateCount,
+    hardFilterPassed: dailySelection.summary.hardFilterPassed,
+    hardFilterRejected: dailySelection.summary.hardFilterRejected,
     marketReadyCandidates,
     waitingMarketCandidates,
     finishedExcludedCount: finishedRows.length,
     selectedCount: selected.length,
+    healthStatus: dailySelection.summary.healthStatus,
+    primarySelected: dailySelection.summary.primarySelected,
+    secondarySelected: dailySelection.summary.secondarySelected,
+    fallbackSelected: dailySelection.summary.fallbackSelected,
     readySelectedCount,
     waitingSelectedCount,
     displayedSignalCount: selected.filter((match) => ['STRONG_SIGNAL', 'WATCH'].includes(getSignal(match))).length,
@@ -344,6 +359,10 @@ function getLeagueCoverage(match) {
 function getOddsRowCount(match) {
   const rows = match.odds ?? match.matchOdds ?? match.match_odds ?? match.enrichment?.odds ?? []
   return Array.isArray(rows) ? rows.filter((row) => row?.id || row?.match_id || row?.matchId).length : 0
+}
+
+function getCandidateKey(match = {}) {
+  return String(match.api_sports_fixture_id ?? match.api_fixture_id ?? match.fixtureId ?? match.fixture_id ?? match.id ?? match.match_id ?? '')
 }
 
 function getSignal(match) {

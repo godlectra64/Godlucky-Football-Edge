@@ -119,9 +119,19 @@ async function fetchMatches(startUtc, endUtc) {
 
 async function fetchByMatchIds(table, ids, columns) {
   if (!ids.length) return []
-  const { data, error } = await supabase.from(table).select(columns).in('match_id', ids)
-  if (error) throw error
-  return data ?? []
+  const rows = []
+  const pageSize = 1000
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(columns)
+      .in('match_id', ids)
+      .range(from, from + pageSize - 1)
+    if (error) throw error
+    rows.push(...(data ?? []))
+    if (!data || data.length < pageSize) break
+  }
+  return rows
 }
 
 async function fetchTop10Rows(dateKey) {
