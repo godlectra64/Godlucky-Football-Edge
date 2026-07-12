@@ -163,7 +163,22 @@ jobs:
           }
 
           await postSync({ mode: 'finalize-market-ready-candidates' })
-          await postSync({ mode: 'strict-api-football-daily-picks', limit: 10, marketFirst: true })
+          let marketFirstPicks = await postSync({ mode: 'strict-api-football-daily-picks', limit: 10, marketFirst: true })
+          if (marketFirstPicks.staleMarketLockRepairEligible === true) {
+            console.log(`Repairing stale pre-market Top10 lock; ready=${marketFirstPicks.candidateReadyCount ?? marketFirstPicks.readyCandidates ?? 0}, withOdds=${marketFirstPicks.top10WithOdds?.length ?? 0}`)
+            marketFirstPicks = await postSync({
+              mode: 'repair-stale-market-first-top10',
+              selectionDate: marketFirstPicks.selectionDate,
+              repairStaleMarketLock: true,
+            })
+            if (marketFirstPicks.repairedExistingLock !== true) {
+              throw new Error('stale market-first Top10 repair was eligible but did not replace the lock')
+            }
+          }
+          const marketFirstWithOddsCount = Number(marketFirstPicks.top10WithOddsCount ?? marketFirstPicks.top10WithOdds?.length ?? 0)
+          if (Number(marketFirstPicks.candidateReadyCount ?? marketFirstPicks.readyCandidates ?? 0) >= 10 && marketFirstWithOddsCount < 10) {
+            throw new Error(`market-first Top10 remains incomplete after conditional repair: withOdds=${marketFirstWithOddsCount}`)
+          }
 
           let top10Odds = await postSync({ mode: 'sync-daily-top10-odds', limit: 2 })
           for (let attempt = 1; attempt <= 8 && top10Odds.hasMore; attempt += 1) {

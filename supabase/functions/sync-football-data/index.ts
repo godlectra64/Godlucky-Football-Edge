@@ -79,6 +79,10 @@ const maxFootballEnrichmentLimit = 50
 const syncChunkSize = 10
 const enrichChunkSize = 5
 const footballEnrichmentChunkSize = 2
+const staleMarketRepairReadyCandidateLimit = 15
+const staleMarketRepairOddsRowLimit = 800
+const staleMarketRepairOddsRowsPerMarketLimit = 20
+const staleMarketRepairSelectionCount = 10
 
 const marketFirstPipelineAdminModes = [
   'daily-sync-auto',
@@ -86,6 +90,7 @@ const marketFirstPipelineAdminModes = [
   'build-daily-market-candidates',
   'sync-daily-candidate-odds',
   'finalize-market-ready-candidates',
+  'repair-stale-market-first-top10',
   'diagnose-sync-today-odds',
   'strict-api-football-daily-picks',
 ]
@@ -167,6 +172,27 @@ Deno.serve(async (request) => {
     const syncType = typeof body.mode === 'string' && body.mode ? body.mode : 'manual'
     const limit = getSyncLimit(body.limit, mode)
     const offset = getSyncOffset(body.offset)
+
+    if (mode === 'repair-stale-market-first-top10') {
+      const result = await repairStaleMarketFirstTop10LowResource(body, startedMs)
+      return json({
+        ok: true,
+        mode,
+        selectionDate: result.selectionDate,
+        repairedExistingLock: result.repairedExistingLock,
+        alreadyHealthy: result.alreadyHealthy,
+        previousSelectedFixtureIds: result.previousSelectedFixtureIds,
+        persistedSelectedFixtureIds: result.persistedSelectedFixtureIds,
+        top10Count: result.top10Count,
+        top10WithOddsCount: result.top10WithOddsCount,
+        top10WithoutOdds: result.top10WithoutOdds,
+        aiFinalPickCoverage: result.aiFinalPickCoverage,
+        candidateReadyCount: result.candidateReadyCount,
+        durationMs: Date.now() - startedMs,
+        warnings: result.warnings,
+        failures: result.failures,
+      })
+    }
 
     if (isFootballEnrichmentMode(mode)) {
       const modeResult = await runFootballEnrichmentMode(mode, body, dayRange, limit)
@@ -267,6 +293,12 @@ Deno.serve(async (request) => {
         selectedWaitingMarketCount: modeResult.selectedWaitingMarketCount,
         selectedNoMarketDataCount: modeResult.selectedNoMarketDataCount,
         selectedFixtureIds: modeResult.selectedFixtureIds,
+        repairedExistingLock: modeResult.repairedExistingLock,
+        previousSelectedFixtureIds: modeResult.previousSelectedFixtureIds,
+        persistedSelectedFixtureIds: modeResult.persistedSelectedFixtureIds,
+        staleMarketLockRepairEligible: modeResult.staleMarketLockRepairEligible,
+        lockPredatesMarketReadiness: modeResult.lockPredatesMarketReadiness,
+        aiFinalPickCoverage: modeResult.aiFinalPickCoverage,
         locked: modeResult.locked,
         alreadyLocked: modeResult.alreadyLocked,
         lockedCount: modeResult.lockedCount,
@@ -756,6 +788,12 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       selectedWaitingMarketCount: result.selectedWaitingMarketCount,
       selectedNoMarketDataCount: result.selectedNoMarketDataCount,
       selectedFixtureIds: result.selectedFixtureIds,
+      repairedExistingLock: result.repairedExistingLock,
+      previousSelectedFixtureIds: result.previousSelectedFixtureIds,
+      persistedSelectedFixtureIds: result.persistedSelectedFixtureIds,
+      staleMarketLockRepairEligible: result.staleMarketLockRepairEligible,
+      lockPredatesMarketReadiness: result.lockPredatesMarketReadiness,
+      aiFinalPickCoverage: result.aiFinalPickCoverage,
       nextRequestExample: result.nextRequestExample,
       locked: result.locked,
       alreadyLocked: result.alreadyLocked,
@@ -4363,9 +4401,16 @@ async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof
 }
 
 async function upsertAiFinalPickForMatch(match: any) {
-  const odds = await fetchStoredMatchOdds(match.id)
+  const payload = await buildAiFinalPickPayloadForMatch(match)
+  const upsert = await upsertAiFinalPickPayload(payload)
+  if (upsert.error) throw upsert.error
+  return upsert.data
+}
+
+async function buildAiFinalPickPayloadForMatch(match: any, preloadedOdds?: Array<any>) {
+  const odds = preloadedOdds ?? await fetchStoredMatchOdds(match.id)
   const pick = buildEdgeAiFinalPick({ ...match, odds })
-  const payload = {
+  return {
     match_id: match.id,
     api_fixture_id: nullableNumber(match.api_sports_fixture_id),
     signal: pick.signal,
@@ -4399,9 +4444,6 @@ async function upsertAiFinalPickForMatch(match: any) {
     raw: pick,
     updated_at: new Date().toISOString(),
   }
-  const upsert = await upsertAiFinalPickPayload(payload)
-  if (upsert.error) throw upsert.error
-  return upsert.data
 }
 
 async function upsertAiFinalPickPayload(payload: Record<string, unknown>) {
@@ -4813,6 +4855,364 @@ async function strictApiFootballDailyPicks(dayRange: ReturnType<typeof getBangko
   }
 }
 
+async function repairStaleMarketFirstTop10LowResource(body: Record<string, unknown>, startedMs: number) {
+  if (body.repairStaleMarketLock !== true) throw new Error('repair-stale-market-first-top10 requires repairStaleMarketLock:true')
+  const selectionDate = getRequiredRepairSelectionDate(body.selectionDate)
+  const existingRows = await fetchLowResourceLockedTop10(selectionDate)
+  if (existingRows.length !== staleMarketRepairSelectionCount) {
+    throw new Error(`Stale market repair requires exactly 10 persisted Top10 rows; found ${existingRows.length}`)
+  }
+
+  const duplicateMatches = existingRows.length - new Set(existingRows.map((row: any) => row.match_id).filter(Boolean)).size
+  const duplicateRanks = existingRows.length - new Set(existingRows.map((row: any) => Number(row.rank)).filter(Boolean)).size
+  if (duplicateMatches || duplicateRanks) throw new Error(`Persisted Top10 identity invariant failed: duplicateMatches=${duplicateMatches}, duplicateRanks=${duplicateRanks}`)
+
+  const previousSelectedFixtureIds = existingRows.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean).slice(0, staleMarketRepairSelectionCount)
+  const readyCandidates = await fetchLowResourceReadyMarketCandidates(selectionDate)
+  const candidateReadyCount = readyCandidates.totalCount
+  if (candidateReadyCount < staleMarketRepairSelectionCount) throw new Error(`Stale market repair requires at least 10 READY candidates; found ${candidateReadyCount}`)
+  if (candidateReadyCount > staleMarketRepairReadyCandidateLimit) {
+    throw new Error(`READY candidate count ${candidateReadyCount} exceeds low-resource canonical ordering cap ${staleMarketRepairReadyCandidateLimit}`)
+  }
+
+  const repairWarnings: Array<string> = []
+  const readyMatchIds = readyCandidates.rows.map((row: any) => row.match_id).filter(Boolean)
+  const readyMarketProbes = await fetchLowResourceRequiredMarketProbes(readyMatchIds)
+  const existingOutsideReadyIds = existingRows.map((row: any) => row.match_id).filter((matchId: string) => matchId && !readyMarketProbes.has(matchId))
+  const existingMarketProbes = await fetchLowResourceRequiredMarketProbes(existingOutsideReadyIds)
+  const initialOddsProbes = new Map([...readyMarketProbes, ...existingMarketProbes])
+  const initialState = summarizeLowResourcePersistedTop10(existingRows, initialOddsProbes)
+  if (initialState.top10WithOddsCount === staleMarketRepairSelectionCount) {
+    const aiFinalPickCoverage = await fetchLowResourceFinalPickCoverage(existingRows.map((row: any) => row.match_id).filter(Boolean))
+    return {
+      selectionDate,
+      repairedExistingLock: false,
+      alreadyHealthy: true,
+      previousSelectedFixtureIds,
+      persistedSelectedFixtureIds: initialState.persistedSelectedFixtureIds,
+      top10Count: initialState.top10Count,
+      top10WithOddsCount: initialState.top10WithOddsCount,
+      top10WithoutOdds: initialState.top10WithoutOdds,
+      aiFinalPickCoverage,
+      candidateReadyCount,
+      warnings: ['Persisted Top10 already has supported latest odds for all 10 fixtures; no repair performed'],
+      failures: [],
+    }
+  }
+
+  const latestLockAt = maxIsoTimestamp(existingRows.map((row: any) => row.locked_at ?? row.created_at))
+  const latestReadyAt = maxIsoTimestamp(readyCandidates.rows.map((row: any) => row.odds_synced_at))
+  if (!latestLockAt || !latestReadyAt || new Date(latestLockAt).getTime() >= new Date(latestReadyAt).getTime()) {
+    throw new Error('Persisted Top10 is not proven to predate market readiness; lock preserved')
+  }
+
+  const repairTargets = await fetchLowResourceRepairMatchTargets(readyCandidates.rows)
+  const candidateItems = repairTargets.flatMap((match: any) => {
+    const odds = readyMarketProbes.get(match.id) ?? []
+    const coverage = summarizeSupportedOddsRows(odds)
+    if (!(coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner)) {
+      const missing = [
+        coverage.hasAh ? null : 'AH',
+        coverage.hasOu ? null : 'OU',
+        coverage.hasMatchWinner ? null : 'MATCH_WINNER',
+      ].filter(Boolean).join('/')
+      if (repairWarnings.length < 5) repairWarnings.push(`Skipped READY candidate ${match.id}: missing supported latest ${missing} odds`)
+      return []
+    }
+    const pickTeam = deriveEdgePickTeamFromApiFootballOdds(match, odds)
+    const strict = buildStrictApiFootballCandidate(match, odds, pickTeam)
+    return [{
+      match,
+      analysis: getAnalysis(match),
+      pick: null,
+      odds,
+      pickTeam,
+      strict,
+      candidate: match.candidate,
+      finalSelectionScore: buildMarketFirstSelectionScore(match, odds, strict),
+    }]
+  }).sort(compareMarketFirstCandidateItems)
+  if (candidateItems.length < staleMarketRepairSelectionCount) {
+    throw new Error(`Stale market repair found only ${candidateItems.length} READY candidates with verified latest AH/OU/MATCH_WINNER odds; need 10`)
+  }
+
+  const selected = candidateItems.slice(0, staleMarketRepairSelectionCount)
+  assertUniqueMarketFirstRepairSelection(selected)
+  const fixtureIds = selected.map((item: any) => Number(item.match.api_sports_fixture_id ?? 0)).filter(Boolean)
+  if (fixtureIds.length !== staleMarketRepairSelectionCount || new Set(fixtureIds).size !== staleMarketRepairSelectionCount) {
+    throw new Error('Stale market lock repair requires exactly 10 unique api_fixture_id values')
+  }
+
+  const selectedMatchIds = selected.map((item: any) => item.match.id)
+  const selectedOddsByMatchId = await fetchLowResourceLatestSupportedOdds(selectedMatchIds)
+  const finalPicks = []
+  for (const item of selected) {
+    const odds = dedupeOddsRowsById([
+      ...(selectedOddsByMatchId.get(item.match.id) ?? []),
+      ...(readyMarketProbes.get(item.match.id) ?? []),
+    ])
+    const coverage = summarizeSupportedOddsRows(odds)
+    if (!(coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner)) throw new Error(`Selected READY candidate ${item.match.id} is missing required latest AH/OU/MATCH_WINNER odds`)
+    item.odds = odds
+    const { updated_at: _updatedAt, ...finalPick } = await buildAiFinalPickPayloadForMatch(item.match, odds)
+    finalPicks.push(finalPick)
+  }
+  const selections = selected.map((item: any, index: number) => ({
+    match_id: item.match.id,
+    api_fixture_id: nullableNumber(item.match.api_sports_fixture_id),
+    rank: index + 1,
+    selection_score: nullableNumber(item.finalSelectionScore),
+  }))
+  assertAtomicRepairPayloads(finalPicks, selections)
+
+  const expectedPreviousMatchIds = existingRows.map((row: any) => row.match_id).filter(Boolean).sort()
+  const repairResult = await callAtomicStaleMarketRepair(selectionDate, expectedPreviousMatchIds, finalPicks, selections)
+  const repairedExistingLock = Boolean(repairResult?.repaired)
+
+  for (const item of selected) item.odds = []
+  readyMarketProbes.clear()
+  existingMarketProbes.clear()
+  initialOddsProbes.clear()
+
+  const persistedRows = await fetchLowResourceLockedTop10(selectionDate)
+  const persistedMatchIds = persistedRows.map((row: any) => row.match_id).filter(Boolean)
+  const persistedOddsByMatchId = repairedExistingLock ? selectedOddsByMatchId : await fetchLowResourceLatestSupportedOdds(persistedMatchIds)
+  const persistedState = summarizeLowResourcePersistedTop10(persistedRows, persistedOddsByMatchId)
+  persistedState.aiFinalPickCoverage = await fetchLowResourceFinalPickCoverage(persistedMatchIds)
+  selectedOddsByMatchId.clear()
+  if (persistedOddsByMatchId !== selectedOddsByMatchId) persistedOddsByMatchId.clear()
+  if (repairedExistingLock) assertLowResourceRepairResult(persistedState)
+  if (!repairedExistingLock && persistedState.top10WithOddsCount < staleMarketRepairSelectionCount) {
+    throw new Error('Atomic repair returned without replacement while persisted Top10 is still unhealthy')
+  }
+
+  return {
+    selectionDate,
+    repairedExistingLock,
+    alreadyHealthy: !repairedExistingLock && persistedState.top10WithOddsCount === staleMarketRepairSelectionCount,
+    previousSelectedFixtureIds,
+    persistedSelectedFixtureIds: persistedState.persistedSelectedFixtureIds,
+    top10Count: persistedState.top10Count,
+    top10WithOddsCount: persistedState.top10WithOddsCount,
+    top10WithoutOdds: persistedState.top10WithoutOdds,
+    aiFinalPickCoverage: persistedState.aiFinalPickCoverage,
+    candidateReadyCount,
+    durationMs: Date.now() - startedMs,
+    warnings: repairWarnings,
+    failures: [],
+  }
+}
+
+function getRequiredRepairSelectionDate(value: unknown) {
+  const selectionDate = String(value ?? '').trim()
+  const parsed = new Date(`${selectionDate}T00:00:00.000Z`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(selectionDate) || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== selectionDate || getBangkokDayRange(selectionDate).dateKey !== selectionDate) {
+    throw new Error('repair-stale-market-first-top10 requires a valid selectionDate in YYYY-MM-DD format')
+  }
+  return selectionDate
+}
+
+async function fetchLowResourceLockedTop10(selectionDate: string) {
+  const result = await supabase
+    .from('daily_top10_selections')
+    .select('id, rank, match_id, api_fixture_id, ai_final_pick_id, locked_at, created_at')
+    .eq('selection_date', selectionDate)
+    .order('rank', { ascending: true })
+    .limit(staleMarketRepairSelectionCount + 1)
+  if (result.error) throw result.error
+  return result.data ?? []
+}
+
+async function fetchLowResourceReadyMarketCandidates(selectionDate: string) {
+  const baseFilters = (query: any) => query
+    .eq('selection_date', selectionDate)
+    .eq('market_readiness_status', 'READY')
+    .eq('has_usable_ah', true)
+    .eq('has_usable_ou', true)
+    .eq('has_usable_match_winner', true)
+  const [countResult, rowsResult] = await Promise.all([
+    baseFilters(supabase.from('daily_market_candidates').select('id', { count: 'exact', head: true })),
+    baseFilters(supabase
+      .from('daily_market_candidates')
+      .select('id, match_id, api_fixture_id, candidate_rank, pre_selection_score, market_readiness_status, market_readiness_score, has_usable_ah, has_usable_ou, has_usable_match_winner, odds_rows_count, odds_synced_at'))
+      .order('candidate_rank', { ascending: true })
+      .limit(staleMarketRepairReadyCandidateLimit),
+  ])
+  if (countResult.error) throw countResult.error
+  if (rowsResult.error) throw rowsResult.error
+  return { rows: rowsResult.data ?? [], totalCount: Number(countResult.count ?? rowsResult.data?.length ?? 0) }
+}
+
+async function fetchLowResourceRepairMatchTargets(candidateRows: Array<any>) {
+  const matchIds = [...new Set(candidateRows.map((row: any) => row.match_id).filter(Boolean))]
+  if (matchIds.length < staleMarketRepairSelectionCount || matchIds.length > staleMarketRepairReadyCandidateLimit) {
+    throw new Error(`Low-resource repair match target count out of bounds: ${matchIds.length}`)
+  }
+  const result = await supabase
+    .from('football_matches')
+    .select(`
+      id,
+      api_sports_fixture_id,
+      kickoff_at,
+      status,
+      status_short,
+      status_long,
+      match_status,
+      odds_updated_at,
+      has_market_data,
+      has_fixture_detail,
+      data_readiness_status,
+      raw,
+      league:football_leagues(id, api_league_id, name, country, priority),
+      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
+      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
+    `)
+    .in('id', matchIds)
+    .limit(staleMarketRepairReadyCandidateLimit)
+  if (result.error) throw result.error
+  const candidateByMatchId = new Map(candidateRows.map((row: any) => [row.match_id, row]))
+  const targets = (result.data ?? []).map((match: any) => {
+    const candidate = candidateByMatchId.get(match.id)
+    if (!candidate) throw new Error(`Missing READY candidate metadata for match ${match.id}`)
+    return {
+      ...match,
+      canonicalMatchId: candidate.match_id,
+      api_sports_fixture_id: nullableNumber(candidate.api_fixture_id ?? match.api_sports_fixture_id),
+      candidateId: candidate.id,
+      candidate,
+    }
+  })
+  if (targets.length !== matchIds.length) throw new Error(`Missing football_matches rows for ${matchIds.length - targets.length} READY candidates`)
+  return targets
+}
+
+type SupportedRepairMarketFocus = 'AH' | 'OU' | 'MATCH_WINNER'
+
+async function fetchLowResourceRequiredMarketProbes(matchIds: Array<string>) {
+  const ids = [...new Set(matchIds.filter(Boolean))]
+  if (ids.length > staleMarketRepairReadyCandidateLimit) throw new Error(`Repair odds probe target count exceeds 15: ${ids.length}`)
+  const marketResults = await Promise.all((['AH', 'OU', 'MATCH_WINNER'] as Array<SupportedRepairMarketFocus>)
+    .map((marketFocus) => fetchLowResourceMarketOddsProbe(ids, marketFocus)))
+  const merged = new Map<string, Array<any>>()
+  for (const matchId of ids) {
+    merged.set(matchId, dedupeOddsRowsById(marketResults.flatMap((result) => result.get(matchId) ?? [])))
+  }
+  return merged
+}
+
+async function fetchLowResourceMarketOddsProbe(matchIds: Array<string>, marketFocus: SupportedRepairMarketFocus) {
+  const ids = [...new Set(matchIds.filter(Boolean))]
+  if (ids.length > staleMarketRepairReadyCandidateLimit) throw new Error(`Repair odds probe target count exceeds 15: ${ids.length}`)
+  const entries = await Promise.all(ids.map(async (matchId) => {
+    const result = await supabase
+      .from('football_match_odds')
+      .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at')
+      .eq('match_id', matchId)
+      .eq('is_latest', true)
+      .eq('market_focus', marketFocus)
+      .not('price', 'is', null)
+      .gt('price', 0)
+      .order('snapshot_at', { ascending: false })
+      .order('id', { ascending: true })
+      .limit(1)
+    if (result.error) throw result.error
+    const supported = (result.data ?? []).filter(isSupportedFullTimeOddsRow)
+    return [matchId, supported] as const
+  }))
+  return new Map<string, Array<any>>(entries)
+}
+
+async function fetchLowResourceLatestSupportedOdds(matchIds: Array<string>) {
+  const ids = [...new Set(matchIds.filter(Boolean))]
+  if (!ids.length || ids.length > staleMarketRepairSelectionCount) {
+    throw new Error(`Low-resource repair odds target count out of bounds: ${ids.length}`)
+  }
+  const entries = await Promise.all(ids.map(async (matchId) => {
+    const marketEntries = await Promise.all((['AH', 'OU', 'MATCH_WINNER'] as Array<SupportedRepairMarketFocus>).map(async (marketFocus) => {
+      const result = await supabase
+        .from('football_match_odds')
+        .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at')
+        .eq('match_id', matchId)
+        .eq('is_latest', true)
+        .eq('market_focus', marketFocus)
+        .not('price', 'is', null)
+        .gt('price', 0)
+        .order('snapshot_at', { ascending: false })
+        .order('id', { ascending: true })
+        .limit(staleMarketRepairOddsRowsPerMarketLimit)
+      if (result.error) throw result.error
+      return (result.data ?? []).filter(isSupportedFullTimeOddsRow)
+    }))
+    return [matchId, dedupeOddsRowsById(marketEntries.flat())] as const
+  }))
+  const totalRows = entries.reduce((total, [, rows]) => total + rows.length, 0)
+  if (totalRows > staleMarketRepairOddsRowLimit) throw new Error(`Latest supported odds row count ${totalRows} exceeds repair cap ${staleMarketRepairOddsRowLimit}`)
+
+  return new Map<string, Array<any>>(entries)
+}
+
+function dedupeOddsRowsById(rows: Array<any>) {
+  const seen = new Set<string>()
+  return rows.filter((row: any) => {
+    const id = String(row.id ?? '')
+    if (!id || seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
+}
+
+function summarizeSupportedOddsRows(rows: Array<any>) {
+  const focuses = new Set(rows.filter(isSupportedFullTimeOddsRow).map((row: any) => normalizeMarketFocus(row.market_focus ?? row.market_name)))
+  return { rows: rows.length, hasAh: focuses.has('AH'), hasOu: focuses.has('OU'), hasMatchWinner: focuses.has('MATCH_WINNER') }
+}
+
+function summarizeLowResourcePersistedTop10(rows: Array<any>, oddsByMatchId: Map<string, Array<any>>) {
+  const withOddsMatchIds = new Set(rows.filter((row: any) => {
+    const coverage = summarizeSupportedOddsRows(oddsByMatchId.get(row.match_id) ?? [])
+    return coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner
+  }).map((row: any) => row.match_id))
+  const persistedSelectedFixtureIds = rows.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean).slice(0, staleMarketRepairSelectionCount)
+  return {
+    top10Count: rows.length,
+    top10WithOddsCount: withOddsMatchIds.size,
+    top10WithoutOdds: rows.filter((row: any) => !withOddsMatchIds.has(row.match_id)).map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean).slice(0, staleMarketRepairSelectionCount),
+    persistedSelectedFixtureIds,
+    aiFinalPickCoverage: rows.filter((row: any) => row.ai_final_pick_id).length,
+    duplicateMatches: rows.length - new Set(rows.map((row: any) => row.match_id).filter(Boolean)).size,
+    duplicateRanks: rows.length - new Set(rows.map((row: any) => Number(row.rank)).filter(Boolean)).size,
+  }
+}
+
+async function fetchLowResourceFinalPickCoverage(matchIds: Array<string>) {
+  const ids = [...new Set(matchIds.filter(Boolean))]
+  if (ids.length > staleMarketRepairSelectionCount) throw new Error(`Final-pick coverage target count exceeds 10: ${ids.length}`)
+  if (!ids.length) return 0
+  const result = await supabase
+    .from('football_ai_final_picks')
+    .select('id, match_id')
+    .in('match_id', ids)
+    .limit(staleMarketRepairSelectionCount)
+  if (result.error) throw result.error
+  return new Set((result.data ?? []).map((row: any) => row.match_id).filter(Boolean)).size
+}
+
+function assertAtomicRepairPayloads(finalPicks: Array<any>, selections: Array<any>) {
+  const finalPickIds = finalPicks.map((row: any) => row.match_id).filter(Boolean)
+  const selectionIds = selections.map((row: any) => row.match_id).filter(Boolean)
+  const ranks = selections.map((row: any) => Number(row.rank))
+  if (finalPicks.length !== 10 || selections.length !== 10 || new Set(finalPickIds).size !== 10 || new Set(selectionIds).size !== 10 || new Set(ranks).size !== 10 || ranks.some((rank: number) => rank < 1 || rank > 10)) {
+    throw new Error('Atomic stale market repair payload invariant failed')
+  }
+  if (finalPickIds.sort().join('|') !== selectionIds.sort().join('|')) throw new Error('Atomic repair final-pick and selection match IDs differ')
+}
+
+function assertLowResourceRepairResult(state: any) {
+  if (state.top10Count !== 10 || state.top10WithOddsCount !== 10 || state.top10WithoutOdds.length || state.aiFinalPickCoverage !== 10 || state.duplicateMatches || state.duplicateRanks) {
+    throw new Error(`Low-resource repair persisted invariant failed: count=${state.top10Count}, withOdds=${state.top10WithOddsCount}, finalPicks=${state.aiFinalPickCoverage}`)
+  }
+}
+
 async function strictApiFootballDailyPicksMarketFirst(dayRange: ReturnType<typeof getBangkokDayRange>, body: Record<string, unknown>) {
   const selectionDate = typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : dayRange.dateKey
   const limit = getPositiveNumber(body.limit, 10, 10)
@@ -4830,7 +5230,7 @@ async function strictApiFootballDailyPicksMarketFirst(dayRange: ReturnType<typeo
   const matchIds = candidateTargets.map((match: any) => match.id).filter(Boolean)
   const [picks, oddsByMatchId] = await Promise.all([
     fetchAiFinalPicksForMatches(matchIds),
-    fetchStoredOddsByMatchIds(matchIds),
+    fetchStoredOddsByMatchIds(matchIds, { latestOnly: true }),
   ])
   const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
   const candidates = candidateTargets
@@ -4852,26 +5252,34 @@ async function strictApiFootballDailyPicksMarketFirst(dayRange: ReturnType<typeo
     .sort(compareMarketFirstCandidateItems)
 
   const readyCandidates = candidates.filter((item: any) => getMarketFirstReadinessStatus(item) === 'READY')
-  const selected = candidates.slice(0, limit)
-  const selectedReadyCount = selected.filter((item: any) => getMarketFirstReadinessStatus(item) === 'READY').length
-  const selectedPartialCount = selected.filter((item: any) => getMarketFirstReadinessStatus(item) === 'PARTIAL').length
-  const selectedWaitingMarketCount = selected.filter((item: any) => getMarketFirstReadinessStatus(item) === 'WAITING_MARKET').length
-  const selectedNoMarketDataCount = selected.filter((item: any) => getMarketFirstReadinessStatus(item) === 'NO_MARKET_DATA').length
-  const avoidableNoMarketData = readyCandidates.length >= limit && selectedNoMarketDataCount > 0
+  const intendedSelection = candidates.slice(0, limit)
+  const intendedNoMarketDataCount = intendedSelection.filter((item: any) => getMarketFirstReadinessStatus(item) === 'NO_MARKET_DATA').length
+  const avoidableNoMarketData = readyCandidates.length >= limit && intendedNoMarketDataCount > 0
   if (avoidableNoMarketData) {
     throw new Error(`marketFirst invariant failed: selected NO_MARKET_DATA while ${readyCandidates.length} READY candidates exist`)
   }
 
-  const persistResult = await persistMarketReadyTop10(selectionDate, selected, existing.data ?? [], { cleanupUnselected: true })
-  const selectedStrict = selected.map((item: any) => item.strict)
-  const top10WithOdds = selected.filter((item: any) => item.strict.hasApiFootballOdds).map((item: any) => Number(item.match.api_sports_fixture_id ?? 0)).filter(Boolean)
-  const selectedFixtureIds = selected.map((item: any) => Number(item.match.api_sports_fixture_id ?? 0)).filter(Boolean)
-  const warnings = []
+  const previousState = await buildPersistedMarketFirstTop10State(selectionDate, existing.data ?? [], candidates, readyCandidates.length)
+  const previousSelectedFixtureIds = previousState.selectedFixtureIds
+  let persistResult = emptyTop10PersistResult(existing.data?.length ?? 0)
+  const warnings: Array<string> = []
+
+  if (!(existing.data ?? []).length) {
+    persistResult = await persistMarketReadyTop10(selectionDate, intendedSelection, [], { cleanupUnselected: true })
+    if (persistResult.failed > 0) throw new Error(`Initial market-first Top10 persistence failed for ${persistResult.failed} row(s)`)
+  } else {
+    if (previousState.staleMarketLockRepairEligible) warnings.push('Persisted Top10 predates market readiness and is repair-eligible; invoke repair-stale-market-first-top10 with repairStaleMarketLock:true')
+  }
+
+  const persistedRows = await fetchPersistedDailyTop10Rows(selectionDate)
+  const persistedState = await buildPersistedMarketFirstTop10State(selectionDate, persistedRows, candidates, readyCandidates.length)
+  const persistedItems = persistedState.rows.map((row: any) => candidates.find((item: any) => item.match.id === row.match_id)).filter(Boolean)
+  const selectedStrict = persistedItems.map((item: any) => item.strict)
   if (readyCandidates.length < limit) warnings.push(`Only ${readyCandidates.length} READY candidates available; filled remaining Top10 from lower readiness candidates`)
 
   return {
-    processed: selected.length,
-    selectedCount: selected.length,
+    processed: persistedState.rows.length,
+    selectedCount: persistedState.rows.length,
     totalCandidates: candidates.length,
     rowsSaved: persistResult.rowsSaved,
     rowsUpdated: persistResult.rowsUpdated,
@@ -4886,15 +5294,22 @@ async function strictApiFootballDailyPicksMarketFirst(dayRange: ReturnType<typeo
     requestedSelectionDate: selectionDate,
     resolvedDateKey: selectionDate,
     readyCandidates: readyCandidates.length,
-    selectedReadyCount,
-    selectedPartialCount,
-    selectedWaitingMarketCount,
-    selectedNoMarketDataCount,
-    top10WithOdds,
-    top10WithoutOdds: selectedFixtureIds.filter((fixtureId: number) => !top10WithOdds.includes(fixtureId)),
-    selectedFixtureIds,
-    selectedWithOddsCount: selectedStrict.filter((item: any) => item.hasApiFootballOdds).length,
-    selectedWithoutOddsCount: selectedStrict.filter((item: any) => !item.hasApiFootballOdds).length,
+    candidateReadyCount: readyCandidates.length,
+    selectedReadyCount: persistedState.selectedReadyCount,
+    selectedPartialCount: persistedState.selectedPartialCount,
+    selectedWaitingMarketCount: persistedState.selectedWaitingMarketCount,
+    selectedNoMarketDataCount: persistedState.selectedNoMarketDataCount,
+    top10WithOdds: persistedState.top10WithOdds,
+    top10WithoutOdds: persistedState.top10WithoutOdds,
+    selectedFixtureIds: persistedState.selectedFixtureIds,
+    previousSelectedFixtureIds,
+    persistedSelectedFixtureIds: persistedState.selectedFixtureIds,
+    repairedExistingLock: false,
+    staleMarketLockRepairEligible: persistedState.staleMarketLockRepairEligible,
+    lockPredatesMarketReadiness: persistedState.lockPredatesMarketReadiness,
+    aiFinalPickCoverage: persistedState.aiFinalPickCoverage,
+    selectedWithOddsCount: persistedState.top10WithOdds.length,
+    selectedWithoutOddsCount: persistedState.top10WithoutOdds.length,
     selectedWithPickTeamCount: selectedStrict.filter((item: any) => Boolean(item.pickTeam)).length,
     selectedWithoutPickTeamCount: selectedStrict.filter((item: any) => !item.pickTeam).length,
     primaryMarketCount: selectedStrict.filter((item: any) => item.hasPrimaryMarket).length,
@@ -4906,8 +5321,94 @@ async function strictApiFootballDailyPicksMarketFirst(dayRange: ReturnType<typeo
     usedRollingWindow: false,
     usedNextDateFallback: false,
     warnings,
-    selectedMatches: selected.map((item: any, index: number) => formatStrictSelectedMatch({ ...item, rank: index + 1 })),
+    selectedMatches: persistedItems.map((item: any, index: number) => formatStrictSelectedMatch({ ...item, rank: persistedState.rows[index]?.rank ?? index + 1 })),
   }
+}
+
+function emptyTop10PersistResult(rowsSkipped = 0) {
+  return { rowsSaved: 0, rowsUpdated: 0, rowsInserted: 0, rowsSkipped, rowsDeleted: 0, duplicateRankResolved: 0, failed: 0, failures: [] as Array<any> }
+}
+
+async function fetchPersistedDailyTop10Rows(selectionDate: string) {
+  const result = await supabase
+    .from('daily_top10_selections')
+    .select('*')
+    .eq('selection_date', selectionDate)
+    .order('rank', { ascending: true })
+  if (result.error) throw result.error
+  return result.data ?? []
+}
+
+async function buildPersistedMarketFirstTop10State(selectionDate: string, rows: Array<any>, candidates: Array<any>, candidateReadyCount: number) {
+  const candidateByMatchId = new Map(candidates.map((item: any) => [item.match.id, item]))
+  const coverageTargets = rows.map((row: any) => candidateByMatchId.get(row.match_id)?.match ?? {
+    id: row.match_id,
+    canonicalMatchId: row.match_id,
+    api_sports_fixture_id: row.api_fixture_id,
+  })
+  const coverage = await fetchUsableOddsCoverageForTargets(coverageTargets)
+  const selectedFixtureIds = rows.map((row: any) => Number(row.api_fixture_id ?? candidateByMatchId.get(row.match_id)?.match?.api_sports_fixture_id ?? 0)).filter(Boolean)
+  const top10WithOdds = rows
+    .filter((row: any) => Number(coverage.byMatchId.get(row.match_id)?.rows ?? 0) > 0)
+    .map((row: any) => Number(row.api_fixture_id ?? candidateByMatchId.get(row.match_id)?.match?.api_sports_fixture_id ?? 0))
+    .filter(Boolean)
+  const statuses = rows.map((row: any) => getMarketFirstReadinessStatus(candidateByMatchId.get(row.match_id) ?? {}))
+  const latestLockAt = maxIsoTimestamp(rows.map((row: any) => row.locked_at))
+  const latestReadyAt = maxIsoTimestamp(candidates
+    .filter((item: any) => getMarketFirstReadinessStatus(item) === 'READY')
+    .map((item: any) => item.candidate?.odds_synced_at))
+  const lockPredatesMarketReadiness = Boolean(latestLockAt && latestReadyAt && new Date(latestLockAt).getTime() < new Date(latestReadyAt).getTime())
+  const duplicateMatchCount = rows.length - new Set(rows.map((row: any) => row.match_id).filter(Boolean)).size
+  const duplicateRankCount = rows.length - new Set(rows.map((row: any) => Number(row.rank)).filter(Boolean)).size
+  const staleMarketLockRepairEligible = rows.length === 10 && candidateReadyCount >= 10 && top10WithOdds.length < 10 && lockPredatesMarketReadiness && duplicateMatchCount === 0 && duplicateRankCount === 0
+  return {
+    selectionDate,
+    rows,
+    selectedFixtureIds,
+    top10WithOdds,
+    top10WithoutOdds: selectedFixtureIds.filter((fixtureId: number) => !top10WithOdds.includes(fixtureId)),
+    selectedReadyCount: statuses.filter((status: string) => status === 'READY').length,
+    selectedPartialCount: statuses.filter((status: string) => status === 'PARTIAL').length,
+    selectedWaitingMarketCount: statuses.filter((status: string) => status === 'WAITING_MARKET').length,
+    selectedNoMarketDataCount: statuses.filter((status: string) => status === 'NO_MARKET_DATA').length,
+    aiFinalPickCoverage: rows.filter((row: any) => row.ai_final_pick_id).length,
+    lockPredatesMarketReadiness,
+    staleMarketLockRepairEligible,
+    duplicateMatchCount,
+    duplicateRankCount,
+  }
+}
+
+async function callAtomicStaleMarketRepair(selectionDate: string, expectedPreviousMatchIds: Array<string>, finalPicks: Array<any>, selections: Array<any>) {
+  const result = await supabase.rpc('repair_stale_market_first_top10', {
+    p_selection_date: selectionDate,
+    p_expected_previous_match_ids: expectedPreviousMatchIds,
+    p_final_picks: finalPicks,
+    p_selections: selections,
+  })
+  if (result.error) {
+    if (isMissingFunctionError(result.error)) throw new Error('Missing repair_stale_market_first_top10 RPC. Apply migration 20260713_add_atomic_market_first_top10_repair.sql before repair.')
+    throw result.error
+  }
+  return result.data
+}
+
+function assertUniqueMarketFirstRepairSelection(selected: Array<any>) {
+  const matchIds = selected.map((item: any) => item.match?.id).filter(Boolean)
+  if (selected.length !== 10 || matchIds.length !== 10 || new Set(matchIds).size !== 10) {
+    throw new Error('Stale market lock repair requires exactly 10 unique READY match ids')
+  }
+  if (selected.some((item: any) => getMarketFirstReadinessStatus(item) !== 'READY')) {
+    throw new Error('Stale market lock repair cannot include a non-READY candidate')
+  }
+}
+
+function maxIsoTimestamp(values: Array<unknown>) {
+  return values
+    .filter(Boolean)
+    .map((value) => String(value))
+    .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())
+    .at(-1) ?? null
 }
 
 async function persistMarketReadyTop10(selectionDate: string, selected: Array<any>, existingRows: Array<any>, options: { cleanupUnselected?: boolean } = {}) {
@@ -5187,24 +5688,45 @@ async function fetchMatchIdsWithOdds(matchIds: Array<string>) {
   return new Set((result.data ?? []).map((row: any) => row.match_id).filter(Boolean))
 }
 
-async function fetchStoredOddsByMatchIds(matchIds: Array<string>) {
+async function fetchStoredOddsByMatchIds(matchIds: Array<string>, options: { latestOnly?: boolean } = {}) {
   const oddsByMatchId = new Map<string, Array<any>>()
   const ids = [...new Set(matchIds.filter(Boolean))]
   if (!ids.length) return oddsByMatchId
 
-  const result = await supabase
-    .from('football_match_odds')
-    .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at, raw')
-    .in('match_id', ids)
-    .order('is_latest', { ascending: false })
-    .order('snapshot_at', { ascending: false })
-
-  if (result.error) {
-    if (isMissingColumnError(result.error)) return oddsByMatchId
-    throw result.error
+  const fetchedRows: Array<any> = []
+  if (!options.latestOnly) {
+    const result = await supabase
+      .from('football_match_odds')
+      .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at, raw')
+      .in('match_id', ids)
+      .order('is_latest', { ascending: false })
+      .order('snapshot_at', { ascending: false })
+    if (result.error) {
+      if (isMissingColumnError(result.error)) return oddsByMatchId
+      throw result.error
+    }
+    fetchedRows.push(...(result.data ?? []))
+  } else {
+    const pageSize = 1000
+    for (let from = 0; ; from += pageSize) {
+      const result = await supabase
+        .from('football_match_odds')
+        .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at, raw')
+        .in('match_id', ids)
+        .eq('is_latest', true)
+        .order('id', { ascending: true })
+        .range(from, from + pageSize - 1)
+      if (result.error) {
+        if (isMissingColumnError(result.error)) return oddsByMatchId
+        throw result.error
+      }
+      const page = result.data ?? []
+      fetchedRows.push(...page)
+      if (page.length < pageSize) break
+    }
   }
 
-  for (const row of result.data ?? []) {
+  for (const row of fetchedRows) {
     if (!row.match_id) continue
     const rows = oddsByMatchId.get(row.match_id) ?? []
     rows.push(row)
@@ -9729,6 +10251,11 @@ function isMissingColumnError(error: any) {
 function isMissingTableError(error: any) {
   const message = String(error?.message ?? error?.details ?? '')
   return error?.code === '42P01' || /relation .* does not exist/i.test(message) || /Could not find the table/i.test(message)
+}
+
+function isMissingFunctionError(error: any) {
+  const message = String(error?.message ?? error?.details ?? '')
+  return error?.code === '42883' || error?.code === 'PGRST202' || /function .* does not exist/i.test(message) || /Could not find the function/i.test(message)
 }
 
 function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority, recentMatches, recentOpponents }: any) {

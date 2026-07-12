@@ -94,11 +94,14 @@ const syncFootballDataSource = readFileSync(new URL('../supabase/functions/sync-
 const dailyTop10RepositorySource = readFileSync(new URL('../src/repositories/dailyTop10Repository.js', import.meta.url), 'utf8')
 const packageSource = readFileSync(new URL('../package.json', import.meta.url), 'utf8')
 const dailyProductionHealthSource = readFileSync(new URL('./verifyDailyProductionHealth.mjs', import.meta.url), 'utf8')
+const dailyWorkflowSource = readFileSync(new URL('../.github/workflows/daily-football-sync.yml', import.meta.url), 'utf8')
+const atomicMarketLockRepairMigrationSource = readFileSync(new URL('../supabase/migrations/20260713_add_atomic_market_first_top10_repair.sql', import.meta.url), 'utf8')
 const requiredMarketFirstAdminModes = [
   'diagnose-sync-today-odds',
   'build-daily-market-candidates',
   'sync-daily-candidate-odds',
   'finalize-market-ready-candidates',
+  'repair-stale-market-first-top10',
   'sync-daily-top10-odds',
   'strict-api-football-daily-picks',
   'daily-sync-auto',
@@ -215,8 +218,68 @@ assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'OU', market_nam
 assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'MATCH_WINNER', market_name: 'First Half Winner', selection: 'Home', price: 1.9 }), false, 'first-half odds row should be rejected')
 assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over', line: 7.5, price: 1.9 }), false, 'suspicious high O/U line from normalized row line should be rejected')
 const strictMarketFirstSource = extractFunctionSource(syncFootballDataSource, 'strictApiFootballDailyPicksMarketFirst')
+const lowResourceRepairSource = extractFunctionSource(syncFootballDataSource, 'repairStaleMarketFirstTop10LowResource')
+const lowResourceRepairBlock = syncFootballDataSource.slice(
+  syncFootballDataSource.indexOf('async function repairStaleMarketFirstTop10LowResource'),
+  syncFootballDataSource.indexOf('async function strictApiFootballDailyPicksMarketFirst')
+)
+const lowResourceResponseBlock = syncFootballDataSource.slice(
+  syncFootballDataSource.indexOf("if (mode === 'repair-stale-market-first-top10')"),
+  syncFootballDataSource.indexOf('if (isFootballEnrichmentMode(mode))')
+)
 assert.ok(strictMarketFirstSource.includes('compareMarketFirstCandidateItems'), 'marketFirst strict picks should use market-first sorting')
 assert.ok(strictMarketFirstSource.includes('marketFirst invariant failed'), 'marketFirst strict picks should fail if NO_MARKET_DATA is selected while READY candidates exist')
+assert.ok(strictMarketFirstSource.includes('buildPersistedMarketFirstTop10State'), 'marketFirst response should be built from re-queried persisted rows')
+assert.ok(strictMarketFirstSource.includes("if (!(existing.data ?? []).length)"), 'normal marketFirst persistence should only create a lock when none exists')
+assert.ok(strictMarketFirstSource.includes('persistedSelectedFixtureIds: persistedState.selectedFixtureIds'), 'marketFirst response should expose persisted selection identities')
+assert.equal(strictMarketFirstSource.includes('body.repairStaleMarketLock'), false, 'strict marketFirst mode should not parse or execute the heavyweight repair flag')
+assert.equal(strictMarketFirstSource.includes('callAtomicStaleMarketRepair'), false, 'strict marketFirst mode should not call the repair RPC')
+assert.ok(lowResourceRepairSource.includes('body.repairStaleMarketLock !== true'), 'dedicated stale-lock repair should require the explicit repair flag')
+assert.ok(lowResourceRepairSource.includes('fetchLowResourceReadyMarketCandidates'), 'dedicated repair should load only bounded READY candidate metadata')
+assert.ok(lowResourceRepairSource.includes('compareMarketFirstCandidateItems'), 'dedicated repair should reuse the canonical market-first comparator')
+assert.ok(lowResourceRepairSource.includes('buildMarketFirstSelectionScore'), 'dedicated repair should reuse the canonical market-first selection score')
+assert.ok(lowResourceRepairSource.includes('buildAiFinalPickPayloadForMatch(item.match, odds)'), 'dedicated repair should reuse the canonical final-pick builder with preloaded odds')
+assert.ok(lowResourceRepairSource.includes('callAtomicStaleMarketRepair'), 'dedicated repair should call the atomic RPC exactly once')
+assert.equal((lowResourceRepairSource.match(/callAtomicStaleMarketRepair/g) ?? []).length, 1, 'dedicated repair should contain exactly one atomic RPC call site')
+assert.ok(lowResourceRepairSource.includes('assertAtomicRepairPayloads(finalPicks, selections)'), 'dedicated repair should validate exactly 10 selections and final picks before RPC')
+assert.ok(lowResourceRepairSource.includes('expectedPreviousMatchIds'), 'dedicated repair should pass the exact sorted previous match IDs to RPC')
+assert.ok(lowResourceRepairSource.includes('fetchLowResourceLockedTop10(selectionDate)'), 'dedicated repair response should re-query persisted Top10 rows')
+assert.ok(lowResourceRepairBlock.includes(".from('football_ai_final_picks')") && lowResourceRepairBlock.includes('.limit(staleMarketRepairSelectionCount)'), 'dedicated repair should verify final-pick coverage with a bounded 10-row query')
+assert.ok(lowResourceRepairBlock.includes(".eq('is_latest', true)"), 'dedicated repair should query latest odds only')
+assert.ok(lowResourceRepairBlock.includes(".eq('market_focus', marketFocus)") && lowResourceRepairBlock.includes("(['AH', 'OU', 'MATCH_WINNER'] as Array<SupportedRepairMarketFocus>)"), 'dedicated repair should query supported full-time markets independently')
+assert.equal(lowResourceRepairBlock.includes("snapshot_at, raw'"), false, 'dedicated repair odds query should not load raw odds payloads')
+assert.ok(lowResourceRepairBlock.includes('staleMarketRepairReadyCandidateLimit = 15') || syncFootballDataSource.includes('const staleMarketRepairReadyCandidateLimit = 15'), 'dedicated repair should cap READY candidates at 15')
+assert.ok(syncFootballDataSource.includes('const staleMarketRepairOddsRowLimit = 800'), 'dedicated repair should hard-cap compact latest supported odds rows at 800')
+assert.ok(syncFootballDataSource.includes('const staleMarketRepairOddsRowsPerMarketLimit = 20'), 'dedicated repair should hard-cap final-pick odds rows per selected market')
+assert.ok(lowResourceRepairBlock.includes('fetchLowResourceRequiredMarketProbes(readyMatchIds)'), 'canonical ordering should use deterministic AH/OU/MATCH_WINNER probes per READY candidate')
+assert.ok(lowResourceRepairBlock.includes('fetchLowResourceMarketOddsProbe') && lowResourceRepairBlock.includes('.limit(1)'), 'market availability probes should use market-specific limit 1 queries')
+assert.equal(lowResourceRepairBlock.includes('.limit(5)'), false, 'market availability must not rely on a generic five-row odds sample')
+assert.ok(lowResourceRepairSource.includes('fetchLowResourceLatestSupportedOdds(selectedMatchIds)'), 'full latest supported odds should be loaded only after the canonical 10 are selected')
+assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairOddsRowsPerMarketLimit)'), 'selected final-pick inputs should load bounded AH, OU, and Match Winner rows independently')
+assert.equal(lowResourceRepairBlock.includes('trackedApiFootballGet'), false, 'dedicated repair must not call API-Football')
+assert.equal(lowResourceRepairBlock.includes('syncOddsForMatch'), false, 'dedicated repair must not invoke provider odds sync')
+assert.equal(lowResourceRepairBlock.includes('fetchDailyMarketCandidateTargets'), false, 'dedicated repair must not load the full dynamic candidate target pool')
+assert.equal(lowResourceRepairBlock.includes('fetchStoredOddsByMatchIds'), false, 'dedicated repair must not load historical/general odds collections')
+assert.ok(syncFootballDataSource.includes("if (mode === 'repair-stale-market-first-top10')"), 'dedicated repair should bypass the heavyweight enrichment response path')
+assert.ok(syncFootballDataSource.includes('previousSelectedFixtureIds: result.previousSelectedFixtureIds') && syncFootballDataSource.includes('persistedSelectedFixtureIds: result.persistedSelectedFixtureIds'), 'dedicated response should expose only bounded previous and persisted fixture arrays')
+for (const forbiddenResponseField of ['endpointCoverage', 'candidateWithoutOdds', 'selectedMatches', 'topSelections', 'details']) {
+  assert.equal(lowResourceResponseBlock.includes(forbiddenResponseField), false, `dedicated repair response should not include ${forbiddenResponseField}`)
+}
+assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairSelectionCount + 1)'), 'persisted Top10 reads should be capped at 11 rows')
+assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairReadyCandidateLimit)'), 'READY candidate and match reads should use the hard limit')
+assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairOddsRowsPerMarketLimit)'), 'selected odds reads should use a hard per-market limit')
+assert.equal(lowResourceRepairBlock.includes('for (let from ='), false, 'dedicated repair should not auto-page odds queries')
+assert.ok(atomicMarketLockRepairMigrationSource.includes('repair_stale_market_first_top10'), 'atomic stale market lock repair RPC migration should exist')
+assert.ok(atomicMarketLockRepairMigrationSource.includes("coalesce(auth.role(), '') <> 'service_role'"), 'atomic repair RPC should reject non-service-role callers')
+assert.ok(atomicMarketLockRepairMigrationSource.includes('for update'), 'atomic repair RPC should lock the existing Top10 before replacement')
+assert.ok(atomicMarketLockRepairMigrationSource.includes("v_existing_with_odds >= 10"), 'atomic repair RPC should preserve a valid existing market-ready lock')
+assert.ok(atomicMarketLockRepairMigrationSource.includes("market_readiness_status = 'READY'"), 'atomic repair RPC should accept READY candidates only')
+assert.ok(atomicMarketLockRepairMigrationSource.includes("bool_or(odds.market_focus = 'AH')") && atomicMarketLockRepairMigrationSource.includes("bool_or(odds.market_focus = 'OU')") && atomicMarketLockRepairMigrationSource.includes("bool_or(odds.market_focus = 'MATCH_WINNER')"), 'atomic repair RPC should require all supported full-time markets')
+assert.ok(atomicMarketLockRepairMigrationSource.includes('delete from public.daily_top10_selections') && atomicMarketLockRepairMigrationSource.includes('insert into public.daily_top10_selections'), 'atomic repair RPC should replace the lock inside one database function transaction')
+assert.ok(atomicMarketLockRepairMigrationSource.includes('v_persisted_pick_count <> 10'), 'atomic repair RPC should rollback when AI final pick coverage is incomplete')
+assert.ok(dailyWorkflowSource.includes('marketFirstPicks.staleMarketLockRepairEligible === true'), 'workflow should enable repair only after persisted health reports an eligible stale lock')
+assert.ok(dailyWorkflowSource.includes("mode: 'repair-stale-market-first-top10'"), 'workflow should invoke the dedicated low-resource repair mode')
+assert.ok(dailyWorkflowSource.includes('repairStaleMarketLock: true'), 'workflow should pass the explicit stale-lock repair flag')
 assert.ok(syncFootballDataSource.includes("if (status === 'NO_MARKET_DATA') score = Math.min(score, 59)"), 'NO_MARKET_DATA final selection score should be capped below READY candidates')
 assert.ok(syncFootballDataSource.includes('if (!odds.length) score = Math.min(score, 60)'), 'fixture-only confidence should remain capped at 60')
 assert.ok(syncFootballDataSource.includes('isUnsupportedMainOddsMarketText'), 'main AH/O-U logic should reject unsupported non-full-time markets')
@@ -258,6 +321,87 @@ assert.deepEqual(idempotentCandidateSync.second.processedFixtureIds, [], 'second
 assert.equal(idempotentCandidateSync.second.readyCandidateCount, 1, 'second identical call should preserve READY count')
 assert.equal(idempotentCandidateSync.usedMatchId, 'canonical-match-1568101', 'duplicate api_fixture_id rows must not redirect odds away from candidate.match_id')
 assert.throws(() => simulateExactCandidateUpdate([], { candidateId: 'missing', matchId: 'canonical-match-1568101' }), /expected 1 row but affected 0/, 'zero-row candidate update should fail loudly')
+const staleLockedTop10 = Array.from({ length: 10 }, (_, index) => ({
+  matchId: `old-${index + 1}`,
+  fixtureId: 100 + index,
+  rank: index + 1,
+  hasOdds: index < 9,
+  aiFinalPickId: `old-pick-${index + 1}`,
+  lockedAt: '2026-07-11T07:30:00.000Z',
+}))
+const readyMarketPool = Array.from({ length: 13 }, (_, index) => ({
+  matchId: `ready-${index + 1}`,
+  fixtureId: 200 + index,
+  status: 'READY',
+  hasAh: true,
+  hasOu: true,
+  hasMatchWinner: true,
+  oddsSyncedAt: '2026-07-11T11:10:00.000Z',
+}))
+const preservedStaleLock = simulateStaleMarketLockRepair(staleLockedTop10, readyMarketPool, { repairStaleMarketLock: false })
+assert.equal(preservedStaleLock.changed, false, 'normal call without repair flag should preserve a stale locked Top10')
+assert.deepEqual(preservedStaleLock.persistedRows.map((row) => row.matchId), staleLockedTop10.map((row) => row.matchId), 'normal response should reflect the unchanged persisted lock')
+const repairedStaleLock = simulateStaleMarketLockRepair(staleLockedTop10, readyMarketPool, { repairStaleMarketLock: true })
+assert.equal(repairedStaleLock.changed, true, 'explicit repair should replace an eligible 9/10 stale lock when 13 READY candidates exist')
+const lowResourceRpcPayload = simulateLowResourceRepairRpcPayload(staleLockedTop10, readyMarketPool.slice(0, 10))
+assert.equal(lowResourceRpcPayload.p_selections.length, 10, 'dedicated repair RPC should receive exactly 10 selections')
+assert.equal(lowResourceRpcPayload.p_final_picks.length, 10, 'dedicated repair RPC should receive exactly 10 final picks')
+assert.deepEqual(lowResourceRpcPayload.p_expected_previous_match_ids, staleLockedTop10.map((row) => row.matchId).sort(), 'dedicated repair RPC should receive the exact sorted previous match IDs')
+const fixtureWithLateAhRows = [
+  ...Array.from({ length: 300 }, (_, index) => ({ id: `ou-${index}`, match_id: 'late-ah', market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over 2.5', line: 2.5, price: 1.85, is_latest: true })),
+  ...Array.from({ length: 108 }, (_, index) => ({ id: `mw-${index}`, match_id: 'late-ah', market_focus: 'MATCH_WINNER', market_name: 'Match Winner', selection: index % 2 ? 'Home' : 'Away', price: 2.1, is_latest: true })),
+  { id: 'ah-late', match_id: 'late-ah', market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.25', line: -0.25, price: 1.92, is_latest: true },
+]
+assert.equal(fixtureWithLateAhRows.length, 409, 'fixture sample should model a 409-row latest odds set')
+assert.equal(simulateGenericFiveRowMarketProbe(fixtureWithLateAhRows, 'AH'), false, 'generic first-five sampling can miss a valid AH row')
+assert.equal(simulateDeterministicMarketProbe(fixtureWithLateAhRows, 'AH'), true, 'market-specific AH query should find a valid AH row after duplicated OU/MW rows')
+const duplicatedOuCannotHideAhRows = [
+  ...Array.from({ length: 50 }, (_, index) => ({ id: `dup-ou-${index}`, match_id: 'dup-ou', market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over 2.5', line: 2.5, price: 1.85, is_latest: true })),
+  { id: 'dup-ah', match_id: 'dup-ou', market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Away +0.5', line: 0.5, price: 1.9, is_latest: true },
+]
+assert.equal(simulateDeterministicMarketProbe(duplicatedOuCannotHideAhRows, 'AH'), true, 'duplicated OU rows must not consume the AH market probe limit')
+const marketProbeReadyPool = Array.from({ length: 11 }, (_, index) => ({
+  matchId: index === 0 ? 'late-ah' : `probe-ready-${index + 1}`,
+  fixtureId: index === 0 ? 1522141 : 300 + index,
+  candidateRank: index + 1,
+  status: 'READY',
+  hasAh: true,
+  hasOu: true,
+  hasMatchWinner: true,
+}))
+const oddsByProbeMatch = new Map(marketProbeReadyPool.map((row, index) => {
+  if (row.matchId === 'late-ah') return [row.matchId, fixtureWithLateAhRows]
+  if (index === 2) return [row.matchId, [
+    { id: `${row.matchId}-ou`, match_id: row.matchId, market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Under 2.5', line: 2.5, price: 1.83, is_latest: true },
+    { id: `${row.matchId}-mw`, match_id: row.matchId, market_focus: 'MATCH_WINNER', market_name: 'Match Winner', selection: 'Home', price: 2.05, is_latest: true },
+  ]]
+  return [row.matchId, [
+    { id: `${row.matchId}-ah`, match_id: row.matchId, market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.25', line: -0.25, price: 1.92, is_latest: true },
+    { id: `${row.matchId}-ou`, match_id: row.matchId, market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over 2.5', line: 2.5, price: 1.86, is_latest: true },
+    { id: `${row.matchId}-mw`, match_id: row.matchId, market_focus: 'MATCH_WINNER', market_name: 'Match Winner', selection: 'Away', price: 2.2, is_latest: true },
+    { id: `${row.matchId}-old-ah`, match_id: row.matchId, market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.5', line: -0.5, price: 1.91, is_latest: false },
+  ]]
+}))
+const deterministicRepairSelection = simulateDeterministicMarketRepairSelection(staleLockedTop10, marketProbeReadyPool, oddsByProbeMatch)
+assert.equal(deterministicRepairSelection.selectedRows.length, 10, 'repair should require exactly 10 fully market-verified selections before RPC')
+assert.equal(deterministicRepairSelection.selectedRows.some((row) => row.matchId === 'probe-ready-3'), false, 'truly missing AH candidate should be skipped')
+assert.equal(deterministicRepairSelection.selectedRows.some((row) => row.matchId === 'probe-ready-11'), true, 'next READY candidate should replace a skipped missing-AH candidate')
+assert.equal(deterministicRepairSelection.warnings.length, 1, 'skipped missing-market candidate should add a bounded warning')
+assert.equal(deterministicRepairSelection.rpcPayload.p_selections.length, 10, 'RPC should still receive exactly 10 selections after replacement')
+assert.equal(deterministicRepairSelection.rpcPayload.p_final_picks.length, 10, 'RPC should still receive exactly 10 final picks after replacement')
+assert.equal(repairedStaleLock.persistedRows.length, 10, 'repair should persist exactly 10 rows')
+assert.equal(new Set(repairedStaleLock.persistedRows.map((row) => row.matchId)).size, 10, 'repair should prevent duplicate selected matches')
+assert.deepEqual(repairedStaleLock.persistedRows.map((row) => row.rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'repair should persist unique ranks 1-10')
+assert.equal(repairedStaleLock.persistedRows.filter((row) => row.aiFinalPickId).length, 10, 'repair should produce AI final pick coverage 10/10')
+assert.deepEqual(repairedStaleLock.response.persistedSelectedFixtureIds, repairedStaleLock.persistedRows.map((row) => row.fixtureId), 'repair response should match re-queried persisted rows')
+assert.deepEqual(repairedStaleLock.response.top10WithoutOdds, [], 'repaired READY-only Top10 should have no fixtures without odds')
+assert.ok(JSON.stringify(repairedStaleLock.response).length < 4096, 'dedicated repair response should remain bounded and small')
+const idempotentLockRepair = simulateStaleMarketLockRepair(repairedStaleLock.persistedRows, readyMarketPool, { repairStaleMarketLock: true })
+assert.equal(idempotentLockRepair.changed, false, 'second repair call should be idempotent')
+assert.deepEqual(idempotentLockRepair.persistedRows, repairedStaleLock.persistedRows, 'second repair call should make no persisted changes')
+const validDifferentLock = staleLockedTop10.map((row) => ({ ...row, hasOdds: true }))
+assert.equal(simulateStaleMarketLockRepair(validDifferentLock, readyMarketPool, { repairStaleMarketLock: true }).changed, false, 'valid market-ready lock must not be replaced unnecessarily')
+assert.equal(simulateSharedAdminAuth({ mode: 'repair-stale-market-first-top10', body: { repairStaleMarketLock: true }, apiKey: 'sb_publishable_anon', configuredSecrets: ['sb_secret_result_admin'] }), false, 'anon/publishable caller cannot invoke stale market lock repair')
 assert.deepEqual(sortMarketFirstSamples([{ id: 'no', status: 'NO_MARKET_DATA', score: 99 }, { id: 'ready', status: 'READY', score: 50 }]), ['ready', 'no'], 'READY candidates must rank before NO_MARKET_DATA candidates')
 assert.equal(capMarketFirstSampleScore({ status: 'NO_MARKET_DATA', score: 99, hasOdds: false }), 59, 'NO_MARKET_DATA cannot outrank READY through raw score')
 assert.equal(capMarketFirstSampleScore({ status: 'READY', score: 75, hasOdds: true }), 75, 'READY candidates can keep supported market score')
@@ -1939,6 +2083,90 @@ function simulateExactCandidateUpdate(rows, identity) {
   const updated = rows.filter((row) => row.candidateId === identity.candidateId && row.matchId === identity.matchId)
   if (updated.length !== 1) throw new Error(`daily_market_candidates update expected 1 row but affected ${updated.length}`)
   return updated[0]
+}
+
+function simulateStaleMarketLockRepair(existingRows, readyPool, { repairStaleMarketLock = false } = {}) {
+  const readyCandidates = readyPool.filter((row) => row.status === 'READY' && row.hasAh && row.hasOu && row.hasMatchWinner)
+  const existingWithOdds = existingRows.filter((row) => row.hasOdds).length
+  const latestLockAt = Math.max(...existingRows.map((row) => new Date(row.lockedAt).getTime()))
+  const latestReadyAt = Math.max(...readyCandidates.map((row) => new Date(row.oddsSyncedAt).getTime()))
+  const uniqueExistingMatches = new Set(existingRows.map((row) => row.matchId)).size === existingRows.length
+  const uniqueExistingRanks = new Set(existingRows.map((row) => row.rank)).size === existingRows.length
+  const eligible = existingRows.length === 10 && readyCandidates.length >= 10 && existingWithOdds < 10 && latestLockAt < latestReadyAt && uniqueExistingMatches && uniqueExistingRanks
+  let persistedRows = existingRows.map((row) => ({ ...row }))
+  let changed = false
+  if (repairStaleMarketLock && eligible) {
+    persistedRows = readyCandidates.slice(0, 10).map((row, index) => ({
+      ...row,
+      rank: index + 1,
+      hasOdds: true,
+      aiFinalPickId: `pick-${row.matchId}`,
+      lockedAt: row.oddsSyncedAt,
+    }))
+    changed = true
+  }
+  const persistedSelectedFixtureIds = persistedRows.map((row) => row.fixtureId)
+  return {
+    changed,
+    eligible,
+    persistedRows,
+    response: {
+      persistedSelectedFixtureIds,
+      selectedFixtureIds: persistedSelectedFixtureIds,
+      top10WithOdds: persistedRows.filter((row) => row.hasOdds).map((row) => row.fixtureId),
+      top10WithoutOdds: persistedRows.filter((row) => !row.hasOdds).map((row) => row.fixtureId),
+      aiFinalPickCoverage: persistedRows.filter((row) => row.aiFinalPickId).length,
+    },
+  }
+}
+
+function simulateLowResourceRepairRpcPayload(existingRows, selectedRows) {
+  return {
+    p_selection_date: '2026-07-11',
+    p_expected_previous_match_ids: existingRows.map((row) => row.matchId).filter(Boolean).sort(),
+    p_selections: selectedRows.map((row, index) => ({ match_id: row.matchId, api_fixture_id: row.fixtureId, rank: index + 1, selection_score: 100 - index })),
+    p_final_picks: selectedRows.map((row) => ({ match_id: row.matchId, api_fixture_id: row.fixtureId, signal: 'WATCH', market_focus: 'AH', risk_level: 'MEDIUM' })),
+  }
+}
+
+function simulateGenericFiveRowMarketProbe(rows, marketFocus) {
+  return rows
+    .slice(0, 5)
+    .filter((row) => row.is_latest !== false && Number(row.price ?? 0) > 0)
+    .filter(simulateIsSupportedFullTimeOddsRow)
+    .some((row) => simulateNormalizeMarketFocus(row.market_focus ?? row.market_name) === marketFocus)
+}
+
+function simulateDeterministicMarketProbe(rows, marketFocus) {
+  return rows
+    .filter((row) => row.is_latest !== false && Number(row.price ?? 0) > 0)
+    .filter((row) => simulateNormalizeMarketFocus(row.market_focus ?? row.market_name) === marketFocus)
+    .filter(simulateIsSupportedFullTimeOddsRow)
+    .slice(0, 1)
+    .length === 1
+}
+
+function simulateDeterministicMarketRepairSelection(existingRows, readyPool, oddsByMatchId) {
+  const warnings = []
+  const selectedRows = []
+  for (const candidate of [...readyPool].sort((a, b) => a.candidateRank - b.candidateRank)) {
+    const rows = oddsByMatchId.get(candidate.matchId) ?? []
+    const hasAh = simulateDeterministicMarketProbe(rows, 'AH')
+    const hasOu = simulateDeterministicMarketProbe(rows, 'OU')
+    const hasMatchWinner = simulateDeterministicMarketProbe(rows, 'MATCH_WINNER')
+    if (!(hasAh && hasOu && hasMatchWinner)) {
+      if (warnings.length < 5) warnings.push({ matchId: candidate.matchId, hasAh, hasOu, hasMatchWinner })
+      continue
+    }
+    selectedRows.push(candidate)
+    if (selectedRows.length === 10) break
+  }
+  if (selectedRows.length !== 10) throw new Error(`expected 10 verified selections but got ${selectedRows.length}`)
+  return {
+    selectedRows,
+    warnings,
+    rpcPayload: simulateLowResourceRepairRpcPayload(existingRows, selectedRows),
+  }
 }
 
 function sortMarketFirstSamples(rows) {
