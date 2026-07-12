@@ -158,8 +158,8 @@ const optionalV2Checks = [
     },
   },
   {
-    label: 'top pick final_rank outside 1-10',
-    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('is_top_pick', true).or('final_rank.lt.1,final_rank.gt.10'),
+    label: 'decision rank below 1',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('is_top_pick', true).lt('final_rank', 1),
   },
 ]
 
@@ -235,11 +235,11 @@ const optionalProfessionalChecks = [
     query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('value_edge_score.lt.0,value_edge_score.gt.100'),
   },
   {
-    label: 'top 10 missing professional score',
+    label: 'decision board analysis missing professional score',
     query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('is_top_pick', true).is('professional_score', null),
   },
   {
-    label: 'daily top10 locked missing professional score',
+    label: 'persisted decision board missing professional score',
     query: checkDailyTop10LockedProfessionalScore,
   },
   {
@@ -283,7 +283,7 @@ const footballEnrichmentChecks = [
     query: () => supabase.from('api_football_enrichment_sync_log').select('id', { count: 'exact', head: true }).eq('status', 'error').gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
   },
   {
-    label: 'top 10 fixture enrichment rows',
+    label: 'decision board fixture enrichment rows',
     query: checkTopFixtureEnrichment,
   },
   {
@@ -397,7 +397,7 @@ for (const check of footballEnrichmentChecks) {
 
   if (warning) console.warn(`${check.label}: ${warning}`)
   else console.log(`${check.label}: ${count ?? 0}`)
-  if ((count ?? 0) > 0 && check.label !== 'top 10 fixture enrichment rows' && !check.label.startsWith('enrichment table ')) failed = true
+  if ((count ?? 0) > 0 && check.label !== 'decision board fixture enrichment rows' && !check.label.startsWith('enrichment table ')) failed = true
 }
 
 if (failed) {
@@ -481,7 +481,7 @@ async function runLinkedCliVerification() {
       count(*) filter (where is_top_pick is true and recommendation not in ('BET', 'LEAN', 'WATCH', 'NO BET')) as "invalid top pick recommendation",
       (select count(*) from duplicate_final_pick_days) as "duplicate final pick per day",
       (select count(*) from duplicate_rank_days) as "duplicate final_rank per day",
-      count(*) filter (where is_top_pick is true and (final_rank < 1 or final_rank > 10)) as "top pick final_rank outside 1-10",
+      count(*) filter (where is_top_pick is true and final_rank < 1) as "decision rank below 1",
       (select count(*) from enrichment_tables where to_regclass('public.' || name) is null) as "missing enrichment tables"
     from base;
   `
@@ -584,7 +584,7 @@ async function checkTopFixtureEnrichment() {
   const fixtureIds = (matches ?? [])
     .map((item) => item.football_matches?.api_sports_fixture_id)
     .filter(Boolean)
-  if (!fixtureIds.length) return { count: 0, warning: 'no top 10 API-FOOTBALL fixtures available yet' }
+  if (!fixtureIds.length) return { count: 0, warning: 'no decision board API-FOOTBALL fixtures available yet' }
 
   const tables = ['api_football_fixture_statistics', 'api_football_fixture_events', 'api_football_fixture_lineups', 'api_football_fixture_players']
   let enrichedRows = 0
@@ -596,7 +596,7 @@ async function checkTopFixtureEnrichment() {
     }
     enrichedRows += count ?? 0
   }
-  return enrichedRows > 0 ? { count: 0 } : { count: 0, warning: 'top 10 exists, but enrichment rows are still empty' }
+  return enrichedRows > 0 ? { count: 0 } : { count: 0, warning: 'decision board exists, but enrichment rows are still empty' }
 }
 
 async function checkTodayDataCoverage() {

@@ -1,7 +1,7 @@
 import { calculateSoftRanking, dailySelectionConfig, DAILY_SELECTION_ALGORITHM_VERSION } from './dailySelectionEngine.js'
 import { getBangkokSelectionWindow } from './bangkokDateRange.js'
 
-export const HYBRID_DAILY_PIPELINE_VERSION = 'hybrid-daily-pipeline-v1'
+export const HYBRID_DAILY_PIPELINE_VERSION = 'market-ready-dynamic-pipeline-v1'
 
 export const hybridDailyPipelinePhases = Object.freeze([
   'OPEN_DAY',
@@ -9,12 +9,14 @@ export const hybridDailyPipelinePhases = Object.freeze([
   'BASE_ENRICHMENT',
   'PRE_RANKING',
   'CANDIDATE_POOL_READY',
-  'CANDIDATE_MARKET_SYNC',
+  'MARKET_AVAILABILITY_SCAN',
+  'CANDIDATE_EXPANSION',
   'MARKET_RECONCILIATION',
-  'FINAL_RANKING',
-  'PRELIMINARY_TOP10',
-  'TOP10_LOCKED',
+  'DEEP_ANALYSIS',
+  'DECISION_CLASSIFICATION',
+  'DECISION_BOARD_READY',
   'NEAR_KICKOFF_REFRESH',
+  'FINAL_LOCK',
   'RESULT_REFRESH',
   'RESULT_SETTLEMENT',
   'COMPLETE',
@@ -24,10 +26,11 @@ export const hybridDailySchedule = Object.freeze([
   { localTime: '00:20', phase: 'OPEN_DAY', modes: ['daily-sync-auto'] },
   { localTime: '04:00', phase: 'BASE_ENRICHMENT', modes: ['daily-sync-auto'] },
   { localTime: '05:30', phase: 'PRE_RANKING', modes: ['build-daily-market-candidates'] },
-  { localTime: '06:00', phase: 'CANDIDATE_MARKET_SYNC', modes: ['sync-daily-candidate-odds', 'finalize-market-ready-candidates'] },
+  { localTime: '06:00', phase: 'MARKET_AVAILABILITY_SCAN', modes: ['sync-daily-candidate-odds', 'finalize-market-ready-candidates'] },
   { localTime: '09:30', phase: 'MARKET_RECONCILIATION', modes: ['sync-daily-candidate-odds', 'finalize-market-ready-candidates'] },
-  { localTime: '*/15', phase: 'TOP10_LOCKED', modes: ['lock-daily-top10', 'get-daily-top10-status'] },
+  { localTime: '*/15', phase: 'DECISION_BOARD_READY', modes: ['lock-daily-top10', 'get-daily-top10-status'] },
   { localTime: '*/15', phase: 'NEAR_KICKOFF_REFRESH', modes: ['sync-daily-top10-odds', 'refresh-locked-top10-signals'] },
+  { localTime: '*/15', phase: 'FINAL_LOCK', modes: ['refresh-locked-top10-signals'] },
   { localTime: '*/15', phase: 'RESULT_REFRESH', modes: ['sync-completed-fixtures'] },
   { localTime: '*/15', phase: 'RESULT_SETTLEMENT', modes: ['settle-ai-pick-results'] },
 ])
@@ -68,18 +71,18 @@ export function getHybridPhaseForDailySyncPhase(phase) {
   if (phase === 'fixture-enrichment') return 'BASE_ENRICHMENT'
   if (phase === 'team-enrichment') return 'BASE_ENRICHMENT'
   if (phase === 'league-enrichment') return 'BASE_ENRICHMENT'
-  if (phase === 'odds-sync') return 'CANDIDATE_MARKET_SYNC'
-  if (phase === 'ranking') return 'FINAL_RANKING'
+  if (phase === 'odds-sync') return 'MARKET_AVAILABILITY_SCAN'
+  if (phase === 'ranking') return 'DECISION_CLASSIFICATION'
   return 'OPEN_DAY'
 }
 
 export function getHybridPhaseForMode(mode) {
   if (mode === 'daily-sync-auto' || mode === 'daily-sync-start' || mode === 'daily-sync-next') return 'FIXTURE_DISCOVERY'
   if (mode === 'build-daily-market-candidates') return 'CANDIDATE_POOL_READY'
-  if (mode === 'sync-daily-candidate-odds') return 'CANDIDATE_MARKET_SYNC'
+  if (mode === 'sync-daily-candidate-odds') return 'MARKET_AVAILABILITY_SCAN'
   if (mode === 'finalize-market-ready-candidates') return 'MARKET_RECONCILIATION'
-  if (mode === 'strict-api-football-daily-picks') return 'PRELIMINARY_TOP10'
-  if (mode === 'lock-daily-top10' || mode === 'get-daily-top10-status') return 'TOP10_LOCKED'
+  if (mode === 'strict-api-football-daily-picks') return 'DECISION_CLASSIFICATION'
+  if (mode === 'lock-daily-top10' || mode === 'get-daily-top10-status') return 'DECISION_BOARD_READY'
   if (mode === 'sync-daily-top10-odds' || mode === 'refresh-locked-top10-signals') return 'NEAR_KICKOFF_REFRESH'
   if (mode === 'sync-completed-fixtures' || mode === 'result-refresh') return 'RESULT_REFRESH'
   if (mode === 'settle-ai-pick-results' || mode === 'settle-ai-pick-results-date') return 'RESULT_SETTLEMENT'
@@ -112,8 +115,11 @@ export function calculatePreRankingScore(match = {}, options = {}) {
 }
 
 export function buildHybridCandidatePool(matches = [], options = {}) {
-  const requestedLimit = Number(options.limit ?? 50)
-  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(Math.floor(requestedLimit), 50)) : 50
+  const coreTarget = positiveInteger(options.coreTarget, dailySelectionConfig.coreTarget)
+  const expansionStep = positiveInteger(options.expansionStep, dailySelectionConfig.expansionStep)
+  const maxCandidates = positiveInteger(options.maxCandidates ?? options.limit, dailySelectionConfig.maxCandidates)
+  const requestedLimit = Number(options.limit ?? maxCandidates)
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(Math.floor(requestedLimit), maxCandidates)) : maxCandidates
   const selectionDate = options.selectionDate ?? getBangkokSelectionWindow(options.now ?? new Date()).selectionDate
   const seenFixtureIds = new Set()
   const candidates = (matches ?? [])
@@ -132,7 +138,7 @@ export function buildHybridCandidatePool(matches = [], options = {}) {
     .map((item, index) => ({
       ...item,
       candidateRank: index + 1,
-      candidateTier: index < 30 ? 'CORE' : 'RESERVE',
+      candidateTier: index < coreTarget ? 'CORE' : index < coreTarget + expansionStep ? 'EXPANDED' : 'RESERVE',
     }))
 
   return {
@@ -140,9 +146,13 @@ export function buildHybridCandidatePool(matches = [], options = {}) {
     selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
     selectionDate,
     limit,
+    coreTarget,
+    expansionStep,
+    maxCandidates,
     candidates,
     candidatePoolCount: candidates.length,
     candidateCoreCount: candidates.filter((item) => item.candidateTier === 'CORE').length,
+    candidateExpandedCount: candidates.filter((item) => item.candidateTier === 'EXPANDED').length,
     candidateReserveCount: candidates.filter((item) => item.candidateTier === 'RESERVE').length,
   }
 }
@@ -214,4 +224,9 @@ function getBangkokLocalParts(date) {
 
 function localDateTimeToUtcIso(dateKey, timeText) {
   return new Date(`${dateKey}T${timeText}:00+07:00`).toISOString()
+}
+
+function positiveInteger(value, fallback) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback
 }

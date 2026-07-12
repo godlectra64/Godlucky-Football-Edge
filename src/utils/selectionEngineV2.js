@@ -25,7 +25,7 @@ export const selectionPriorityTiers = {
 export function buildUsableDailySelection(matches = [], options = {}) {
   const now = normalizeDate(options.now)
   const selectionDate = options.selectionDate ?? getBangkokDateKey(now)
-  const limit = positiveNumber(options.limit, 10)
+  const limit = positiveNumber(options.limit ?? options.maxCandidates, 60)
   const rows = (Array.isArray(matches) ? matches : []).map((match) => buildSelectionCandidate(match, now))
   const dateRows = rows.filter((row) => getBangkokDateKey(row.match.kickoffAt ?? row.match.kickoff_at) === selectionDate)
   const playableRows = dateRows.filter((row) => row.playable)
@@ -55,6 +55,9 @@ export function buildUsableDailySelection(matches = [], options = {}) {
         hardFilter: selectionRow.hardFilter,
         softRanking: selectionRow.softRanking,
         selectionStatus: selectionRow.selectionStatus,
+        decisionStatus: selectionRow.decisionStatus,
+        decisionRank: selectionRow.decisionRank,
+        decisionAudit: selectionRow.decision,
         selectionTier: selectionRow.tier,
         statusGroup: row.statusGroup,
         decision: row.unified.decision,
@@ -66,18 +69,18 @@ export function buildUsableDailySelection(matches = [], options = {}) {
       },
       displayRank: index + 1,
       display_rank: index + 1,
-      finalRank: index + 1,
-      final_rank: index + 1,
-      rank: index + 1,
-      aiPickRank: index + 1,
-      ai_pick_rank: index + 1,
-      aiPickLabel: `AI PICK #${index + 1}`,
-      ai_pick_label: `AI PICK #${index + 1}`,
+      finalRank: selectionRow.decisionRank ?? null,
+      final_rank: selectionRow.decisionRank ?? null,
+      rank: selectionRow.decisionRank ?? null,
+      aiPickRank: selectionRow.decisionRank ?? null,
+      ai_pick_rank: selectionRow.decisionRank ?? null,
+      aiPickLabel: selectionRow.decisionRank ? `AI PICK #${selectionRow.decisionRank}` : statusLabel(selectionRow.decisionStatus),
+      ai_pick_label: selectionRow.decisionRank ? `AI PICK #${selectionRow.decisionRank}` : statusLabel(selectionRow.decisionStatus),
     }))
 
-  const readySelectedCount = selected.filter((match) => match.selectionV2?.decision === 'BET').length
-  const waitingSelectedCount = selected.filter((match) => match.selectionV2?.selectionStatus === 'SELECTED_WAITING_MARKET' || match.selectionV2?.status === 'WAITING_MARKET').length
-  const marketReadyCandidates = playableRows.filter((row) => row.unified.decision === 'BET' || row.unified.decision === 'LEAN').length
+  const readySelectedCount = selected.filter((match) => match.selectionV2?.decisionStatus === 'READY').length
+  const waitingSelectedCount = selected.filter((match) => match.selectionV2?.decisionStatus === 'WAITING_MARKET').length
+  const marketReadyCandidates = playableRows.filter((row) => row.marketReadiness !== marketReadinessGroups.waiting).length
   const waitingMarketCandidates = playableRows.filter((row) => row.unified.status === 'WAITING_MARKET').length
 
   return {
@@ -102,6 +105,17 @@ export function buildUsableDailySelection(matches = [], options = {}) {
     primarySelected: dailySelection.summary.primarySelected,
     secondarySelected: dailySelection.summary.secondarySelected,
     fallbackSelected: dailySelection.summary.fallbackSelected,
+    readyCount: dailySelection.summary.readyCount,
+    watchCount: dailySelection.summary.watchCount,
+    waitingMarketCount: dailySelection.summary.waitingMarketCount,
+    rejectedCount: dailySelection.summary.rejectedCount,
+    coreCandidates: dailySelection.summary.coreCandidates,
+    expandedCandidates: dailySelection.summary.expandedCandidates,
+    marketProbedCandidates: dailySelection.summary.marketProbedCandidates,
+    expansionSteps: dailySelection.summary.expansionSteps,
+    expansionStopReason: dailySelection.summary.expansionStopReason,
+    pipelineVersion: dailySelection.pipelineVersion,
+    selectionAlgorithmVersion: dailySelection.algorithmVersion,
     readySelectedCount,
     waitingSelectedCount,
     displayedSignalCount: selected.filter((match) => ['STRONG_SIGNAL', 'WATCH'].includes(getSignal(match))).length,
@@ -117,6 +131,12 @@ export function buildUsableDailySelection(matches = [], options = {}) {
     }),
     nextSyncSuggestion: marketReadyCandidates > 0 ? 'refresh_display_order' : 'sync_odds_then_reselect',
   }
+}
+
+function statusLabel(status) {
+  if (status === 'WATCH') return 'WATCH'
+  if (status === 'WAITING_MARKET') return 'รอราคา'
+  return 'ไม่เข้าเกณฑ์'
 }
 
 export function buildStrictDailyApiFootballSelection(matches = [], options = {}) {

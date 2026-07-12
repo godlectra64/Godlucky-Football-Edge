@@ -56,8 +56,8 @@ assert.equal(writeFailureCompletion.retryable, true)
 assert.equal(writeFailureCompletion.retryReasonCode, 'DATABASE_WRITE_FAILED')
 
 const noOddsSelection = selectDailyTop10(createCandidates(12, { odds: [] }), { selectionDate })
-assert.equal(noOddsSelection.selected.length, 10)
-assert.ok(noOddsSelection.selected.every((row) => row.selectionStatus === 'SELECTED_WAITING_MARKET'))
+assert.equal(noOddsSelection.selected.length, 12)
+assert.ok(noOddsSelection.selected.every((row) => row.selectionStatus === 'WAITING_MARKET'))
 assert.ok(noOddsSelection.selected.every((row) => row.softRanking.finalPickAllowed === false))
 const noOddsCompletion = buildRankingCompletionState({
   selectedCount: noOddsSelection.selected.length,
@@ -84,7 +84,7 @@ const shortCompletion = buildRankingCompletionState({
 })
 assert.equal(shortCompletion.rankingStatus, 'success')
 assert.equal(shortCompletion.selectionCompleted, true)
-assert.equal(shortCompletion.selectionHealth, 'INSUFFICIENT_ELIGIBLE_CANDIDATES')
+assert.equal(shortCompletion.selectionHealth, 'DYNAMIC_BOARD_READY')
 assert.equal(shortCompletion.retryable, false)
 
 const orchestratorSource = readFileSync('supabase/functions/sync-football-data/index.ts', 'utf8')

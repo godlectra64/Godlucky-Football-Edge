@@ -26,7 +26,7 @@ assert.equal(isWithinBangkokDay('2026-07-12T17:15:00.000Z', selectionDate), fals
 
 const metadata = buildHybridPipelineMetadata(selectionDate)
 assert.equal(metadata.pipelineVersion, HYBRID_DAILY_PIPELINE_VERSION)
-assert.equal(metadata.selectionAlgorithmVersion, 'two-stage-selection-v1')
+assert.equal(metadata.selectionAlgorithmVersion, 'market-ready-dynamic-selection-v1')
 assert.ok(metadata.phases.includes('PRE_RANKING'))
 assert.ok(metadata.phases.includes('RESULT_SETTLEMENT'))
 
@@ -38,25 +38,27 @@ const withOddsScore = calculatePreRankingScore(candidate(1, {
 }), { selectionDate }).finalScore
 assert.equal(withOddsScore, noOddsScore, 'pre-ranking score must not change when only odds/market input changes')
 
-const smallPool = buildHybridCandidatePool(createCandidates(17), { selectionDate, limit: 50 })
+const smallPool = buildHybridCandidatePool(createCandidates(17), { selectionDate, limit: 60 })
 assert.equal(smallPool.candidatePoolCount, 17)
 assert.equal(smallPool.candidateCoreCount, 17)
 assert.equal(smallPool.candidateReserveCount, 0)
 
-const largePoolA = buildHybridCandidatePool(createCandidates(200), { selectionDate, limit: 50 })
-const largePoolB = buildHybridCandidatePool([...createCandidates(200)].reverse(), { selectionDate, limit: 50 })
-assert.equal(largePoolA.candidatePoolCount, 50)
-assert.equal(new Set(largePoolA.candidates.map((row) => row.fixtureId)).size, 50)
+const largePoolA = buildHybridCandidatePool(createCandidates(200), { selectionDate, limit: 60 })
+const largePoolB = buildHybridCandidatePool([...createCandidates(200)].reverse(), { selectionDate, limit: 60 })
+assert.equal(largePoolA.candidatePoolCount, 60)
+assert.equal(new Set(largePoolA.candidates.map((row) => row.fixtureId)).size, 60)
 assert.deepEqual(
   largePoolA.candidates.map((row) => `${row.candidateRank}:${row.fixtureId}`),
   largePoolB.candidates.map((row) => `${row.candidateRank}:${row.fixtureId}`),
 )
 assert.equal(largePoolA.candidateCoreCount, 30)
+assert.equal(largePoolA.candidateExpandedCount, 10)
 assert.equal(largePoolA.candidateReserveCount, 20)
-assert.deepEqual(largePoolA.candidates.slice(30).map((row) => row.candidateTier), Array(20).fill('RESERVE'))
+assert.deepEqual(largePoolA.candidates.slice(30, 40).map((row) => row.candidateTier), Array(10).fill('EXPANDED'))
+assert.deepEqual(largePoolA.candidates.slice(40).map((row) => row.candidateTier), Array(20).fill('RESERVE'))
 
-const oddsTargets = largePoolA.candidates.slice(0, 50)
-assert.ok(oddsTargets.length <= 50, 'odds sync must be bounded to the candidate pool')
+const oddsTargets = largePoolA.candidates.slice(0, 60)
+assert.ok(oddsTargets.length <= 60, 'odds sync must be bounded to the candidate pool')
 
 const noOddsSelection = selectDailyTop10(createCandidates(12, { odds: [] }), { selectionDate })
 const noOddsCompletion = buildRankingCompletionState({
@@ -64,8 +66,8 @@ const noOddsCompletion = buildRankingCompletionState({
   eligibleCandidateCount: noOddsSelection.summary.eligibleCandidateCount,
   rankingReadiness: { totalFixtures: 12, ready: 0, pending: 12, hasMarketDataCount: 0 },
 })
-assert.equal(noOddsSelection.selected.length, 10)
-assert.ok(noOddsSelection.selected.every((row) => row.selectionStatus === 'SELECTED_WAITING_MARKET'))
+assert.equal(noOddsSelection.selected.length, 12)
+assert.ok(noOddsSelection.selected.every((row) => row.selectionStatus === 'WAITING_MARKET'))
 assert.ok(noOddsSelection.selected.every((row) => row.softRanking.finalPickAllowed === false))
 assert.equal(noOddsCompletion.rankingStatus, 'success')
 assert.equal(noOddsCompletion.retryable, false)

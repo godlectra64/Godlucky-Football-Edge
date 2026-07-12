@@ -14,6 +14,7 @@
     "verify:daily-sync-orchestrator": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:odds": "node scripts/verifyOddsIntegrity.mjs",
     "verify:ai-final-pick": "node scripts/verifyAiFinalPickIntegrity.mjs",
+    "verify:daily-decision-board": "node scripts/verifyDailyDecisionBoard.mjs",
     "verify:daily-top10": "node scripts/verifyDailyTop10Lock.mjs",
     "verify:daily-production-health": "node scripts/verifyDailyProductionHealth.mjs",
     "verify:strict-daily": "node scripts/verifyStrictDaily.mjs",

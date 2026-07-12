@@ -92,7 +92,7 @@ export default function TodayPage({
         </div>
       </section>
 
-      {!loading && !error && totalMatchCount > selectedCount && selectedCount < 10 ? (
+      {!loading && !error && totalMatchCount > selectedCount ? (
         <section className="mt-3 rounded-[18px] border border-cyan-300/20 bg-cyan-300/10 p-3">
           <p className="text-sm font-black text-cyan-50">{buildSelectionSummaryTitle({ noReadyDecision, waitingCount: waitingMatches.length, selectedCount, totalMatchCount })}</p>
           {noReadyDecision && waitingMatches.length ? (

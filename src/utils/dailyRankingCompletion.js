@@ -1,7 +1,7 @@
 export function buildRankingCompletionState(input = {}) {
   const selectedCount = nonNegativeInteger(input.selectedCount)
   const eligibleCandidateCount = nonNegativeInteger(input.eligibleCandidateCount)
-  const expectedSelectedCount = Math.min(10, eligibleCandidateCount)
+  const expectedSelectedCount = selectedCount
   const writeFailures = nonNegativeInteger(input.writeFailures)
   const invalidScores = nonNegativeInteger(input.invalidScores)
   const duplicateRanks = nonNegativeInteger(input.duplicateRanks)
@@ -11,7 +11,7 @@ export function buildRankingCompletionState(input = {}) {
   const retryableFailure = Boolean(input.retryableFailure)
 
   const invariantFailures = [
-    selectedCount !== expectedSelectedCount ? 'SELECTED_COUNT_MISMATCH' : null,
+    selectedCount > eligibleCandidateCount ? 'SELECTED_COUNT_EXCEEDS_ELIGIBLE' : null,
     invalidScores > 0 ? 'INVALID_SCORE' : null,
     duplicateRanks > 0 ? 'DUPLICATE_RANK' : null,
     duplicateFixtures > 0 ? 'DUPLICATE_FIXTURE' : null,
@@ -52,7 +52,7 @@ export function buildRankingCompletionState(input = {}) {
     selectionCompleted: true,
     retryable: false,
     retryReasonCode: 'NONE',
-    selectionHealth: eligibleCandidateCount >= 10 ? 'OK' : 'INSUFFICIENT_ELIGIBLE_CANDIDATES',
+    selectionHealth: selectedCount > 0 ? 'DYNAMIC_BOARD_READY' : eligibleCandidateCount > 0 ? 'NO_DECISION_READY' : 'NO_ELIGIBLE_CANDIDATES',
     expectedSelectedCount,
     marketReadinessStatus: getMarketReadinessStatus(input.rankingReadiness, selectedCount),
     bettingReadiness: getBettingReadiness(input.rankingReadiness, selectedCount),

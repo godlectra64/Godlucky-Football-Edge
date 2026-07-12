@@ -24,7 +24,7 @@ export async function getTodayMatches() {
 
 export async function getTodayTopMatches() {
   const matches = await getTodayMatches()
-  return getTopMatches(matches, 10)
+  return getTopMatches(matches)
 }
 
 export async function getMatchAnalysis(matchId) {

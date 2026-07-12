@@ -195,20 +195,20 @@ assert.ok(syncDailyCandidateOddsSource.includes('candidateReadyCount: postSyncSt
 assert.ok(syncDailyCandidateOddsSource.includes("classifyCandidateMarketReadiness(existingCoverage) === 'READY'"), 'second candidate odds call should skip the provider only after all required markets are present')
 assert.ok(syncDailyCandidateOddsSource.includes('canonicalMatchId,'), 'sync-daily-candidate-odds should pass candidate.match_id through the odds save path')
 assert.ok(syncFootballDataSource.includes("if (String(row.market_readiness_status ?? '').toUpperCase() === 'READY') readyCandidateCount += 1"), 'post-sync READY count should dedupe candidate fixture ids before the scheduler stop check')
-assert.ok(syncFootballDataSource.includes(".eq('is_latest', true)\n      .order('id', { ascending: true })\n      .range(from, from + pageSize - 1)"), 'candidate odds coverage must page deterministically through latest snapshots instead of truncating the pool')
+assert.match(syncFootballDataSource, /\.eq\('is_latest', true\)\s*\.order\('id', \{ ascending: true \}\)\s*\.range\(from, from \+ pageSize - 1\)/, 'candidate odds coverage must page deterministically through latest snapshots instead of truncating the pool')
 assert.ok(syncFootballDataSource.includes('has_usable_ah: Boolean(coverage?.hasAh)'), 'candidate row updates should persist usable AH coverage')
 assert.ok(syncFootballDataSource.includes('has_usable_ou: Boolean(coverage?.hasOu)'), 'candidate row updates should persist usable O/U coverage')
 assert.ok(syncFootballDataSource.includes('has_usable_match_winner: Boolean(coverage?.hasMatchWinner)'), 'candidate row updates should persist usable Match Winner coverage')
 assert.ok(syncFootballDataSource.includes('odds_rows_count: Number(coverage?.rows ?? 0)'), 'candidate row updates should persist the supported latest odds row count')
 assert.ok(syncFootballDataSource.includes('odds_synced_at: new Date().toISOString()'), 'candidate row updates should persist the odds sync timestamp')
 assert.ok(syncFootballDataSource.includes('odds_sync_status: status'), 'candidate row updates should persist the odds sync result status')
-assert.ok(syncFootballDataSource.includes(".eq('match_id', identity.matchId)\n    .select('id, match_id')"), 'candidate readiness updates should target and return the canonical candidate match row')
+assert.match(syncFootballDataSource, /\.eq\('match_id', identity\.matchId\)\s*\.select\('id, match_id'\)/, 'candidate readiness updates should target and return the canonical candidate match row')
 assert.ok(syncFootballDataSource.includes('update expected 1 row but affected'), 'candidate readiness updates should fail loudly unless exactly one row is affected')
 assert.ok(syncFootballDataSource.includes('Duplicate football_matches rows for api_fixture_id'), 'candidate odds sync should report duplicate provider fixture identities')
 assert.ok(syncFootballDataSource.includes('match_id: canonicalMatchId'), 'normalized odds rows should use the candidate canonical match_id')
 assert.ok(syncFootballDataSource.includes('Refusing to store odds with mismatched match_id'), 'odds persistence should reject rows linked to another match identity')
 assert.ok(syncFootballDataSource.includes('function isSupportedFullTimeOddsRow(row: any)'), 'isSupportedFullTimeOddsRow should be defined at module scope when referenced')
-assert.ok(syncFootballDataSource.includes('function isUsableFullTimeOddsRow(row: any) {\n  return isSupportedFullTimeOddsRow(row)'), 'legacy usable odds row helper should delegate to the canonical supported full-time row helper')
+assert.match(syncFootballDataSource, /function isUsableFullTimeOddsRow\(row: any\) \{\s*return isSupportedFullTimeOddsRow\(row\)/, 'legacy usable odds row helper should delegate to the canonical supported full-time row helper')
 assert.ok(syncFootballDataSource.includes("if (text === 'OU') return 'OU'"), 'market focus normalization should accept stored OU tokens')
 assert.ok(syncFootballDataSource.includes('const line = parseBetLine(value?.value) ?? parseBetLine(value?.line)'), 'full-time O/U filter should inspect normalized row line when selection text has no number')
 assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'MATCH_WINNER', market_name: 'Match Winner', selection: 'Home', price: 1.9 }), true, 'MATCH_WINNER full-time odds row should be supported')
@@ -228,9 +228,9 @@ const lowResourceResponseBlock = syncFootballDataSource.slice(
   syncFootballDataSource.indexOf('if (isFootballEnrichmentMode(mode))')
 )
 assert.ok(strictMarketFirstSource.includes('compareMarketFirstCandidateItems'), 'marketFirst strict picks should use market-first sorting')
-assert.ok(strictMarketFirstSource.includes('marketFirst invariant failed'), 'marketFirst strict picks should fail if NO_MARKET_DATA is selected while READY candidates exist')
+assert.ok(syncFootballDataSource.includes('hasValidDecisionMarketItem(item)'), 'marketFirst persistence should gate final picks on valid AH/O-U decision markets')
 assert.ok(strictMarketFirstSource.includes('buildPersistedMarketFirstTop10State'), 'marketFirst response should be built from re-queried persisted rows')
-assert.ok(strictMarketFirstSource.includes("if (!(existing.data ?? []).length)"), 'normal marketFirst persistence should only create a lock when none exists')
+assert.ok(strictMarketFirstSource.includes('persistMarketReadyTop10(selectionDate, intendedSelection, existing.data ?? [], { cleanupUnselected: true })'), 'normal marketFirst persistence should reconcile the existing dynamic decision board')
 assert.ok(strictMarketFirstSource.includes('persistedSelectedFixtureIds: persistedState.selectedFixtureIds'), 'marketFirst response should expose persisted selection identities')
 assert.equal(strictMarketFirstSource.includes('body.repairStaleMarketLock'), false, 'strict marketFirst mode should not parse or execute the heavyweight repair flag')
 assert.equal(strictMarketFirstSource.includes('callAtomicStaleMarketRepair'), false, 'strict marketFirst mode should not call the repair RPC')
@@ -277,9 +277,9 @@ assert.ok(atomicMarketLockRepairMigrationSource.includes("market_readiness_statu
 assert.ok(atomicMarketLockRepairMigrationSource.includes("bool_or(odds.market_focus = 'AH')") && atomicMarketLockRepairMigrationSource.includes("bool_or(odds.market_focus = 'OU')") && atomicMarketLockRepairMigrationSource.includes("bool_or(odds.market_focus = 'MATCH_WINNER')"), 'atomic repair RPC should require all supported full-time markets')
 assert.ok(atomicMarketLockRepairMigrationSource.includes('delete from public.daily_top10_selections') && atomicMarketLockRepairMigrationSource.includes('insert into public.daily_top10_selections'), 'atomic repair RPC should replace the lock inside one database function transaction')
 assert.ok(atomicMarketLockRepairMigrationSource.includes('v_persisted_pick_count <> 10'), 'atomic repair RPC should rollback when AI final pick coverage is incomplete')
-assert.ok(dailyWorkflowSource.includes('marketFirstPicks.staleMarketLockRepairEligible === true'), 'workflow should enable repair only after persisted health reports an eligible stale lock')
-assert.ok(dailyWorkflowSource.includes("mode: 'repair-stale-market-first-top10'"), 'workflow should invoke the dedicated low-resource repair mode')
-assert.ok(dailyWorkflowSource.includes('repairStaleMarketLock: true'), 'workflow should pass the explicit stale-lock repair flag')
+assert.ok(dailyWorkflowSource.includes("mode: 'strict-api-football-daily-picks', limit: 60, marketFirst: true"), 'workflow should persist the dynamic decision board with limit 60')
+assert.equal(dailyWorkflowSource.includes("mode: 'repair-stale-market-first-top10'"), false, 'workflow should not invoke stale fixed-Top10 repair in the dynamic decision-board path')
+assert.ok(dailyWorkflowSource.includes('npm run verify:daily-decision-board'), 'workflow should run the dynamic decision-board verifier')
 assert.ok(syncFootballDataSource.includes("if (status === 'NO_MARKET_DATA') score = Math.min(score, 59)"), 'NO_MARKET_DATA final selection score should be capped below READY candidates')
 assert.ok(syncFootballDataSource.includes('if (!odds.length) score = Math.min(score, 60)'), 'fixture-only confidence should remain capped at 60')
 assert.ok(syncFootballDataSource.includes('isUnsupportedMainOddsMarketText'), 'main AH/O-U logic should reject unsupported non-full-time markets')
@@ -302,7 +302,7 @@ const emptyCandidateSync = simulatePostSyncCandidateState([
   { fixtureId: 301, status: 'WAITING_MARKET', hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 },
 ], new Map([[301, { hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 }]]))
 assert.equal(emptyCandidateSync.rows[0].status, 'NO_MARKET_DATA', 'empty provider results should remain non-ready')
-assert.equal(shouldStopCandidateOddsPaging(Array.from({ length: 10 }, (_, index) => ({ fixtureId: index + 1, status: 'READY', hasAh: true, hasOu: true, hasMatchWinner: true, rows: 3 }))), true, 'scheduler should stop from the verified post-sync count at 10 READY candidates')
+assert.equal(shouldStopCandidateOddsPaging(Array.from({ length: 10 }, (_, index) => ({ fixtureId: index + 1, status: 'READY', hasAh: true, hasOu: true, hasMatchWinner: true, rows: 3 }))), false, 'scheduler should continue until the dynamic candidate pool is exhausted')
 const idempotentCandidateSync = simulateIdempotentCandidateOddsSync({
   candidateId: 'candidate-1568101',
   candidateMatchId: 'canonical-match-1568101',
@@ -946,12 +946,12 @@ const v2Mixed = [
 ]
 const v2MixedRows = runAiSelectionEngine(v2Mixed)
 const v2Top10 = v2MixedRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
-assert.equal(v2Top10.length, 10, 'AI Selection Engine v2 should fill Top 10 from all usable recommendations')
+assert.equal(v2Top10.length, 7, 'AI Selection Engine v2 should keep BET/LEAN watch rows without NO BET padding')
 assert.equal(v2Top10.filter((row) => row.recommendation === 'BET').length, 2)
 assert.equal(v2Top10.filter((row) => row.recommendation === 'LEAN').length, 5)
-assert.equal(v2Top10.filter((row) => row.recommendation === 'NO BET').length, 3)
-assert.deepEqual(v2Top10.map((row) => row.final_rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-assert.equal(v2MixedRows.filter((row) => row.is_final_pick).length, 1, 'only one v2 row may be final pick')
+assert.equal(v2Top10.filter((row) => row.recommendation === 'NO BET').length, 0)
+assert.deepEqual(v2Top10.map((row) => row.final_rank), Array(7).fill(null))
+assert.equal(v2MixedRows.filter((row) => row.is_final_pick).length, 0, 'WATCH-only v2 rows must not create a final pick')
 assert.equal(v2Top10[0].recommendation, 'BET')
 assert.equal(v2Top10[0].recommendation_tier, '*****')
 
@@ -962,16 +962,15 @@ const v2LeanOnlyRows = runAiSelectionEngine([
 const v2LeanTop = v2LeanOnlyRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
 assert.equal(v2LeanTop.length, 2, 'v2 should still rank picks when no BET exists')
 assert.equal(v2LeanTop[0].recommendation, 'LEAN')
-assert.ok(v2LeanTop[0].final_pick_note.includes('BET'), 'LEAN final pick note must say it is not BET level')
+assert.equal(v2LeanTop[0].is_final_pick, false, 'LEAN watch rows must not create a final pick')
+assert.equal(v2LeanTop[0].final_rank, null, 'LEAN watch rows should not receive a decision rank')
 
 const v2NoBetOnlyRows = runAiSelectionEngine([
   v2Match('v2-no-bet-only-1', 35, 90, 'NO BET'),
   v2Match('v2-no-bet-only-2', 32, 92, 'NO BET'),
 ])
 const v2NoBetTop = v2NoBetOnlyRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
-assert.equal(v2NoBetTop.length, 2, 'v2 should show NO BET watchlist rows when they are the only analysis available')
-assert.equal(v2NoBetTop[0].recommendation, 'NO BET')
-assert.ok(v2NoBetTop[0].final_pick_note.length > 0)
+assert.equal(v2NoBetTop.length, 0, 'v2 should not pad the decision board with NO BET-only rows')
 
 const v2InvalidRows = runAiSelectionEngine([{ id: 'missing-critical-data' }])
 assert.equal(v2InvalidRows.filter((row) => row.is_top_pick).length, 0, 'invalid rows should not become Top 10 picks')
@@ -2035,7 +2034,8 @@ function simulatePostSyncCandidateState(rows, syncedCoverage = new Map()) {
 }
 
 function shouldStopCandidateOddsPaging(rows) {
-  return simulatePostSyncCandidateState(rows).readyCandidateCount >= 10
+  simulatePostSyncCandidateState(rows)
+  return false
 }
 
 function simulateIdempotentCandidateOddsSync({ candidateId, candidateMatchId, fixtureId, duplicateMatchIds = [] }) {

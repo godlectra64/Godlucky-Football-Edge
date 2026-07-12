@@ -40,7 +40,8 @@ function buildSelectionEngineRow(candidate, selected) {
   const sourceRecommendation = normalizeRecommendation(analysis.recommendation ?? match.recommendation)
   const recommendation = candidate.hasMarketData || sourceRecommendation !== 'BET' ? sourceRecommendation : 'WATCH'
   const isTopPick = Boolean(selected)
-  const isFinalPick = Boolean(selected && selected.rank === 1 && selected.hasMarketData)
+  const decisionRank = selected?.decisionRank ?? selected?.rank ?? null
+  const isFinalPick = Boolean(selected && decisionRank === 1 && selected.hasMarketData && selected.decisionStatus === 'READY')
 
   return {
     match_id: getMatchId(match),
@@ -62,15 +63,15 @@ function buildSelectionEngineRow(candidate, selected) {
     ai_score: candidate.softRanking.weightedScore,
     confidence_score: components.confidenceScore,
     ranking_score: candidate.softRanking.finalScore,
-    final_rank: selected?.rank ?? null,
+    final_rank: decisionRank,
     recommendation,
     recommendation_tier: getRecommendationTier(recommendation, components.confidenceScore, components.riskScore),
-    final_pick_note: selected?.rank === 1 ? buildFinalPickNote(recommendation, selected) : null,
+    final_pick_note: decisionRank === 1 ? buildFinalPickNote(recommendation, selected) : null,
     analysis_summary: buildTwoStageSummary(candidate, recommendation),
     is_top_pick: isTopPick,
     is_final_pick: isFinalPick,
     selection_status: selected?.selectionStatus ?? null,
-    selection_tier: selected?.tier ?? null,
+    selection_tier: selected?.candidateTier ?? selected?.tier ?? null,
     has_market_data: candidate.hasMarketData,
     raw: {
       daily_selection: {
@@ -78,9 +79,10 @@ function buildSelectionEngineRow(candidate, selected) {
         hardFilter: candidate.hardFilter,
         softRanking: candidate.softRanking,
         selected: isTopPick,
-        rank: selected?.rank ?? null,
-        tier: selected?.tier ?? null,
+        rank: decisionRank,
+        tier: selected?.candidateTier ?? selected?.tier ?? null,
         selectionStatus: selected?.selectionStatus ?? null,
+        decisionStatus: selected?.decisionStatus ?? null,
       },
     },
   }

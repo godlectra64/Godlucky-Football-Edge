@@ -1919,11 +1919,11 @@ async function runDailyFullSyncMode(mode: string, body: Record<string, unknown>,
     { step: 7, mode: 'coaches', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('coaches', body, dayRange, context) },
     { step: 8, mode: 'venues', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('venues', body, dayRange, context) },
     { step: 9, mode: 'top-players', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('top-players', body, dayRange, context) },
-    { step: 10, mode: 'ai-top10-ranking', limit: 10, worker: () => runDailyRankingStep(dayRange, context) },
+    { step: 10, mode: 'decision-board-ranking', limit: 60, worker: () => runDailyRankingStep(dayRange, context) },
   ]
 
   for (const item of dailySteps) {
-    if (context.rateLimited && item.mode !== 'ai-top10-ranking') {
+    if (context.rateLimited && item.mode !== 'decision-board-ranking') {
       const skipped = await logDailyStepSkipped(context, item.step, item.mode)
       steps.push(skipped)
       continue
@@ -1945,7 +1945,7 @@ async function runDailyFullSyncMode(mode: string, body: Record<string, unknown>,
     processed,
     skippedByLimit: 0,
     failures: failed ? steps.filter((step) => step.failed > 0).map((step) => ({ message: `${step.mode}: ${step.message ?? 'failed'}` })) : [],
-    rankedSelectionRows: steps.find((step) => step.mode === 'ai-top10-ranking')?.processed ?? 0,
+    rankedSelectionRows: steps.find((step) => step.mode === 'decision-board-ranking')?.processed ?? 0,
     topSelections: await fetchTopSelectionsDebug(dayRange).catch(() => []),
     endpointCoverage: context.endpoints,
     enrichedMatches: [],
@@ -2005,7 +2005,7 @@ async function runDailyRankingStep(dayRange: ReturnType<typeof getBangkokDayRang
   const readinessBeforeRanking = await getRankingReadinessSummary(dayRange)
   const rankingWrite = await updateDailySelectionRanks(dayRange)
   const rankingReadiness = await getRankingReadinessSummary(dayRange)
-  const finalPickRows = await recomputeAiFinalPicks(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks' })
+  const finalPickRows = await recomputeAiFinalPicks(dayRange, { ...context, limit: 60, mode: 'recompute-ai-final-picks' })
   const rankedSelectionRows = Number(rankingWrite.rowsSaved ?? 0)
   const eligibleCandidateCount = Number(rankingWrite.eligibleCandidateCount ?? rankingReadiness.totalFixtures ?? readinessBeforeRanking.totalFixtures ?? rankedSelectionRows)
   const completion = buildRankingCompletionState({
@@ -3410,7 +3410,7 @@ async function syncDailyTop10Odds(body: Record<string, unknown>, dayRange: Retur
 
 async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
   const selectionDate = dayRange.dateKey
-  const candidateLimit = getPositiveLimit(body.limit, 50, 50)
+  const candidateLimit = getPositiveLimit(body.limit, 60, 60)
   const forceRebuild = body.forceRebuild === true || body.force === true
   const existing = await fetchDailyMarketCandidateRows(selectionDate)
   const warnings: Array<string> = []
@@ -3433,7 +3433,8 @@ async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRang
       candidatesSaved: existing.length,
       candidatePoolCount: existing.length,
       candidateCoreCount: Math.min(existing.length, 30),
-      candidateReserveCount: Math.max(0, existing.length - 30),
+      candidateExpandedCount: Math.max(0, Math.min(existing.length - 30, 10)),
+      candidateReserveCount: Math.max(0, existing.length - 40),
       candidateFixtureIds: existing.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
       topCandidateSample: existing.slice(0, 5).map(formatDailyMarketCandidateRow),
       warnings: ['Reused stable daily_market_candidates; pass forceRebuild:true to rebuild'],
@@ -3507,7 +3508,8 @@ async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRang
     candidatesSaved: rows.length,
     candidatePoolCount: rows.length,
     candidateCoreCount: rows.filter((row: any) => Number(row.candidate_rank ?? 0) <= 30).length,
-    candidateReserveCount: rows.filter((row: any) => Number(row.candidate_rank ?? 0) > 30).length,
+    candidateExpandedCount: rows.filter((row: any) => Number(row.candidate_rank ?? 0) > 30 && Number(row.candidate_rank ?? 0) <= 40).length,
+    candidateReserveCount: rows.filter((row: any) => Number(row.candidate_rank ?? 0) > 40).length,
     candidateFixtureIds: rows.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
     topCandidateSample: rows.slice(0, 5).map(formatDailyMarketCandidateRow),
     warnings,
@@ -3667,14 +3669,14 @@ async function finalizeMarketReadyCandidates(dayRange: ReturnType<typeof getBang
     waitingMarketCandidates: counts.WAITING_MARKET,
     noMarketDataCandidates: counts.NO_MARKET_DATA,
     analysisRowsUpdated: finalPicks.rowsSaved ?? 0,
-    warnings: counts.READY < 10 ? [`Only ${counts.READY} READY candidates available; strict picks may fill from waiting/no-market fixtures`] : [],
+    warnings: counts.READY === 0 ? ['READY count is 0; strict picks may produce WATCH/WAITING_MARKET only'] : [],
     failures: finalPicks.failures ?? [],
   }
 }
 
 async function finalizeTodayOddsSync(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const rankedSelectionRows = await withRetryableSyncOperation('database', 'recompute_ranking', () => updateDailySelectionRanks(dayRange))
-  const finalPickRows = await withRetryableSyncOperation('database', 'recompute_ai_final_picks', () => recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks-date' }))
+  const finalPickRows = await withRetryableSyncOperation('database', 'recompute_ai_final_picks', () => recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 60, mode: 'recompute-ai-final-picks-date' }))
   return {
     status: finalPickRows.failed > 0 ? 'partial_success' : 'success',
     processed: rankedSelectionRows + Number(finalPickRows.processed ?? 0),
@@ -3792,8 +3794,8 @@ async function diagnoseSyncTodayOdds(dayRange: ReturnType<typeof getBangkokDayRa
 function getDailyOddsLikelyRootCause(input: { fixturesCount: number; todayOddsRows: number; candidateCount: number; readyCandidateCount: number; candidateWithoutOddsCount: number }) {
   if (!input.fixturesCount) return 'UNKNOWN'
   if (!input.candidateCount) return 'DAILY_MARKET_CANDIDATES_NOT_BUILT'
-  if (input.readyCandidateCount < 10 && input.candidateWithoutOddsCount > 0) return 'CANDIDATE_ODDS_SYNC_INCOMPLETE_OR_PROVIDER_EMPTY'
-  if (input.readyCandidateCount >= 10) return 'READY_CANDIDATES_AVAILABLE'
+  if (input.readyCandidateCount === 0 && input.candidateWithoutOddsCount > 0) return 'CANDIDATE_ODDS_SYNC_INCOMPLETE_OR_PROVIDER_EMPTY'
+  if (input.readyCandidateCount > 0) return 'READY_CANDIDATES_AVAILABLE'
   if (input.todayOddsRows > 0) return 'UNKNOWN'
   return 'ODDS_SYNC_NOT_RUN_FOR_TODAY'
 }
@@ -4483,10 +4485,18 @@ async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof
       .map((match: any) => ({ match, lockedRow: null, rank: Number(getAnalysis(match)?.final_rank ?? 999) }))
       .filter((item) => Boolean(getAnalysis(item.match)?.is_top_pick || Number(item.rank) < 999))
       .sort((a, b) => a.rank - b.rank)
-      .slice(0, 10)
+      .slice(0, 60)
   }
 
   const matchIds = items.map((item) => item.match?.id).filter(Boolean)
+  const oddsByMatchId = await fetchStoredOddsByMatchIds(matchIds, { latestOnly: true })
+  items = items.map((item: any) => ({
+    ...item,
+    match: {
+      ...item.match,
+      odds: oddsByMatchId.get(item.match?.id) ?? [],
+    },
+  }))
   const beforePicks = await fetchAiFinalPicksForMatches(matchIds)
   let recomputedFinalPicks = 0
   let rowsSaved = 0
@@ -4495,6 +4505,24 @@ async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof
 
   for (const item of items) {
     try {
+      if (!hasValidDecisionMarketItem({ match: item.match, odds: item.match.odds ?? [] })) {
+        if (item.lockedRow?.id) {
+          const patch = await supabase
+            .from('daily_top10_selections')
+            .update({
+              ai_final_pick_id: null,
+              signal: 'SKIP',
+              market_focus: 'NONE',
+              confidence_score: null,
+              market_ready: false,
+              selection_status: 'WAITING_MARKET',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', item.lockedRow.id)
+          if (patch.error && !isMissingColumnError(patch.error)) throw patch.error
+        }
+        continue
+      }
       const pick = await upsertAiFinalPickForMatch(item.match)
       recomputedFinalPicks += 1
       rowsSaved += 1
@@ -4507,6 +4535,8 @@ async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof
             market_focus: pick.market_focus,
             confidence_score: pick.confidence_score,
             risk_level: pick.risk_level,
+            market_ready: true,
+            selection_status: 'READY',
             updated_at: new Date().toISOString(),
           })
           .eq('id', item.lockedRow.id)
@@ -4651,35 +4681,20 @@ async function lockDailyTop10(dayRange: ReturnType<typeof getBangkokDayRange>) {
   const itemByMatchId = new Map(candidates.map((item: any) => [item.match.id, item]))
   const dailySelection = selectDailyTop10(candidates.map((item: any) => item.match), { selectionDate })
   const selected = dailySelection.selected.map((row: any) => itemByMatchId.get(row.match.id)).filter(Boolean)
-
-  for (const item of selected) {
-    try {
-      item.pick = await upsertAiFinalPickForMatch(item.match)
-    } catch (error) {
-      console.warn('lock-daily-top10 ai final pick refresh failed', { matchId: item.match?.id, error: formatErrorMessage(error, 'ai final pick failed') })
-    }
-  }
-
-  const rows = selected.map((item: any, index: number) => ({
-    selection_date: selectionDate,
-    match_id: item.match.id,
-    api_fixture_id: nullableNumber(item.match.api_sports_fixture_id),
-    rank: index + 1,
-    selection_score: nullableNumber(item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
-    ai_final_pick_id: item.pick?.id ?? null,
-    signal: item.pick?.signal ?? 'SKIP',
-    market_focus: item.pick?.market_focus ?? 'NONE',
-    confidence_score: nullableNumber(item.pick?.confidence_score ?? item.analysis?.confidence_score),
-    risk_level: normalizeRiskLevelText(item.pick?.risk_level ?? item.analysis?.risk_level ?? 'MEDIUM'),
-    updated_at: new Date().toISOString(),
-  }))
-
-  if (rows.length) {
-    const insert = await supabase.from('daily_top10_selections').insert(rows)
-    if (insert.error) throw insert.error
-  }
+  const persistResult = await persistMarketReadyTop10(selectionDate, selected, [], { cleanupUnselected: true })
+  const rows = await fetchPersistedDailyTop10Rows(selectionDate)
   const status = summarizeDailyTop10(selectionDate, rows)
-  return { processed: rows.length, totalCandidates: matches.length, rowsSaved: rows.length, failed: 0, partial: rows.length < 10, locked: true, alreadyLocked: false, ...status }
+  return {
+    processed: rows.length,
+    totalCandidates: matches.length,
+    rowsSaved: persistResult.rowsSaved,
+    failed: persistResult.failed,
+    partial: persistResult.failed > 0,
+    locked: true,
+    alreadyLocked: false,
+    ...status,
+    failures: persistResult.failures,
+  }
 }
 
 async function getDailyTop10Status(dayRange: ReturnType<typeof getBangkokDayRange>) {
@@ -5378,7 +5393,7 @@ function assertLowResourceRepairResult(state: any) {
 
 async function strictApiFootballDailyPicksMarketFirst(dayRange: ReturnType<typeof getBangkokDayRange>, body: Record<string, unknown>) {
   const selectionDate = typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : dayRange.dateKey
-  const limit = getPositiveNumber(body.limit, 10, 10)
+  const limit = getPositiveNumber(body.limit, 60, 60)
   const [candidateTargets, existing] = await Promise.all([
     fetchDailyMarketCandidateTargets(selectionDate),
     supabase
@@ -5415,30 +5430,24 @@ async function strictApiFootballDailyPicksMarketFirst(dayRange: ReturnType<typeo
     .sort(compareMarketFirstCandidateItems)
 
   const readyCandidates = candidates.filter((item: any) => getMarketFirstReadinessStatus(item) === 'READY')
-  const intendedSelection = candidates.slice(0, limit)
-  const intendedNoMarketDataCount = intendedSelection.filter((item: any) => getMarketFirstReadinessStatus(item) === 'NO_MARKET_DATA').length
-  const avoidableNoMarketData = readyCandidates.length >= limit && intendedNoMarketDataCount > 0
-  if (avoidableNoMarketData) {
-    throw new Error(`marketFirst invariant failed: selected NO_MARKET_DATA while ${readyCandidates.length} READY candidates exist`)
-  }
+  const watchCandidates = candidates.filter((item: any) => getMarketFirstReadinessStatus(item) === 'PARTIAL')
+  const waitingCandidates = candidates.filter((item: any) => ['WAITING_MARKET', 'NO_MARKET_DATA'].includes(getMarketFirstReadinessStatus(item)))
+  const intendedSelection = [...readyCandidates, ...watchCandidates, ...waitingCandidates].slice(0, limit)
 
   const previousState = await buildPersistedMarketFirstTop10State(selectionDate, existing.data ?? [], candidates, readyCandidates.length)
   const previousSelectedFixtureIds = previousState.selectedFixtureIds
   let persistResult = emptyTop10PersistResult(existing.data?.length ?? 0)
   const warnings: Array<string> = []
 
-  if (!(existing.data ?? []).length) {
-    persistResult = await persistMarketReadyTop10(selectionDate, intendedSelection, [], { cleanupUnselected: true })
-    if (persistResult.failed > 0) throw new Error(`Initial market-first Top10 persistence failed for ${persistResult.failed} row(s)`)
-  } else {
-    if (previousState.staleMarketLockRepairEligible) warnings.push('Persisted Top10 predates market readiness and is repair-eligible; invoke repair-stale-market-first-top10 with repairStaleMarketLock:true')
-  }
+  persistResult = await persistMarketReadyTop10(selectionDate, intendedSelection, existing.data ?? [], { cleanupUnselected: true })
+  if (persistResult.failed > 0) throw new Error(`Dynamic decision board persistence failed for ${persistResult.failed} row(s)`)
+  if (previousState.staleMarketLockRepairEligible) warnings.push('Existing persisted board predated market readiness and was reconciled by the dynamic decision board pipeline')
 
   const persistedRows = await fetchPersistedDailyTop10Rows(selectionDate)
   const persistedState = await buildPersistedMarketFirstTop10State(selectionDate, persistedRows, candidates, readyCandidates.length)
   const persistedItems = persistedState.rows.map((row: any) => candidates.find((item: any) => item.match.id === row.match_id)).filter(Boolean)
   const selectedStrict = persistedItems.map((item: any) => item.strict)
-  if (readyCandidates.length < limit) warnings.push(`Only ${readyCandidates.length} READY candidates available; filled remaining Top10 from lower readiness candidates`)
+  if (readyCandidates.length === 0) warnings.push('READY count is 0; dynamic board may contain WATCH/WAITING_MARKET only')
 
   return {
     processed: persistedState.rows.length,
@@ -5610,7 +5619,11 @@ async function persistMarketReadyTop10(selectionDate: string, selected: Array<an
 
   for (const [index, item] of selected.entries()) {
     try {
-      item.pick = await upsertAiFinalPickForMatch(item.match)
+      if (hasValidDecisionMarketItem(item)) {
+        item.pick = await upsertAiFinalPickForMatch(item.match)
+      } else {
+        item.pick = null
+      }
       const payload = buildDailyTop10RowPayload(selectionDate, item, index)
       const desiredRank = index + 1
       const rawRankRow = rankRows.get(desiredRank)
@@ -5663,30 +5676,69 @@ async function persistMarketReadyTop10(selectionDate: string, selected: Array<an
 }
 
 function buildDailyTop10RowPayload(selectionDate: string, item: any, index: number) {
+  const marketReady = hasValidDecisionMarketItem(item)
+  const decisionStatus = getDecisionBoardStatus(item)
   return {
     selection_date: selectionDate,
     match_id: item.match.id,
     api_fixture_id: nullableNumber(item.match.api_sports_fixture_id),
     rank: index + 1,
-    selection_score: nullableNumber(dailySelection.selected[index]?.softRanking?.finalScore ?? item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
-    ai_final_pick_id: item.pick?.id ?? null,
-    signal: item.pick?.signal ?? 'SKIP',
-    market_focus: item.pick?.market_focus ?? 'NONE',
-    pick_team: item.strict?.pickTeam ?? item.pickTeam?.pickTeam ?? null,
-    pick_team_id: item.strict?.pickTeamId ?? item.pickTeam?.pickTeamId ?? null,
-    pick_side: item.strict?.pickSide ?? item.pickTeam?.pickSide ?? null,
-    pick_source: item.strict?.pickSource ?? item.pickTeam?.pickSource ?? null,
-    pick_market: item.strict?.pickMarket ?? item.pickTeam?.pickMarket ?? null,
-    pick_market_id: item.strict?.pickMarketId ?? item.pickTeam?.pickMarketId ?? null,
-    pick_selection: item.strict?.pickSelection ?? item.pickTeam?.pickSelection ?? null,
-    pick_price: nullableNumber(item.strict?.pickPrice ?? item.pickTeam?.pickPrice),
-    pick_confidence: nullableNumber(item.pick?.pick_confidence ?? item.pickTeam?.pickConfidence),
-    market_data_used: Boolean(item.pick?.market_data_used ?? item.strict?.hasApiFootballOdds ?? item.pickTeam?.hasApiFootballOdds ?? false),
-    analysis_status: item.pick?.analysis_status ?? (item.strict?.hasApiFootballOdds ? 'API_FOOTBALL_ODDS_READY' : 'INSUFFICIENT_MARKET_DATA'),
-    confidence_score: nullableNumber(item.pick?.confidence_score ?? item.analysis?.confidence_score),
+    selection_score: nullableNumber(item.finalSelectionScore ?? item.candidate?.pre_selection_score ?? item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
+    ai_final_pick_id: marketReady ? item.pick?.id ?? null : null,
+    signal: marketReady ? item.pick?.signal ?? 'WATCH' : 'SKIP',
+    market_focus: marketReady ? item.pick?.market_focus ?? item.strict?.pickMarket ?? 'NONE' : 'NONE',
+    pick_team: marketReady ? item.strict?.pickTeam ?? item.pickTeam?.pickTeam ?? null : null,
+    pick_team_id: marketReady ? item.strict?.pickTeamId ?? item.pickTeam?.pickTeamId ?? null : null,
+    pick_side: marketReady ? item.strict?.pickSide ?? item.pickTeam?.pickSide ?? null : 'NONE',
+    pick_source: marketReady ? item.strict?.pickSource ?? item.pickTeam?.pickSource ?? null : 'NONE',
+    pick_market: marketReady ? item.strict?.pickMarket ?? item.pickTeam?.pickMarket ?? null : null,
+    pick_market_id: marketReady ? item.strict?.pickMarketId ?? item.pickTeam?.pickMarketId ?? null : null,
+    pick_selection: marketReady ? item.strict?.pickSelection ?? item.pickTeam?.pickSelection ?? null : null,
+    pick_price: marketReady ? nullableNumber(item.strict?.pickPrice ?? item.pickTeam?.pickPrice) : null,
+    pick_confidence: marketReady ? nullableNumber(item.pick?.pick_confidence ?? item.pickTeam?.pickConfidence) : null,
+    market_data_used: marketReady,
+    analysis_status: marketReady ? item.pick?.analysis_status ?? 'API_FOOTBALL_ODDS_READY' : 'INSUFFICIENT_MARKET_DATA',
+    selection_status: decisionStatus,
+    market_ready: marketReady,
+    pipeline_version: HYBRID_DAILY_PIPELINE_VERSION,
+    selection_algorithm_version: DAILY_SELECTION_ALGORITHM_VERSION,
+    decision_reason: decisionStatus === 'WAITING_MARKET' ? 'No valid AH/O-U market available' : `${decisionStatus} by market-ready dynamic decision board`,
+    decision_audit: {
+      candidateRank: item.candidate?.candidate_rank ?? null,
+      candidateTier: item.candidate?.candidate_tier ?? null,
+      preSelectionScore: item.candidate?.pre_selection_score ?? null,
+      marketReadinessStatus: getMarketFirstReadinessStatus(item),
+      hasAhMarket: Boolean(item.candidate?.has_usable_ah),
+      hasOuMarket: Boolean(item.candidate?.has_usable_ou),
+      oddsRowsCount: item.odds?.length ?? item.candidate?.odds_rows_count ?? 0,
+    },
+    confidence_score: marketReady ? nullableNumber(item.pick?.confidence_score ?? item.analysis?.confidence_score) : null,
     risk_level: normalizeRiskLevelText(item.pick?.risk_level ?? item.analysis?.risk_level ?? 'MEDIUM'),
     updated_at: new Date().toISOString(),
   }
+}
+
+function hasValidDecisionMarketItem(item: any) {
+  const rows = Array.isArray(item?.odds) ? item.odds : []
+  if (rows.some(isValidDecisionOddsRow)) return true
+  const market = String(item?.strict?.pickMarket ?? item?.pickTeam?.pickMarket ?? '').toUpperCase()
+  return ['AH', 'OU'].includes(market) && nullableNumber(item?.strict?.pickPrice ?? item?.pickTeam?.pickPrice) !== null
+}
+
+function isValidDecisionOddsRow(row: any) {
+  const focus = String(row?.market_focus ?? '').toUpperCase()
+  const name = String(row?.market_name ?? '').toLowerCase()
+  const price = nullableNumber(row?.price)
+  if (price === null || price <= 0) return false
+  return focus === 'AH' || focus === 'OU' || name.includes('asian handicap') || name.includes('handicap') || name.includes('over/under') || name.includes('goals over')
+}
+
+function getDecisionBoardStatus(item: any) {
+  const readiness = getMarketFirstReadinessStatus(item)
+  if (readiness === 'READY') return 'READY'
+  if (readiness === 'PARTIAL') return 'WATCH'
+  if (readiness === 'WAITING_MARKET' || readiness === 'NO_MARKET_DATA') return 'WAITING_MARKET'
+  return 'REJECTED'
 }
 
 async function updateDailyTop10Row(rowId: string, selectionDate: string, payload: Record<string, unknown>) {
@@ -5733,6 +5785,12 @@ function stripApiFootballPickPayload(payload: Record<string, unknown>) {
     'pipeline_stage',
     'pipeline_reasons',
     'pipeline_warnings',
+    'selection_status',
+    'market_ready',
+    'pipeline_version',
+    'selection_algorithm_version',
+    'decision_reason',
+    'decision_audit',
   ]) {
     delete stripped[key]
   }
@@ -6460,6 +6518,9 @@ function summarizeDailyTop10(selectionDate: string, rows: Array<any>) {
     strongSignalCount: rows.filter((row) => row.signal === 'STRONG_SIGNAL').length,
     watchCount: rows.filter((row) => row.signal === 'WATCH').length,
     skipCount: rows.filter((row) => row.signal === 'SKIP').length,
+    readyCount: rows.filter((row) => String(row.selection_status ?? '').toUpperCase() === 'READY' || row.market_ready === true).length,
+    waitingMarketCount: rows.filter((row) => String(row.selection_status ?? '').toUpperCase() === 'WAITING_MARKET' || row.market_ready === false).length,
+    decisionBoardCount: rows.length,
   }
 }
 
@@ -11991,7 +12052,7 @@ function getSyncLimit(value: unknown, mode = 'manual') {
   if (mode === 'sync-today-odds') return 1
   if (mode === 'sync-daily-top10-odds') return getPositiveLimit(value, 2, 10)
   if (mode === 'sync-daily-candidate-odds') return getPositiveLimit(value, 2, 10)
-  if (mode === 'build-daily-market-candidates') return getPositiveLimit(value, 50, 80)
+  if (mode === 'build-daily-market-candidates') return getPositiveLimit(value, 60, 60)
   if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
   if (isResultPipelineMode(mode)) return getPositiveLimit(value, 10, 20)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit

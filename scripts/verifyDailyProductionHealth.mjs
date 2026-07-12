@@ -16,12 +16,12 @@ dotenv.config({ path: '.env' })
 const allowedRootCauses = new Set([
   'OK',
   'DAILY_MARKET_CANDIDATES_NOT_BUILT',
-  'READY_CANDIDATES_LESS_THAN_10',
+  'DYNAMIC_READY_COVERAGE_PARTIAL',
   'ODDS_PROVIDER_EMPTY_FOR_SELECTED_FIXTURES',
   'DAILY_SYNC_REUSED_COMPLETED_RUN',
   'FIXTURE_SYNC_LOW_COUNT',
-  'TOP10_SELECTED_BEFORE_MARKET_READY',
-  'TOP10_ODDS_SYNC_INCOMPLETE',
+  'DECISION_BOARD_SELECTED_BEFORE_MARKET_READY',
+  'DECISION_BOARD_ODDS_SYNC_INCOMPLETE',
   'DYNAMIC_OFFSET_DUPLICATE_FIXTURES',
 ])
 
@@ -64,7 +64,7 @@ const playableMatches = matches.filter(isPlayable)
 const todayOdds = matchIds.length
   ? await selectAll('football_match_odds', 'id, match_id, market_focus, market_name, selection, line, price, api_bookmaker_id, is_latest', (query) => query.in('match_id', matchIds))
   : []
-const top10Rows = await selectAll('daily_top10_selections', 'id, rank, match_id, ai_final_pick_id, locked_at, updated_at', (query) =>
+const top10Rows = await selectAll('daily_top10_selections', 'id, rank, match_id, ai_final_pick_id, locked_at, updated_at, selection_status, market_ready', (query) =>
   query.eq('selection_date', range.dateKey).order('rank', { ascending: true })
 )
 const top10MatchIds = top10Rows.map((row) => row.match_id).filter(Boolean)
@@ -89,20 +89,24 @@ const latestDailyRunSteps = latestDailyRun?.id
   : []
 
 const oddsChecks = await buildOddsChecks(matches, todayOdds)
-const top10WithOddsMatchIds = new Set(top10Odds.filter(isUsableFullTimeOddsRow).map((row) => row.match_id).filter(Boolean))
+const top10WithDecisionMarketMatchIds = new Set(top10Odds.filter(isUsableDecisionMarketOddsRow).map((row) => row.match_id).filter(Boolean))
+const readyTop10Rows = top10Rows.filter((row) => normalizeDecisionStatus(row) === 'READY')
+const waitingTop10Rows = top10Rows.filter((row) => normalizeDecisionStatus(row) === 'WAITING_MARKET')
 const duplicateTop10Ranks = countDuplicates(top10Rows.map((row) => row.rank).filter((rank) => rank !== null && rank !== undefined))
 const duplicateTop10Matches = countDuplicates(top10MatchIds)
-const aiFinalPickCoverage = top10Rows.filter((row) => row.ai_final_pick_id).length
+const aiFinalPickCoverage = readyTop10Rows.filter((row) => row.ai_final_pick_id).length
 const candidateCounts = countCandidateReadiness(candidateRowsResult.rows)
-const dailyTop10SelectedFixturesWithOdds = top10WithOddsMatchIds.size
-const selectedWaitingMarketCount = Math.max(0, top10Rows.length - dailyTop10SelectedFixturesWithOdds)
+const dailyTop10SelectedFixturesWithOdds = readyTop10Rows.filter((row) => top10WithDecisionMarketMatchIds.has(row.match_id)).length
+const selectedWaitingMarketCount = waitingTop10Rows.length
 const eligibleCandidateCount = selection.summary.eligibleCandidateCount
 const selectedHardFilterViolations = top10Rows.filter((row) => {
   const selected = selection.selected.find((item) => item.match?.id === row.match_id)
   return selected ? !selected.hardFilter.passed : false
 }).length
 const invalidFinalScores = selection.candidates.filter((row) => !Number.isFinite(Number(row.softRanking.finalScore)) || Number(row.softRanking.finalScore) < 0 || Number(row.softRanking.finalScore) > 100).length
-const fakeFinalPickRows = top10Rows.filter((row) => !top10WithOddsMatchIds.has(row.match_id) && row.ai_final_pick_id).length
+const fakeFinalPickRows = top10Rows.filter((row) => normalizeDecisionStatus(row) !== 'READY' && row.ai_final_pick_id).length
+const expectedDynamicBoardCount = Math.min(60, eligibleCandidateCount)
+const dynamicBoardCountViolation = top10Rows.length > 0 && top10Rows.length <= expectedDynamicBoardCount ? 0 : 1
 const rankingCompletion = buildRankingCompletionState({
   selectedCount: top10Rows.length,
   eligibleCandidateCount,
@@ -126,7 +130,7 @@ const pipelineStatus = rankingCompletion.rankingStatus === 'success' ? 'SUCCESS'
 const earliestSelectedKickoff = getEarliestKickoffForSelection(top10Rows, matches)
 const lockDeadline = calculateDynamicLockDeadline(earliestSelectedKickoff)
 const lockedAt = top10Rows.map((row) => row.locked_at).filter(Boolean).sort()[0] ?? null
-const selectedBettingReady = top10Rows.filter((row) => top10WithOddsMatchIds.has(row.match_id) && row.ai_final_pick_id).length
+const selectedBettingReady = readyTop10Rows.filter((row) => top10WithDecisionMarketMatchIds.has(row.match_id) && row.ai_final_pick_id).length
 const selectedWithoutFinalPick = top10Rows.filter((row) => !row.ai_final_pick_id).length
 const apiCalls = countApiCalls(latestDailyRunSteps)
 const cacheHits = countCacheHits(latestDailyRunSteps)
@@ -142,6 +146,7 @@ const rootCause = determineRootCause({
   candidateReadyCount: candidateCounts.READY,
   dailyTop10Count: top10Rows.length,
   dailyTop10SelectedFixturesWithOdds,
+  selectedWaitingMarketCount,
   duplicateTop10Ranks,
   duplicateTop10Matches,
   aiFinalPickCoverage,
@@ -165,7 +170,8 @@ console.log(`eligibleCandidates: ${eligibleCandidateCount}`)
 console.log(`preRankedCandidates: ${selection.candidates.length}`)
 console.log(`candidatePoolCount: ${candidateRowsResult.rows.length}`)
 console.log(`candidateCoreCount: ${candidateRowsResult.rows.filter((row) => Number(row.candidate_rank ?? 0) <= 30).length}`)
-console.log(`candidateReserveCount: ${candidateRowsResult.rows.filter((row) => Number(row.candidate_rank ?? 0) > 30).length}`)
+console.log(`candidateExpandedCount: ${candidateRowsResult.rows.filter((row) => Number(row.candidate_rank ?? 0) > 30 && Number(row.candidate_rank ?? 0) <= 40).length}`)
+console.log(`candidateReserveCount: ${candidateRowsResult.rows.filter((row) => Number(row.candidate_rank ?? 0) > 40).length}`)
 console.log(`preliminarySelected: ${selection.summary.selectedCount}`)
 console.log(`lockedSelected: ${top10Rows.length}`)
 console.log(`primarySelected: ${selection.summary.primarySelected}`)
@@ -196,11 +202,10 @@ console.log(`retryable: ${rankingCompletion.retryable}`)
 console.log(`retryReasonCode: ${rankingCompletion.retryReasonCode}`)
 report('fixturesToday', matches.length, { failWhen: (value) => value <= 0 })
 report('playableFixtures', playableMatches.length, { failWhen: (value) => value <= 0 })
-report('dailyTop10 count valid', top10Rows.length === Math.min(10, eligibleCandidateCount) ? 0 : 1, { details: `count ${top10Rows.length}, eligible ${eligibleCandidateCount}` })
-report('dailyTop10 count over 10', top10Rows.length > 10 ? top10Rows.length - 10 : 0)
-report('candidate pool <= 50', candidateRowsResult.rows.length > 50 ? candidateRowsResult.rows.length - 50 : 0)
-report('duplicate selected Top10 ranks', duplicateTop10Ranks)
-report('duplicate selected Top10 fixtures', duplicateTop10Matches)
+report('decision board count valid', dynamicBoardCountViolation, { details: `count ${top10Rows.length}, eligible ${eligibleCandidateCount}, expectedMax ${expectedDynamicBoardCount}` })
+report('candidate pool <= 60', candidateRowsResult.rows.length > 60 ? candidateRowsResult.rows.length - 60 : 0)
+report('duplicate decision board ranks', duplicateTop10Ranks)
+report('duplicate decision board fixtures', duplicateTop10Matches)
 report('aiFinalPick coverage market-ready incomplete', Math.max(0, dailyTop10SelectedFixturesWithOdds - aiFinalPickCoverage), { details: `${aiFinalPickCoverage}/${dailyTop10SelectedFixturesWithOdds} market-ready; waiting-market ${selectedWaitingMarketCount}` })
 report('selected hard-filter violations', selectedHardFilterViolations)
 report('fake final picks for waiting-market selections', fakeFinalPickRows)
@@ -227,9 +232,7 @@ console.log(`dailyTop10SelectedFixturesWithOdds: ${dailyTop10SelectedFixturesWit
 
 if (candidateRowsResult.rows.length > 0) {
   report('candidateReadyCount available', Number.isFinite(candidateCounts.READY) ? 0 : 1)
-  if (candidateCounts.READY >= 10) {
-    report('Top10 with odds must be 10 when READY candidates >= 10', dailyTop10SelectedFixturesWithOdds === 10 ? 0 : 10 - dailyTop10SelectedFixturesWithOdds)
-  }
+  report('ready rows do not exceed ready candidates', dailyTop10SelectedFixturesWithOdds > candidateCounts.READY ? dailyTop10SelectedFixturesWithOdds - candidateCounts.READY : 0)
 }
 
 console.log(`likelyRootCause: ${rootCause}`)
@@ -378,9 +381,10 @@ function determineRootCause(input) {
   if (input.fixturesToday <= 0 || input.playableFixtures <= 0) return 'FIXTURE_SYNC_LOW_COUNT'
   if (input.candidateTableMissing || input.dailyMarketCandidates <= 0) return 'DAILY_MARKET_CANDIDATES_NOT_BUILT'
   if (input.duplicateTop10Ranks > 0 || input.duplicateTop10Matches > 0) return 'DYNAMIC_OFFSET_DUPLICATE_FIXTURES'
-  if (input.oddsChecks.oddsRowsExistButHasMarketDataFalse > 0 || input.oddsChecks.hasMarketDataTrueButNoOddsRows > 0) return 'TOP10_ODDS_SYNC_INCOMPLETE'
-  if (input.candidateReadyCount >= 10 && input.dailyTop10SelectedFixturesWithOdds < 10) return 'TOP10_SELECTED_BEFORE_MARKET_READY'
-  if (input.dailyTop10Count > 0 && input.dailyTop10SelectedFixturesWithOdds < input.dailyTop10Count && input.candidateReadyCount < 10) return 'READY_CANDIDATES_LESS_THAN_10'
+  if (input.oddsChecks.oddsRowsExistButHasMarketDataFalse > 0 || input.oddsChecks.hasMarketDataTrueButNoOddsRows > 0) return 'DECISION_BOARD_ODDS_SYNC_INCOMPLETE'
+  if (input.candidateReadyCount > 0 && input.dailyTop10SelectedFixturesWithOdds === 0) return 'DECISION_BOARD_SELECTED_BEFORE_MARKET_READY'
+  if (input.selectedWaitingMarketCount > 0 && input.dailyTop10SelectedFixturesWithOdds < input.dailyTop10Count) return 'DYNAMIC_READY_COVERAGE_PARTIAL'
+  if (input.dailyTop10Count > 0 && input.dailyTop10SelectedFixturesWithOdds < input.dailyTop10Count && input.candidateReadyCount < input.dailyTop10Count) return 'DYNAMIC_READY_COVERAGE_PARTIAL'
   if (input.dailyTop10Count > 0 && input.dailyTop10SelectedFixturesWithOdds < input.dailyTop10Count) return 'ODDS_PROVIDER_EMPTY_FOR_SELECTED_FIXTURES'
   return 'OK'
 }
@@ -444,6 +448,18 @@ function isFinished(match) {
 
 function isUsableFullTimeOddsRow(row) {
   return !isUnsupportedMainOddsMarket(row) && (isAhLike(row) || isOuLike(row) || String(row.market_focus ?? '').toUpperCase() === 'MATCH_WINNER' || String(row.market_name ?? '').toLowerCase().includes('match winner'))
+}
+
+function isUsableDecisionMarketOddsRow(row) {
+  return !isUnsupportedMainOddsMarket(row) && (isAhLike(row) || isOuLike(row))
+}
+
+function normalizeDecisionStatus(row) {
+  const status = String(row.selection_status ?? '').toUpperCase()
+  if (status) return status
+  if (row.market_ready === true) return 'READY'
+  if (row.market_ready === false) return 'WAITING_MARKET'
+  return row.ai_final_pick_id ? 'READY' : 'WAITING_MARKET'
 }
 
 function isAhLike(row) {

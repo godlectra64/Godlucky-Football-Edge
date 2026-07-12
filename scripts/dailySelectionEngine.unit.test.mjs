@@ -13,29 +13,30 @@ assert.ok(Math.abs(Object.values(dailySelectionConfig.weights).reduce((total, va
 const fullMarket = { id: 'odds', match_id: 'x', market_name: 'Asian Handicap', price: 1.9 }
 
 const scenario1 = selectDailyTop10(createCandidates(20, { odds: [fullMarket] }), { selectionDate })
-assert.equal(scenario1.selected.length, 10)
-assert.deepEqual(scenario1.selected.map((row) => row.rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-assert.equal(new Set(scenario1.selected.map((row) => row.fixtureId)).size, 10)
-assert.ok(scenario1.selected.every((row) => row.tier === 'PRIMARY'))
+assert.equal(scenario1.selected.length, 20)
+assert.deepEqual(scenario1.selected.map((row) => row.decisionRank), Array.from({ length: 20 }, (_, index) => index + 1))
+assert.equal(new Set(scenario1.selected.map((row) => row.fixtureId)).size, 20)
+assert.ok(scenario1.selected.every((row) => row.candidateTier === 'CORE'))
+assert.ok(scenario1.selected.every((row) => row.decisionStatus === 'READY'))
 
 const scenario2Rows = [
   ...createCandidates(10, { odds: [fullMarket], prefix: 'market' }),
   ...createCandidates(6, { odds: [], prefix: 'no-market', scoreOffset: -1 }),
 ]
 const scenario2 = selectDailyTop10(scenario2Rows, { selectionDate })
-assert.equal(scenario2.selected.length, 10)
+assert.equal(scenario2.selected.length, 16)
 assert.equal(scenario2.rejected.filter((row) => row.hardFilter.reasons.some((item) => item.code === 'WAITING_MARKET_DATA')).length, 0)
 assert.ok(scenario2.candidates.some((row) => !row.hasMarketData && row.softRanking.penalties.some((item) => item.code === 'MISSING_MARKET_DATA')))
-assert.ok(scenario2.selected.filter((row) => !row.hasMarketData).every((row) => row.selectionStatus === 'SELECTED_WAITING_MARKET'))
+assert.ok(scenario2.selected.filter((row) => !row.hasMarketData).every((row) => row.selectionStatus === 'WAITING_MARKET'))
 assert.ok(scenario2.selected.filter((row) => !row.hasMarketData).every((row) => row.softRanking.finalPickAllowed === false))
 
 const scenario3 = selectDailyTop10(createCandidates(8, { odds: [fullMarket] }), { selectionDate })
 assert.equal(scenario3.selected.length, 8)
-assert.equal(scenario3.summary.healthStatus, 'INSUFFICIENT_ELIGIBLE_CANDIDATES')
+assert.equal(scenario3.summary.healthStatus, 'DYNAMIC_BOARD_READY')
 
 const sameLeague = selectDailyTop10(createCandidates(14, { odds: [fullMarket], league: { name: 'Same League', country: 'England' } }), { selectionDate })
-assert.equal(sameLeague.selected.length, 10)
-assert.ok(sameLeague.selected.some((row) => row.tier === 'SECONDARY' || row.tier === 'FALLBACK'))
+assert.equal(sameLeague.selected.length, 14)
+assert.ok(sameLeague.selected.every((row) => row.candidateTier === 'CORE'))
 
 for (const status_short of ['CANC', 'PST', 'FT']) {
   const rejected = evaluateHardFilter(candidate(1, { status_short, odds: [fullMarket] }), buildContext())
@@ -44,9 +45,10 @@ for (const status_short of ['CANC', 'PST', 'FT']) {
 }
 
 const noOddsWithStats = selectDailyTop10(createCandidates(12, { odds: [], scoreOffset: 0 }), { selectionDate })
-assert.equal(noOddsWithStats.selected.length, 10)
+assert.equal(noOddsWithStats.selected.length, 12)
 assert.ok(noOddsWithStats.selected.every((row) => row.softRanking.finalScore >= 0 && row.softRanking.finalScore <= 100))
-assert.ok(noOddsWithStats.selected.every((row) => row.selectionStatus === 'SELECTED_WAITING_MARKET'))
+assert.ok(noOddsWithStats.selected.every((row) => row.selectionStatus === 'WAITING_MARKET'))
+assert.ok(noOddsWithStats.selected.every((row) => row.decisionRank === null))
 
 const ordered = createCandidates(14, { odds: [fullMarket] })
 const shuffled = [...ordered].reverse()

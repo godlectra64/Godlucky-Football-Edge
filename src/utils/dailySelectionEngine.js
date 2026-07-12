@@ -1,12 +1,30 @@
 import { getLeagueQualityScore } from './leagueQualityScoring.js'
 
-export const DAILY_SELECTION_ALGORITHM_VERSION = 'two-stage-selection-v1'
+export const DAILY_SELECTION_ALGORITHM_VERSION = 'market-ready-dynamic-selection-v1'
 
 export const dailySelectionConfig = Object.freeze({
   algorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-  topN: 10,
+  coreTarget: 30,
+  expansionStep: 10,
+  maxCandidates: 60,
+  minMarketReadyTarget: 12,
+  targetMarketCoverageRatio: 0.4,
   primaryScoreThreshold: 72,
   secondaryScoreThreshold: 64,
+  ready: Object.freeze({
+    dataReadinessScore: 80,
+    confidence: 72,
+    edgeScore: 65,
+    riskScore: 45,
+    moduleConsistency: 70,
+    criticalMissingFields: 0,
+  }),
+  watch: Object.freeze({
+    dataReadinessScore: 65,
+    confidence: 62,
+    edgeScore: 55,
+    riskScore: 60,
+  }),
   weights: Object.freeze({
     leagueQuality: 0.12,
     dataQuality: 0.18,
@@ -37,7 +55,11 @@ export function buildDailySelectionContext(matches = [], options = {}) {
     fixtureIdCounts,
     config: {
       ...dailySelectionConfig,
-      topN: options.limit ?? options.topN ?? dailySelectionConfig.topN,
+      coreTarget: positiveInteger(options.coreTarget, dailySelectionConfig.coreTarget),
+      expansionStep: positiveInteger(options.expansionStep, dailySelectionConfig.expansionStep),
+      maxCandidates: positiveInteger(options.maxCandidates ?? options.limit, dailySelectionConfig.maxCandidates),
+      minMarketReadyTarget: positiveInteger(options.minMarketReadyTarget, dailySelectionConfig.minMarketReadyTarget),
+      targetMarketCoverageRatio: numericValue(options.targetMarketCoverageRatio, dailySelectionConfig.targetMarketCoverageRatio),
       ...(options.config ?? {}),
     },
   }
@@ -146,6 +168,7 @@ export function selectDailyTop10(matches = [], options = {}) {
   const rows = (matches ?? []).map((match, inputIndex) => {
     const hardFilter = evaluateHardFilter(match, context)
     const softRanking = calculateSoftRanking({ match }, context)
+    const decision = classifyDecision({ match, hardFilter, softRanking, context })
     return {
       match,
       inputIndex,
@@ -157,25 +180,40 @@ export function selectDailyTop10(matches = [], options = {}) {
       passedHardFilter: hardFilter.passed,
       selectionScore: softRanking.finalScore,
       hasMarketData: softRanking.hasMarketData,
-      selectionStatus: softRanking.hasMarketData ? 'SELECTED_MARKET_READY' : 'SELECTED_WAITING_MARKET',
+      marketReady: softRanking.hasMarketData,
+      selectionStatus: decision.status,
+      decisionStatus: decision.status,
+      decisionRankEligible: decision.rankEligible,
+      decision,
     }
   })
 
   const eligible = rows.filter((row) => row.passedHardFilter)
   const rejected = rows.filter((row) => !row.passedHardFilter)
-  const selectedRows = fillTopN(eligible, context.config).map((row, index) => ({
+  const rankedCandidates = buildDynamicCandidatePool(eligible, context.config)
+  const selectedRows = rankedCandidates.filter((row) => row.decisionStatus !== 'REJECTED').map((row, index) => ({
     ...row,
-    rank: index + 1,
+    rank: row.decisionRankEligible ? index + 1 : null,
+    decisionRank: row.decisionRankEligible ? index + 1 : null,
     tier: getSelectionTier(row, context.config),
   }))
 
   const selectedIds = new Set(selectedRows.map((row) => row.fixtureId || row.match?.id).filter(Boolean))
-  const healthStatus = eligible.length >= context.config.topN
-    ? selectedRows.length === context.config.topN ? 'OK' : 'TOP10_UNDERFILLED'
-    : 'INSUFFICIENT_ELIGIBLE_CANDIDATES'
+  const marketReadyCount = selectedRows.filter((row) => row.decisionStatus === 'READY').length
+  const probedCandidateCount = Math.min(rankedCandidates.length, context.config.maxCandidates)
+  const coverageRatio = probedCandidateCount ? marketReadyCount / probedCandidateCount : 0
+  const expansionStopReason = getExpansionStopReason({
+    marketReadyCount,
+    probedCandidateCount,
+    candidateCount: rankedCandidates.length,
+    totalEligible: eligible.length,
+    config: context.config,
+  })
+  const healthStatus = selectedRows.length ? 'DYNAMIC_BOARD_READY' : eligible.length ? 'NO_DECISION_READY' : 'NO_ELIGIBLE_CANDIDATES'
 
   return {
     algorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
+    pipelineVersion: 'market-ready-dynamic-pipeline-v1',
     selectionDate: context.selectionDate,
     selected: selectedRows,
     candidates: rows.map((row) => ({
@@ -190,11 +228,24 @@ export function selectDailyTop10(matches = [], options = {}) {
       hardFilterPassed: eligible.length,
       hardFilterRejected: rejected.length,
       selectedCount: selectedRows.length,
-      primarySelected: selectedRows.filter((row) => row.tier === 'PRIMARY').length,
-      secondarySelected: selectedRows.filter((row) => row.tier === 'SECONDARY').length,
-      fallbackSelected: selectedRows.filter((row) => row.tier === 'FALLBACK').length,
-      marketReadySelected: selectedRows.filter((row) => row.hasMarketData).length,
-      waitingMarketSelected: selectedRows.filter((row) => !row.hasMarketData).length,
+      readyCount: selectedRows.filter((row) => row.decisionStatus === 'READY').length,
+      watchCount: selectedRows.filter((row) => row.decisionStatus === 'WATCH').length,
+      waitingMarketCount: selectedRows.filter((row) => row.decisionStatus === 'WAITING_MARKET').length,
+      rejectedCount: rejected.length + rankedCandidates.filter((row) => row.decisionStatus === 'REJECTED').length,
+      primarySelected: selectedRows.filter((row) => row.tier === 'CORE').length,
+      secondarySelected: selectedRows.filter((row) => row.tier === 'EXPANDED').length,
+      fallbackSelected: selectedRows.filter((row) => row.tier === 'RESERVE').length,
+      marketReadySelected: selectedRows.filter((row) => row.decisionStatus === 'READY').length,
+      waitingMarketSelected: selectedRows.filter((row) => row.decisionStatus === 'WAITING_MARKET').length,
+      coreCandidates: rankedCandidates.filter((row) => row.candidateTier === 'CORE').length,
+      expandedCandidates: rankedCandidates.filter((row) => row.candidateTier === 'EXPANDED').length,
+      reserveCandidates: rankedCandidates.filter((row) => row.candidateTier === 'RESERVE').length,
+      marketProbedCandidates: probedCandidateCount,
+      marketReadyCandidates: marketReadyCount,
+      targetMarketCoverageRatio: context.config.targetMarketCoverageRatio,
+      marketCoverageRatio: roundScore(coverageRatio * 100),
+      expansionSteps: Math.max(0, Math.ceil(Math.max(0, rankedCandidates.length - context.config.coreTarget) / context.config.expansionStep)),
+      expansionStopReason,
       healthStatus,
     },
   }
@@ -202,8 +253,8 @@ export function selectDailyTop10(matches = [], options = {}) {
 
 export function compareDailySelectionRows(a, b) {
   return (
+    decisionStatusPriority(b.decisionStatus) - decisionStatusPriority(a.decisionStatus) ||
     b.selectionScore - a.selectionScore ||
-    Number(b.hasMarketData) - Number(a.hasMarketData) ||
     getRecommendationPriority(b.softRanking?.recommendation) - getRecommendationPriority(a.softRanking?.recommendation) ||
     a.kickoffTime - b.kickoffTime ||
     String(a.fixtureId ?? a.match?.id ?? '').localeCompare(String(b.fixtureId ?? b.match?.id ?? '')) ||
@@ -211,44 +262,135 @@ export function compareDailySelectionRows(a, b) {
   )
 }
 
-function fillTopN(eligible, config) {
-  const selected = []
-  const used = new Set()
-  const passes = [
-    { tier: 'PRIMARY', threshold: config.primaryScoreThreshold, cap: 3 },
-    { tier: 'SECONDARY', threshold: config.secondaryScoreThreshold, cap: 5 },
-    { tier: 'FALLBACK', threshold: 0, cap: Infinity },
-  ]
-  const sorted = [...eligible].sort(compareDailySelectionRows)
+function getSelectionTier(row, config) {
+  if (row.candidateTier) return row.candidateTier
+  if (row.candidateRank <= config.coreTarget) return 'CORE'
+  if (row.candidateRank <= config.maxCandidates) return 'EXPANDED'
+  return 'RESERVE'
+}
 
-  for (const pass of passes) {
-    const leagueCounts = countSelectedLeagues(selected)
-    for (const row of sorted) {
-      const key = row.fixtureId || row.match?.id
-      if (!key || used.has(key)) continue
-      if (row.selectionScore < pass.threshold) continue
-      if ((leagueCounts.get(row.leagueKey) ?? 0) >= pass.cap) continue
-      selected.push({ ...row, fallbackLevel: pass.tier })
-      used.add(key)
-      leagueCounts.set(row.leagueKey, (leagueCounts.get(row.leagueKey) ?? 0) + 1)
-      if (selected.length >= config.topN) return selected
+function buildDynamicCandidatePool(eligible, config) {
+  const sorted = [...eligible].sort(compareDailySelectionRows)
+  const maxCandidates = Math.max(0, Math.min(config.maxCandidates, sorted.length))
+  let target = Math.min(config.coreTarget, maxCandidates)
+  let pool = sorted.slice(0, target)
+
+  while (target < maxCandidates && shouldExpandCandidatePool(pool, config)) {
+    target = Math.min(target + config.expansionStep, maxCandidates)
+    pool = sorted.slice(0, target)
+  }
+
+  return pool.map((row, index) => ({
+    ...row,
+    candidateRank: index + 1,
+    candidateTier: index < config.coreTarget ? 'CORE' : index < target ? 'EXPANDED' : 'RESERVE',
+  }))
+}
+
+function shouldExpandCandidatePool(rows, config) {
+  if (!rows.length) return false
+  const marketReadyCount = rows.filter((row) => row.decisionStatus === 'READY').length
+  return marketReadyCount < config.minMarketReadyTarget &&
+    marketReadyCount / rows.length < config.targetMarketCoverageRatio
+}
+
+function getExpansionStopReason({ marketReadyCount, probedCandidateCount, candidateCount, totalEligible, config }) {
+  if (marketReadyCount >= config.minMarketReadyTarget) return 'MIN_MARKET_READY_TARGET_REACHED'
+  if (probedCandidateCount > 0 && marketReadyCount / probedCandidateCount >= config.targetMarketCoverageRatio) return 'TARGET_MARKET_COVERAGE_RATIO_REACHED'
+  if (candidateCount >= config.maxCandidates) return 'MAX_CANDIDATES_REACHED'
+  if (candidateCount >= totalEligible) return 'NO_MORE_CANDIDATES'
+  return 'CANDIDATE_POOL_READY'
+}
+
+function classifyDecision({ match, hardFilter, softRanking, context }) {
+  if (!hardFilter.passed) {
+    return {
+      status: 'REJECTED',
+      rankEligible: false,
+      failedGates: hardFilter.reasons,
+      reason: 'Fixture rejected by hard filters',
     }
   }
 
-  return selected
+  const dataReadinessScore = getDataQualityScore(match)
+  const confidence = getConfidenceScore(match)
+  const edgeScore = getValueScore(match)
+  const riskScore = getRiskScore(match)
+  const moduleConsistency = getModuleConsistencyScore(match)
+  const criticalMissingFields = getCriticalMissingFieldCount(match)
+  const marketReady = softRanking.hasMarketData
+  const gates = {
+    market_ready: marketReady,
+    data_readiness_score: dataReadinessScore,
+    confidence,
+    edge_score: edgeScore,
+    risk_score: riskScore,
+    module_consistency: moduleConsistency,
+    critical_missing_fields: criticalMissingFields,
+  }
+
+  if (!marketReady) {
+    return {
+      status: 'WAITING_MARKET',
+      rankEligible: false,
+      gates,
+      failedGates: [reason('WAITING_MARKET', 'No valid AH/O-U market is available; final pick is blocked')],
+      reason: 'Waiting for market availability',
+      ahPickStatus: 'รอเส้น AH',
+      ouPickStatus: 'รอราคา O/U',
+      finalPick: null,
+    }
+  }
+
+  const ready = context.config.ready ?? dailySelectionConfig.ready
+  const readyFailures = []
+  if (dataReadinessScore < ready.dataReadinessScore) readyFailures.push(reason('DATA_READINESS_BELOW_READY', `data_readiness_score ${dataReadinessScore} < ${ready.dataReadinessScore}`))
+  if (confidence < ready.confidence) readyFailures.push(reason('CONFIDENCE_BELOW_READY', `confidence ${confidence} < ${ready.confidence}`))
+  if (edgeScore < ready.edgeScore) readyFailures.push(reason('EDGE_BELOW_READY', `edge_score ${edgeScore} < ${ready.edgeScore}`))
+  if (riskScore > ready.riskScore) readyFailures.push(reason('RISK_ABOVE_READY', `risk_score ${riskScore} > ${ready.riskScore}`))
+  if (moduleConsistency < ready.moduleConsistency) readyFailures.push(reason('MODULE_CONSISTENCY_BELOW_READY', `module_consistency ${moduleConsistency} < ${ready.moduleConsistency}`))
+  if (criticalMissingFields > ready.criticalMissingFields) readyFailures.push(reason('CRITICAL_FIELDS_MISSING', `critical_missing_fields ${criticalMissingFields} > ${ready.criticalMissingFields}`))
+
+  if (!readyFailures.length) {
+    return {
+      status: 'READY',
+      rankEligible: true,
+      gates,
+      failedGates: [],
+      reason: 'Market-ready candidate passed READY gates',
+    }
+  }
+
+  const watch = context.config.watch ?? dailySelectionConfig.watch
+  const watchPassed = dataReadinessScore >= watch.dataReadinessScore &&
+    (confidence >= watch.confidence || edgeScore >= watch.edgeScore) &&
+    riskScore <= watch.riskScore &&
+    criticalMissingFields === 0
+
+  if (watchPassed) {
+    return {
+      status: 'WATCH',
+      rankEligible: false,
+      gates,
+      failedGates: readyFailures,
+      reason: 'Market-ready candidate did not pass READY gates',
+    }
+  }
+
+  return {
+    status: 'REJECTED',
+    rankEligible: false,
+    gates,
+    failedGates: readyFailures,
+    reason: 'Candidate did not pass decision quality gates',
+  }
 }
 
-function getSelectionTier(row, config) {
-  if (row.fallbackLevel) return row.fallbackLevel
-  if (row.selectionScore >= config.primaryScoreThreshold) return 'PRIMARY'
-  if (row.selectionScore >= config.secondaryScoreThreshold) return 'SECONDARY'
-  return 'FALLBACK'
-}
-
-function countSelectedLeagues(rows) {
-  const counts = new Map()
-  for (const row of rows) counts.set(row.leagueKey, (counts.get(row.leagueKey) ?? 0) + 1)
-  return counts
+function decisionStatusPriority(status) {
+  if (status === 'READY') return 4
+  if (status === 'WATCH') return 3
+  if (status === 'WAITING_MARKET') return 2
+  return 1
 }
 
 function getFixtureId(match = {}) {
@@ -311,12 +453,18 @@ function hasMarketData(match = {}) {
   const rows = match.odds ?? match.matchOdds ?? match.match_odds ?? analysis.raw?.odds ?? []
   const oddsRowsUsed = Number(analysis.odds_rows_used ?? analysis.raw?.odds_rows_used ?? 0)
   return Boolean(
-    (Array.isArray(rows) && rows.length > 0) ||
-      oddsRowsUsed > 0 ||
-      match.hasMarketData ||
-      match.has_market_data ||
-      analysis.market_data_used,
+    (Array.isArray(rows) && rows.some(isUsableDecisionMarket)) ||
+      oddsRowsUsed > 0,
   )
+}
+
+function isUsableDecisionMarket(row = {}) {
+  const focus = String(row.market_focus ?? '').toUpperCase()
+  const name = String(row.market_name ?? row.name ?? '').toLowerCase()
+  const hasPrice = row.price !== null && row.price !== undefined && Number(row.price) > 0
+  const isAh = focus === 'AH' || name.includes('asian handicap') || name.includes('handicap')
+  const isOu = focus === 'OU' || name.includes('over/under') || name.includes('goals over')
+  return hasPrice && (isAh || isOu)
 }
 
 function getDataQualityScore(match = {}) {
@@ -356,6 +504,39 @@ function getRiskScore(match = {}) {
   if (riskLevel === 'LOW') return 30
   if (riskLevel === 'HIGH') return 78
   return 55
+}
+
+function getConfidenceScore(match = {}) {
+  const analysis = getAnalysis(match)
+  return scoreValue(analysis.calibrated_confidence_score ?? analysis.confidence_score ?? match.confidence, 0)
+}
+
+function getModuleConsistencyScore(match = {}) {
+  const analysis = getAnalysis(match)
+  const values = [
+    analysis.team_strength_score,
+    analysis.form_score,
+    analysis.home_advantage_score ?? analysis.home_away_score,
+    analysis.goal_scoring_score ?? analysis.goal_quality_score,
+    analysis.defensive_stability_score,
+    analysis.tactical_matchup_score ?? analysis.tactical_score,
+    analysis.motivation_score,
+  ].map((value) => firstNumber(value)).filter((value) => value !== null)
+  if (!values.length) return 70
+  const average = values.reduce((total, value) => total + value, 0) / values.length
+  const spread = Math.max(...values) - Math.min(...values)
+  return roundScore(clamp(average - spread * 0.2, 0, 100))
+}
+
+function getCriticalMissingFieldCount(match = {}) {
+  const checks = [
+    getFixtureId(match),
+    getKickoff(match),
+    getLeagueName(match),
+    getHomeTeamName(match),
+    getAwayTeamName(match),
+  ]
+  return checks.filter((value) => !value).length
 }
 
 function getAnalysis(match = {}) {
@@ -428,6 +609,16 @@ function firstNumber(...values) {
     if (Number.isFinite(numeric)) return numeric
   }
   return null
+}
+
+function positiveInteger(value, fallback) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback
+}
+
+function numericValue(value, fallback) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
 }
 
 function scoreValue(value, fallback = 0) {

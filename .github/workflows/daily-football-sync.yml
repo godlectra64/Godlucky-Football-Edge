@@ -24,7 +24,7 @@ jobs:
       EDGE_ADMIN_SECRET: ${{ secrets.EDGE_ADMIN_SECRET }}
 
     steps:
-      - name: Run daily fixture sync, Top10 odds, and verify
+      - name: Run daily fixture sync, decision board odds, and verify
         shell: bash
         run: |
           node <<'NODE'
@@ -145,12 +145,12 @@ jobs:
             console.log(`daily-sync-auto stopped without a real failure: status=${dailySync.status ?? 'unknown'}, progressPercent=${dailySync.progressPercent ?? 'unknown'}, nextAction=${dailySync.nextAction ?? 'unknown'}`)
           }
 
-          await postSync({ mode: 'build-daily-market-candidates', limit: 50 })
+          await postSync({ mode: 'build-daily-market-candidates', limit: 60 })
 
           let candidateOdds = await postSync({ mode: 'sync-daily-candidate-odds', limit: 2 })
-          for (let attempt = 1; attempt <= 25 && candidateOdds.hasMore && Number(candidateOdds.readyCandidateCount ?? 0) < 10; attempt += 1) {
+          for (let attempt = 1; attempt <= 30 && candidateOdds.hasMore; attempt += 1) {
             const offset = Number(candidateOdds.nextOffset ?? 0)
-            console.log(`Continuing sync-daily-candidate-odds at offset ${offset}; ready=${candidateOdds.readyCandidateCount ?? 0}; attempt ${attempt}/25`)
+            console.log(`Continuing sync-daily-candidate-odds at offset ${offset}; ready=${candidateOdds.readyCandidateCount ?? 0}; attempt ${attempt}/30`)
             candidateOdds = await postSync({
               mode: 'sync-daily-candidate-odds',
               offset,
@@ -158,27 +158,12 @@ jobs:
             })
           }
 
-          if (candidateOdds.hasMore && Number(candidateOdds.readyCandidateCount ?? 0) < 10) {
-            throw new Error(`candidate odds sync stopped before enough READY candidates: ready=${candidateOdds.readyCandidateCount ?? 0}, nextOffset=${candidateOdds.nextOffset ?? 'unknown'}`)
+          if (candidateOdds.hasMore) {
+            throw new Error(`candidate odds sync still has more work at offset ${candidateOdds.nextOffset ?? 'unknown'}`)
           }
 
           await postSync({ mode: 'finalize-market-ready-candidates' })
-          let marketFirstPicks = await postSync({ mode: 'strict-api-football-daily-picks', limit: 10, marketFirst: true })
-          if (marketFirstPicks.staleMarketLockRepairEligible === true) {
-            console.log(`Repairing stale pre-market Top10 lock; ready=${marketFirstPicks.candidateReadyCount ?? marketFirstPicks.readyCandidates ?? 0}, withOdds=${marketFirstPicks.top10WithOdds?.length ?? 0}`)
-            marketFirstPicks = await postSync({
-              mode: 'repair-stale-market-first-top10',
-              selectionDate: marketFirstPicks.selectionDate,
-              repairStaleMarketLock: true,
-            })
-            if (marketFirstPicks.repairedExistingLock !== true) {
-              throw new Error('stale market-first Top10 repair was eligible but did not replace the lock')
-            }
-          }
-          const marketFirstWithOddsCount = Number(marketFirstPicks.top10WithOddsCount ?? marketFirstPicks.top10WithOdds?.length ?? 0)
-          if (Number(marketFirstPicks.candidateReadyCount ?? marketFirstPicks.readyCandidates ?? 0) >= 10 && marketFirstWithOddsCount < 10) {
-            throw new Error(`market-first Top10 remains incomplete after conditional repair: withOdds=${marketFirstWithOddsCount}`)
-          }
+          await postSync({ mode: 'strict-api-football-daily-picks', limit: 60, marketFirst: true })
 
           let top10Odds = await postSync({ mode: 'sync-daily-top10-odds', limit: 2 })
           for (let attempt = 1; attempt <= 8 && top10Odds.hasMore; attempt += 1) {
@@ -196,7 +181,7 @@ jobs:
           }
 
           await postSync({ mode: 'sync-today-odds-finalize' })
-          await postSync({ mode: 'strict-api-football-daily-picks', limit: 10, marketFirst: true })
+          await postSync({ mode: 'strict-api-football-daily-picks', limit: 60, marketFirst: true })
           await postSync({ mode: 'get-daily-top10-status' })
           await postSync({ mode: 'diagnose-sync-today-odds' })
           console.log('Daily football sync workflow completed successfully.')
@@ -223,7 +208,7 @@ jobs:
           npm run verify:scheduler
           if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then
             npm run verify:odds
-            npm run verify:daily-top10
+            npm run verify:daily-decision-board
             npm run verify:daily-production-health
             npm run diagnose:daily-odds-sync
           else
