@@ -29,7 +29,7 @@ console.log('Football analytics production checks passed')
 function checkSource() {
   const status = readFile('src/utils/analysisStatus.js')
   const analytics = readFile('src/utils/footballAnalytics.js')
-  const migration = readFile('supabase/migrations/20260712_finalize_football_analytics_production.sql')
+  const migration = readFile('supabase/migrations/20260712230000_finalize_football_analytics_production.sql')
   const edge = readFile('supabase/functions/sync-football-data/index.ts')
   const packageJson = readFile('package.json')
 
@@ -88,7 +88,7 @@ function findForbiddenPublicTerms() {
     'src/pages/AiPerformancePage.jsx',
     'src/pages/StatsPage.jsx',
   ]
-  const forbidden = ['Best Bet', 'Double Chance Pick', 'Asian Handicap Pick', 'Over/Under Pick', 'เดิมพัน', 'แทง', 'เจ้ามือ', 'ราคาบอล', 'Best Pick', 'Final Decision', 'AH Analysis', 'O/U Analysis']
+  const forbidden = ['Best Bet', 'Double Chance Pick', 'Asian Handicap Pick', 'Over/Under Pick', 'à¹€à¸”à¸´à¸¡à¸žà¸±à¸™', 'à¹à¸—à¸‡', 'à¹€à¸ˆà¹‰à¸²à¸¡à¸·à¸­', 'à¸£à¸²à¸„à¸²à¸šà¸­à¸¥', 'Best Pick', 'Final Decision', 'AH Analysis', 'O/U Analysis']
   const found = []
   for (const file of publicFiles) {
     const text = readFile(file)

@@ -24,6 +24,7 @@ const allowedRootCauses = new Set([
   'DECISION_BOARD_ODDS_SYNC_INCOMPLETE',
   'DYNAMIC_OFFSET_DUPLICATE_FIXTURES',
 ])
+const canonicalAnalysisStatuses = new Set(['ANALYSIS_READY', 'PARTIAL_ANALYSIS', 'WAITING_DATA', 'INSUFFICIENT_DATA', 'FINAL_LOCKED', 'FINISHED'])
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
@@ -87,6 +88,12 @@ const latestDailyRunSteps = latestDailyRun?.id
     query.eq('run_id', latestDailyRun.id).order('step_order', { ascending: true })
   )
   : []
+const dailyAnalysisBoardResult = await selectOptionalAll('daily_analysis_board', 'selection_id, match_id, fixture_id, selection_date, rank, analysis_status, confidence', (query) =>
+  query.eq('selection_date', range.dateKey).order('rank', { ascending: true })
+)
+const aiFinalPickRowsResult = matchIds.length
+  ? await selectOptionalAll('football_ai_final_picks', 'id, match_id, api_fixture_id, analysis_status, confidence_score, pick_confidence', (query) => query.in('match_id', matchIds))
+  : { rows: [], missing: false }
 
 const oddsChecks = await buildOddsChecks(matches, todayOdds)
 const top10WithDecisionMarketMatchIds = new Set(top10Odds.filter(isUsableDecisionMarketOddsRow).map((row) => row.match_id).filter(Boolean))
@@ -96,6 +103,14 @@ const duplicateTop10Ranks = countDuplicates(top10Rows.map((row) => row.rank).fil
 const duplicateTop10Matches = countDuplicates(top10MatchIds)
 const aiFinalPickCoverage = readyTop10Rows.filter((row) => row.ai_final_pick_id).length
 const candidateCounts = countCandidateReadiness(candidateRowsResult.rows)
+const footballAnalyticsChecks = buildFootballAnalyticsChecks({
+  dailyRun: latestDailyRun,
+  dailyAnalysisBoardRows: dailyAnalysisBoardResult.rows,
+  aiFinalPickRows: aiFinalPickRowsResult.rows,
+})
+const footballAnalyticsMode = footballAnalyticsChecks.syncReady || footballAnalyticsChecks.boardRowsAvailable
+const footballAnalyticsBoardAvailable = footballAnalyticsChecks.boardRowsAvailable
+const footballAnalyticsReady = footballAnalyticsChecks.ready
 const dailyTop10SelectedFixturesWithOdds = readyTop10Rows.filter((row) => top10WithDecisionMarketMatchIds.has(row.match_id)).length
 const selectedWaitingMarketCount = waitingTop10Rows.length
 const eligibleCandidateCount = selection.summary.eligibleCandidateCount
@@ -141,6 +156,11 @@ const resultsSettled = await countSettledResults(range.dateKey)
 const rootCause = determineRootCause({
   fixturesToday: matches.length,
   playableFixtures: playableMatches.length,
+  footballAnalyticsMode,
+  footballAnalyticsReady,
+  footballAnalyticsInvalid: footballAnalyticsChecks.invalidAnalysisStatuses + footballAnalyticsChecks.invalidConfidenceValues + footballAnalyticsChecks.duplicateBoardRanks + footballAnalyticsChecks.duplicateBoardFixtures + footballAnalyticsChecks.duplicateFinalPickFixtures,
+  footballAnalyticsSyncReady: footballAnalyticsChecks.syncReady,
+  footballAnalyticsBoardAvailable,
   candidateTableMissing: candidateRowsResult.missing,
   dailyMarketCandidates: candidateRowsResult.rows.length,
   candidateReadyCount: candidateCounts.READY,
@@ -174,6 +194,13 @@ console.log(`candidateExpandedCount: ${candidateRowsResult.rows.filter((row) => 
 console.log(`candidateReserveCount: ${candidateRowsResult.rows.filter((row) => Number(row.candidate_rank ?? 0) > 40).length}`)
 console.log(`preliminarySelected: ${selection.summary.selectedCount}`)
 console.log(`lockedSelected: ${top10Rows.length}`)
+console.log(`dailyAnalysisBoardRows: ${dailyAnalysisBoardResult.rows.length}`)
+console.log(`aiFinalPickRows: ${aiFinalPickRowsResult.rows.length}`)
+console.log(`rankingSelectionCompleted: ${footballAnalyticsChecks.rankingSelectionCompleted}`)
+console.log(`rankingSelectionHealth: ${footballAnalyticsChecks.rankingSelectionHealth ?? 'NONE'}`)
+console.log(`footballAnalyticsMode: ${footballAnalyticsMode}`)
+console.log(`footballAnalyticsBoardAvailable: ${footballAnalyticsBoardAvailable}`)
+console.log(`footballAnalyticsReady: ${footballAnalyticsReady}`)
 console.log(`primarySelected: ${selection.summary.primarySelected}`)
 console.log(`secondarySelected: ${selection.summary.secondarySelected}`)
 console.log(`fallbackSelected: ${selection.summary.fallbackSelected}`)
@@ -202,14 +229,21 @@ console.log(`retryable: ${rankingCompletion.retryable}`)
 console.log(`retryReasonCode: ${rankingCompletion.retryReasonCode}`)
 report('fixturesToday', matches.length, { failWhen: (value) => value <= 0 })
 report('playableFixtures', playableMatches.length, { failWhen: (value) => value <= 0 })
-report('decision board count valid', dynamicBoardCountViolation, { details: `count ${top10Rows.length}, eligible ${eligibleCandidateCount}, expectedMax ${expectedDynamicBoardCount}` })
-report('candidate pool <= 60', candidateRowsResult.rows.length > 60 ? candidateRowsResult.rows.length - 60 : 0)
+reportWithFootballAnalyticsWarning('decision board count valid', dynamicBoardCountViolation, { details: `count ${top10Rows.length}, eligible ${eligibleCandidateCount}, expectedMax ${expectedDynamicBoardCount}` })
+reportWithFootballAnalyticsWarning('candidate pool <= 60', candidateRowsResult.rows.length > 60 ? candidateRowsResult.rows.length - 60 : 0)
 report('duplicate decision board ranks', duplicateTop10Ranks)
 report('duplicate decision board fixtures', duplicateTop10Matches)
-report('aiFinalPick coverage market-ready incomplete', Math.max(0, dailyTop10SelectedFixturesWithOdds - aiFinalPickCoverage), { details: `${aiFinalPickCoverage}/${dailyTop10SelectedFixturesWithOdds} market-ready; waiting-market ${selectedWaitingMarketCount}` })
+reportWithFootballAnalyticsWarning('aiFinalPick coverage market-ready incomplete', Math.max(0, dailyTop10SelectedFixturesWithOdds - aiFinalPickCoverage), { details: `${aiFinalPickCoverage}/${dailyTop10SelectedFixturesWithOdds} market-ready; waiting-market ${selectedWaitingMarketCount}` })
 report('selected hard-filter violations', selectedHardFilterViolations)
 report('fake final picks for waiting-market selections', fakeFinalPickRows)
 report('invalid final scores', invalidFinalScores)
+report('daily analysis board duplicate ranks', footballAnalyticsChecks.duplicateBoardRanks)
+report('daily analysis board duplicate fixtures', footballAnalyticsChecks.duplicateBoardFixtures)
+report('football ai final pick duplicate fixtures', footballAnalyticsChecks.duplicateFinalPickFixtures)
+reportWhenFootballAnalyticsMode('football analytics sync ready', footballAnalyticsChecks.syncReady ? 0 : 1, { details: `rankingSelectionCompleted ${footballAnalyticsChecks.rankingSelectionCompleted}, rankingSelectionHealth ${footballAnalyticsChecks.rankingSelectionHealth ?? 'NONE'}` })
+reportWhenFootballAnalyticsMode('football analytics board rows available', footballAnalyticsChecks.boardRowsAvailable ? 0 : 1, { details: `daily_analysis_board ${dailyAnalysisBoardResult.rows.length}, football_ai_final_picks ${aiFinalPickRowsResult.rows.length}` })
+report('football analytics analysis statuses canonical', footballAnalyticsChecks.invalidAnalysisStatuses)
+report('football analytics confidence range 0-100', footballAnalyticsChecks.invalidConfidenceValues)
 console.log(`duplicateRanks: ${duplicateTop10Ranks}`)
 console.log(`duplicateFixtures: ${duplicateTop10Matches}`)
 console.log(`invalidScores: ${invalidFinalScores}`)
@@ -219,9 +253,9 @@ report('null odds price', oddsChecks.nullPrice)
 report('invalid odds price', oddsChecks.invalidPrice)
 console.log(`oddsIntegritySource: ${oddsChecks.oddsIntegritySource}`)
 report('duplicateLatestOdds', oddsChecks.duplicateLatestOdds)
-report('odds rows exists but has_market_data=false', oddsChecks.oddsRowsExistButHasMarketDataFalse)
-report('has_market_data=true but no odds rows', oddsChecks.hasMarketDataTrueButNoOddsRows)
-report('daily_market_candidates table exists', candidateRowsResult.missing ? 1 : 0, { details: candidateRowsResult.missing ? 'daily_market_candidates table missing. Apply migration 20260712_add_daily_market_candidates.sql.' : 'ok' })
+reportWithFootballAnalyticsWarning('odds rows exists but has_market_data=false', oddsChecks.oddsRowsExistButHasMarketDataFalse)
+reportWithFootballAnalyticsWarning('has_market_data=true but no odds rows', oddsChecks.hasMarketDataTrueButNoOddsRows)
+reportWithFootballAnalyticsWarning('daily_market_candidates table exists', candidateRowsResult.missing ? 1 : 0, { details: candidateRowsResult.missing ? 'daily_market_candidates table missing. Legacy candidate table is optional when Football Analytics is ready.' : 'ok' })
 
 console.log(`dailyMarketCandidates: ${candidateRowsResult.rows.length}`)
 console.log(`candidateReadyCount: ${candidateCounts.READY}`)
@@ -231,8 +265,8 @@ console.log(`candidateNoMarketDataCount: ${candidateCounts.NO_MARKET_DATA}`)
 console.log(`dailyTop10SelectedFixturesWithOdds: ${dailyTop10SelectedFixturesWithOdds}`)
 
 if (candidateRowsResult.rows.length > 0) {
-  report('candidateReadyCount available', Number.isFinite(candidateCounts.READY) ? 0 : 1)
-  report('ready rows do not exceed ready candidates', dailyTop10SelectedFixturesWithOdds > candidateCounts.READY ? dailyTop10SelectedFixturesWithOdds - candidateCounts.READY : 0)
+  reportWithFootballAnalyticsWarning('candidateReadyCount available', Number.isFinite(candidateCounts.READY) ? 0 : 1)
+  reportWithFootballAnalyticsWarning('ready rows do not exceed ready candidates', dailyTop10SelectedFixturesWithOdds > candidateCounts.READY ? dailyTop10SelectedFixturesWithOdds - candidateCounts.READY : 0)
 }
 
 console.log(`likelyRootCause: ${rootCause}`)
@@ -379,6 +413,10 @@ async function countDuplicateLatestOddsCompatible() {
 
 function determineRootCause(input) {
   if (input.fixturesToday <= 0 || input.playableFixtures <= 0) return 'FIXTURE_SYNC_LOW_COUNT'
+  if (input.footballAnalyticsReady) return 'OK'
+  if (input.footballAnalyticsMode && !input.footballAnalyticsSyncReady) return 'DAILY_SYNC_REUSED_COMPLETED_RUN'
+  if (input.footballAnalyticsMode && !input.footballAnalyticsBoardAvailable) return 'NO_FOOTBALL_ANALYTICS_BOARD'
+  if (input.footballAnalyticsMode && input.footballAnalyticsInvalid > 0) return 'FOOTBALL_ANALYTICS_BOARD_INVALID'
   if (input.candidateTableMissing || input.dailyMarketCandidates <= 0) return 'DAILY_MARKET_CANDIDATES_NOT_BUILT'
   if (input.duplicateTop10Ranks > 0 || input.duplicateTop10Matches > 0) return 'DYNAMIC_OFFSET_DUPLICATE_FIXTURES'
   if (input.oddsChecks.oddsRowsExistButHasMarketDataFalse > 0 || input.oddsChecks.hasMarketDataTrueButNoOddsRows > 0) return 'DECISION_BOARD_ODDS_SYNC_INCOMPLETE'
@@ -436,6 +474,20 @@ function report(label, value, options = {}) {
   if (failedCheck) failed = true
 }
 
+function warn(label, value, options = {}) {
+  console.log(`${label}: ${value}${options.details ? ` (${options.details})` : ''} [warning]`)
+}
+
+function reportWithFootballAnalyticsWarning(label, value, options = {}) {
+  if (footballAnalyticsReady) warn(label, value, options)
+  else report(label, value, options)
+}
+
+function reportWhenFootballAnalyticsMode(label, value, options = {}) {
+  if (footballAnalyticsMode) report(label, value, options)
+  else warn(label, value, options)
+}
+
 function isPlayable(match) {
   const status = String(match.status_short ?? match.status ?? match.match_status ?? '').toUpperCase()
   return !['FT', 'AET', 'PEN', 'CANC', 'PST', 'ABD', 'AWD', 'WO', 'FINISHED'].includes(status)
@@ -448,6 +500,62 @@ function isFinished(match) {
 
 function isUsableFullTimeOddsRow(row) {
   return !isUnsupportedMainOddsMarket(row) && (isAhLike(row) || isOuLike(row) || String(row.market_focus ?? '').toUpperCase() === 'MATCH_WINNER' || String(row.market_name ?? '').toLowerCase().includes('match winner'))
+}
+
+function buildFootballAnalyticsChecks({ dailyRun, dailyAnalysisBoardRows, aiFinalPickRows }) {
+  const rankingSelectionCompleted = getRankingSelectionCompleted(dailyRun)
+  const rankingSelectionHealth = getRankingSelectionHealth(dailyRun)
+  const syncReady = rankingSelectionCompleted || rankingSelectionHealth === 'DYNAMIC_BOARD_READY'
+  const boardRowsAvailable = dailyAnalysisBoardRows.length > 0 || aiFinalPickRows.length > 0
+  const duplicateBoardRanks = countDuplicates(dailyAnalysisBoardRows.map((row) => row.rank).filter((rank) => rank !== null && rank !== undefined))
+  const duplicateBoardFixtures = countDuplicates(dailyAnalysisBoardRows.map((row) => row.match_id ?? row.fixture_id).filter(Boolean))
+  const duplicateFinalPickFixtures = countDuplicates(aiFinalPickRows.map((row) => row.match_id ?? row.api_fixture_id).filter(Boolean))
+  const invalidAnalysisStatuses = [
+    ...dailyAnalysisBoardRows.map((row) => row.analysis_status),
+    ...aiFinalPickRows.map((row) => row.analysis_status),
+  ].filter((status) => status !== null && status !== undefined && status !== '' && !canonicalAnalysisStatuses.has(toCanonicalAnalysisStatus(status))).length
+  const invalidConfidenceValues = [
+    ...dailyAnalysisBoardRows.map((row) => row.confidence),
+    ...aiFinalPickRows.flatMap((row) => [row.confidence_score, row.pick_confidence]),
+  ].filter((value) => value !== null && value !== undefined && value !== '' && (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 100)).length
+
+  return {
+    rankingSelectionCompleted,
+    rankingSelectionHealth,
+    syncReady,
+    boardRowsAvailable,
+    duplicateBoardRanks,
+    duplicateBoardFixtures,
+    duplicateFinalPickFixtures,
+    invalidAnalysisStatuses,
+    invalidConfidenceValues,
+    ready: syncReady && boardRowsAvailable && invalidAnalysisStatuses === 0 && invalidConfidenceValues === 0,
+  }
+}
+
+function getRankingSelectionCompleted(run) {
+  return Boolean(
+    run?.summary?.rankingSelectionCompleted ??
+    run?.summary?.finalSummary?.rankingSelectionCompleted ??
+    run?.summary?.latest?.details?.selectionCompleted ??
+    run?.summary?.latest?.selectionCompleted
+  )
+}
+
+function getRankingSelectionHealth(run) {
+  return run?.summary?.rankingSelectionHealth ??
+    run?.summary?.finalSummary?.rankingSelectionHealth ??
+    run?.summary?.latest?.details?.selectionHealth ??
+    run?.summary?.latest?.selectionHealth ??
+    null
+}
+
+function toCanonicalAnalysisStatus(value) {
+  const status = String(value ?? '').trim().toUpperCase().replace(/[\s-]+/g, '_')
+  if (canonicalAnalysisStatuses.has(status)) return status
+  if (status === 'MARKET_DATA_READY_RECALCULATED') return 'ANALYSIS_READY'
+  if (status === 'INSUFFICIENT_MARKET_DATA') return 'INSUFFICIENT_DATA'
+  return status
 }
 
 function isUsableDecisionMarketOddsRow(row) {

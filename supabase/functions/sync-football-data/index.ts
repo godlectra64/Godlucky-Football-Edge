@@ -1,4 +1,4 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+﻿import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { getBangkokDayRange } from '../_shared/bangkokDateRange.ts'
 import { selectDailyTop10, DAILY_SELECTION_ALGORITHM_VERSION } from '../../../src/utils/dailySelectionEngine.js'
 import { buildRankingCompletionState } from '../../../src/utils/dailyRankingCompletion.js'
@@ -437,10 +437,10 @@ Deno.serve(async (request) => {
     const total = totalFetched
     const status = allFailures.length ? 'partial_success' : 'success'
     const message = total === 0
-      ? 'ไม่พบคู่แข่งขันวันนี้และพรุ่งนี้'
+      ? 'à¹„à¸¡à¹ˆà¸žà¸šà¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¸§à¸±à¸™à¸™à¸µà¹‰à¹à¸¥à¸°à¸žà¸£à¸¸à¹ˆà¸‡à¸™à¸µà¹‰'
       : allFailures.length
-      ? `บันทึกข้อมูล ${processed} คู่ อัปเดตวิเคราะห์ ${updatedAnalysisCount} รายการ แก้ข้อมูลผิด ${invalidRowsFixed} รายการ และมีข้อผิดพลาด ${allFailures.length} รายการ`
-      : `บันทึกข้อมูล ${processed} คู่ และอัปเดตวิเคราะห์ ${updatedAnalysisCount} รายการ`
+      ? `à¸šà¸±à¸™à¸—à¸¶à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥ ${processed} à¸„à¸¹à¹ˆ à¸­à¸±à¸›à¹€à¸”à¸•à¸§à¸´à¹€à¸„à¸£à¸²à¸°à¸«à¹Œ ${updatedAnalysisCount} à¸£à¸²à¸¢à¸à¸²à¸£ à¹à¸à¹‰à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸œà¸´à¸” ${invalidRowsFixed} à¸£à¸²à¸¢à¸à¸²à¸£ à¹à¸¥à¸°à¸¡à¸µà¸‚à¹‰à¸­à¸œà¸´à¸”à¸žà¸¥à¸²à¸” ${allFailures.length} à¸£à¸²à¸¢à¸à¸²à¸£`
+      : `à¸šà¸±à¸™à¸—à¸¶à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥ ${processed} à¸„à¸¹à¹ˆ à¹à¸¥à¸°à¸­à¸±à¸›à¹€à¸”à¸•à¸§à¸´à¹€à¸„à¸£à¸²à¸°à¸«à¹Œ ${updatedAnalysisCount} à¸£à¸²à¸¢à¸à¸²à¸£`
 
     await finishLog(logId, status, message, {
       provider: primaryProvider.name,
@@ -6145,7 +6145,7 @@ function deriveEdgePickTeamFromApiFootballOdds(match: any, oddsRows: Array<any>)
     pickSelection: null,
     pickPrice: null,
     pickSource: 'NONE',
-    reason: 'ยังไม่มีข้อมูลราคา',
+    reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²',
     marketPriority: 0,
     hasApiFootballOdds: false,
     hasPrimaryMarket: false,
@@ -6176,28 +6176,28 @@ function deriveEdgePickTeamFromApiFootballOdds(match: any, oddsRows: Array<any>)
 
   if (market === 'AH') {
     const side = inferEdgeTeamSide(selection, homeName, awayName)
-    if (side === 'HOME') return withEdgePickSummary({ ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }, match, rows)
-    if (side === 'AWAY') return withEdgePickSummary({ ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }, match, rows)
-    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาดแฮนดิแคปได้' }, match, rows)
+    if (side === 'HOME') return withEdgePickSummary({ ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸”à¹à¸®à¸™à¸”à¸´à¹à¸„à¸›à¸‚à¸­à¸‡ API-Football' }, match, rows)
+    if (side === 'AWAY') return withEdgePickSummary({ ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸”à¹à¸®à¸™à¸”à¸´à¹à¸„à¸›à¸‚à¸­à¸‡ API-Football' }, match, rows)
+    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸£à¸°à¸šà¸¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸”à¹à¸®à¸™à¸”à¸´à¹à¸„à¸›à¹„à¸”à¹‰' }, match, rows)
   }
 
   if (market === 'MATCH_WINNER') {
     const side = inferEdgeTeamSide(selection, homeName, awayName)
-    if (side === 'HOME') return withEdgePickSummary({ ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }, match, rows)
-    if (side === 'AWAY') return withEdgePickSummary({ ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }, match, rows)
-    if (isEdgeDrawSelection(selection)) return withEdgePickSummary({ ...base, pickSide: 'DRAW', reason: 'ตลาดนี้เป็นผลเสมอ ไม่มีทีมที่เลือก' }, match, rows)
-    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาด 1X2 ได้' }, match, rows)
+    if (side === 'HOME') return withEdgePickSummary({ ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸” 1X2 à¸‚à¸­à¸‡ API-Football' }, match, rows)
+    if (side === 'AWAY') return withEdgePickSummary({ ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸” 1X2 à¸‚à¸­à¸‡ API-Football' }, match, rows)
+    if (isEdgeDrawSelection(selection)) return withEdgePickSummary({ ...base, pickSide: 'DRAW', reason: 'à¸•à¸¥à¸²à¸”à¸™à¸µà¹‰à¹€à¸›à¹‡à¸™à¸œà¸¥à¹€à¸ªà¸¡à¸­ à¹„à¸¡à¹ˆà¸¡à¸µà¸—à¸µà¸¡à¸—à¸µà¹ˆà¹€à¸¥à¸·à¸­à¸' }, match, rows)
+    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸£à¸°à¸šà¸¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸” 1X2 à¹„à¸”à¹‰' }, match, rows)
   }
 
   if (market === 'DOUBLE_CHANCE') {
     const side = inferEdgeDoubleChanceSide(selection)
-    if (side !== 'NONE') return withEdgePickSummary({ ...base, pickSide: side, reason: 'อ้างอิงราคา Double Chance จริงจาก API-Football' }, match, rows)
-    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุฝั่งจากตลาด Double Chance ได้' }, match, rows)
+    if (side !== 'NONE') return withEdgePickSummary({ ...base, pickSide: side, reason: 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸£à¸²à¸„à¸² Double Chance à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football' }, match, rows)
+    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸£à¸°à¸šà¸¸à¸à¸±à¹ˆà¸‡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸” Double Chance à¹„à¸”à¹‰' }, match, rows)
   }
 
-  if (market === 'OU') return withEdgePickSummary({ ...base, pickSide: inferEdgeOverUnderSide(selection), reason: 'ตลาดสูงต่ำไม่มีทีมที่เลือก' }, match, rows)
-  if (market === 'BTTS') return withEdgePickSummary({ ...base, pickSide: inferEdgeYesNoSide(selection), reason: 'ตลาดทั้งสองทีมยิงได้ไม่มีทีมที่เลือก' }, match, rows)
-  return withEdgePickSummary({ ...base, reason: 'ตลาดจาก API-Football ไม่ใช่ตลาดเลือกทีม' }, match, rows)
+  if (market === 'OU') return withEdgePickSummary({ ...base, pickSide: inferEdgeOverUnderSide(selection), reason: 'à¸•à¸¥à¸²à¸”à¸ªà¸¹à¸‡à¸•à¹ˆà¸³à¹„à¸¡à¹ˆà¸¡à¸µà¸—à¸µà¸¡à¸—à¸µà¹ˆà¹€à¸¥à¸·à¸­à¸' }, match, rows)
+  if (market === 'BTTS') return withEdgePickSummary({ ...base, pickSide: inferEdgeYesNoSide(selection), reason: 'à¸•à¸¥à¸²à¸”à¸—à¸±à¹‰à¸‡à¸ªà¸­à¸‡à¸—à¸µà¸¡à¸¢à¸´à¸‡à¹„à¸”à¹‰à¹„à¸¡à¹ˆà¸¡à¸µà¸—à¸µà¸¡à¸—à¸µà¹ˆà¹€à¸¥à¸·à¸­à¸' }, match, rows)
+  return withEdgePickSummary({ ...base, reason: 'à¸•à¸¥à¸²à¸”à¸ˆà¸²à¸ API-Football à¹„à¸¡à¹ˆà¹ƒà¸Šà¹ˆà¸•à¸¥à¸²à¸”à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡' }, match, rows)
 }
 
 function choosePrimaryEdgeOddsMarket(rows: Array<any>) {
@@ -6229,16 +6229,16 @@ function createEdgePickSummary(match: any, pick: any, oddsRows: Array<any>) {
   const hasOdds = Array.isArray(oddsRows) && oddsRows.length > 0
   const analysis = getAnalysis(match) ?? {}
   const confidence = Math.round(Number(pick.pickConfidence ?? analysis.calibrated_confidence_score ?? analysis.confidence_score ?? match.confidence_score ?? 0))
-  const market = hasOdds ? firstText(oddsRows[0]?.market_name, pick.pickMarket, 'API-Football') : 'ยังไม่มีข้อมูลราคา'
+  const market = hasOdds ? firstText(oddsRows[0]?.market_name, pick.pickMarket, 'API-Football') : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²'
   return {
-    title: 'สรุปมุมมองระบบ',
+    title: 'à¸ªà¸£à¸¸à¸›à¸¡à¸¸à¸¡à¸¡à¸­à¸‡à¸£à¸°à¸šà¸š',
     side: pick.pickSide ?? 'NONE',
     sideLabel: getEdgePickSideLabel(pick),
     team: pick.pickTeam ?? null,
     market,
-    reason: hasOdds ? getEdgePickSummaryReason(pick) : 'ระบบยังไม่พบข้อมูลราคาจาก API-Football สำหรับคู่นี้',
+    reason: hasOdds ? getEdgePickSummaryReason(pick) : 'à¸£à¸°à¸šà¸šà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸šà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¸ˆà¸²à¸ API-Football à¸ªà¸³à¸«à¸£à¸±à¸šà¸„à¸¹à¹ˆà¸™à¸µà¹‰',
     predictedOutcomeLabel: getEdgePredictedOutcomeLabel(pick),
-    confidenceLabel: confidence ? `${confidence}%` : 'รอข้อมูลเพิ่ม',
+    confidenceLabel: confidence ? `${confidence}%` : 'à¸£à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹€à¸žà¸´à¹ˆà¸¡',
     hasApiFootballOdds: hasOdds,
   }
 }
@@ -6246,14 +6246,14 @@ function createEdgePickSummary(match: any, pick: any, oddsRows: Array<any>) {
 function getEdgePickSideLabel(pick: any) {
   if (pick.pickTeam) return pick.pickTeam
   const labels: Record<string, string> = {
-    HOME: 'เจ้าบ้าน',
-    AWAY: 'ทีมเยือน',
-    DRAW: 'เสมอ',
-    OVER: 'สูง',
-    UNDER: 'ต่ำ',
-    YES: 'ใช่',
-    NO: 'ไม่ใช่',
-    NONE: 'ยังไม่เลือกฝั่ง',
+    HOME: 'à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™',
+    AWAY: 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™',
+    DRAW: 'à¹€à¸ªà¸¡à¸­',
+    OVER: 'à¸ªà¸¹à¸‡',
+    UNDER: 'à¸•à¹ˆà¸³',
+    YES: 'à¹ƒà¸Šà¹ˆ',
+    NO: 'à¹„à¸¡à¹ˆà¹ƒà¸Šà¹ˆ',
+    NONE: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡',
   }
   return labels[String(pick.pickSide ?? 'NONE').toUpperCase()] ?? labels.NONE
 }
@@ -6261,24 +6261,24 @@ function getEdgePickSideLabel(pick: any) {
 function getEdgePredictedOutcomeLabel(pick: any) {
   const side = String(pick.pickSide ?? 'NONE').toUpperCase()
   const market = String(pick.pickMarket ?? '').toUpperCase()
-  if (!pick.hasApiFootballOdds) return 'ยังไม่มีข้อมูลราคา'
-  if (pick.pickTeam && market === 'AH') return `${pick.pickTeam} เป็นฝั่งที่ระบบให้ภาษีดีกว่า`
-  if (pick.pickTeam && market === 'MATCH_WINNER') return `${pick.pickTeam} มีโอกาสเหนือกว่า`
-  if (side === 'DRAW') return 'เกมมีโอกาสออกเสมอ'
-  if (side === 'OVER') return 'เกมมีแนวโน้มประตูรวมสูง'
-  if (side === 'UNDER') return 'เกมมีแนวโน้มประตูรวมต่ำ'
-  if (side === 'YES') return 'มีแนวโน้มที่ทั้งสองทีมทำประตูได้'
-  if (side === 'NO') return 'มีแนวโน้มที่อย่างน้อยหนึ่งทีมทำประตูไม่ได้'
-  return 'รอข้อมูลเพิ่มก่อนเลือกฝั่ง'
+  if (!pick.hasApiFootballOdds) return 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²'
+  if (pick.pickTeam && market === 'AH') return `${pick.pickTeam} à¹€à¸›à¹‡à¸™à¸à¸±à¹ˆà¸‡à¸—à¸µà¹ˆà¸£à¸°à¸šà¸šà¹ƒà¸«à¹‰à¸ à¸²à¸©à¸µà¸”à¸µà¸à¸§à¹ˆà¸²`
+  if (pick.pickTeam && market === 'MATCH_WINNER') return `${pick.pickTeam} à¸¡à¸µà¹‚à¸­à¸à¸²à¸ªà¹€à¸«à¸™à¸·à¸­à¸à¸§à¹ˆà¸²`
+  if (side === 'DRAW') return 'à¹€à¸à¸¡à¸¡à¸µà¹‚à¸­à¸à¸²à¸ªà¸­à¸­à¸à¹€à¸ªà¸¡à¸­'
+  if (side === 'OVER') return 'à¹€à¸à¸¡à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸›à¸£à¸°à¸•à¸¹à¸£à¸§à¸¡à¸ªà¸¹à¸‡'
+  if (side === 'UNDER') return 'à¹€à¸à¸¡à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸›à¸£à¸°à¸•à¸¹à¸£à¸§à¸¡à¸•à¹ˆà¸³'
+  if (side === 'YES') return 'à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸—à¸µà¹ˆà¸—à¸±à¹‰à¸‡à¸ªà¸­à¸‡à¸—à¸µà¸¡à¸—à¸³à¸›à¸£à¸°à¸•à¸¹à¹„à¸”à¹‰'
+  if (side === 'NO') return 'à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸—à¸µà¹ˆà¸­à¸¢à¹ˆà¸²à¸‡à¸™à¹‰à¸­à¸¢à¸«à¸™à¸¶à¹ˆà¸‡à¸—à¸µà¸¡à¸—à¸³à¸›à¸£à¸°à¸•à¸¹à¹„à¸¡à¹ˆà¹„à¸”à¹‰'
+  return 'à¸£à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹€à¸žà¸´à¹ˆà¸¡à¸à¹ˆà¸­à¸™à¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡'
 }
 
 function getEdgePickSummaryReason(pick: any) {
   const market = String(pick.pickMarket ?? '').toUpperCase()
-  if (market === 'AH') return 'อ้างอิงตลาดแฮนดิแคปจริงจาก API-Football'
-  if (market === 'MATCH_WINNER') return 'อ้างอิงตลาดผลแพ้ชนะจริงจาก API-Football'
-  if (market === 'OU') return 'อ้างอิงตลาดประตูรวมจริงจาก API-Football'
-  if (market === 'BTTS') return 'อ้างอิงตลาดทั้งสองทีมทำประตูจริงจาก API-Football'
-  return 'อ้างอิงข้อมูลราคาจริงจาก API-Football'
+  if (market === 'AH') return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸•à¸¥à¸²à¸”à¹à¸®à¸™à¸”à¸´à¹à¸„à¸›à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
+  if (market === 'MATCH_WINNER') return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸•à¸¥à¸²à¸”à¸œà¸¥à¹à¸žà¹‰à¸Šà¸™à¸°à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
+  if (market === 'OU') return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸•à¸¥à¸²à¸”à¸›à¸£à¸°à¸•à¸¹à¸£à¸§à¸¡à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
+  if (market === 'BTTS') return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸•à¸¥à¸²à¸”à¸—à¸±à¹‰à¸‡à¸ªà¸­à¸‡à¸—à¸µà¸¡à¸—à¸³à¸›à¸£à¸°à¸•à¸¹à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
+  return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
 }
 
 function getStrictDailyScoreParts(match: any, oddsRows: Array<any>, pickTeam: any) {
@@ -8128,7 +8128,7 @@ function normalizeOddsPayload(match: any, response: any) {
   const opening = rows[0]
   const available = rows.length > 0
   const pickSide = getAnalysis(match)?.pick_side ?? null
-  const movement = opening && latest && opening.line !== latest.line ? `${opening.line ?? '-'} -> ${latest.line ?? '-'}` : available ? 'ราคาล่าสุดพร้อมใช้งาน แต่ยังไม่เห็นการไหลชัดเจน' : 'ยังไม่มีข้อมูลราคา'
+  const movement = opening && latest && opening.line !== latest.line ? `${opening.line ?? '-'} -> ${latest.line ?? '-'}` : available ? 'à¸£à¸²à¸„à¸²à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸žà¸£à¹‰à¸­à¸¡à¹ƒà¸Šà¹‰à¸‡à¸²à¸™ à¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸«à¹‡à¸™à¸à¸²à¸£à¹„à¸«à¸¥à¸Šà¸±à¸”à¹€à¸ˆà¸™' : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²'
   return {
     available,
     rows,
@@ -8241,7 +8241,7 @@ function buildEdgeAiFinalPick(match: any) {
     riskLevel,
     keyReasons,
     warningSigns,
-    marketSignal: hasOdds ? selected.marketSignal : 'ยังไม่มีข้อมูลตลาดราคา',
+    marketSignal: hasOdds ? selected.marketSignal : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²',
     finalSummary: buildEdgeAiFinalSummary(signal, marketFocus, direction, confidenceScore, riskLevel, hasOdds),
     ahAnalysis,
     ouAnalysis,
@@ -8257,7 +8257,7 @@ function buildEdgeAiFinalPick(match: any) {
     primaryBookmaker: odds.find((row: any) => row.bookmaker_name)?.bookmaker_name ?? null,
     latestOdds: odds.find((row: any) => row.market_focus === marketFocus)?.odd_text ?? null,
     analysisStatus: analysis.analysis_status ?? analysis.raw?.analysis_status ?? (marketDataUsed ? 'MARKET_DATA_READY_RECALCULATED' : 'INSUFFICIENT_MARKET_DATA'),
-    recommendationReason: analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? (marketDataUsed ? 'มีข้อมูลตลาดแล้ว แต่คะแนน edge/risk ยังไม่ผ่านเกณฑ์' : 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ'),
+    recommendationReason: analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? (marketDataUsed ? 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¹à¸¥à¹‰à¸§ à¹à¸•à¹ˆà¸„à¸°à¹à¸™à¸™ edge/risk à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œ' : 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³'),
     marketDataUsed,
     oddsRowsUsed,
     recalculatedAt: analysis.recalculated_at ?? new Date().toISOString(),
@@ -8278,7 +8278,7 @@ function edgeAnalyzeAh(match: any) {
     rows.length ? 'AH market data is available from API-FOOTBALL' : '',
   ].filter(Boolean)
   const warnings = [
-    !rows.length ? 'ยังไม่มีข้อมูลตลาดราคา' : '',
+    !rows.length ? 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²' : '',
     Math.abs(gap) < 5 ? 'Team edge is narrow' : '',
     normalizeRiskLevelText(analysis.risk_level) === 'HIGH' ? 'Risk level is high' : '',
   ].filter(Boolean)
@@ -8288,7 +8288,7 @@ function edgeAnalyzeAh(match: any) {
     confidenceScore: normalizeScore(48 + Math.abs(gap) * 0.55 + (rows.length ? 8 : -10) - warnings.length * 3),
     reasons: reasons.length ? reasons : ['AH data direction is conservative'],
     warnings,
-    marketSignal: rows.length ? 'Latest AH market data is available' : 'ยังไม่มีข้อมูลตลาดราคา',
+    marketSignal: rows.length ? 'Latest AH market data is available' : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²',
     hasMarket: rows.length > 0,
     bookmakerCount: new Set(rows.map((row: any) => row.bookmaker_name).filter(Boolean)).size,
   }
@@ -8308,7 +8308,7 @@ function edgeAnalyzeOu(match: any) {
     rows.length ? 'OU market data is available from API-FOOTBALL' : '',
   ].filter(Boolean)
   const warnings = [
-    !rows.length ? 'ยังไม่มีข้อมูลตลาดราคา' : '',
+    !rows.length ? 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²' : '',
     tempo > 47 && tempo < 57 ? 'Goal tempo is close to neutral' : '',
     normalizeRiskLevelText(analysis.risk_level) === 'HIGH' ? 'Risk level is high' : '',
   ].filter(Boolean)
@@ -8318,7 +8318,7 @@ function edgeAnalyzeOu(match: any) {
     confidenceScore: normalizeScore(46 + Math.abs(tempo - 52) * 0.58 + (rows.length ? 8 : -10) - warnings.length * 3),
     reasons: reasons.length ? reasons : ['OU data direction is conservative'],
     warnings,
-    marketSignal: rows.length ? 'Latest OU market data is available' : 'ยังไม่มีข้อมูลตลาดราคา',
+    marketSignal: rows.length ? 'Latest OU market data is available' : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²',
     hasMarket: rows.length > 0,
     bookmakerCount: new Set(rows.map((row: any) => row.bookmaker_name).filter(Boolean)).size,
   }
@@ -8333,7 +8333,7 @@ function chooseEdgeMarket(ahAnalysis: any, ouAnalysis: any) {
 }
 
 function buildEdgeAiFinalSummary(signal: string, marketFocus: string, direction: string, confidenceScore: number, riskLevel: string, hasOdds: boolean) {
-  if (!hasOdds) return 'ยังไม่มีข้อมูลตลาดราคา AI Final Pick จึงจำกัดสัญญาณสูงสุดไม่ให้เป็น Strong Signal'
+  if (!hasOdds) return 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸² AI Final Pick à¸ˆà¸¶à¸‡à¸ˆà¸³à¸à¸±à¸”à¸ªà¸±à¸à¸à¸²à¸“à¸ªà¸¹à¸‡à¸ªà¸¸à¸”à¹„à¸¡à¹ˆà¹ƒà¸«à¹‰à¹€à¸›à¹‡à¸™ Strong Signal'
   if (signal === 'STRONG_SIGNAL') return `Strong Signal on ${marketFocus} ${direction} with ${confidenceScore}% confidence and ${riskLevel} risk.`
   if (signal === 'WATCH') return `Watch ${marketFocus} ${direction}. Data direction is useful but still needs confirmation.`
   return `Skip ${marketFocus} ${direction}. Risk or data conflict is too high for a final signal.`
@@ -8633,7 +8633,7 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
       risk_level: getRiskLevelFromRiskScore(riskScore),
       recommendation: 'NO BET',
       analysis_status: 'INSUFFICIENT_MARKET_DATA',
-      recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
+      recommendation_reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³',
       market_data_used: false,
       odds_rows_used: oddsRows.length,
       pick_team: null,
@@ -8650,7 +8650,7 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
       raw: {
         ...raw,
         analysis_status: 'INSUFFICIENT_MARKET_DATA',
-        recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
+        recommendation_reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³',
         market_data_used: false,
         odds_rows_used: oddsRows.length,
         pick_team: null,
@@ -8693,8 +8693,8 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
   const rankingScore = roundScore(calibrated * 0.5 + metrics.marketEdgeScore * 0.22 + metrics.oddsMovementScore * 0.13 + depth * 0.15 - (riskScore >= 70 ? 4 : 0))
   const analysisStatus = recommendation === 'NO BET' ? 'MODEL_NO_EDGE' : 'MARKET_DATA_READY_RECALCULATED'
   const recommendationReason = recommendation === 'NO BET'
-    ? 'มีข้อมูลตลาดแล้ว แต่คะแนน edge/risk ยังไม่ผ่านเกณฑ์'
-    : 'มีข้อมูลตลาดและคะแนน edge/risk ผ่านเกณฑ์ของโมเดล'
+    ? 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¹à¸¥à¹‰à¸§ à¹à¸•à¹ˆà¸„à¸°à¹à¸™à¸™ edge/risk à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œ'
+    : 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¹à¸¥à¸°à¸„à¸°à¹à¸™à¸™ edge/risk à¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œà¸‚à¸­à¸‡à¹‚à¸¡à¹€à¸”à¸¥'
 
   return {
     market_edge_score: metrics.marketEdgeScore,
@@ -9464,7 +9464,7 @@ function normalizeAnalysisPayload(analysis: any) {
     selectionV2.analysis_summary ||
       analysis?.analysis_summary ||
       analysis?.thai_reason ||
-      `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskLevel}. ข้อมูลบางส่วนยังจำกัด ควรตรวจราคาก่อนตัดสินใจ`,
+      `à¹à¸™à¸°à¸™à¸³ ${recommendation} à¹€à¸žà¸£à¸²à¸°à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence}/100 à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸£à¸°à¸”à¸±à¸š${riskLevel}. à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸„à¸§à¸£à¸•à¸£à¸§à¸ˆà¸£à¸²à¸„à¸²à¸à¹ˆà¸­à¸™à¸•à¸±à¸”à¸ªà¸´à¸™à¹ƒà¸ˆ`,
   ).trim()
   const pick = derivePickSideFromAnalysis(analysis ?? {}, {
     home_advantage_score: analysis?.home_advantage_score ?? analysis?.modules?.homeAwayAdvantage,
@@ -9612,14 +9612,14 @@ function buildProfessionalSelectionScoreEdge(match: any = {}, analysis: any = {}
       ? 'LEAN'
       : 'NO BET'
   const reasons = [
-    `Professional score ${Math.round(totalScore)}/100 จาก league/data/market/stat/value pipeline`,
-    leagueQuality >= 55 ? 'ลีกผ่านเกณฑ์คุณภาพขั้นต่ำ' : 'ลีกต่ำกว่าเกณฑ์คุณภาพ',
-    valueEdge >= 70 ? 'พบ value edge ชัดเจนจากราคา/โมเดล' : 'value edge ยังไม่ชัดพอ',
+    `Professional score ${Math.round(totalScore)}/100 à¸ˆà¸²à¸ league/data/market/stat/value pipeline`,
+    leagueQuality >= 55 ? 'à¸¥à¸µà¸à¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œà¸„à¸¸à¸“à¸ à¸²à¸žà¸‚à¸±à¹‰à¸™à¸•à¹ˆà¸³' : 'à¸¥à¸µà¸à¸•à¹ˆà¸³à¸à¸§à¹ˆà¸²à¹€à¸à¸“à¸‘à¹Œà¸„à¸¸à¸“à¸ à¸²à¸ž',
+    valueEdge >= 70 ? 'à¸žà¸š value edge à¸Šà¸±à¸”à¹€à¸ˆà¸™à¸ˆà¸²à¸à¸£à¸²à¸„à¸²/à¹‚à¸¡à¹€à¸”à¸¥' : 'value edge à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸Šà¸±à¸”à¸žà¸­',
   ]
   const warnings = [
-    ...(!gates.passedMarketQuality ? ['ข้อมูลตลาดยังไม่แข็งแรงพอสำหรับ BET'] : []),
-    ...(!gates.passedDataQuality ? ['ข้อมูลบางส่วนไม่ครบ ระบบลดความมั่นใจ'] : []),
-    ...(riskControl < 60 ? ['risk control ยังไม่ถึงระดับเสี่ยงต่ำ'] : []),
+    ...(!gates.passedMarketQuality ? ['à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹à¸‚à¹‡à¸‡à¹à¸£à¸‡à¸žà¸­à¸ªà¸³à¸«à¸£à¸±à¸š BET'] : []),
+    ...(!gates.passedDataQuality ? ['à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¹„à¸¡à¹ˆà¸„à¸£à¸š à¸£à¸°à¸šà¸šà¸¥à¸”à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ'] : []),
+    ...(riskControl < 60 ? ['risk control à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸–à¸¶à¸‡à¸£à¸°à¸”à¸±à¸šà¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸•à¹ˆà¸³'] : []),
   ]
   return {
     totalScore,
@@ -9638,8 +9638,8 @@ function buildProfessionalSelectionScoreEdge(match: any = {}, analysis: any = {}
       side: analysis.value_side ?? analysis.pick_side ?? 'NONE',
       market: analysis.value_market ?? analysis.market_type ?? null,
       line: analysis.value_line ?? analysis.market_line ?? null,
-      label: recommendation === 'BET' ? 'AI BET' : recommendation === 'LEAN' ? 'รอดูราคา' : 'ผ่านการวิเคราะห์แล้ว แต่ไม่คุ้มเสี่ยง',
-      reason: recommendation === 'BET' ? 'Value, confidence และ risk ผ่านเกณฑ์' : 'ยังไม่ผ่านครบทุก gate สำคัญ',
+      label: recommendation === 'BET' ? 'AI BET' : recommendation === 'LEAN' ? 'à¸£à¸­à¸”à¸¹à¸£à¸²à¸„à¸²' : 'à¸œà¹ˆà¸²à¸™à¸à¸²à¸£à¸§à¸´à¹€à¸„à¸£à¸²à¸°à¸«à¹Œà¹à¸¥à¹‰à¸§ à¹à¸•à¹ˆà¹„à¸¡à¹ˆà¸„à¸¸à¹‰à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡',
+      reason: recommendation === 'BET' ? 'Value, confidence à¹à¸¥à¸° risk à¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œ' : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸œà¹ˆà¸²à¸™à¸„à¸£à¸šà¸—à¸¸à¸ gate à¸ªà¸³à¸„à¸±à¸',
     },
   }
 }
@@ -10035,7 +10035,7 @@ async function normalizeLegacyAnalysisRows() {
     const confidence = Math.round(clamp(Number(row.confidence_score ?? row.raw?.confidence_score ?? 0), 0, 100))
     const riskLevel = normalizeRiskLevel(row.risk_level ?? row.raw?.risk_level)
     const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
-    const analysisSummary = row.analysis_summary || row.raw?.analysis_summary || row.thai_reason || `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskLevel}. ข้อมูลบางส่วนยังจำกัด ควรตรวจราคาก่อนตัดสินใจ`
+    const analysisSummary = row.analysis_summary || row.raw?.analysis_summary || row.thai_reason || `à¹à¸™à¸°à¸™à¸³ ${recommendation} à¹€à¸žà¸£à¸²à¸°à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence}/100 à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸£à¸°à¸”à¸±à¸š${riskLevel}. à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸„à¸§à¸£à¸•à¸£à¸§à¸ˆà¸£à¸²à¸„à¸²à¸à¹ˆà¸­à¸™à¸•à¸±à¸”à¸ªà¸´à¸™à¹ƒà¸ˆ`
     const pick = derivePickSideFromAnalysis(row.raw?.raw_match ?? row.raw ?? {}, {
       home_advantage_score: row.home_advantage_score ?? row.raw?.home_advantage_score,
       away_weakness_score: row.away_weakness_score ?? row.raw?.away_weakness_score,
@@ -10308,14 +10308,14 @@ function buildDailyRankingWriteResult(selection: any, rowsSaved: number) {
       const score = Number(row?.softRanking?.finalScore)
       return !Number.isFinite(score) || score < 0 || score > 100
     }).length,
-    duplicateRanks: countDuplicateValues(selected.map((row: any) => row.rank).filter((rank: any) => rank !== null && rank !== undefined)),
-    duplicateFixtures: countDuplicateValues(selected.map((row: any) => row.fixtureId ?? row.match?.id).filter(Boolean)),
+    duplicateRanks: countDuplicateDecisionValues(selected.map((row: any) => row.rank).filter((rank: any) => rank !== null && rank !== undefined)),
+    duplicateFixtures: countDuplicateDecisionValues(selected.map((row: any) => row.fixtureId ?? row.match?.id).filter(Boolean)),
     hardFilterViolations: selected.filter((row: any) => row?.hardFilter && !row.hardFilter.passed).length,
     finalPickViolations: selected.filter((row: any) => !row.hasMarketData && row?.softRanking?.finalPickAllowed).length,
   }
 }
 
-function countDuplicateValues(values: Array<any>) {
+function countDuplicateDecisionValues(values: Array<any>) {
   const seen = new Set()
   let duplicates = 0
   for (const value of values) {
@@ -10373,7 +10373,7 @@ async function markInsufficientMarketDataRows(rows: Array<any>) {
       .update({
         recommendation: 'NO BET',
         analysis_status: 'INSUFFICIENT_MARKET_DATA',
-        recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
+        recommendation_reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³',
         market_data_used: false,
         odds_rows_used: 0,
         recalculated_at: new Date().toISOString(),
@@ -10384,7 +10384,7 @@ async function markInsufficientMarketDataRows(rows: Array<any>) {
         raw: {
           ...raw,
           analysis_status: 'INSUFFICIENT_MARKET_DATA',
-          recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
+          recommendation_reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³',
           market_data_used: false,
           odds_rows_used: 0,
           data_readiness_status: row.readiness,
@@ -10886,24 +10886,24 @@ function scoreTeamStrength(match: any, homeForm: any, awayForm: any, homeStandin
     const pointsGap = Number(homeStanding.points ?? 0) - Number(awayStanding.points ?? 0)
     const goalDiffGap = Number(homeStanding.goalDifference ?? 0) - Number(awayStanding.goalDifference ?? 0)
     const score = clamp(58 + standingGap * 2 + pointsGap * 0.7 + goalDiffGap * 0.8, 28, 90)
-    return moduleResult(score, standingGap >= 0 ? 'อันดับและแต้มโดยรวมหนุนฝั่งเจ้าบ้านมากกว่า' : 'อันดับตารางไม่ได้หนุนฝั่งเจ้าบ้านชัดเจน')
+    return moduleResult(score, standingGap >= 0 ? 'à¸­à¸±à¸™à¸”à¸±à¸šà¹à¸¥à¸°à¹à¸•à¹‰à¸¡à¹‚à¸”à¸¢à¸£à¸§à¸¡à¸«à¸™à¸¸à¸™à¸à¸±à¹ˆà¸‡à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸¡à¸²à¸à¸à¸§à¹ˆà¸²' : 'à¸­à¸±à¸™à¸”à¸±à¸šà¸•à¸²à¸£à¸²à¸‡à¹„à¸¡à¹ˆà¹„à¸”à¹‰à¸«à¸™à¸¸à¸™à¸à¸±à¹ˆà¸‡à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸Šà¸±à¸”à¹€à¸ˆà¸™')
   }
 
   const formGap = formPoints(homeForm) - formPoints(awayForm)
   const goalDiffGap = formGoalDiff(homeForm) - formGoalDiff(awayForm)
   const nameSignal = (match.homeTeam?.name ? 3 : 0) + (match.awayTeam?.name ? 2 : 0)
   const score = clamp(55 + formGap * 1.4 + goalDiffGap * 1.8 + nameSignal, 35, 78)
-  return moduleResult(score, 'ไม่มีตารางคะแนนครบ จึงใช้ฟอร์มและข้อมูลทีมที่มีเป็น proxy')
+  return moduleResult(score, 'à¹„à¸¡à¹ˆà¸¡à¸µà¸•à¸²à¸£à¸²à¸‡à¸„à¸°à¹à¸™à¸™à¸„à¸£à¸š à¸ˆà¸¶à¸‡à¹ƒà¸Šà¹‰à¸Ÿà¸­à¸£à¹Œà¸¡à¹à¸¥à¸°à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸—à¸µà¸¡à¸—à¸µà¹ˆà¸¡à¸µà¹€à¸›à¹‡à¸™ proxy')
 }
 
 function scoreRecentForm(homeForm: any, awayForm: any) {
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return moduleResult(56, 'ข้อมูลฟอร์มล่าสุดจำกัด จึงประเมินแบบกลางจากบริบทคู่แข่ง')
+  if (!played) return moduleResult(56, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸Ÿà¸­à¸£à¹Œà¸¡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¹à¸šà¸šà¸à¸¥à¸²à¸‡à¸ˆà¸²à¸à¸šà¸£à¸´à¸šà¸—à¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡')
 
   const pointsRate = ((formPoints(homeForm) + formPoints(awayForm)) / Math.max(played * 3, 1)) * 100
   const goalBalance = clamp((formGoalDiff(homeForm) + formGoalDiff(awayForm)) * 2.5, -18, 18)
   const score = clamp(42 + pointsRate * 0.38 + goalBalance, 25, 86)
-  return moduleResult(score, played >= 8 ? 'ฟอร์ม 5 นัดล่าสุดมีข้อมูลรองรับเพียงพอ' : 'มีข้อมูลฟอร์มบางส่วน แต่ยังไม่เต็มหน้าต่าง 5 นัด')
+  return moduleResult(score, played >= 8 ? 'à¸Ÿà¸­à¸£à¹Œà¸¡ 5 à¸™à¸±à¸”à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸­à¸‡à¸£à¸±à¸šà¹€à¸žà¸µà¸¢à¸‡à¸žà¸­' : 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸Ÿà¸­à¸£à¹Œà¸¡à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™ à¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸•à¹‡à¸¡à¸«à¸™à¹‰à¸²à¸•à¹ˆà¸²à¸‡ 5 à¸™à¸±à¸”')
 }
 
 function scoreAttackQuality(homeForm: any, awayForm: any, homeStanding: any, awayStanding: any) {
@@ -10911,32 +10911,32 @@ function scoreAttackQuality(homeForm: any, awayForm: any, homeStanding: any, awa
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
   const standingBoost = homeStanding || awayStanding ? clamp((Number(homeStanding?.goalsFor ?? 0) + Number(awayStanding?.goalsFor ?? 0)) * 0.25, 0, 12) : 0
 
-  if (!played && !standingBoost) return moduleResult(57, 'ยังไม่มี xG หรือสถิติเกมรุกละเอียด จึงใช้ค่ากลางแบบระมัดระวัง')
+  if (!played && !standingBoost) return moduleResult(57, 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µ xG à¸«à¸£à¸·à¸­à¸ªà¸–à¸´à¸•à¸´à¹€à¸à¸¡à¸£à¸¸à¸à¸¥à¸°à¹€à¸­à¸µà¸¢à¸” à¸ˆà¸¶à¸‡à¹ƒà¸Šà¹‰à¸„à¹ˆà¸²à¸à¸¥à¸²à¸‡à¹à¸šà¸šà¸£à¸°à¸¡à¸±à¸”à¸£à¸°à¸§à¸±à¸‡')
 
   const goalsPerMatch = goalsFor / Math.max(played, 1)
   const score = clamp(48 + goalsPerMatch * 18 + standingBoost, 30, 88)
-  return moduleResult(score, goalsPerMatch >= 1.4 ? 'เกมรุกมีแนวโน้มสร้างประตูได้ดีจากข้อมูลล่าสุด' : 'เกมรุกยังไม่ได้เด่นชัดจากข้อมูลประตูที่มี')
+  return moduleResult(score, goalsPerMatch >= 1.4 ? 'à¹€à¸à¸¡à¸£à¸¸à¸à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸ªà¸£à¹‰à¸²à¸‡à¸›à¸£à¸°à¸•à¸¹à¹„à¸”à¹‰à¸”à¸µà¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¥à¹ˆà¸²à¸ªà¸¸à¸”' : 'à¹€à¸à¸¡à¸£à¸¸à¸à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹„à¸”à¹‰à¹€à¸”à¹ˆà¸™à¸Šà¸±à¸”à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸›à¸£à¸°à¸•à¸¹à¸—à¸µà¹ˆà¸¡à¸µ')
 }
 
 function scoreDefensiveStability(homeForm: any, awayForm: any) {
   const goalsAgainst = Number(homeForm?.goals_against ?? 0) + Number(awayForm?.goals_against ?? 0)
   const cleanSheets = Number(homeForm?.clean_sheets ?? 0) + Number(awayForm?.clean_sheets ?? 0)
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return moduleResult(58, 'ข้อมูลเกมรับจำกัด จึงยังประเมินความมั่นคงในระดับกลาง')
+  if (!played) return moduleResult(58, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹€à¸à¸¡à¸£à¸±à¸šà¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¸¢à¸±à¸‡à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¸„à¸‡à¹ƒà¸™à¸£à¸°à¸”à¸±à¸šà¸à¸¥à¸²à¸‡')
 
   const concededPerMatch = goalsAgainst / Math.max(played, 1)
   const score = clamp(74 - concededPerMatch * 22 + cleanSheets * 4, 25, 90)
-  return moduleResult(score, concededPerMatch <= 1 ? 'เกมรับค่อนข้างมั่นคงจากอัตราเสียประตู' : 'เกมรับยังมีความเสี่ยงจากอัตราเสียประตู')
+  return moduleResult(score, concededPerMatch <= 1 ? 'à¹€à¸à¸¡à¸£à¸±à¸šà¸„à¹ˆà¸­à¸™à¸‚à¹‰à¸²à¸‡à¸¡à¸±à¹ˆà¸™à¸„à¸‡à¸ˆà¸²à¸à¸­à¸±à¸•à¸£à¸²à¹€à¸ªà¸µà¸¢à¸›à¸£à¸°à¸•à¸¹' : 'à¹€à¸à¸¡à¸£à¸±à¸šà¸¢à¸±à¸‡à¸¡à¸µà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ˆà¸²à¸à¸­à¸±à¸•à¸£à¸²à¹€à¸ªà¸µà¸¢à¸›à¸£à¸°à¸•à¸¹')
 }
 
 function scoreHomeAwayAdvantage(match: any, homeForm: any) {
   const venueText = String(match.venue ?? match.raw?.venue ?? '').toLowerCase()
-  if (venueText.includes('neutral')) return moduleResult(52, 'สนามเป็นกลางหรือมีสัญญาณว่าเจ้าบ้านไม่ได้เปรียบเต็มที่')
+  if (venueText.includes('neutral')) return moduleResult(52, 'à¸ªà¸™à¸²à¸¡à¹€à¸›à¹‡à¸™à¸à¸¥à¸²à¸‡à¸«à¸£à¸·à¸­à¸¡à¸µà¸ªà¸±à¸à¸à¸²à¸“à¸§à¹ˆà¸²à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¹„à¸¡à¹ˆà¹„à¸”à¹‰à¹€à¸›à¸£à¸µà¸¢à¸šà¹€à¸•à¹‡à¸¡à¸—à¸µà¹ˆ')
 
   const played = Number(homeForm?.played ?? 0)
   const homeWinRate = played ? Number(homeForm?.wins ?? 0) / played : 0.4
   const score = clamp(57 + homeWinRate * 22 + Math.max(formGoalDiff(homeForm), 0) * 1.3, 48, 78)
-  return moduleResult(score, played ? 'เจ้าบ้านมีแรงหนุนจากสภาพการแข่งขันและฟอร์มฝั่งเหย้า' : 'ไม่มีข้อมูลสนามละเอียด จึงให้น้ำหนักเจ้าบ้านแบบจำกัด')
+  return moduleResult(score, played ? 'à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸¡à¸µà¹à¸£à¸‡à¸«à¸™à¸¸à¸™à¸ˆà¸²à¸à¸ªà¸ à¸²à¸žà¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¹à¸¥à¸°à¸Ÿà¸­à¸£à¹Œà¸¡à¸à¸±à¹ˆà¸‡à¹€à¸«à¸¢à¹‰à¸²' : 'à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ªà¸™à¸²à¸¡à¸¥à¸°à¹€à¸­à¸µà¸¢à¸” à¸ˆà¸¶à¸‡à¹ƒà¸«à¹‰à¸™à¹‰à¸³à¸«à¸™à¸±à¸à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¹à¸šà¸šà¸ˆà¸³à¸à¸±à¸”')
 }
 
 function scoreAwayWeakness(awayForm: any, awayStanding: any) {
@@ -10944,7 +10944,7 @@ function scoreAwayWeakness(awayForm: any, awayStanding: any) {
   const standingPosition = Number(awayStanding?.position ?? 0)
 
   if (!played && !standingPosition) {
-    return moduleResult(55, 'ข้อมูลจุดอ่อนทีมเยือนยังจำกัด จึงประเมินแบบระมัดระวัง')
+    return moduleResult(55, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸¸à¸”à¸­à¹ˆà¸­à¸™à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¹à¸šà¸šà¸£à¸°à¸¡à¸±à¸”à¸£à¸°à¸§à¸±à¸‡')
   }
 
   const lossRate = played ? Number(awayForm?.losses ?? 0) / played : 0.25
@@ -10956,8 +10956,8 @@ function scoreAwayWeakness(awayForm: any, awayStanding: any) {
   return moduleResult(
     score,
     score >= 68
-      ? 'ทีมเยือนมีสัญญาณเปราะจากฟอร์มแพ้/เสียประตูและอันดับตาราง'
-      : 'ทีมเยือนยังไม่เห็นจุดอ่อนชัดพอ จึงให้คะแนนแบบกลางค่อนไปทางระวัง',
+      ? 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸¡à¸µà¸ªà¸±à¸à¸à¸²à¸“à¹€à¸›à¸£à¸²à¸°à¸ˆà¸²à¸à¸Ÿà¸­à¸£à¹Œà¸¡à¹à¸žà¹‰/à¹€à¸ªà¸µà¸¢à¸›à¸£à¸°à¸•à¸¹à¹à¸¥à¸°à¸­à¸±à¸™à¸”à¸±à¸šà¸•à¸²à¸£à¸²à¸‡'
+      : 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸«à¹‡à¸™à¸ˆà¸¸à¸”à¸­à¹ˆà¸­à¸™à¸Šà¸±à¸”à¸žà¸­ à¸ˆà¸¶à¸‡à¹ƒà¸«à¹‰à¸„à¸°à¹à¸™à¸™à¹à¸šà¸šà¸à¸¥à¸²à¸‡à¸„à¹ˆà¸­à¸™à¹„à¸›à¸—à¸²à¸‡à¸£à¸°à¸§à¸±à¸‡',
   )
 }
 
@@ -10966,21 +10966,21 @@ function scoreMotivationContext(match: any, leaguePriority: number) {
   const knockoutBoost = ['final', 'semi', 'quarter', 'last_16', 'playoff'].some((item) => stage.includes(item)) ? 8 : 0
   const priorityScore = leaguePriority <= 15 ? 65 : leaguePriority <= 30 ? 61 : leaguePriority <= 50 ? 58 : 55
   const score = clamp(priorityScore + knockoutBoost, 52, 78)
-  return moduleResult(score, knockoutBoost ? 'รายการหรือรอบการแข่งขันเพิ่มแรงจูงใจเชิงบริบท' : 'ข้อมูลแรงจูงใจยังจำกัด จึงใช้คะแนนกลางตามความสำคัญรายการ')
+  return moduleResult(score, knockoutBoost ? 'à¸£à¸²à¸¢à¸à¸²à¸£à¸«à¸£à¸·à¸­à¸£à¸­à¸šà¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¹€à¸žà¸´à¹ˆà¸¡à¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¹€à¸Šà¸´à¸‡à¸šà¸£à¸´à¸šà¸—' : 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¹ƒà¸Šà¹‰à¸„à¸°à¹à¸™à¸™à¸à¸¥à¸²à¸‡à¸•à¸²à¸¡à¸„à¸§à¸²à¸¡à¸ªà¸³à¸„à¸±à¸à¸£à¸²à¸¢à¸à¸²à¸£')
 }
 
 function scoreMarketOddsRisk(match: any, homeForm: any, awayForm: any) {
   const hasOdds = hasMarketData(match)
   if (!hasOdds) {
     return {
-      ...moduleResult(52, 'ข้อมูลราคาตลาดยังจำกัด จึงให้คะแนน conservative และไม่ใช้เป็นเหตุผลหนุน BET เต็มตัว'),
+      ...moduleResult(52, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¸•à¸¥à¸²à¸”à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¹ƒà¸«à¹‰à¸„à¸°à¹à¸™à¸™ conservative à¹à¸¥à¸°à¹„à¸¡à¹ˆà¹ƒà¸Šà¹‰à¹€à¸›à¹‡à¸™à¹€à¸«à¸•à¸¸à¸œà¸¥à¸«à¸™à¸¸à¸™ BET à¹€à¸•à¹‡à¸¡à¸•à¸±à¸§'),
       has_market_data: false,
     }
   }
 
   const formGap = Math.abs(formPoints(homeForm) - formPoints(awayForm))
   const score = clamp(58 + Math.min(formGap, 8) * 2.2, 42, 82)
-  return { ...moduleResult(score, 'มีข้อมูลตลาดบางส่วนและใช้ร่วมกับความต่างของฟอร์มเพื่อประเมินความเสี่ยง'), has_market_data: true }
+  return { ...moduleResult(score, 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¹à¸¥à¸°à¹ƒà¸Šà¹‰à¸£à¹ˆà¸§à¸¡à¸à¸±à¸šà¸„à¸§à¸²à¸¡à¸•à¹ˆà¸²à¸‡à¸‚à¸­à¸‡à¸Ÿà¸­à¸£à¹Œà¸¡à¹€à¸žà¸·à¹ˆà¸­à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡'), has_market_data: true }
 }
 
 function calculateOverallRiskV2Legacy(breakdown: any, confidence: number, dataCompleteness: number) {
@@ -10997,12 +10997,12 @@ function calculateOverallRiskV2Legacy(breakdown: any, confidence: number, dataCo
   const weakCore = ['team_strength', 'recent_form', 'attack_quality', 'defensive_stability'].filter((key) => breakdown[key].score < 45).length
 
   if (confidence < 48 || weakCore >= 2 || spread >= 42) {
-    return { level: 'HIGH', reason: 'คะแนนสำคัญหลายด้านอ่อนหรือขัดแย้งกันมาก จึงจัดเป็นความเสี่ยงสูง' }
+    return { level: 'HIGH', reason: 'à¸„à¸°à¹à¸™à¸™à¸ªà¸³à¸„à¸±à¸à¸«à¸¥à¸²à¸¢à¸”à¹‰à¸²à¸™à¸­à¹ˆà¸­à¸™à¸«à¸£à¸·à¸­à¸‚à¸±à¸”à¹à¸¢à¹‰à¸‡à¸à¸±à¸™à¸¡à¸²à¸ à¸ˆà¸¶à¸‡à¸ˆà¸±à¸”à¹€à¸›à¹‡à¸™à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡' }
   }
   if (confidence >= 72 && dataCompleteness >= 70 && spread <= 28) {
-    return { level: 'LOW', reason: 'หลายโมดูลให้ภาพสอดคล้องกันและข้อมูลรองรับค่อนข้างครบ' }
+    return { level: 'LOW', reason: 'à¸«à¸¥à¸²à¸¢à¹‚à¸¡à¸”à¸¹à¸¥à¹ƒà¸«à¹‰à¸ à¸²à¸žà¸ªà¸­à¸”à¸„à¸¥à¹‰à¸­à¸‡à¸à¸±à¸™à¹à¸¥à¸°à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸­à¸‡à¸£à¸±à¸šà¸„à¹ˆà¸­à¸™à¸‚à¹‰à¸²à¸‡à¸„à¸£à¸š' }
   }
-  return { level: 'MEDIUM', reason: 'มีข้อมูลสนับสนุนบางส่วน แต่ยังไม่ครบทุกมิติหรือคะแนนยังไม่สอดคล้องเต็มที่' }
+  return { level: 'MEDIUM', reason: 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ªà¸™à¸±à¸šà¸ªà¸™à¸¸à¸™à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™ à¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸„à¸£à¸šà¸—à¸¸à¸à¸¡à¸´à¸•à¸´à¸«à¸£à¸·à¸­à¸„à¸°à¹à¸™à¸™à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸ªà¸­à¸”à¸„à¸¥à¹‰à¸­à¸‡à¹€à¸•à¹‡à¸¡à¸—à¸µà¹ˆ' }
 }
 
 function moduleResult(score: number, reason: string) {
@@ -11206,10 +11206,10 @@ function recommendationBoost(recommendation: unknown) {
 }
 
 function buildSelectionSummaryV2(recommendation: string, confidence: number, risk: number, league: number, quality: number, edge: number) {
-  if (recommendation === 'BET') return `คู่นี้ผ่านการคัดเลือกด้วยคะแนนรวม ${confidence} จากคุณภาพลีก ${league}, คุณภาพข้อมูล ${quality} และ Edge Score ${edge} โดยมีความเสี่ยง ${risk} จึงอยู่ในระดับ BET`
-  if (recommendation === 'LEAN') return `คู่นี้มีแนวโน้มดีแต่ยังไม่ชัดพอสำหรับ BET จึงจัดเป็น LEAN ด้วยความมั่นใจ ${confidence} และความเสี่ยง ${risk}`
-  if (recommendation === 'WATCH') return `คู่นี้น่าติดตาม แต่ยังมีปัจจัยเสี่ยงหรือข้อมูลไม่ชัดพอ จึงจัดเป็น WATCH ด้วยความมั่นใจ ${confidence}`
-  return `คู่นี้ยังไม่เหมาะสำหรับการเดิมพัน เนื่องจากคะแนนความมั่นใจ ${confidence} หรือความเสี่ยง ${risk} ยังไม่ผ่านเกณฑ์`
+  if (recommendation === 'BET') return `à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¸œà¹ˆà¸²à¸™à¸à¸²à¸£à¸„à¸±à¸”à¹€à¸¥à¸·à¸­à¸à¸”à¹‰à¸§à¸¢à¸„à¸°à¹à¸™à¸™à¸£à¸§à¸¡ ${confidence} à¸ˆà¸²à¸à¸„à¸¸à¸“à¸ à¸²à¸žà¸¥à¸µà¸ ${league}, à¸„à¸¸à¸“à¸ à¸²à¸žà¸‚à¹‰à¸­à¸¡à¸¹à¸¥ ${quality} à¹à¸¥à¸° Edge Score ${edge} à¹‚à¸”à¸¢à¸¡à¸µà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡ ${risk} à¸ˆà¸¶à¸‡à¸­à¸¢à¸¹à¹ˆà¹ƒà¸™à¸£à¸°à¸”à¸±à¸š BET`
+  if (recommendation === 'LEAN') return `à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸”à¸µà¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸Šà¸±à¸”à¸žà¸­à¸ªà¸³à¸«à¸£à¸±à¸š BET à¸ˆà¸¶à¸‡à¸ˆà¸±à¸”à¹€à¸›à¹‡à¸™ LEAN à¸”à¹‰à¸§à¸¢à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence} à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡ ${risk}`
+  if (recommendation === 'WATCH') return `à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¸™à¹ˆà¸²à¸•à¸´à¸”à¸•à¸²à¸¡ à¹à¸•à¹ˆà¸¢à¸±à¸‡à¸¡à¸µà¸›à¸±à¸ˆà¸ˆà¸±à¸¢à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸«à¸£à¸·à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹„à¸¡à¹ˆà¸Šà¸±à¸”à¸žà¸­ à¸ˆà¸¶à¸‡à¸ˆà¸±à¸”à¹€à¸›à¹‡à¸™ WATCH à¸”à¹‰à¸§à¸¢à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence}`
+  return `à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸«à¸¡à¸²à¸°à¸ªà¸³à¸«à¸£à¸±à¸šà¸à¸²à¸£à¹€à¸”à¸´à¸¡à¸žà¸±à¸™ à¹€à¸™à¸·à¹ˆà¸­à¸‡à¸ˆà¸²à¸à¸„à¸°à¹à¸™à¸™à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence} à¸«à¸£à¸·à¸­à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡ ${risk} à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œ`
 }
 
 function getRiskLevelFromRiskScore(riskScore: number) {
@@ -11219,9 +11219,9 @@ function getRiskLevelFromRiskScore(riskScore: number) {
 }
 
 function buildFinalPickNoteV2(recommendation: string) {
-  if (recommendation === 'LEAN') return 'อันดับ 1 วันนี้ยังไม่ถึงระดับ BET แต่เป็นคู่ที่ AI ประเมินดีที่สุด'
-  if (recommendation === 'WATCH' || recommendation === 'NO BET') return 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ไม่แนะนำให้เดิมพัน แต่เป็นคู่ที่น่าติดตามที่สุดของวัน'
-  return 'วันนี้ AI เลือกคู่นี้เป็นอันดับ 1 ของวัน'
+  if (recommendation === 'LEAN') return 'à¸­à¸±à¸™à¸”à¸±à¸š 1 à¸§à¸±à¸™à¸™à¸µà¹‰à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸–à¸¶à¸‡à¸£à¸°à¸”à¸±à¸š BET à¹à¸•à¹ˆà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¸—à¸µà¹ˆ AI à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸”à¸µà¸—à¸µà¹ˆà¸ªà¸¸à¸”'
+  if (recommendation === 'WATCH' || recommendation === 'NO BET') return 'à¸­à¸±à¸™à¸”à¸±à¸š 1 à¸§à¸±à¸™à¸™à¸µà¹‰à¸¢à¸±à¸‡à¸¡à¸µà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡ AI à¹„à¸¡à¹ˆà¹à¸™à¸°à¸™à¸³à¹ƒà¸«à¹‰à¹€à¸”à¸´à¸¡à¸žà¸±à¸™ à¹à¸•à¹ˆà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¸—à¸µà¹ˆà¸™à¹ˆà¸²à¸•à¸´à¸”à¸•à¸²à¸¡à¸—à¸µà¹ˆà¸ªà¸¸à¸”à¸‚à¸­à¸‡à¸§à¸±à¸™'
+  return 'à¸§à¸±à¸™à¸™à¸µà¹‰ AI à¹€à¸¥à¸·à¸­à¸à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¹€à¸›à¹‡à¸™à¸­à¸±à¸™à¸”à¸±à¸š 1 à¸‚à¸­à¸‡à¸§à¸±à¸™'
 }
 
 function recommendationPriority(recommendation: unknown) {
@@ -11302,11 +11302,11 @@ function normalizeValueStatus(value: unknown, context: { recommendation: string;
 function getValueReason(status: string, storedReason: unknown, marketLine: string | null, fairLine: string | null) {
   const reason = String(storedReason ?? '').trim()
   if (reason) return reason
-  if (status === 'YES') return 'ราคาตลาดดีกว่า Fair Line จากข้อมูลจริงที่มี'
-  if (status === 'NO') return 'มีข้อมูลราคาแล้ว แต่ส่วนต่างยังไม่คุ้มพอ'
-  if (status === 'NOT_APPLICABLE') return 'ไม่ใช่จังหวะเดิมพัน จึงไม่ประเมิน Value เชิงรุก'
-  if (!marketLine || !fairLine) return 'ยังไม่มีราคาตลาดหรือ Fair Line เพียงพอสำหรับประเมิน Value'
-  return 'รอข้อมูลราคาเพิ่มเติม'
+  if (status === 'YES') return 'à¸£à¸²à¸„à¸²à¸•à¸¥à¸²à¸”à¸”à¸µà¸à¸§à¹ˆà¸² Fair Line à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡à¸—à¸µà¹ˆà¸¡à¸µ'
+  if (status === 'NO') return 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¹à¸¥à¹‰à¸§ à¹à¸•à¹ˆà¸ªà¹ˆà¸§à¸™à¸•à¹ˆà¸²à¸‡à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸„à¸¸à¹‰à¸¡à¸žà¸­'
+  if (status === 'NOT_APPLICABLE') return 'à¹„à¸¡à¹ˆà¹ƒà¸Šà¹ˆà¸ˆà¸±à¸‡à¸«à¸§à¸°à¹€à¸”à¸´à¸¡à¸žà¸±à¸™ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸›à¸£à¸°à¹€à¸¡à¸´à¸™ Value à¹€à¸Šà¸´à¸‡à¸£à¸¸à¸'
+  if (!marketLine || !fairLine) return 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸£à¸²à¸„à¸²à¸•à¸¥à¸²à¸”à¸«à¸£à¸·à¸­ Fair Line à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­à¸ªà¸³à¸«à¸£à¸±à¸šà¸›à¸£à¸°à¹€à¸¡à¸´à¸™ Value'
+  return 'à¸£à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¹€à¸žà¸´à¹ˆà¸¡à¹€à¸•à¸´à¸¡'
 }
 
 function firstText(...values: Array<unknown>) {
@@ -11354,13 +11354,13 @@ function derivePickSideFromAnalysis(match: any, analysis: any) {
   }
 
   if (recommendation === 'NO BET') {
-    return buildPickResult('NONE', homeName, awayName, 'ไม่แนะนำเดิมพัน เพราะระบบประเมินว่ายังไม่มีความคุ้มค่าพอ')
+    return buildPickResult('NONE', homeName, awayName, 'à¹„à¸¡à¹ˆà¹à¸™à¸°à¸™à¸³à¹€à¸”à¸´à¸¡à¸žà¸±à¸™ à¹€à¸žà¸£à¸²à¸°à¸£à¸°à¸šà¸šà¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸§à¹ˆà¸²à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸„à¸§à¸²à¸¡à¸„à¸¸à¹‰à¸¡à¸„à¹ˆà¸²à¸žà¸­')
   }
   if (riskLevel === 'HIGH') {
-    return buildPickResult('NONE', homeName, awayName, 'ความเสี่ยงสูง จึงไม่แนะนำเลือกฝั่ง')
+    return buildPickResult('NONE', homeName, awayName, 'à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¹à¸™à¸°à¸™à¸³à¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡')
   }
   if (confidence < 58) {
-    return buildPickResult('NONE', homeName, awayName, 'ข้อมูลยังไม่พอให้เลือกฝั่งอย่างมั่นใจ')
+    return buildPickResult('NONE', homeName, awayName, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸­à¹ƒà¸«à¹‰à¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡à¸­à¸¢à¹ˆà¸²à¸‡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ')
   }
 
   const homeAdvantage = normalizeScore(analysis?.home_advantage_score ?? analysis?.modules?.homeAwayAdvantage ?? 56)
@@ -11373,18 +11373,18 @@ function derivePickSideFromAnalysis(match: any, analysis: any) {
   const awayEdge = (50 - homeAdvantage) * 0.7 + (50 - awayWeakness) * 0.55 + (goalScoring - 55) * 0.05 + (defensiveStability - 55) * 0.05 - marketPenalty
 
   if (homeEdge >= 14 && homeAdvantage >= 62 && awayWeakness >= 60 && marketRisk >= 48) {
-    return buildPickResult('HOME', homeName, awayName, 'เจ้าบ้านได้เปรียบชัดจากคะแนนเหย้าและความอ่อนแอของทีมเยือน')
+    return buildPickResult('HOME', homeName, awayName, 'à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¹„à¸”à¹‰à¹€à¸›à¸£à¸µà¸¢à¸šà¸Šà¸±à¸”à¸ˆà¸²à¸à¸„à¸°à¹à¸™à¸™à¹€à¸«à¸¢à¹‰à¸²à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¸­à¹ˆà¸­à¸™à¹à¸­à¸‚à¸­à¸‡à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™')
   }
   if (awayEdge >= 16 && homeAdvantage <= 42 && awayWeakness <= 42 && marketRisk >= 52) {
-    return buildPickResult('AWAY', homeName, awayName, 'ทีมเยือนมีภาษีดีกว่าจากคะแนนฝั่งเจ้าบ้านที่อ่อนและทีมเยือนไม่เปราะชัด')
+    return buildPickResult('AWAY', homeName, awayName, 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸¡à¸µà¸ à¸²à¸©à¸µà¸”à¸µà¸à¸§à¹ˆà¸²à¸ˆà¸²à¸à¸„à¸°à¹à¸™à¸™à¸à¸±à¹ˆà¸‡à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸—à¸µà¹ˆà¸­à¹ˆà¸­à¸™à¹à¸¥à¸°à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¹„à¸¡à¹ˆà¹€à¸›à¸£à¸²à¸°à¸Šà¸±à¸”')
   }
 
-  return buildPickResult('NONE', homeName, awayName, 'ข้อมูลยังไม่พอให้เลือกฝั่งอย่างมั่นใจ')
+  return buildPickResult('NONE', homeName, awayName, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸­à¹ƒà¸«à¹‰à¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡à¸­à¸¢à¹ˆà¸²à¸‡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ')
 }
 
 function buildPickResult(pickSide: string, homeName: string | null, awayName: string | null, pickReason: string) {
   const normalized = normalizePickSide(pickSide)
-  const pickTeam = normalized === 'HOME' ? homeName : normalized === 'AWAY' ? awayName : normalized === 'DRAW' ? 'เสมอ' : null
+  const pickTeam = normalized === 'HOME' ? homeName : normalized === 'AWAY' ? awayName : normalized === 'DRAW' ? 'à¹€à¸ªà¸¡à¸­' : null
 
   return {
     pick_side: normalized,
@@ -11427,8 +11427,8 @@ function logAnalysisV2Breakdown({ match, confidence, riskLevel, recommendation, 
 }
 
 function buildAnalysisSummaryV2Legacy(match: any, confidence: number, riskLevel: string, recommendation: string, breakdown: any) {
-  const summaryHome = match.homeTeam?.name ?? 'ทีมเหย้า'
-  const summaryAway = match.awayTeam?.name ?? 'ทีมเยือน'
+  const summaryHome = match.homeTeam?.name ?? 'à¸—à¸µà¸¡à¹€à¸«à¸¢à¹‰à¸²'
+  const summaryAway = match.awayTeam?.name ?? 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™'
   const summaryModules = [
     { label: 'Team Strength', score: breakdown.team_strength.score },
     { label: 'Recent Form', score: breakdown.recent_form.score },
@@ -11443,29 +11443,29 @@ function buildAnalysisSummaryV2Legacy(match: any, confidence: number, riskLevel:
   const riskReason = breakdown.overall_risk.reason
 
   if (recommendation === 'BET') {
-    return `${summaryHome} พบ ${summaryAway}: คะแนนรวม ${confidence}/100 เข้าระดับ BET เพราะ ${bestModule.label} เด่น (${bestModule.score}/100) และ risk_level เป็น ${riskLevel}. ${riskReason}`
+    return `${summaryHome} à¸žà¸š ${summaryAway}: à¸„à¸°à¹à¸™à¸™à¸£à¸§à¸¡ ${confidence}/100 à¹€à¸‚à¹‰à¸²à¸£à¸°à¸”à¸±à¸š BET à¹€à¸žà¸£à¸²à¸° ${bestModule.label} à¹€à¸”à¹ˆà¸™ (${bestModule.score}/100) à¹à¸¥à¸° risk_level à¹€à¸›à¹‡à¸™ ${riskLevel}. ${riskReason}`
   }
   if (recommendation === 'LEAN') {
-    return `${summaryHome} พบ ${summaryAway}: คะแนนรวม ${confidence}/100 เหมาะเป็น LEAN มากกว่า BET จุดหนุนหลักคือ ${bestModule.label} (${bestModule.score}/100) แต่ ${weakestModule.label} ยังถ่วงอยู่ (${weakestModule.score}/100). ${riskReason}`
+    return `${summaryHome} à¸žà¸š ${summaryAway}: à¸„à¸°à¹à¸™à¸™à¸£à¸§à¸¡ ${confidence}/100 à¹€à¸«à¸¡à¸²à¸°à¹€à¸›à¹‡à¸™ LEAN à¸¡à¸²à¸à¸à¸§à¹ˆà¸² BET à¸ˆà¸¸à¸”à¸«à¸™à¸¸à¸™à¸«à¸¥à¸±à¸à¸„à¸·à¸­ ${bestModule.label} (${bestModule.score}/100) à¹à¸•à¹ˆ ${weakestModule.label} à¸¢à¸±à¸‡à¸–à¹ˆà¸§à¸‡à¸­à¸¢à¸¹à¹ˆ (${weakestModule.score}/100). ${riskReason}`
   }
-  return `${summaryHome} พบ ${summaryAway}: คะแนนรวม ${confidence}/100 ยังเป็น NO BET แม้มีจุดเด่นที่ ${bestModule.label} (${bestModule.score}/100) แต่ ${weakestModule.label} ยังไม่สนับสนุนพอ (${weakestModule.score}/100). ${riskReason}`
+  return `${summaryHome} à¸žà¸š ${summaryAway}: à¸„à¸°à¹à¸™à¸™à¸£à¸§à¸¡ ${confidence}/100 à¸¢à¸±à¸‡à¹€à¸›à¹‡à¸™ NO BET à¹à¸¡à¹‰à¸¡à¸µà¸ˆà¸¸à¸”à¹€à¸”à¹ˆà¸™à¸—à¸µà¹ˆ ${bestModule.label} (${bestModule.score}/100) à¹à¸•à¹ˆ ${weakestModule.label} à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸ªà¸™à¸±à¸šà¸ªà¸™à¸¸à¸™à¸žà¸­ (${weakestModule.score}/100). ${riskReason}`
 
   const modules: Record<string, number> = {}
-  const home = match.homeTeam?.name ?? 'ทีมเหย้า'
-  const away = match.awayTeam?.name ?? 'ทีมเยือน'
+  const home = match.homeTeam?.name ?? 'à¸—à¸µà¸¡à¹€à¸«à¸¢à¹‰à¸²'
+  const away = match.awayTeam?.name ?? 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™'
   const topModule = Object.entries(modules).sort(([, a], [, b]) => b - a)[0]?.[0] ?? 'teamStrength'
   const moduleText: Record<string, string> = {
-    teamStrength: 'ความแข็งแรงทีม',
-    recentForm: 'ฟอร์ม 5 นัดหลัง',
-    homeAdvantage: 'ความได้เปรียบในบ้าน',
-    awayWeakness: 'จุดอ่อนทีมเยือน',
-    goalScoring: 'ศักยภาพการทำประตู',
-    defensiveStability: 'ความมั่นคงเกมรับ',
-    motivation: 'แรงจูงใจและความสำคัญรายการ',
-    marketRisk: 'ความเสี่ยงตลาด',
+    teamStrength: 'à¸„à¸§à¸²à¸¡à¹à¸‚à¹‡à¸‡à¹à¸£à¸‡à¸—à¸µà¸¡',
+    recentForm: 'à¸Ÿà¸­à¸£à¹Œà¸¡ 5 à¸™à¸±à¸”à¸«à¸¥à¸±à¸‡',
+    homeAdvantage: 'à¸„à¸§à¸²à¸¡à¹„à¸”à¹‰à¹€à¸›à¸£à¸µà¸¢à¸šà¹ƒà¸™à¸šà¹‰à¸²à¸™',
+    awayWeakness: 'à¸ˆà¸¸à¸”à¸­à¹ˆà¸­à¸™à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™',
+    goalScoring: 'à¸¨à¸±à¸à¸¢à¸ à¸²à¸žà¸à¸²à¸£à¸—à¸³à¸›à¸£à¸°à¸•à¸¹',
+    defensiveStability: 'à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¸„à¸‡à¹€à¸à¸¡à¸£à¸±à¸š',
+    motivation: 'à¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¸ªà¸³à¸„à¸±à¸à¸£à¸²à¸¢à¸à¸²à¸£',
+    marketRisk: 'à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸•à¸¥à¸²à¸”',
   }
 
-  return `${home} พบ ${away}: Football Master Framework ให้คะแนน ${confidence}/100 คำแนะนำ ${getRecommendationFromConfidence(confidence, riskLevel)} จุดเด่นคือ${moduleText[topModule]} และ risk_level เป็น ${riskLevel}`
+  return `${home} à¸žà¸š ${away}: Football Master Framework à¹ƒà¸«à¹‰à¸„à¸°à¹à¸™à¸™ ${confidence}/100 à¸„à¸³à¹à¸™à¸°à¸™à¸³ ${getRecommendationFromConfidence(confidence, riskLevel)} à¸ˆà¸¸à¸”à¹€à¸”à¹ˆà¸™à¸„à¸·à¸­${moduleText[topModule]} à¹à¸¥à¸° risk_level à¹€à¸›à¹‡à¸™ ${riskLevel}`
 }
 
 function calculateDataIntelligence(match: any, context: any = {}) {
@@ -11493,22 +11493,22 @@ function calculateLeaguePositionData(match: any) {
   const standings = match.standings ?? []
   const homeStanding = findStanding(standings, getTeamId(match.homeTeam))
   const awayStanding = findStanding(standings, getTeamId(match.awayTeam))
-  if (!homeStanding || !awayStanding) return { score: 58, confidence: 'low', home_rank: null, away_rank: null, point_gap: null, goal_difference_gap: null, edge: 'unknown', reason: 'ยังไม่มีข้อมูลอันดับลีกเพียงพอ' }
+  if (!homeStanding || !awayStanding) return { score: 58, confidence: 'low', home_rank: null, away_rank: null, point_gap: null, goal_difference_gap: null, edge: 'unknown', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸­à¸±à¸™à¸”à¸±à¸šà¸¥à¸µà¸à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­' }
 
   const homeRank = Number(homeStanding.position ?? 0)
   const awayRank = Number(awayStanding.position ?? 0)
   const pointGap = Number(homeStanding.points ?? 0) - Number(awayStanding.points ?? 0)
   const goalDiffGap = Number(homeStanding.goalDifference ?? 0) - Number(awayStanding.goalDifference ?? 0)
   const score = Math.round(clamp(58 + (awayRank - homeRank) * 1.8 + pointGap * 0.45 + goalDiffGap * 0.35, 35, 85))
-  return { score, confidence: 'high', home_rank: homeRank || null, away_rank: awayRank || null, point_gap: pointGap, goal_difference_gap: goalDiffGap, edge: score >= 62 ? 'home' : score <= 54 ? 'away' : 'none', reason: `อันดับลีกจริง เจ้าบ้านอันดับ ${homeRank || '-'} ทีมเยือนอันดับ ${awayRank || '-'} แต้มต่าง ${pointGap} และประตูได้เสียต่าง ${goalDiffGap}` }
+  return { score, confidence: 'high', home_rank: homeRank || null, away_rank: awayRank || null, point_gap: pointGap, goal_difference_gap: goalDiffGap, edge: score >= 62 ? 'home' : score <= 54 ? 'away' : 'none', reason: `à¸­à¸±à¸™à¸”à¸±à¸šà¸¥à¸µà¸à¸ˆà¸£à¸´à¸‡ à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸­à¸±à¸™à¸”à¸±à¸š ${homeRank || '-'} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸­à¸±à¸™à¸”à¸±à¸š ${awayRank || '-'} à¹à¸•à¹‰à¸¡à¸•à¹ˆà¸²à¸‡ ${pointGap} à¹à¸¥à¸°à¸›à¸£à¸°à¸•à¸¹à¹„à¸”à¹‰à¹€à¸ªà¸µà¸¢à¸•à¹ˆà¸²à¸‡ ${goalDiffGap}` }
 }
 
 function calculateRecentFormData(homeForm: any, awayForm: any) {
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return { score: 58, confidence: 'low', home: emptyDataForm(), away: emptyDataForm(), trend: 'unknown', reason: 'ข้อมูลฟอร์มล่าสุดยังจำกัด' }
+  if (!played) return { score: 58, confidence: 'low', home: emptyDataForm(), away: emptyDataForm(), trend: 'unknown', reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸Ÿà¸­à¸£à¹Œà¸¡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸”' }
 
   const score = Math.round(clamp(56 + (formPoints(homeForm) - formPoints(awayForm)) * 1.4 + (formGoalDiff(homeForm) - formGoalDiff(awayForm)) * 1.2, 35, 82))
-  return { score, confidence: played >= 8 ? 'high' : played >= 4 ? 'medium' : 'low', home: summarizeDataForm(homeForm), away: summarizeDataForm(awayForm), trend: score >= 63 ? 'positive' : score <= 49 ? 'negative' : 'neutral', reason: `ฟอร์มล่าสุดมีข้อมูลจริง ${played} นัด เจ้าบ้าน ${formatDataForm(homeForm)} ทีมเยือน ${formatDataForm(awayForm)}` }
+  return { score, confidence: played >= 8 ? 'high' : played >= 4 ? 'medium' : 'low', home: summarizeDataForm(homeForm), away: summarizeDataForm(awayForm), trend: score >= 63 ? 'positive' : score <= 49 ? 'negative' : 'neutral', reason: `à¸Ÿà¸­à¸£à¹Œà¸¡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${played} à¸™à¸±à¸” à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™ ${formatDataForm(homeForm)} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™ ${formatDataForm(awayForm)}` }
 }
 
 function calculateHomeAwayFormData(match: any) {
@@ -11516,41 +11516,41 @@ function calculateHomeAwayFormData(match: any) {
   const homeForm = venueData.home ?? match.homeHomeForm
   const awayForm = venueData.away ?? match.awayAwayForm
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return { score: 58, confidence: 'low', home_win_rate: null, away_win_rate: null, home: emptyDataForm(), away: emptyDataForm(), advantage: 'unknown', reason: 'ฟอร์มเหย้า/เยือนยังไม่ชัด' }
+  if (!played) return { score: 58, confidence: 'low', home_win_rate: null, away_win_rate: null, home: emptyDataForm(), away: emptyDataForm(), advantage: 'unknown', reason: 'à¸Ÿà¸­à¸£à¹Œà¸¡à¹€à¸«à¸¢à¹‰à¸²/à¹€à¸¢à¸·à¸­à¸™à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸Šà¸±à¸”' }
 
   const homeRate = Number(homeForm?.played ?? 0) ? Number(homeForm?.wins ?? 0) / Number(homeForm?.played ?? 1) : null
   const awayRate = Number(awayForm?.played ?? 0) ? Number(awayForm?.wins ?? 0) / Number(awayForm?.played ?? 1) : null
   const score = Math.round(clamp(57 + ((homeRate ?? 0.4) - (awayRate ?? 0.35)) * 28 + (formGoalDiff(homeForm) - formGoalDiff(awayForm)) * 0.9, 35, 82))
-  return { score, confidence: played >= 8 ? 'high' : 'medium', home_win_rate: homeRate === null ? null : Math.round(homeRate * 100), away_win_rate: awayRate === null ? null : Math.round(awayRate * 100), home: summarizeDataForm(homeForm), away: summarizeDataForm(awayForm), advantage: score >= 63 ? 'home' : score <= 51 ? 'away' : 'none', reason: `ใช้ข้อมูลเหย้า/เยือนจริง advantage ${score >= 63 ? 'home' : score <= 51 ? 'away' : 'none'}` }
+  return { score, confidence: played >= 8 ? 'high' : 'medium', home_win_rate: homeRate === null ? null : Math.round(homeRate * 100), away_win_rate: awayRate === null ? null : Math.round(awayRate * 100), home: summarizeDataForm(homeForm), away: summarizeDataForm(awayForm), advantage: score >= 63 ? 'home' : score <= 51 ? 'away' : 'none', reason: `à¹ƒà¸Šà¹‰à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹€à¸«à¸¢à¹‰à¸²/à¹€à¸¢à¸·à¸­à¸™à¸ˆà¸£à¸´à¸‡ advantage ${score >= 63 ? 'home' : score <= 51 ? 'away' : 'none'}` }
 }
 
 function calculateHeadToHeadData(match: any, context: any) {
   const matches = getH2HMatches(match, context)
-  if (!matches.length) return { score: 58, confidence: 'low', matches_count: 0, home_wins: 0, away_wins: 0, draws: 0, goals_average: null, reason: 'ไม่มี H2H เพียงพอ' }
+  if (!matches.length) return { score: 58, confidence: 'low', matches_count: 0, home_wins: 0, away_wins: 0, draws: 0, goals_average: null, reason: 'à¹„à¸¡à¹ˆà¸¡à¸µ H2H à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­' }
 
   const summary = summarizeH2H(matches.slice(0, 10), getTeamId(match.homeTeam), getTeamId(match.awayTeam))
-  return { score: Math.round(clamp(56 + (summary.homeWins - summary.awayWins) * 3 + Math.min(summary.played, 5), 42, 78)), confidence: summary.played >= 8 ? 'high' : summary.played >= 4 ? 'medium' : 'low', matches_count: summary.played, home_wins: summary.homeWins, away_wins: summary.awayWins, draws: summary.draws, goals_average: summary.played ? Math.round((summary.goals / summary.played) * 100) / 100 : null, reason: `H2H มีข้อมูลจริง ${summary.played} นัด เจ้าบ้านชนะ ${summary.homeWins} เสมอ ${summary.draws} ทีมเยือนชนะ ${summary.awayWins}` }
+  return { score: Math.round(clamp(56 + (summary.homeWins - summary.awayWins) * 3 + Math.min(summary.played, 5), 42, 78)), confidence: summary.played >= 8 ? 'high' : summary.played >= 4 ? 'medium' : 'low', matches_count: summary.played, home_wins: summary.homeWins, away_wins: summary.awayWins, draws: summary.draws, goals_average: summary.played ? Math.round((summary.goals / summary.played) * 100) / 100 : null, reason: `H2H à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${summary.played} à¸™à¸±à¸” à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸Šà¸™à¸° ${summary.homeWins} à¹€à¸ªà¸¡à¸­ ${summary.draws} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸Šà¸™à¸° ${summary.awayWins}` }
 }
 
 function calculateStrengthOfScheduleData(recentOpponents: any) {
   const ranks = flattenRecentOpponents(recentOpponents).map((item: any) => Number(item.opponent?.position ?? item.position ?? item.rank ?? 0)).filter((rank: number) => rank > 0)
-  if (!ranks.length) return { score: 58, confidence: 'low', average_opponent_rank: null, difficulty: 'unknown', reason: 'ยังไม่มีข้อมูลคุณภาพคู่แข่ง 3-5 นัดล่าสุดเพียงพอ' }
+  if (!ranks.length) return { score: 58, confidence: 'low', average_opponent_rank: null, difficulty: 'unknown', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸„à¸¸à¸“à¸ à¸²à¸žà¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡ 3-5 à¸™à¸±à¸”à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­' }
 
   const average = ranks.reduce((total: number, rank: number) => total + rank, 0) / ranks.length
   const difficulty = average <= 6 ? 'hard' : average >= 14 ? 'easy' : 'medium'
-  return { score: difficulty === 'hard' ? 55 : difficulty === 'easy' ? 62 : 58, confidence: ranks.length >= 6 ? 'high' : ranks.length >= 3 ? 'medium' : 'low', average_opponent_rank: Math.round(average * 100) / 100, difficulty, reason: `คู่แข่งล่าสุดมีอันดับเฉลี่ย ${Math.round(average * 100) / 100} ระดับความยาก ${difficulty}` }
+  return { score: difficulty === 'hard' ? 55 : difficulty === 'easy' ? 62 : 58, confidence: ranks.length >= 6 ? 'high' : ranks.length >= 3 ? 'medium' : 'low', average_opponent_rank: Math.round(average * 100) / 100, difficulty, reason: `à¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸¡à¸µà¸­à¸±à¸™à¸”à¸±à¸šà¹€à¸‰à¸¥à¸µà¹ˆà¸¢ ${Math.round(average * 100) / 100} à¸£à¸°à¸”à¸±à¸šà¸„à¸§à¸²à¸¡à¸¢à¸²à¸ ${difficulty}` }
 }
 
 function calculateGoalStatisticsData(homeForm: any, awayForm: any) {
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return { score: 58, confidence: 'low', average_goals_scored: null, average_goals_conceded: null, clean_sheet_rate: null, btts_rate: null, over_2_5_rate: null, reason: 'สถิติประตูยังจำกัด และไม่สร้างค่า xG เอง' }
+  if (!played) return { score: 58, confidence: 'low', average_goals_scored: null, average_goals_conceded: null, clean_sheet_rate: null, btts_rate: null, over_2_5_rate: null, reason: 'à¸ªà¸–à¸´à¸•à¸´à¸›à¸£à¸°à¸•à¸¹à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¹à¸¥à¸°à¹„à¸¡à¹ˆà¸ªà¸£à¹‰à¸²à¸‡à¸„à¹ˆà¸² xG à¹€à¸­à¸‡' }
 
   const goalsFor = Number(homeForm?.goals_for ?? 0) + Number(awayForm?.goals_for ?? 0)
   const goalsAgainst = Number(homeForm?.goals_against ?? 0) + Number(awayForm?.goals_against ?? 0)
   const cleanSheets = Number(homeForm?.clean_sheets ?? 0) + Number(awayForm?.clean_sheets ?? 0)
   const averageFor = goalsFor / played
   const averageAgainst = goalsAgainst / played
-  return { score: Math.round(clamp(52 + averageFor * 10 - averageAgainst * 5 + (cleanSheets / played) * 8, 35, 84)), confidence: played >= 8 ? 'high' : played >= 4 ? 'medium' : 'low', average_goals_scored: Math.round(averageFor * 100) / 100, average_goals_conceded: Math.round(averageAgainst * 100) / 100, clean_sheet_rate: Math.round((cleanSheets / played) * 100), btts_rate: null, over_2_5_rate: null, reason: `สถิติประตูจากข้อมูลจริง ${played} นัด ยิงเฉลี่ย ${Math.round(averageFor * 100) / 100} เสียเฉลี่ย ${Math.round(averageAgainst * 100) / 100}` }
+  return { score: Math.round(clamp(52 + averageFor * 10 - averageAgainst * 5 + (cleanSheets / played) * 8, 35, 84)), confidence: played >= 8 ? 'high' : played >= 4 ? 'medium' : 'low', average_goals_scored: Math.round(averageFor * 100) / 100, average_goals_conceded: Math.round(averageAgainst * 100) / 100, clean_sheet_rate: Math.round((cleanSheets / played) * 100), btts_rate: null, over_2_5_rate: null, reason: `à¸ªà¸–à¸´à¸•à¸´à¸›à¸£à¸°à¸•à¸¹à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${played} à¸™à¸±à¸” à¸¢à¸´à¸‡à¹€à¸‰à¸¥à¸µà¹ˆà¸¢ ${Math.round(averageFor * 100) / 100} à¹€à¸ªà¸µà¸¢à¹€à¸‰à¸¥à¸µà¹ˆà¸¢ ${Math.round(averageAgainst * 100) / 100}` }
 }
 
 function calculateDataConfidenceScore(sections: any) {
@@ -11567,7 +11567,7 @@ function calculateDataConfidenceScore(sections: any) {
   const missing = keys.filter((key) => !available.includes(key))
   const score = Math.round((available.length / keys.length) * 100)
   const level = score >= 75 ? 'high' : score >= 45 ? 'medium' : 'low'
-  return { score, level, available, missing, reason: `ข้อมูลจริงพร้อมใช้ ${available.length}/${keys.length} หมวด ระดับ ${level}` }
+  return { score, level, available, missing, reason: `à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡à¸žà¸£à¹‰à¸­à¸¡à¹ƒà¸Šà¹‰ ${available.length}/${keys.length} à¸«à¸¡à¸§à¸” à¸£à¸°à¸”à¸±à¸š ${level}` }
 }
 
 function calculateDataIntelligenceModifier(data: any, baseConfidence = 0, footballModifier = 0) {
@@ -11647,7 +11647,7 @@ function calculateFootballIntelligence(match: any, context: any = {}) {
 function calculateH2HIntelligence(match: any, context: any = {}) {
   const h2hMatches = getH2HMatches(match, context)
   if (!h2hMatches.length) {
-    return { score: 58, confidence: 'low', reason: 'ยังไม่มีข้อมูล H2H เพียงพอ', signals: ['missing_h2h'] }
+    return { score: 58, confidence: 'low', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥ H2H à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­', signals: ['missing_h2h'] }
   }
 
   const latest10 = h2hMatches.slice(0, 10)
@@ -11668,7 +11668,7 @@ function calculateH2HIntelligence(match: any, context: any = {}) {
   return {
     score: Math.round(clamp(56 + (samples.homeWins - samples.awayWins) * 3 + Math.min(latest5.length, 5), 45, 76)),
     confidence,
-    reason: `H2H มีข้อมูลจริง ${latest10.length} นัดล่าสุด เจ้าบ้านชนะ ${samples.homeWins} เสมอ ${samples.draws} ทีมเยือนชนะ ${samples.awayWins}${goalsAverage ? ` ค่าเฉลี่ยประตู ${goalsAverage}` : ''}`,
+    reason: `H2H à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${latest10.length} à¸™à¸±à¸”à¸¥à¹ˆà¸²à¸ªà¸¸à¸” à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸Šà¸™à¸° ${samples.homeWins} à¹€à¸ªà¸¡à¸­ ${samples.draws} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸Šà¸™à¸° ${samples.awayWins}${goalsAverage ? ` à¸„à¹ˆà¸²à¹€à¸‰à¸¥à¸µà¹ˆà¸¢à¸›à¸£à¸°à¸•à¸¹ ${goalsAverage}` : ''}`,
     signals,
   }
 }
@@ -11676,13 +11676,13 @@ function calculateH2HIntelligence(match: any, context: any = {}) {
 function calculateLeagueContext(match: any) {
   const type = classifyCompetition(getCompetitionText(match))
   const byType: Record<string, any> = {
-    league: { score: 62, risk_modifier: -1, reason: 'รายการลีกมีบริบทต่อเนื่องและประเมินเสถียรกว่า' },
-    cup: { score: 58, risk_modifier: 2, reason: 'รายการถ้วยมีแรงจูงใจสูง แต่ความผันผวนมากขึ้น' },
-    friendly: { score: 52, risk_modifier: 3, reason: 'เกมกระชับมิตรมีความเสี่ยงจากการทดลองทีมและแรงจูงใจต่ำกว่า' },
-    international: { score: 57, risk_modifier: 1, reason: 'เกมทีมชาติมีบริบทเฉพาะและข้อมูลสโมสรใช้ได้จำกัด' },
-    youth: { score: 53, risk_modifier: 2, reason: 'รายการเยาวชนมีความนิ่งของข้อมูลต่ำกว่ารายการหลัก' },
-    women: { score: 54, risk_modifier: 2, reason: 'รายการหญิงอาจมี coverage ข้อมูลน้อยกว่ารายการหลัก' },
-    unknown: { score: 58, risk_modifier: 0, reason: 'ยังจำแนกประเภทการแข่งขันไม่ได้ชัด จึงให้ค่ากลาง' },
+    league: { score: 62, risk_modifier: -1, reason: 'à¸£à¸²à¸¢à¸à¸²à¸£à¸¥à¸µà¸à¸¡à¸µà¸šà¸£à¸´à¸šà¸—à¸•à¹ˆà¸­à¹€à¸™à¸·à¹ˆà¸­à¸‡à¹à¸¥à¸°à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¹€à¸ªà¸–à¸µà¸¢à¸£à¸à¸§à¹ˆà¸²' },
+    cup: { score: 58, risk_modifier: 2, reason: 'à¸£à¸²à¸¢à¸à¸²à¸£à¸–à¹‰à¸§à¸¢à¸¡à¸µà¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¸ªà¸¹à¸‡ à¹à¸•à¹ˆà¸„à¸§à¸²à¸¡à¸œà¸±à¸™à¸œà¸§à¸™à¸¡à¸²à¸à¸‚à¸¶à¹‰à¸™' },
+    friendly: { score: 52, risk_modifier: 3, reason: 'à¹€à¸à¸¡à¸à¸£à¸°à¸Šà¸±à¸šà¸¡à¸´à¸•à¸£à¸¡à¸µà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ˆà¸²à¸à¸à¸²à¸£à¸—à¸”à¸¥à¸­à¸‡à¸—à¸µà¸¡à¹à¸¥à¸°à¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¸•à¹ˆà¸³à¸à¸§à¹ˆà¸²' },
+    international: { score: 57, risk_modifier: 1, reason: 'à¹€à¸à¸¡à¸—à¸µà¸¡à¸Šà¸²à¸•à¸´à¸¡à¸µà¸šà¸£à¸´à¸šà¸—à¹€à¸‰à¸žà¸²à¸°à¹à¸¥à¸°à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ªà¹‚à¸¡à¸ªà¸£à¹ƒà¸Šà¹‰à¹„à¸”à¹‰à¸ˆà¸³à¸à¸±à¸”' },
+    youth: { score: 53, risk_modifier: 2, reason: 'à¸£à¸²à¸¢à¸à¸²à¸£à¹€à¸¢à¸²à¸§à¸Šà¸™à¸¡à¸µà¸„à¸§à¸²à¸¡à¸™à¸´à¹ˆà¸‡à¸‚à¸­à¸‡à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¹ˆà¸³à¸à¸§à¹ˆà¸²à¸£à¸²à¸¢à¸à¸²à¸£à¸«à¸¥à¸±à¸' },
+    women: { score: 54, risk_modifier: 2, reason: 'à¸£à¸²à¸¢à¸à¸²à¸£à¸«à¸à¸´à¸‡à¸­à¸²à¸ˆà¸¡à¸µ coverage à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸™à¹‰à¸­à¸¢à¸à¸§à¹ˆà¸²à¸£à¸²à¸¢à¸à¸²à¸£à¸«à¸¥à¸±à¸' },
+    unknown: { score: 58, risk_modifier: 0, reason: 'à¸¢à¸±à¸‡à¸ˆà¸³à¹à¸™à¸à¸›à¸£à¸°à¹€à¸ à¸—à¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¹„à¸¡à¹ˆà¹„à¸”à¹‰à¸Šà¸±à¸” à¸ˆà¸¶à¸‡à¹ƒà¸«à¹‰à¸„à¹ˆà¸²à¸à¸¥à¸²à¸‡' },
   }
 
   return { type, ...byType[type] }
@@ -11693,7 +11693,7 @@ function calculateRestDays(match: any, recentMatches: any) {
   const awayRestDays = getRestDays(match, getTeamRecentMatches(recentMatches, 'away'))
 
   if (homeRestDays === null && awayRestDays === null) {
-    return { home_rest_days: null, away_rest_days: null, score: 58, advantage: 'none', reason: 'ยังไม่มีข้อมูลวันพักทีมล่าสุด' }
+    return { home_rest_days: null, away_rest_days: null, score: 58, advantage: 'none', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸§à¸±à¸™à¸žà¸±à¸à¸—à¸µà¸¡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”' }
   }
 
   const diff = (homeRestDays ?? 0) - (awayRestDays ?? 0)
@@ -11704,7 +11704,7 @@ function calculateRestDays(match: any, recentMatches: any) {
     away_rest_days: awayRestDays,
     score: Math.round(clamp(58 + scoreRestDays(homeRestDays) - scoreRestDays(awayRestDays), 45, 72)),
     advantage,
-    reason: `วันพักล่าสุด เจ้าบ้าน ${formatRestDays(homeRestDays)} ทีมเยือน ${formatRestDays(awayRestDays)} ภาพรวมได้เปรียบ: ${advantage}`,
+    reason: `à¸§à¸±à¸™à¸žà¸±à¸à¸¥à¹ˆà¸²à¸ªà¸¸à¸” à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™ ${formatRestDays(homeRestDays)} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™ ${formatRestDays(awayRestDays)} à¸ à¸²à¸žà¸£à¸§à¸¡à¹„à¸”à¹‰à¹€à¸›à¸£à¸µà¸¢à¸š: ${advantage}`,
   }
 }
 
@@ -11713,7 +11713,7 @@ function calculateScheduleDifficulty(recentOpponents: any) {
   const rated = opponents.map(getOpponentDifficulty).filter((value: number | null) => value !== null)
 
   if (!rated.length) {
-    return { score: 58, difficulty: 'unknown', reason: 'ยังไม่มีข้อมูลคุณภาพคู่แข่ง 3-5 นัดล่าสุดเพียงพอ', confidence: 'low' }
+    return { score: 58, difficulty: 'unknown', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸„à¸¸à¸“à¸ à¸²à¸žà¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡ 3-5 à¸™à¸±à¸”à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­', confidence: 'low' }
   }
 
   const average = rated.reduce((total: number, value: number | null) => total + Number(value ?? 0), 0) / rated.length
@@ -11722,7 +11722,7 @@ function calculateScheduleDifficulty(recentOpponents: any) {
   return {
     score: difficulty === 'hard' ? 54 : difficulty === 'easy' ? 62 : 58,
     difficulty,
-    reason: `ประเมินความยากคู่แข่งล่าสุดจากข้อมูลจริง ${rated.length} รายการ ระดับ ${difficulty}`,
+    reason: `à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸„à¸§à¸²à¸¡à¸¢à¸²à¸à¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${rated.length} à¸£à¸²à¸¢à¸à¸²à¸£ à¸£à¸°à¸”à¸±à¸š ${difficulty}`,
     confidence: rated.length >= 6 ? 'high' : rated.length >= 3 ? 'medium' : 'low',
   }
 }
@@ -11730,7 +11730,7 @@ function calculateScheduleDifficulty(recentOpponents: any) {
 function calculateSquadContext(match: any, squadData: any) {
   const data = squadData ?? match.squadData
   if (!data || (Array.isArray(data) && !data.length)) {
-    return { score: 58, confidence: 'low', reason: 'ยังไม่มีข้อมูลตัวผู้เล่น/อาการบาดเจ็บเพียงพอ', signals: ['missing_squad_data'] }
+    return { score: 58, confidence: 'low', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸±à¸§à¸œà¸¹à¹‰à¹€à¸¥à¹ˆà¸™/à¸­à¸²à¸à¸²à¸£à¸šà¸²à¸”à¹€à¸ˆà¹‡à¸šà¹€à¸žà¸µà¸¢à¸‡à¸žà¸­', signals: ['missing_squad_data'] }
   }
 
   const injuries = countItems(data.injuries ?? data.injury)
@@ -11747,7 +11747,7 @@ function calculateSquadContext(match: any, squadData: any) {
   return {
     score: Math.round(clamp(62 - penalty, 35, 68)),
     confidence: signals.length ? 'medium' : 'low',
-    reason: signals.length ? 'มีข้อมูล squad จริงบางส่วนและนำมาหักความเสี่ยงตามผลกระทบ' : 'มีข้อมูล squad แต่ยังไม่พบสัญญาณผู้เล่นสำคัญชัดเจน',
+    reason: signals.length ? 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥ squad à¸ˆà¸£à¸´à¸‡à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¹à¸¥à¸°à¸™à¸³à¸¡à¸²à¸«à¸±à¸à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸•à¸²à¸¡à¸œà¸¥à¸à¸£à¸°à¸—à¸š' : 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥ squad à¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸šà¸ªà¸±à¸à¸à¸²à¸“à¸œà¸¹à¹‰à¹€à¸¥à¹ˆà¸™à¸ªà¸³à¸„à¸±à¸à¸Šà¸±à¸”à¹€à¸ˆà¸™',
     signals,
   }
 }
@@ -11758,7 +11758,7 @@ function calculateMomentum(formData: any) {
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
 
   if (!played) {
-    return { score: 56, momentum: 'unknown', signals: ['missing_detailed_form'], reason: 'ยังไม่มีข้อมูลโมเมนตัมละเอียด จึงไม่เดาเพิ่มจากข้อมูลที่ไม่มี' }
+    return { score: 56, momentum: 'unknown', signals: ['missing_detailed_form'], reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹‚à¸¡à¹€à¸¡à¸™à¸•à¸±à¸¡à¸¥à¸°à¹€à¸­à¸µà¸¢à¸” à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¹€à¸”à¸²à¹€à¸žà¸´à¹ˆà¸¡à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸—à¸µà¹ˆà¹„à¸¡à¹ˆà¸¡à¸µ' }
   }
 
   const pointsRate = ((formPoints(homeForm) + formPoints(awayForm)) / Math.max(played * 3, 1)) * 100
@@ -11775,7 +11775,7 @@ function calculateMomentum(formData: any) {
     score,
     momentum: score >= 63 ? 'positive' : score <= 49 ? 'negative' : 'neutral',
     signals: signals.length ? signals : ['form_proxy_used'],
-    reason: 'ใช้ข้อมูล goals/form จาก v2 เป็น proxy โดยไม่เดาสถิติที่ยังไม่มี',
+    reason: 'à¹ƒà¸Šà¹‰à¸‚à¹‰à¸­à¸¡à¸¹à¸¥ goals/form à¸ˆà¸²à¸ v2 à¹€à¸›à¹‡à¸™ proxy à¹‚à¸”à¸¢à¹„à¸¡à¹ˆà¹€à¸”à¸²à¸ªà¸–à¸´à¸•à¸´à¸—à¸µà¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µ',
   }
 }
 
@@ -11784,10 +11784,10 @@ function calculateMatchImportance(match: any) {
   const leagueContext = calculateLeagueContext(match)
   const knockout = ['final', 'semi', 'quarter', 'last 16', 'last_16', 'playoff', 'knockout'].some((item) => text.includes(item))
 
-  if (leagueContext.type === 'friendly') return { score: 50, importance: 'low', risk_modifier: 2, reason: 'Friendly มีความสำคัญเชิงผลการแข่งขันต่ำกว่า' }
-  if (knockout) return { score: 64, importance: 'high', risk_modifier: 2, reason: 'รอบน็อกเอาต์/รอบลึกมีความสำคัญสูง แต่ variance สูงขึ้น' }
-  if (leagueContext.type === 'league') return { score: 59, importance: 'medium', risk_modifier: -1, reason: 'เกมลีกปกติมีแรงจูงใจและรูปแบบค่อนข้างเสถียร' }
-  return { score: 58, importance: leagueContext.type === 'unknown' ? 'unknown' : 'medium', risk_modifier: leagueContext.risk_modifier > 0 ? 1 : 0, reason: 'ยังไม่มี league table context เพียงพอ จึงไม่สรุป must-win เอง' }
+  if (leagueContext.type === 'friendly') return { score: 50, importance: 'low', risk_modifier: 2, reason: 'Friendly à¸¡à¸µà¸„à¸§à¸²à¸¡à¸ªà¸³à¸„à¸±à¸à¹€à¸Šà¸´à¸‡à¸œà¸¥à¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¸•à¹ˆà¸³à¸à¸§à¹ˆà¸²' }
+  if (knockout) return { score: 64, importance: 'high', risk_modifier: 2, reason: 'à¸£à¸­à¸šà¸™à¹‡à¸­à¸à¹€à¸­à¸²à¸•à¹Œ/à¸£à¸­à¸šà¸¥à¸¶à¸à¸¡à¸µà¸„à¸§à¸²à¸¡à¸ªà¸³à¸„à¸±à¸à¸ªà¸¹à¸‡ à¹à¸•à¹ˆ variance à¸ªà¸¹à¸‡à¸‚à¸¶à¹‰à¸™' }
+  if (leagueContext.type === 'league') return { score: 59, importance: 'medium', risk_modifier: -1, reason: 'à¹€à¸à¸¡à¸¥à¸µà¸à¸›à¸à¸•à¸´à¸¡à¸µà¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¹à¸¥à¸°à¸£à¸¹à¸›à¹à¸šà¸šà¸„à¹ˆà¸­à¸™à¸‚à¹‰à¸²à¸‡à¹€à¸ªà¸–à¸µà¸¢à¸£' }
+  return { score: 58, importance: leagueContext.type === 'unknown' ? 'unknown' : 'medium', risk_modifier: leagueContext.risk_modifier > 0 ? 1 : 0, reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µ league table context à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸ªà¸£à¸¸à¸› must-win à¹€à¸­à¸‡' }
 }
 
 function calculateIntelligenceModifier(intelligence: any, baseConfidence = 0) {
@@ -11831,16 +11831,16 @@ function calculateOverallRisk(breakdown: any, confidence: number, dataCompletene
   const lowConfidenceSignals = [intelligence?.h2h, intelligence?.schedule_difficulty, intelligence?.squad_context].filter((item) => item?.confidence === 'low').length
 
   if (confidence < 48 || weakCore >= 2 || spread >= 42 || marketRiskWeak || (leagueType === 'friendly' && dataConfidence === 'low') || (totalRiskModifier >= 4 && confidence < 68) || (marketDataMissing && confidence < 50)) {
-    return { level: 'HIGH', reason: 'คะแนนสำคัญอ่อน/ขัดแย้ง หรือบริบทการแข่งขันมี variance สูง จึงจัดเป็นความเสี่ยงสูง' }
+    return { level: 'HIGH', reason: 'à¸„à¸°à¹à¸™à¸™à¸ªà¸³à¸„à¸±à¸à¸­à¹ˆà¸­à¸™/à¸‚à¸±à¸”à¹à¸¢à¹‰à¸‡ à¸«à¸£à¸·à¸­à¸šà¸£à¸´à¸šà¸—à¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¸¡à¸µ variance à¸ªà¸¹à¸‡ à¸ˆà¸¶à¸‡à¸ˆà¸±à¸”à¹€à¸›à¹‡à¸™à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡' }
   }
   if (!marketDataMissing && confidence >= 72 && dataCompleteness >= 70 && spread <= 28 && totalRiskModifier <= 1 && lowConfidenceSignals <= 1) {
-    return { level: 'LOW', reason: 'หลายโมดูลให้ภาพสอดคล้องกัน ข้อมูลรองรับค่อนข้างครบ และ risk modifier ต่ำ' }
+    return { level: 'LOW', reason: 'à¸«à¸¥à¸²à¸¢à¹‚à¸¡à¸”à¸¹à¸¥à¹ƒà¸«à¹‰à¸ à¸²à¸žà¸ªà¸­à¸”à¸„à¸¥à¹‰à¸­à¸‡à¸à¸±à¸™ à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸­à¸‡à¸£à¸±à¸šà¸„à¹ˆà¸­à¸™à¸‚à¹‰à¸²à¸‡à¸„à¸£à¸š à¹à¸¥à¸° risk modifier à¸•à¹ˆà¸³' }
   }
   return {
     level: 'MEDIUM',
     reason: marketDataMissing
-      ? 'ข้อมูลตลาดยังจำกัด จึงคุมความเสี่ยงไว้ระดับกลางและหลีกเลี่ยง BET เว้นแต่คะแนนฝั่งฟุตบอลแข็งมาก'
-      : 'ข้อมูลยังไม่ครบทุกมิติ แต่ไม่มีสัญญาณอันตรายชัด จึงคงความเสี่ยงระดับกลาง',
+      ? 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¸„à¸¸à¸¡à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¹„à¸§à¹‰à¸£à¸°à¸”à¸±à¸šà¸à¸¥à¸²à¸‡à¹à¸¥à¸°à¸«à¸¥à¸µà¸à¹€à¸¥à¸µà¹ˆà¸¢à¸‡ BET à¹€à¸§à¹‰à¸™à¹à¸•à¹ˆà¸„à¸°à¹à¸™à¸™à¸à¸±à¹ˆà¸‡à¸Ÿà¸¸à¸•à¸šà¸­à¸¥à¹à¸‚à¹‡à¸‡à¸¡à¸²à¸'
+      : 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸„à¸£à¸šà¸—à¸¸à¸à¸¡à¸´à¸•à¸´ à¹à¸•à¹ˆà¹„à¸¡à¹ˆà¸¡à¸µà¸ªà¸±à¸à¸à¸²à¸“à¸­à¸±à¸™à¸•à¸£à¸²à¸¢à¸Šà¸±à¸” à¸ˆà¸¶à¸‡à¸„à¸‡à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸£à¸°à¸”à¸±à¸šà¸à¸¥à¸²à¸‡',
   }
 }
 
@@ -11858,15 +11858,15 @@ function buildAnalysisSummary(match: any, confidence: number, riskLevel: string,
   const bestModule = [...summaryModules].sort((a, b) => b.score - a.score)[0]
   const weakestModule = [...summaryModules].sort((a, b) => a.score - b.score)[0]
   const marketMissing = breakdown.market_odds_risk?.has_market_data === false
-  const riskText = riskLevel === 'LOW' ? 'ต่ำ' : riskLevel === 'HIGH' ? 'สูง' : 'กลาง'
-  const marketText = marketMissing ? ' ข้อมูลตลาดยังจำกัด จึงไม่ควรไล่ราคาแรง' : ''
+  const riskText = riskLevel === 'LOW' ? 'à¸•à¹ˆà¸³' : riskLevel === 'HIGH' ? 'à¸ªà¸¹à¸‡' : 'à¸à¸¥à¸²à¸‡'
+  const marketText = marketMissing ? ' à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸„à¸§à¸£à¹„à¸¥à¹ˆà¸£à¸²à¸„à¸²à¹à¸£à¸‡' : ''
   const caution = recommendation === 'BET'
-    ? 'ยังควรเช็กไลน์อัปและราคาใกล้แข่งก่อนเข้า'
+    ? 'à¸¢à¸±à¸‡à¸„à¸§à¸£à¹€à¸Šà¹‡à¸à¹„à¸¥à¸™à¹Œà¸­à¸±à¸›à¹à¸¥à¸°à¸£à¸²à¸„à¸²à¹ƒà¸à¸¥à¹‰à¹à¸‚à¹ˆà¸‡à¸à¹ˆà¸­à¸™à¹€à¸‚à¹‰à¸²'
     : recommendation === 'LEAN'
-      ? 'เหมาะติดตามหรือรอราคานิ่งมากกว่า BET เต็มตัว'
-      : 'ควรข้ามหรือรอข้อมูลใหม่ก่อน'
+      ? 'à¹€à¸«à¸¡à¸²à¸°à¸•à¸´à¸”à¸•à¸²à¸¡à¸«à¸£à¸·à¸­à¸£à¸­à¸£à¸²à¸„à¸²à¸™à¸´à¹ˆà¸‡à¸¡à¸²à¸à¸à¸§à¹ˆà¸² BET à¹€à¸•à¹‡à¸¡à¸•à¸±à¸§'
+      : 'à¸„à¸§à¸£à¸‚à¹‰à¸²à¸¡à¸«à¸£à¸·à¸­à¸£à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹ƒà¸«à¸¡à¹ˆà¸à¹ˆà¸­à¸™'
 
-  return `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskText}. จุดหนุนคือ ${bestModule.label} ${bestModule.score}/100 แต่ความเสี่ยงหลักอยู่ที่ ${weakestModule.label} ${weakestModule.score}/100.${marketText} ${caution}`
+  return `à¹à¸™à¸°à¸™à¸³ ${recommendation} à¹€à¸žà¸£à¸²à¸°à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence}/100 à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸£à¸°à¸”à¸±à¸š${riskText}. à¸ˆà¸¸à¸”à¸«à¸™à¸¸à¸™à¸„à¸·à¸­ ${bestModule.label} ${bestModule.score}/100 à¹à¸•à¹ˆà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸«à¸¥à¸±à¸à¸­à¸¢à¸¹à¹ˆà¸—à¸µà¹ˆ ${weakestModule.label} ${weakestModule.score}/100.${marketText} ${caution}`
 }
 
 function logFootballIntelligenceV3({ match, baseConfidence, footballModifier, dataIntelligenceModifier, intelligenceModifier, confidence, riskLevel, recommendation, modules, intelligenceSignals }: any) {
@@ -11887,17 +11887,17 @@ function logFootballIntelligenceV3({ match, baseConfidence, footballModifier, da
 }
 
 function buildFootballIntelligenceExplanation(intelligence: any, modifier: number) {
-  return `v3 ประเมินบริบทเป็น ${intelligence.league_context.type}, momentum ${intelligence.momentum.momentum}, H2H confidence ${intelligence.h2h.confidence}, squad confidence ${intelligence.squad_context.confidence}; modifier ${formatSigned(modifier)}`
+  return `v3 à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸šà¸£à¸´à¸šà¸—à¹€à¸›à¹‡à¸™ ${intelligence.league_context.type}, momentum ${intelligence.momentum.momentum}, H2H confidence ${intelligence.h2h.confidence}, squad confidence ${intelligence.squad_context.confidence}; modifier ${formatSigned(modifier)}`
 }
 
 function buildContextSummary(intelligence: any) {
   const parts = [
-    `บริบทการแข่งขันเป็น ${intelligence?.league_context?.type ?? 'unknown'}`,
-    `โมเมนตัม ${intelligence?.momentum?.momentum ?? 'unknown'}`,
+    `à¸šà¸£à¸´à¸šà¸—à¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¹€à¸›à¹‡à¸™ ${intelligence?.league_context?.type ?? 'unknown'}`,
+    `à¹‚à¸¡à¹€à¸¡à¸™à¸•à¸±à¸¡ ${intelligence?.momentum?.momentum ?? 'unknown'}`,
   ]
-  if (intelligence?.h2h?.confidence === 'low') parts.push('ข้อมูล H2H ยังจำกัด')
-  if (intelligence?.squad_context?.confidence === 'low') parts.push('ข้อมูลตัวผู้เล่นยังจำกัด')
-  if (Number(intelligence?.match_importance?.risk_modifier ?? 0) > 0) parts.push('รายการมีความผันผวนเพิ่มขึ้น')
+  if (intelligence?.h2h?.confidence === 'low') parts.push('à¸‚à¹‰à¸­à¸¡à¸¹à¸¥ H2H à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸”')
+  if (intelligence?.squad_context?.confidence === 'low') parts.push('à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸±à¸§à¸œà¸¹à¹‰à¹€à¸¥à¹ˆà¸™à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸”')
+  if (Number(intelligence?.match_importance?.risk_modifier ?? 0) > 0) parts.push('à¸£à¸²à¸¢à¸à¸²à¸£à¸¡à¸µà¸„à¸§à¸²à¸¡à¸œà¸±à¸™à¸œà¸§à¸™à¹€à¸žà¸´à¹ˆà¸¡à¸‚à¸¶à¹‰à¸™')
   return parts.join(', ')
 }
 
@@ -11999,7 +11999,7 @@ function scoreRestDays(days: number | null) {
 }
 
 function formatRestDays(days: number | null) {
-  return days === null ? 'ไม่ทราบ' : `${days} วัน`
+  return days === null ? 'à¹„à¸¡à¹ˆà¸—à¸£à¸²à¸š' : `${days} à¸§à¸±à¸™`
 }
 
 function flattenRecentOpponents(recentOpponents: any) {
@@ -12075,12 +12075,12 @@ async function resetMatchesForRange(range: { startUtc: string; endUtc: string })
 }
 
 function formatRound(match: any) {
-  return [match.stage, match.group, match.matchday ? `Matchday ${match.matchday}` : ''].filter(Boolean).join(' · ') || null
+  return [match.stage, match.group, match.matchday ? `Matchday ${match.matchday}` : ''].filter(Boolean).join(' Â· ') || null
 }
 
 function buildThaiReason(homeForm: Record<string, number>, awayForm: Record<string, number>, confidence: number, riskLevel: string) {
-  const riskText = riskLevel === 'low' ? 'ความเสี่ยงโดยรวมต่ำ' : riskLevel === 'medium' ? 'ยังมีจุดที่ต้องติดตามก่อนแข่ง' : 'ความเสี่ยงสูงกว่าปกติ'
-  return `ทีมเหย้ามีผลงาน 5 นัดหลัง ชนะ ${homeForm.wins} เสมอ ${homeForm.draws} แพ้ ${homeForm.losses} ยิงได้ ${homeForm.goals_for} ประตู ส่วนทีมเยือนชนะ ${awayForm.wins} เสมอ ${awayForm.draws} แพ้ ${awayForm.losses} ระบบประเมินความมั่นใจที่ ${confidence}% และ${riskText}`
+  const riskText = riskLevel === 'low' ? 'à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¹‚à¸”à¸¢à¸£à¸§à¸¡à¸•à¹ˆà¸³' : riskLevel === 'medium' ? 'à¸¢à¸±à¸‡à¸¡à¸µà¸ˆà¸¸à¸”à¸—à¸µà¹ˆà¸•à¹‰à¸­à¸‡à¸•à¸´à¸”à¸•à¸²à¸¡à¸à¹ˆà¸­à¸™à¹à¸‚à¹ˆà¸‡' : 'à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡à¸à¸§à¹ˆà¸²à¸›à¸à¸•à¸´'
+  return `à¸—à¸µà¸¡à¹€à¸«à¸¢à¹‰à¸²à¸¡à¸µà¸œà¸¥à¸‡à¸²à¸™ 5 à¸™à¸±à¸”à¸«à¸¥à¸±à¸‡ à¸Šà¸™à¸° ${homeForm.wins} à¹€à¸ªà¸¡à¸­ ${homeForm.draws} à¹à¸žà¹‰ ${homeForm.losses} à¸¢à¸´à¸‡à¹„à¸”à¹‰ ${homeForm.goals_for} à¸›à¸£à¸°à¸•à¸¹ à¸ªà¹ˆà¸§à¸™à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸Šà¸™à¸° ${awayForm.wins} à¹€à¸ªà¸¡à¸­ ${awayForm.draws} à¹à¸žà¹‰ ${awayForm.losses} à¸£à¸°à¸šà¸šà¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆà¸—à¸µà¹ˆ ${confidence}% à¹à¸¥à¸°${riskText}`
 }
 
 async function finishLog(logId: string | null, status: string, message: string, raw: unknown) {
