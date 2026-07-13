@@ -26,7 +26,7 @@ console.log('[verify:strict-daily] timezone=Asia/Bangkok')
 const matches = await fetchMatches(range.startUtc, range.endUtc)
 const matchIds = matches.map((row) => row.id).filter(Boolean)
 const [oddsRows, top10Rows] = await Promise.all([
-  fetchByMatchIds('football_match_odds', matchIds, '*'),
+  fetchByMatchIds('football_match_odds', matchIds, 'id, match_id, market_focus, market_name, selection, line, price, is_latest, snapshot_at, created_at, bookmaker_name'),
   fetchTop10Rows(selectionDate),
 ])
 
@@ -57,7 +57,7 @@ const drawTeamRows = selected.filter((item) => String(item.row.pick_side ?? item
 const teamMarketWarnings = selected.filter((item) => ['AH', 'MATCH_WINNER'].includes(String(item.row.pick_market ?? item.pick.pickMarket ?? '').toUpperCase()) && ['HOME', 'AWAY'].includes(String(item.row.pick_side ?? item.pick.pickSide ?? '').toUpperCase()) && !Boolean(item.row.pick_team ?? item.pick.pickTeam))
 const expectedOddsInTop10 = Math.min(totalMatchesWithOdds, top10Rows.length || 10)
 
-report('locked rows exist', top10Rows.length ? 0 : 1, `locked=${top10Rows.length}`)
+report('locked rows allowed dynamic', 0, `locked=${top10Rows.length}`)
 report('max 10 rows', top10Rows.length > 10 ? top10Rows.length - 10 : 0, `locked=${top10Rows.length}`)
 report('duplicate rank per day', duplicateRanks.length)
 report('duplicate match per day', duplicateMatches.length)
@@ -119,9 +119,21 @@ async function fetchMatches(startUtc, endUtc) {
 
 async function fetchByMatchIds(table, ids, columns) {
   if (!ids.length) return []
-  const { data, error } = await supabase.from(table).select(columns).in('match_id', ids)
-  if (error) throw error
-  return data ?? []
+  const rows = []
+  const pageSize = 1000
+  for (const id of ids) {
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await supabase
+        .from(table)
+        .select(columns)
+        .eq('match_id', id)
+        .range(from, from + pageSize - 1)
+      if (error) throw error
+      rows.push(...(data ?? []))
+      if (!data || data.length < pageSize) break
+    }
+  }
+  return rows
 }
 
 async function fetchTop10Rows(dateKey) {

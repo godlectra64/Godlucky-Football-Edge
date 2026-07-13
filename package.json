@@ -15,6 +15,8 @@
     "verify:odds": "node scripts/verifyOddsIntegrity.mjs",
     "verify:ai-final-pick": "node scripts/verifyAiFinalPickIntegrity.mjs",
     "verify:daily-top10": "node scripts/verifyDailyTop10Lock.mjs",
+    "verify:daily-decision-board": "node scripts/verifyDailyDecisionBoard.mjs",
+    "verify:daily-production-health": "node scripts/verifyDailyProductionHealth.mjs",
     "verify:strict-daily": "node scripts/verifyStrictDaily.mjs",
     "verify:results": "node scripts/verifyResultSettlementIntegrity.mjs",
     "verify:scheduler": "node scripts/verifyGitHubActionsScheduler.mjs",

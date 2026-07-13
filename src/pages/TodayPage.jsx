@@ -68,7 +68,7 @@ export default function TodayPage({
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <HeroMetric icon={Flame} label="พร้อมตัดสิน" value={strongMatches.length} tone="strong" />
             <HeroMetric icon={Eye} label="เฝ้าดู" value={watchMatches.length} tone="watch" />
-            <HeroMetric icon={Hourglass} label="รอราคา" value={waitingMatches.length} tone="waiting" />
+            <HeroMetric icon={Hourglass} label="รอ" value={waitingMatches.length} tone="waiting" />
             <HeroMetric icon={Trophy} label="จบแล้ว" value={finishedCount} tone="finished" />
           </div>
 
@@ -148,7 +148,7 @@ export default function TodayPage({
           ) : null}
 
           {waitingMatches.length ? (
-            <MatchSection title="รอข้อมูลราคา" count={waitingMatches.length} tone="waiting">
+            <MatchSection title="รอข้อมูล" count={waitingMatches.length} tone="waiting">
               {waitingMatches.map((match) => (
                 <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable isWaitingMarketData displayMode="waiting" />
               ))}
@@ -202,8 +202,8 @@ function MatchSection({ title, count, tone = 'strong', emptyMessage = '', childr
 function NoReadyDecisionNotice() {
   return (
     <section className="rounded-[18px] border border-amber-300/24 bg-amber-300/10 p-3">
-      <p className="text-sm font-black text-amber-50">วันนี้ยังไม่มีคู่ที่พร้อมสรุป AH/O-U</p>
-      <p className="mt-1 text-xs font-semibold leading-5 text-amber-100">ระบบพบ fixture จริง แต่ API-Football ยังไม่มีข้อมูลราคาครบ จึงแสดงมุมมองผู้ชนะเบื้องต้นเท่านั้น</p>
+      <p className="text-sm font-black text-amber-50">วันนี้ยังไม่มีคู่ที่ผ่านเกณฑ์พร้อมตัดสิน</p>
+      <p className="mt-1 text-xs font-semibold leading-5 text-amber-100">ระบบทำงานครบ แต่ยังไม่มีคู่ที่คะแนน ตลาด และความเสี่ยงผ่าน READY พร้อมกัน</p>
     </section>
   )
 }
@@ -268,10 +268,20 @@ function StateBox({ title, message, detail = '', tone = 'default', onRetry, acti
 }
 
 function buildHeroMessage(summary, noReadyDecision = false) {
-  if (noReadyDecision) return 'วันนี้ยังไม่มีคู่ที่พร้อมสรุป AH/O-U'
+  if (noReadyDecision) return buildNoReadySummary(summary)
   if (summary.hasStrongPick) return 'วันนี้มีคู่ที่พร้อมตัดสิน'
   if (summary.watchCount) return 'วันนี้ยังไม่สุด แต่มีคู่ที่ควรเฝ้าดู'
-  if (summary.waitingCount) return 'รอข้อมูลราคาเพื่อยืนยัน AH/O-U'
+  if (summary.waitingCount) return 'รอข้อมูลก่อนยืนยันตัวเลือกสุดท้าย'
   if (summary.hasFinishedOnly) return 'คู่วันนี้แข่งจบแล้ว'
   return 'กำลังรอข้อมูลที่พร้อมพอสำหรับการคัดคู่'
+}
+
+function buildNoReadySummary(summary = {}) {
+  const reasons = summary.notReadyReasons ?? {}
+  const parts = [
+    reasons.market ? `รอตลาด ${reasons.market} คู่` : '',
+    reasons.score ? `คะแนนยังไม่ถึง ${reasons.score} คู่` : '',
+    reasons.risk ? `ความเสี่ยงสูง ${reasons.risk} คู่` : '',
+  ].filter(Boolean)
+  return parts.length ? `วันนี้ยังไม่มีคู่ที่ผ่านเกณฑ์พร้อมตัดสิน · ${parts.join(' · ')}` : 'วันนี้ยังไม่มีคู่ที่ผ่านเกณฑ์พร้อมตัดสิน'
 }

@@ -1,4 +1,5 @@
 import { buildSimpleBettingDecision } from './bettingDecision.js'
+import { buildDecisionDiagnostics, normalizeDecisionStatus } from './decisionClassification.js'
 import { getMatchStatusInfo } from './matchStatus.js'
 
 export function buildTodayMatchBuckets(matches = [], options = {}) {
@@ -33,12 +34,14 @@ export function buildTodayMatchBuckets(matches = [], options = {}) {
 
     result.playableMatches.push(enriched)
 
-    if (decision.status === 'WAITING_MARKET' || decision.status === 'NO_DATA') {
+    const decisionStatus = normalizeDecisionStatus(decision.decision_status ?? decision.status)
+
+    if (decisionStatus === 'WAIT') {
       result.waitingMatches.push(enriched)
       return result
     }
 
-    if (decision.status === 'READY' && decision.final_pick?.type !== 'NO_DECISION') {
+    if (decisionStatus === 'READY' && decision.final_pick?.type !== 'NO_DECISION') {
       result.strongMatches.push(enriched)
       return result
     }
@@ -48,6 +51,7 @@ export function buildTodayMatchBuckets(matches = [], options = {}) {
   }, createEmptyBuckets())
 
   buckets.summary = buildSummary(buckets, options)
+  buckets.diagnostics = buildDecisionDiagnostics(buckets.playableMatches)
   return buckets
 }
 
@@ -89,7 +93,21 @@ function buildSummary(buckets, options = {}) {
     hasStrongPick: buckets.strongMatches.length > 0,
     hasWaitingOnly: totalVisible > 0 && buckets.strongMatches.length === 0 && buckets.watchMatches.length === 0,
     hasFinishedOnly: totalVisible === 0 && (buckets.finishedMatches.length > 0 || Number(options.finishedCount ?? 0) > 0),
+    notReadyReasons: buildNotReadyReasons([...buckets.watchMatches, ...buckets.waitingMatches]),
   }
+}
+
+function buildNotReadyReasons(matches = []) {
+  const reasons = { market: 0, score: 0, risk: 0, analysis: 0, data: 0 }
+  for (const match of matches) {
+    const codes = match.bettingDecision?.decision_reason_codes ?? []
+    if (codes.some((code) => String(code).includes('MARKET') || String(code).includes('AH_MISSING') || String(code).includes('OU_MISSING'))) reasons.market += 1
+    if (codes.some((code) => String(code).includes('SCORE_BELOW'))) reasons.score += 1
+    if (codes.some((code) => String(code).includes('RISK_HIGH'))) reasons.risk += 1
+    if (codes.some((code) => String(code).includes('ANALYSIS'))) reasons.analysis += 1
+    if (codes.some((code) => String(code).includes('DATA'))) reasons.data += 1
+  }
+  return reasons
 }
 
 function normalizeAnalysis(analysis = {}) {

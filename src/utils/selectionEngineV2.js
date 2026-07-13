@@ -1,4 +1,5 @@
 import { getMarketReadinessGroup, marketReadinessGroups, recommendationLabels, riskLabels } from './analysisEngine.js'
+import { classifyDecision } from './decisionClassification.js'
 import { buildStrictApiFootballCandidate, buildStrictApiFootballSelection, compareStrictApiFootballCandidates } from './marketDisplay.js'
 import { getMatchStatusInfo, matchStatusGroups } from './matchStatus.js'
 
@@ -40,7 +41,8 @@ export function buildUsableDailySelection(matches = [], options = {}) {
   const windowRows = rows.filter((row) => isInWindow(row, windowStart, windowEnd))
   const playableRows = windowRows.filter((row) => row.playable)
   const finishedRows = rows.filter((row) => row.statusGroup === matchStatusGroups.finished)
-  const selected = playableRows
+  const candidatePool = buildDynamicCandidatePool(playableRows, options)
+  const selected = candidatePool
     .sort(compareSelectionCandidates)
     .slice(0, limit)
     .map((row, index) => ({
@@ -71,7 +73,7 @@ export function buildUsableDailySelection(matches = [], options = {}) {
 
   return {
     selected,
-    candidates: playableRows,
+    candidates: candidatePool,
     finishedExcluded: finishedRows,
     windowStart: windowStart.toISOString(),
     windowEnd: windowEnd.toISOString(),
@@ -79,6 +81,8 @@ export function buildUsableDailySelection(matches = [], options = {}) {
     expandedWindow: useExpandedWindow,
     totalFixturesInWindow: windowRows.length,
     playableCandidates: playableRows.length,
+    candidatesInitial: Math.min(positiveNumber(options.initialCandidateCount, 30), playableRows.length),
+    candidatesExpanded: Math.max(0, candidatePool.length - Math.min(positiveNumber(options.initialCandidateCount, 30), playableRows.length)),
     marketReadyCandidates,
     waitingMarketCandidates,
     finishedExcludedCount: finishedRows.length,
@@ -131,8 +135,34 @@ export function buildSelectionCandidate(match = {}, now = new Date()) {
     marketPriority: strictApiFootball.marketPriority,
     hasPickTeam: Boolean(strictApiFootball.pickTeam),
     strictApiFootball,
+    decisionClassification: classifyDecision(match, { finalPick: match.aiFinalPick?.final_pick ?? match.ai_final_pick?.final_pick }),
     isPast: getKickoffTime(match) < now.getTime(),
   }
+}
+
+function buildDynamicCandidatePool(rows = [], options = {}) {
+  const initial = positiveNumber(options.initialCandidateCount, 30)
+  const step = positiveNumber(options.expansionStep, 10)
+  const maximum = positiveNumber(options.maximumCandidateCount, 80)
+  const target = positiveNumber(options.minimumMarketReadyTarget, 15)
+  const ranked = [...rows].sort(comparePreMarketCandidates)
+  let size = Math.min(initial, ranked.length)
+  while (size < ranked.length && size < maximum) {
+    const pool = ranked.slice(0, size)
+    if (pool.filter((row) => row.decisionClassification?.market_readiness?.ready || row.priorityTier === selectionPriorityTiers.ready).length >= target) break
+    size = Math.min(size + step, maximum, ranked.length)
+  }
+  return ranked.slice(0, size)
+}
+
+function comparePreMarketCandidates(a, b) {
+  const fixtureQualityDiff = b.leagueMarketCoverageScore - a.leagueMarketCoverageScore
+  const rankingDiff = b.rankingScore - a.rankingScore
+  const confidenceDiff = b.confidenceScore - a.confidenceScore
+  const riskDiff = a.riskValue - b.riskValue
+  const kickoffDiff = a.kickoffTime - b.kickoffTime
+  const idDiff = String(a.match?.id ?? '').localeCompare(String(b.match?.id ?? ''))
+  return fixtureQualityDiff || rankingDiff || confidenceDiff || riskDiff || kickoffDiff || idDiff
 }
 
 function normalizeDisplayMatch(match = {}) {
@@ -169,7 +199,8 @@ export function compareSelectionCandidates(a, b) {
   const confidenceDiff = b.confidenceScore - a.confidenceScore
   const riskDiff = a.riskValue - b.riskValue
   const kickoffDiff = a.kickoffTime - b.kickoffTime
-  return priorityDiff || coverageDiff || signalDiff || marketEdgeDiff || rankingDiff || confidenceDiff || riskDiff || kickoffDiff
+  const stableDiff = String(a.match?.id ?? '').localeCompare(String(b.match?.id ?? ''))
+  return priorityDiff || coverageDiff || signalDiff || marketEdgeDiff || rankingDiff || confidenceDiff || riskDiff || kickoffDiff || stableDiff
 }
 
 export function planDailyTop10Persistence(existingRows = [], selectedRows = []) {

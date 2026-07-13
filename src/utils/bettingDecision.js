@@ -1,8 +1,9 @@
 import { analyzeAsianHandicap } from './ahAnalysisEngine.js'
+import { classifyDecision } from './decisionClassification.js'
 import { analyzeOverUnder } from './ouAnalysisEngine.js'
 import { getLatestOddsByMarket, normalizeOddsRows } from './oddsUtils.js'
 
-const statuses = ['READY', 'WATCH', 'WAITING_MARKET', 'NO_DATA']
+const statuses = ['READY', 'WATCH', 'WAIT', 'WAITING_MARKET', 'NO_DATA', 'REJECTED']
 const finalTypes = ['TEAM', 'AH', 'OU', 'NO_DECISION']
 
 export function buildSimpleBettingDecision(match = {}) {
@@ -17,7 +18,8 @@ export function buildSimpleBettingDecision(match = {}) {
   const ahPick = buildAhPick(match, ahRows)
   const ouPick = buildOuPick(match, ouRows)
   const finalPick = buildFinalPick({ ahPick, ouPick, matchView, hasAnyMarket, marketQuality: getMarketQualityScore(match) })
-  const status = buildStatus({ hasAnyMarket, matchView, finalPick })
+  const classification = classifyDecision(match, { finalPick, analysisComplete: hasAnalysisOutput(match) })
+  const status = classification.status
   const confidence = getDecisionConfidence({ match_view: matchView, ah_pick: ahPick, ou_pick: ouPick, final_pick: finalPick, status })
 
   return {
@@ -27,6 +29,14 @@ export function buildSimpleBettingDecision(match = {}) {
     final_pick: finalPick,
     confidence,
     status,
+    decision_status: classification.decision_status,
+    legacy_status: classification.legacy_status,
+    decision_readiness_score: classification.decision_readiness_score,
+    decision_reason: classification.decision_reason,
+    decision_reason_codes: classification.decision_reason_codes,
+    market_readiness: classification.market_readiness,
+    decision_scores: classification.scores,
+    pipeline_version: classification.pipeline_version,
   }
 }
 
@@ -65,7 +75,7 @@ function normalizeDecision(value = {}, match = {}) {
   const ahPick = normalizeAhPick(value.ah_pick ?? value.ahPick, fresh.ah_pick)
   const ouPick = normalizeOuPick(value.ou_pick ?? value.ouPick, fresh.ou_pick)
   const finalPick = normalizeFinalPickObject(value.final_pick ?? value.finalPick, fresh.final_pick)
-  const status = statuses.includes(String(value.status ?? '').toUpperCase()) ? String(value.status).toUpperCase() : fresh.status
+  const status = statuses.includes(String(value.status ?? value.decision_status ?? '').toUpperCase()) ? String(value.status ?? value.decision_status).toUpperCase() : fresh.status
   return {
     match_view: matchView,
     ah_pick: ahPick,
@@ -73,6 +83,14 @@ function normalizeDecision(value = {}, match = {}) {
     final_pick: finalPick,
     confidence: scoreValue(value.confidence ?? fresh.confidence),
     status,
+    decision_status: value.decision_status ?? fresh.decision_status,
+    legacy_status: value.legacy_status ?? fresh.legacy_status,
+    decision_readiness_score: scoreValue(value.decision_readiness_score ?? fresh.decision_readiness_score),
+    decision_reason: firstText(value.decision_reason, fresh.decision_reason),
+    decision_reason_codes: Array.isArray(value.decision_reason_codes) ? value.decision_reason_codes : fresh.decision_reason_codes,
+    market_readiness: value.market_readiness ?? fresh.market_readiness,
+    decision_scores: value.decision_scores ?? fresh.decision_scores,
+    pipeline_version: value.pipeline_version ?? fresh.pipeline_version,
   }
 }
 
@@ -242,12 +260,9 @@ function getMarketQualityScore(match = {}) {
   return scoreValue(analysis.market_edge_score ?? analysis.market_quality_score ?? analysis.raw?.market_edge_score ?? 60)
 }
 
-function buildStatus({ hasAnyMarket, matchView, finalPick }) {
-  if (hasAnyMarket && finalPick.type !== 'NO_DECISION') return 'READY'
-  if (hasAnyMarket) return 'WATCH'
-  if (matchView.source === 'INSUFFICIENT_DATA') return 'NO_DATA'
-  if (!hasAnyMarket) return 'WAITING_MARKET'
-  return 'READY'
+function hasAnalysisOutput(match = {}) {
+  const analysis = getAnalysis(match)
+  return Boolean(analysis.recommendation || analysis.confidence_score || analysis.analysis_status || match.aiFinalPick || match.ai_final_pick)
 }
 
 function normalizeMatchView(value = {}, fallback) {

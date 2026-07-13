@@ -3389,9 +3389,9 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
       pick: pickByMatch.get(match.id) ?? null,
       odds: oddsByMatchId.get(match.id) ?? [],
     }))
-    .sort(compareDailyTop10LockCandidate)
+  const candidatePool = buildDynamicDailyCandidatePool(candidates)
 
-  const selected = candidates.slice(0, 10)
+  const selected = candidatePool.sort(compareDailyTop10LockCandidate).slice(0, 10)
   const persistResult = await persistMarketReadyTop10(resolvedDateKey, selected, existing.data ?? [])
   const selectedReady = selected.filter((item: any) => dailyMarketReadinessPriority(item) <= 2)
   const selectedWaiting = selected.filter((item: any) => isWaitingMarketCandidate(item))
@@ -3409,6 +3409,7 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
   return {
     processed: selected.length,
     totalCandidates: candidates.length,
+    candidatePoolSize: candidatePool.length,
     rowsSaved: persistResult.rowsSaved,
     rowsUpdated: persistResult.rowsUpdated,
     rowsInserted: persistResult.rowsInserted,
@@ -3436,6 +3437,15 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
     reason,
     nextSyncSuggestion: marketReadyCandidates.length ? 'refresh_display_order' : 'sync_odds_then_reselect',
     refreshedBecause: reason,
+    pipelineVersion: 'market-ready-hybrid-gate-v1',
+    decisionDiagnostics: {
+      fixtures_discovered: windowMatches.length,
+      fixtures_eligible: playableMatches.length,
+      candidates_initial: Math.min(30, candidates.length),
+      candidates_expanded: Math.max(0, candidatePool.length - Math.min(30, candidates.length)),
+      market_any_ready: marketReadyCandidates.length,
+      wait_count: waitingMarketCandidates.length,
+    },
     skippedBecause: null,
     readyMatches: selectedReady.map(formatTop10RefreshMatch),
     waitingMatches: selectedWaiting.map(formatTop10RefreshMatch),
@@ -4223,6 +4233,31 @@ function compareDailyTop10LockCandidate(a: any, b: any) {
   const riskDiff = riskSortValue(a.pick?.risk_level ?? a.analysis?.risk_level) - riskSortValue(b.pick?.risk_level ?? b.analysis?.risk_level)
   const kickoffDiff = new Date(a.match?.kickoff_at ?? 0).getTime() - new Date(b.match?.kickoff_at ?? 0).getTime()
   return marketPriorityDiff || leagueCoverageDiff || signalDiff || marketEdgeDiff || hasPickDiff || scoreDiff || confidenceDiff || riskDiff || kickoffDiff
+}
+
+function buildDynamicDailyCandidatePool(candidates: Array<any>) {
+  const initialCandidateCount = 30
+  const expansionStep = 10
+  const maximumCandidateCount = 80
+  const minimumMarketReadyTarget = 15
+  const ranked = [...candidates].sort(compareDailyPreRankingCandidate)
+  let size = Math.min(initialCandidateCount, ranked.length)
+  while (size < ranked.length && size < maximumCandidateCount) {
+    const pool = ranked.slice(0, size)
+    if (pool.filter((item: any) => dailyMarketReadinessPriority(item) === 1).length >= minimumMarketReadyTarget) break
+    size = Math.min(size + expansionStep, maximumCandidateCount, ranked.length)
+  }
+  return ranked.slice(0, size)
+}
+
+function compareDailyPreRankingCandidate(a: any, b: any) {
+  const leagueCoverageDiff = getLeagueMarketCoverageScore(b) - getLeagueMarketCoverageScore(a)
+  const scoreDiff = dailySelectionScore(b) - dailySelectionScore(a)
+  const confidenceDiff = dailyConfidenceScore(b) - dailyConfidenceScore(a)
+  const riskDiff = riskSortValue(a.pick?.risk_level ?? a.analysis?.risk_level) - riskSortValue(b.pick?.risk_level ?? b.analysis?.risk_level)
+  const kickoffDiff = new Date(a.match?.kickoff_at ?? 0).getTime() - new Date(b.match?.kickoff_at ?? 0).getTime()
+  const stableDiff = String(a.match?.id ?? '').localeCompare(String(b.match?.id ?? ''))
+  return leagueCoverageDiff || scoreDiff || confidenceDiff || riskDiff || kickoffDiff || stableDiff
 }
 
 function getUsableSelectionReason(summary: { playableCount: number; selectedCount: number; marketReadyCount: number; waitingCount: number; finishedCount: number; expanded: boolean }) {

@@ -67,6 +67,7 @@ import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 import { buildTodayMatchBuckets, buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
 import { buildUsableDailySelection, planDailyTop10Persistence } from '../src/utils/selectionEngineV2.js'
+import { classifyDecision, calculateDecisionReadinessScore } from '../src/utils/decisionClassification.js'
 import { formatMarketFocus, formatRecommendationLabel, formatSignal } from '../src/utils/uiLabels.js'
 import { mergeResultRows } from '../src/repositories/resultTrackerRepository.js'
 import { runAiSelectionEngine } from '../src/utils/aiSelectionEngine.js'
@@ -942,6 +943,11 @@ assert.ok(!noBetRanking.rankReason.includes('เหมาะเป็น'), 'NO 
 assert.ok(noBetRanking.rankReason.includes('ควรข้าม'), 'NO BET rank reason should clearly recommend skipping')
 
 const marketReadyFinalPick = generateAiFinalPick({
+  id: 'final-pick-match',
+  kickoffAt: '2026-07-03T18:00:00.000Z',
+  league: { name: 'Test League' },
+  homeTeam: { name: 'Home Test' },
+  awayTeam: { name: 'Away Test' },
   analysis: {
     recommendation: 'BET',
     ranking_score: 89,
@@ -993,14 +999,49 @@ assert.equal(missingMarketFinalPick.ah_pick.label, 'รอเส้น AH', 'mis
 assert.equal(missingMarketFinalPick.ou_pick.label, 'รอราคา O/U', 'missing O/U odds must wait for O/U price')
 assert.equal(missingMarketFinalPick.final_pick.type, 'NO_DECISION', 'missing market data must not create a final market pick')
 assert.equal(missingMarketFinalPick.final_pick.label, 'ยังไม่มี Best Pick', 'missing market data must show no Best Pick')
-assert.equal(missingMarketFinalPick.status, 'WAITING_MARKET', 'missing odds with usable fixture data should be WAITING_MARKET')
+assert.equal(missingMarketFinalPick.status, 'WAIT', 'missing odds with usable fixture data should be WAIT')
 assert.equal(missingMarketFinalPick.match_view.source, 'FIXTURE_MODEL', 'no-odds match view should use fixture model')
 assert.ok(missingMarketFinalPick.match_view.confidence <= 60, 'fixture-only match view confidence must be capped at 60')
 
 const lowDataNoOddsPick = generateAiFinalPick({ analysis: { market_data_used: false, odds_rows_used: 0 }, odds: [] })
-assert.equal(lowDataNoOddsPick.status, 'NO_DATA', 'low-data no-odds match should be NO_DATA')
+assert.equal(lowDataNoOddsPick.status, 'REJECTED', 'invalid low-data fixture should be rejected by hard gate')
 assert.equal(lowDataNoOddsPick.match_view.label, 'ข้อมูลยังไม่พอประเมินฝั่งชนะ')
 assert.equal(lowDataNoOddsPick.final_pick.label, 'ยังไม่มี Best Pick')
+
+const hybridBaseMatch = {
+  id: 'hybrid-base',
+  kickoffAt: '2026-07-03T18:00:00.000Z',
+  league: { name: 'Hybrid League' },
+  homeTeam: { name: 'Hybrid Home' },
+  awayTeam: { name: 'Hybrid Away' },
+  analysis: {
+    recommendation: 'BET',
+    confidence_score: 84,
+    calibrated_confidence_score: 84,
+    risk_level: 'MEDIUM',
+    data_quality_score: 88,
+    market_quality_score: 86,
+    feature_completeness_score: 88,
+  },
+  odds: [{ id: 'hybrid-ah', match_id: 'hybrid-base', market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.5', line: '-0.5', price: 1.9 }],
+}
+assert.equal(calculateDecisionReadinessScore({ dataQualityScore: 88, marketQualityScore: 86, analysisConfidence: 84, riskLevel: 'MEDIUM', featureCompletenessScore: 88 }), 84.5)
+assert.equal(classifyDecision(hybridBaseMatch, { finalPick: { type: 'AH' } }).status, 'READY', 'Case 1: complete market-ready score 84 should be READY')
+assert.equal(classifyDecision({ ...hybridBaseMatch, analysis: { ...hybridBaseMatch.analysis, confidence_score: 75, calibrated_confidence_score: 75, data_quality_score: 75, market_quality_score: 75, feature_completeness_score: 75 } }, { finalPick: { type: 'AH' } }).status, 'WATCH', 'Case 2: score 75 should be WATCH')
+assert.equal(classifyDecision({ ...hybridBaseMatch, analysis: { ...hybridBaseMatch.analysis, risk_level: 'HIGH' } }, { finalPick: { type: 'AH' } }).status, 'WATCH', 'Case 3: HIGH risk should be WATCH, not READY')
+const waitMissingMarket = classifyDecision({ ...hybridBaseMatch, odds: [] }, { finalPick: { type: 'AH' } })
+assert.equal(waitMissingMarket.status, 'WAIT', 'Case 4: missing AH market should be WAIT')
+assert.ok(waitMissingMarket.decision_reason_codes.includes('AH_MISSING') || waitMissingMarket.decision_reason_codes.includes('MARKET_MISSING'))
+assert.equal(classifyDecision({ ...hybridBaseMatch, analysis: { risk_level: 'LOW' } }, { finalPick: { type: 'AH' }, analysisComplete: false }).status, 'WAIT', 'Case 5: incomplete analysis should be WAIT')
+assert.equal(classifyDecision({ ...hybridBaseMatch, id: null }, { finalPick: { type: 'AH' } }).status, 'REJECTED', 'Case 6: invalid fixture should be REJECTED')
+assert.equal(classifyDecision({ ...hybridBaseMatch, injuries: [] }, { finalPick: { type: 'AH' } }).status, 'READY', 'Case 7: incomplete injury data should be a soft penalty, not rejection')
+const zeroReadyRows = Array.from({ length: 4 }, (_, index) => classifyDecision({ ...hybridBaseMatch, id: `zero-ready-${index}`, analysis: { ...hybridBaseMatch.analysis, confidence_score: 65, calibrated_confidence_score: 65, data_quality_score: 65, market_quality_score: 65 } }, { finalPick: { type: 'AH' } }))
+assert.equal(zeroReadyRows.filter((row) => row.status === 'READY').length, 0, 'Case 8: READY=0 is valid')
+const fourReadyRows = Array.from({ length: 4 }, (_, index) => classifyDecision({ ...hybridBaseMatch, id: `four-ready-${index}` }, { finalPick: { type: 'AH' } }))
+assert.equal(fourReadyRows.filter((row) => row.status === 'READY').length, 4, 'Case 9: READY fewer than 10 should stay as real count')
+const fourteenReadyRows = Array.from({ length: 14 }, (_, index) => ({ id: `ready-rank-${index}`, decision: classifyDecision({ ...hybridBaseMatch, id: `ready-rank-${index}`, analysis: { ...hybridBaseMatch.analysis, confidence_score: 95 - index, calibrated_confidence_score: 95 - index } }, { finalPick: { type: 'AH' } }) }))
+assert.equal(fourteenReadyRows.filter((row) => row.decision.status === 'READY').length, 14, 'Case 10: READY over display max should keep decision data')
+assert.equal(fourteenReadyRows.filter((row) => row.decision.status === 'READY').slice(0, 10).length, 10, 'Case 10: display can cap at 10 without deleting READY rows')
 
 const marketReadyMatches = Array.from({ length: 3 }, (_, index) => ({
   ...baseMatch,
@@ -1092,13 +1133,13 @@ assert.equal(decisiveTodayBuckets.summary.windowHours, 36, 'Today V2 summary sho
 const oneStrongOneWatchOneWaiting = buildTodayMatchBuckets([
   createStatusMatches(1, 'NS', 'bucket-strong', {
     waitingMarketData: false,
-    odds: [{ id: 'bucket-strong-odds', match_id: 'bucket-strong-0', market_name: 'Asian Handicap', price: 1.9 }],
+    odds: [{ id: 'bucket-strong-odds', match_id: 'bucket-strong-0', market_name: 'Asian Handicap', selection: 'Home -0.5', line: '-0.5', price: 1.9 }],
     aiFinalPick: { signal: 'STRONG_SIGNAL', confidence_score: 83, risk_level: 'LOW' },
     analysis: { recommendation: 'BET', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 80, confidence_score: 83, calibrated_confidence_score: 83, risk_level: 'LOW', data_validation_status: 'VALID' },
   })[0],
   createStatusMatches(1, 'NS', 'bucket-watch', {
     waitingMarketData: false,
-    odds: [{ id: 'bucket-watch-odds', match_id: 'bucket-watch-0', market_name: 'Asian Handicap', price: 1.8 }],
+    odds: [{ id: 'bucket-watch-odds', match_id: 'bucket-watch-0', market_name: 'Asian Handicap', selection: 'Home -0.5', line: '-0.5', price: 1.8 }],
     aiFinalPick: { signal: 'WATCH', confidence_score: 62, risk_level: 'MEDIUM' },
     analysis: { recommendation: 'LEAN', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 45, confidence_score: 62, calibrated_confidence_score: 62, risk_level: 'MEDIUM', data_validation_status: 'VALID' },
   })[0],
