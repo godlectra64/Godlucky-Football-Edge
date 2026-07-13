@@ -1,11 +1,10 @@
-import { toLegacyMarketFocus } from './marketRegistry.js'
-
-export const marketFocusValues = ['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE', 'CORRECT_SCORE', 'BTTS', 'NONE']
+export const marketFocusValues = ['AH', 'OU', 'MATCH_WINNER', 'BTTS', 'NONE']
 
 export function normalizeMarketFocus(value) {
   const text = String(value ?? '').toUpperCase()
-  const legacy = toLegacyMarketFocus(text)
-  if (legacy !== 'NONE') return legacy
+  if (text.includes('ASIAN') || text === 'AH' || text.includes('HANDICAP')) return 'AH'
+  if (text.includes('OVER') || text.includes('UNDER') || text === 'OU' || text.includes('TOTAL')) return 'OU'
+  if (text.includes('MATCH WINNER') || text === '1X2' || text.includes('HOME/AWAY')) return 'MATCH_WINNER'
   if (text.includes('BOTH TEAMS') || text.includes('BTTS')) return 'BTTS'
   return marketFocusValues.includes(text) ? text : 'NONE'
 }

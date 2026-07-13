@@ -1,5 +1,4 @@
 import { getBangkokToday } from '../utils/bangkokDate.js'
-import { getBangkokDayRange } from '../utils/bangkokDateRange.js'
 import { fetchMatchesByIds, fetchMatchesByKickoffRange } from './matchesRepository.js'
 import { compareMarketReadyMatches, isMarketReadyForDisplay } from '../utils/analysisEngine.js'
 import { getStatusCodeFromMatch } from '../utils/matchStatus.js'
@@ -138,14 +137,9 @@ function sortMarketReadyTop10(matches = []) {
 
 export async function getTodayTop10OrFallback(fallback = []) {
   const date = getBangkokToday()
-  const usable = await getUsableRollingTop10(date)
-  if (!usable.error && (usable.data.length || usable.status?.finishedExcludedCount)) {
-    return { matches: usable.data, status: usable.status, locked: Boolean(usable.locked), selection: usable.selection }
-  }
-
   const locked = await getLockedTop10(date)
   if (!locked.error && (locked.status?.lockedCount || locked.data.length)) {
-    const selection = buildUsableDailySelection(locked.data, { selectionDate: date })
+    const selection = buildUsableDailySelection(locked.data)
     return {
       matches: selection.selected,
       status: {
@@ -160,8 +154,13 @@ export async function getTodayTop10OrFallback(fallback = []) {
     }
   }
 
+  const usable = await getUsableRollingTop10(date)
+  if (!usable.error && (usable.data.length || usable.status?.finishedExcludedCount)) {
+    return { matches: usable.data, status: usable.status, locked: Boolean(usable.locked), selection: usable.selection }
+  }
+
   const statusResult = await getDailyTop10Status(date)
-  const fallbackSelection = buildUsableDailySelection(fallback, { selectionDate: date })
+  const fallbackSelection = buildUsableDailySelection(fallback)
   return {
     matches: fallbackSelection.selected,
     status: {
@@ -176,14 +175,15 @@ export async function getTodayTop10OrFallback(fallback = []) {
 }
 
 async function getUsableRollingTop10(date) {
-  const range = getBangkokDayRange(date)
+  const now = new Date()
+  const windowEnd = new Date(now.getTime() + 48 * 60 * 60 * 1000)
   const [matchesResult, statusResult] = await Promise.all([
-    fetchMatchesByKickoffRange(range.startUtc, range.endUtc),
+    fetchMatchesByKickoffRange(now.toISOString(), windowEnd.toISOString()),
     getDailyTop10Status(date),
   ])
   if (matchesResult.error) return { data: [], error: matchesResult.error, status: statusResult.data ?? emptyStatus(date).data }
 
-  const selection = buildUsableDailySelection(matchesResult.data ?? [], { selectionDate: date })
+  const selection = buildUsableDailySelection(matchesResult.data ?? [], { now })
   return {
     data: selection.selected,
     error: null,

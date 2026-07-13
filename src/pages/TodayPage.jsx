@@ -1,6 +1,7 @@
 import { CheckCircle2, Eye, Flame, Hourglass, RefreshCcw, Sparkles, Trophy, Zap } from 'lucide-react'
 import { useMemo } from 'react'
 import MatchCard from '../components/MatchCard'
+import { getDecisionConfidence } from '../utils/bettingDecision'
 import { formatThaiDate, formatUpdatedAt } from '../utils/formatters'
 import { buildTodayMatchBuckets } from '../utils/todayMatchBuckets'
 
@@ -31,18 +32,18 @@ export default function TodayPage({
     strongMatches,
     watchMatches,
     waitingMatches,
-    predictionOnlyMatches,
     finishedMatches,
     hiddenMatches,
     playableMatches,
     summary,
   } = buckets
 
+  const avgConfidence = playableMatches.length ? Math.round(playableMatches.reduce((total, match) => total + getDecisionConfidence(match.bettingDecision), 0) / playableMatches.length) : 0
   const finishedCount = Math.max(summary.finishedCount, finishedMatches.length)
   const lastUpdated = top10Status?.lastUpdated ?? top10Status?.lockedAt ?? null
   const showFinishedOnlyState = !loading && !error && playableMatches.length === 0 && finishedCount > 0
   const showEmptyState = !loading && !error && playableMatches.length === 0 && finishedCount === 0
-  const hasMainSections = !loading && !error && (strongMatches.length || watchMatches.length || waitingMatches.length || predictionOnlyMatches.length)
+  const hasMainSections = !loading && !error && (strongMatches.length || watchMatches.length || waitingMatches.length)
   const noReadyDecision = !loading && !error && playableMatches.length > 0 && strongMatches.length === 0
 
   return (
@@ -67,20 +68,23 @@ export default function TodayPage({
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <HeroMetric icon={Flame} label="พร้อมตัดสิน" value={strongMatches.length} tone="strong" />
             <HeroMetric icon={Eye} label="เฝ้าดู" value={watchMatches.length} tone="watch" />
-            <HeroMetric icon={Hourglass} label="รอข้อมูล" value={waitingMatches.length} tone="waiting" />
+            <HeroMetric icon={Hourglass} label="รอราคา" value={waitingMatches.length} tone="waiting" />
             <HeroMetric icon={Trophy} label="จบแล้ว" value={finishedCount} tone="finished" />
           </div>
 
           <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
             <div className="flex min-w-0 items-center justify-between gap-2">
-              <p className="text-clamp-1 text-[12px] font-black text-white">{buildHeroMessagePolished(summary, noReadyDecision)}</p>
+              <p className="text-clamp-1 text-[12px] font-black text-white">{buildHeroMessage(summary, noReadyDecision)}</p>
               <span className="flex shrink-0 items-center gap-1 text-[11px] font-black text-emerald-100">
                 <CheckCircle2 size={12} />
                 พร้อมใช้งาน
               </span>
             </div>
             <p className="text-clamp-2 mt-1 text-[11px] font-semibold leading-4 text-slate-400">
-              {buildHeroSubtextPolished({ noReadyDecision, waitingCount: waitingMatches.length, lastUpdated })}
+              {top10Locked || lockedCount ? `ใช้ชุดคัดประจำวันที่บันทึกไว้ ${lockedCount || matches.length}/10` : `ใช้รายการที่พร้อมที่สุดในช่วง ${windowHoursUsed} ชั่วโมง`}
+              {totalMatchCount ? ` · จากรายการทั้งหมด ${totalMatchCount} คู่` : ''}
+              {avgConfidence ? ` · AI Score เฉลี่ย ${avgConfidence}%` : ''}
+              {lastUpdated ? ` · อัปเดต ${formatUpdatedAt(lastUpdated)}` : ''}
             </p>
           </div>
 
@@ -92,12 +96,9 @@ export default function TodayPage({
         </div>
       </section>
 
-      {!loading && !error && totalMatchCount > selectedCount ? (
+      {!loading && !error && totalMatchCount > selectedCount && selectedCount < 10 ? (
         <section className="mt-3 rounded-[18px] border border-cyan-300/20 bg-cyan-300/10 p-3">
-          <p className="text-sm font-black text-cyan-50">{buildSelectionSummaryTitle({ noReadyDecision, waitingCount: waitingMatches.length, selectedCount, totalMatchCount })}</p>
-          {noReadyDecision && waitingMatches.length ? (
-            <p className="mt-1 text-xs font-semibold leading-5 text-cyan-100">ยังไม่มีคู่ที่ข้อมูลครบพอสำหรับสรุปเต็ม ระบบจะแสดงมุมมองพื้นฐานไปก่อน</p>
-          ) : null}
+          <p className="text-sm font-black text-cyan-50">วันนี้มีคู่ที่ผ่านเกณฑ์คุณภาพสูง {selectedCount} คู่ จากทั้งหมด {totalMatchCount} คู่</p>
         </section>
       ) : null}
 
@@ -119,7 +120,7 @@ export default function TodayPage({
       {showEmptyState ? (
         <StateBox
           title="ยังไม่มีคู่ที่พร้อมคัดวันนี้"
-            message="ระบบจะอัปเดตอีกครั้งเมื่อข้อมูลการแข่งขันและสถิติพร้อมพอ"
+          message="ระบบจะอัปเดตอีกครั้งเมื่อข้อมูลราคาและสถานะการแข่งขันพร้อมพอ"
           onRetry={onRefresh}
         />
       ) : null}
@@ -147,17 +148,9 @@ export default function TodayPage({
           ) : null}
 
           {waitingMatches.length ? (
-            <MatchSection title="รอข้อมูล" count={waitingMatches.length} tone="waiting">
+            <MatchSection title="รอข้อมูลราคา" count={waitingMatches.length} tone="waiting">
               {waitingMatches.map((match) => (
                 <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable isWaitingMarketData displayMode="waiting" />
-              ))}
-            </MatchSection>
-          ) : null}
-
-          {predictionOnlyMatches.length ? (
-            <MatchSection title="Prediction Only" count={predictionOnlyMatches.length} tone="prediction">
-              {predictionOnlyMatches.map((match) => (
-                <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable displayMode="prediction" />
               ))}
             </MatchSection>
           ) : null}
@@ -192,7 +185,6 @@ function MatchSection({ title, count, tone = 'strong', emptyMessage = '', childr
     strong: 'text-emerald-100',
     watch: 'text-cyan-100',
     waiting: 'text-amber-100',
-    prediction: 'text-slate-100',
   }[tone] ?? 'text-white'
   const childRows = Array.isArray(children) ? children.filter(Boolean) : children ? [children] : []
 
@@ -210,8 +202,8 @@ function MatchSection({ title, count, tone = 'strong', emptyMessage = '', childr
 function NoReadyDecisionNotice() {
   return (
     <section className="rounded-[18px] border border-amber-300/24 bg-amber-300/10 p-3">
-      <p className="text-sm font-black text-amber-50">วันนี้ยังไม่มีคู่ที่ข้อมูลครบพอสำหรับสรุปเต็ม</p>
-      <p className="mt-1 text-xs font-semibold leading-5 text-amber-100">ระบบพบ fixture จริง และจะแสดงมุมมองผู้ชนะเบื้องต้นจนกว่าข้อมูลประกอบจะครบขึ้น</p>
+      <p className="text-sm font-black text-amber-50">วันนี้ยังไม่มีคู่ที่พร้อมสรุป AH/O-U</p>
+      <p className="mt-1 text-xs font-semibold leading-5 text-amber-100">ระบบพบ fixture จริง แต่ API-Football ยังไม่มีข้อมูลราคาครบ จึงแสดงมุมมองผู้ชนะเบื้องต้นเท่านั้น</p>
     </section>
   )
 }
@@ -275,36 +267,11 @@ function StateBox({ title, message, detail = '', tone = 'default', onRetry, acti
   )
 }
 
-function buildHeroMessagePolished(summary, noReadyDecision = false) {
-  if (!summary) return buildHeroMessage(summary, noReadyDecision)
-  if (noReadyDecision) return 'วันนี้ยังไม่มีคู่ที่ข้อมูลครบพอสำหรับสรุปเต็ม'
-  if (summary.hasStrongPick) return 'วันนี้มีคู่พร้อมตัดสิน'
-  if (summary.watchCount) return 'มีคู่ที่น่าเฝ้าดู'
-  if (summary.waitingCount) return 'รอข้อมูล'
-  if (summary.hasFinishedOnly) return 'คู่วันนี้แข่งจบแล้ว'
-  return 'กำลังรอข้อมูลที่พร้อมพอสำหรับการคัดคู่'
-}
-
-function buildHeroSubtextPolished({ noReadyDecision = false, waitingCount = 0, lastUpdated = null } = {}) {
-  const updateText = lastUpdated ? ` · อัปเดต ${formatUpdatedAt(lastUpdated)}` : ''
-  if (noReadyDecision || waitingCount) {
-    return `ระบบยังแสดงมุมมองผู้ชนะจากข้อมูล fixture และจะอัปเดตเมื่อมีข้อมูลประกอบครบขึ้น${updateText}`
-  }
-  return `จัดอันดับจากมุมมองผู้ชนะ คุณภาพข้อมูล ความเสี่ยง และความมั่นใจ${updateText}`
-}
-
-function buildSelectionSummaryTitle({ noReadyDecision = false, waitingCount = 0, selectedCount = 0, totalMatchCount = 0 } = {}) {
-  if (noReadyDecision && waitingCount > 0) {
-    return `วันนี้ระบบคัดคู่ที่น่าติดตามได้ ${waitingCount} คู่ จากทั้งหมด ${totalMatchCount} คู่`
-  }
-  return `วันนี้ระบบคัดคู่ไว้ ${selectedCount} คู่ จากทั้งหมด ${totalMatchCount} คู่`
-}
-
 function buildHeroMessage(summary, noReadyDecision = false) {
-  if (noReadyDecision) return 'วันนี้ยังไม่มีคู่ที่ข้อมูลครบพอสำหรับสรุปเต็ม'
+  if (noReadyDecision) return 'วันนี้ยังไม่มีคู่ที่พร้อมสรุป AH/O-U'
   if (summary.hasStrongPick) return 'วันนี้มีคู่ที่พร้อมตัดสิน'
   if (summary.watchCount) return 'วันนี้ยังไม่สุด แต่มีคู่ที่ควรเฝ้าดู'
-  if (summary.waitingCount) return 'รอข้อมูลประกอบเพิ่มเติม'
+  if (summary.waitingCount) return 'รอข้อมูลราคาเพื่อยืนยัน AH/O-U'
   if (summary.hasFinishedOnly) return 'คู่วันนี้แข่งจบแล้ว'
   return 'กำลังรอข้อมูลที่พร้อมพอสำหรับการคัดคู่'
 }

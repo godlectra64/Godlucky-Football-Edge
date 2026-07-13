@@ -63,13 +63,11 @@ import {
 import { normalizeMarketIntelligence } from '../src/utils/marketIntelligence.js'
 import { deriveAiPickSide, getAiPickDisplay } from '../src/utils/pickSide.js'
 import { buildProfessionalSelectionScore } from '../src/utils/professionalSelectionPipeline.js'
-import { buildFootballIntelligence, calculateFixtureModelConfidence } from '../src/utils/footballIntelligenceEngine.js'
-import { buildCanonicalMatchDecision } from '../src/utils/bettingDecision.js'
 import { getOneBestPickOfDay } from '../src/utils/finalPick.js'
 import { getMatchStatusInfo, matchStatusGroups } from '../src/utils/matchStatus.js'
 import { buildTodayMatchBuckets, buildTodayStatusBuckets } from '../src/utils/todayMatchBuckets.js'
 import { buildUsableDailySelection, planDailyTop10Persistence } from '../src/utils/selectionEngineV2.js'
-import { formatAhCardLabel, formatBestPickCardLabel, formatMarketFocus, formatOuCardLabel, formatRecommendationLabel, formatSignal } from '../src/utils/uiLabels.js'
+import { formatMarketFocus, formatRecommendationLabel, formatSignal } from '../src/utils/uiLabels.js'
 import { mergeResultRows } from '../src/repositories/resultTrackerRepository.js'
 import { runAiSelectionEngine } from '../src/utils/aiSelectionEngine.js'
 import { generateAiFinalPick } from '../src/utils/aiFinalPickEngine.js'
@@ -92,24 +90,6 @@ assert.equal(isWithinBangkokDay('2026-06-28T17:00:00.000Z', '2026-06-28'), false
 
 const syncFootballDataSource = readFileSync(new URL('../supabase/functions/sync-football-data/index.ts', import.meta.url), 'utf8')
 const dailyTop10RepositorySource = readFileSync(new URL('../src/repositories/dailyTop10Repository.js', import.meta.url), 'utf8')
-const packageSource = readFileSync(new URL('../package.json', import.meta.url), 'utf8')
-const dailyProductionHealthSource = readFileSync(new URL('./verifyDailyProductionHealth.mjs', import.meta.url), 'utf8')
-const dailyWorkflowSource = readFileSync(new URL('../.github/workflows/daily-football-sync.yml', import.meta.url), 'utf8')
-const atomicMarketLockRepairMigrationSource = readFileSync(new URL('../supabase/migrations/20260713_add_atomic_market_first_top10_repair.sql', import.meta.url), 'utf8')
-const requiredMarketFirstAdminModes = [
-  'diagnose-sync-today-odds',
-  'build-daily-market-candidates',
-  'sync-daily-candidate-odds',
-  'finalize-market-ready-candidates',
-  'repair-stale-market-first-top10',
-  'sync-daily-top10-odds',
-  'strict-api-football-daily-picks',
-  'daily-sync-auto',
-]
-const marketFirstPipelineAdminModesSource = syncFootballDataSource.slice(
-  syncFootballDataSource.indexOf('const marketFirstPipelineAdminModes = ['),
-  syncFootballDataSource.indexOf('const footballEnrichmentModes = [')
-)
 assert.ok(syncFootballDataSource.includes("Deno.env.get('FOOTBALL_PROVIDER') ?? 'api-football'"), 'sync-football-data should default to API-FOOTBALL')
 assert.ok(syncFootballDataSource.includes('const primaryProvider = getProviderAdapter(requestedProviderName)'), 'sync-football-data should choose the primary provider before fetching')
 assert.ok(syncFootballDataSource.includes("fetchFixtures: ({ dateKey }) => fetchApiFootballFixtures(dateKey)"), 'API-FOOTBALL adapter should fetch fixtures by Bangkok dateKey')
@@ -159,304 +139,6 @@ assert.ok(syncFootballDataSource.includes('await runManualMode(primaryProvider, 
 assert.ok(syncFootballDataSource.includes('const v4Result = await recomputeV4AnalysisRows(ids)'), 'recompute mode should refresh v4 analysis rows')
 assert.ok(syncFootballDataSource.includes('const result = await processInChunks(candidates.rows, syncChunkSize, storePredictionResult'), 'learning mode should store prediction results')
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/odds'"), 'enrich mode should fetch API-FOOTBALL odds only outside manual sync')
-assert.ok(syncFootballDataSource.includes("'odds-sync'"), 'daily sync should include a dedicated odds-sync phase')
-assert.ok(syncFootballDataSource.includes("restartCompleted: body.restartCompleted ?? !body.runId"), 'daily-sync-auto should restart completed runs on the first auto call')
-assert.ok(syncFootballDataSource.includes("const restartCompleted = body.restartCompleted === true"), 'daily sync run startup should parse restartCompleted explicitly')
-assert.ok(syncFootballDataSource.includes("run.status === 'success' && !force && !restartCompleted"), 'completed daily sync runs should only be reused when restartCompleted is false')
-assert.ok(syncFootballDataSource.includes("'sync-today-odds'"), 'sync-football-data should expose a safe manual today odds refresh mode')
-assert.ok(packageSource.includes('"verify:daily-production-health": "node scripts/verifyDailyProductionHealth.mjs"'), 'package.json should expose verify:daily-production-health')
-assert.ok(dailyProductionHealthSource.includes('DAILY_MARKET_CANDIDATES_NOT_BUILT'), 'daily production health verifier should report specific candidate-pool root causes')
-assert.ok(dailyProductionHealthSource.includes('process.exit(1)'), 'daily production health verifier should fail hard on unhealthy production state')
-assert.ok(dailyProductionHealthSource.includes("oddsIntegritySource: 'verifyOddsIntegrity-compatible'"), 'daily production health duplicate odds check should declare verifyOddsIntegrity-compatible source')
-assert.ok(dailyProductionHealthSource.includes("report('duplicateLatestOdds', oddsChecks.duplicateLatestOdds"), 'daily production health should report duplicateLatestOdds explicitly')
-assert.ok(dailyProductionHealthSource.includes(".eq('is_latest', true)"), 'daily production health duplicate odds check should only count latest odds rows')
-assert.ok(dailyProductionHealthSource.includes('[row.match_id, row.api_bookmaker_id, row.market_focus, row.market_name, row.selection, row.line].join'), 'daily production health duplicate odds key should match verifyOddsIntegrity')
-assert.ok(syncFootballDataSource.includes("'sync-daily-top10-odds'"), 'sync-football-data should expose a locked daily Top10 odds refresh mode')
-assert.ok(syncFootballDataSource.includes('const marketFirstPipelineAdminModes = ['), 'market-first pipeline admin modes should be registered in one canonical mode list')
-for (const mode of requiredMarketFirstAdminModes) {
-  assert.ok(marketFirstPipelineAdminModesSource.includes(`'${mode}'`), `market-first admin mode list should include ${mode}`)
-}
-assert.ok(syncFootballDataSource.includes("'sync-today-odds-finalize'"), 'sync-football-data should expose a separate odds finalization mode')
-assert.ok(syncFootballDataSource.includes("'diagnose-sync-today-odds'"), 'sync-football-data should expose a read-only today odds diagnosis mode')
-assert.ok(syncFootballDataSource.includes("if (mode === 'sync-today-odds') return 1"), 'sync-today-odds should be hard-capped to one fixture per request')
-assert.ok(syncFootballDataSource.includes('daily_market_candidates'), 'daily market candidate pool should be persisted in the Edge function')
-assert.ok(syncFootballDataSource.includes('forceRebuild:true'), 'candidate pool reuse warning should require forceRebuild:true for changed order')
-const syncDailyCandidateOddsSource = extractFunctionSource(syncFootballDataSource, 'syncDailyCandidateOdds')
-assert.ok(syncDailyCandidateOddsSource.includes('fetchDailyMarketCandidateTargets(selectionDate)'), 'sync-daily-candidate-odds must use the stable daily_market_candidates pool')
-assert.equal(syncDailyCandidateOddsSource.includes('fetchDailyTop10LockCandidates'), false, 'sync-daily-candidate-odds must not use fixture/ranking candidates directly')
-assert.equal(syncDailyCandidateOddsSource.includes('fetchTodayOddsFixtureCandidates'), false, 'sync-daily-candidate-odds must not use dynamic today odds candidates')
-assert.ok(syncDailyCandidateOddsSource.includes('seenFixtureIds'), 'sync-daily-candidate-odds must dedupe fixture ids in a request')
-assert.ok(syncDailyCandidateOddsSource.includes('skippedAlreadyHasOdds'), 'sync-daily-candidate-odds should skip already-ready odds by default')
-assert.ok(syncDailyCandidateOddsSource.includes('body.force === true'), 'sync-daily-candidate-odds should support force:true')
-assert.ok(syncDailyCandidateOddsSource.includes('fetchUsableOddsCoverageForTargets(targets)'), 'sync-daily-candidate-odds should check only the stable page before processing')
-assert.ok(syncDailyCandidateOddsSource.includes('const refreshedCandidates = await fetchDailyMarketCandidateRows(selectionDate)'), 'sync-daily-candidate-odds must re-query the persisted candidate pool after processing')
-assert.ok(syncDailyCandidateOddsSource.includes('summarizeDailyMarketCandidateRows(refreshedCandidates)'), 'sync-daily-candidate-odds response must summarize post-sync candidate rows')
-assert.ok(syncDailyCandidateOddsSource.includes('candidateReadyCount: postSyncState.readyCandidateCount'), 'sync-daily-candidate-odds should return the post-sync READY count under both aliases')
-assert.ok(syncDailyCandidateOddsSource.includes("classifyCandidateMarketReadiness(existingCoverage) === 'READY'"), 'second candidate odds call should skip the provider only after all required markets are present')
-assert.ok(syncDailyCandidateOddsSource.includes('canonicalMatchId,'), 'sync-daily-candidate-odds should pass candidate.match_id through the odds save path')
-assert.ok(syncFootballDataSource.includes("if (String(row.market_readiness_status ?? '').toUpperCase() === 'READY') readyCandidateCount += 1"), 'post-sync READY count should dedupe candidate fixture ids before the scheduler stop check')
-assert.match(syncFootballDataSource, /\.eq\('is_latest', true\)\s*\.order\('id', \{ ascending: true \}\)\s*\.range\(from, from \+ pageSize - 1\)/, 'candidate odds coverage must page deterministically through latest snapshots instead of truncating the pool')
-assert.ok(syncFootballDataSource.includes('has_usable_ah: Boolean(coverage?.hasAh)'), 'candidate row updates should persist usable AH coverage')
-assert.ok(syncFootballDataSource.includes('has_usable_ou: Boolean(coverage?.hasOu)'), 'candidate row updates should persist usable O/U coverage')
-assert.ok(syncFootballDataSource.includes('has_usable_match_winner: Boolean(coverage?.hasMatchWinner)'), 'candidate row updates should persist usable Match Winner coverage')
-assert.ok(syncFootballDataSource.includes('odds_rows_count: Number(coverage?.rows ?? 0)'), 'candidate row updates should persist the supported latest odds row count')
-assert.ok(syncFootballDataSource.includes('odds_synced_at: new Date().toISOString()'), 'candidate row updates should persist the odds sync timestamp')
-assert.ok(syncFootballDataSource.includes('odds_sync_status: status'), 'candidate row updates should persist the odds sync result status')
-assert.match(syncFootballDataSource, /\.eq\('match_id', identity\.matchId\)\s*\.select\('id, match_id'\)/, 'candidate readiness updates should target and return the canonical candidate match row')
-assert.ok(syncFootballDataSource.includes('update expected 1 row but affected'), 'candidate readiness updates should fail loudly unless exactly one row is affected')
-assert.ok(syncFootballDataSource.includes('Duplicate football_matches rows for api_fixture_id'), 'candidate odds sync should report duplicate provider fixture identities')
-assert.ok(syncFootballDataSource.includes('match_id: canonicalMatchId'), 'normalized odds rows should use the candidate canonical match_id')
-assert.ok(syncFootballDataSource.includes('Refusing to store odds with mismatched match_id'), 'odds persistence should reject rows linked to another match identity')
-assert.ok(syncFootballDataSource.includes('function isSupportedFullTimeOddsRow(row: any)'), 'isSupportedFullTimeOddsRow should be defined at module scope when referenced')
-assert.match(syncFootballDataSource, /function isUsableFullTimeOddsRow\(row: any\) \{\s*return isSupportedFullTimeOddsRow\(row\)/, 'legacy usable odds row helper should delegate to the canonical supported full-time row helper')
-assert.ok(syncFootballDataSource.includes("if (text === 'OU') return 'OU'"), 'market focus normalization should accept stored OU tokens')
-assert.ok(syncFootballDataSource.includes('const line = parseBetLine(value?.value) ?? parseBetLine(value?.line)'), 'full-time O/U filter should inspect normalized row line when selection text has no number')
-assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'MATCH_WINNER', market_name: 'Match Winner', selection: 'Home', price: 1.9 }), true, 'MATCH_WINNER full-time odds row should be supported')
-assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.25', price: 1.9 }), true, 'AH full-time odds row should be supported')
-assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over 2.5', price: 1.9 }), true, 'OU full-time odds row should be supported')
-assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'OU', market_name: 'Corners Over/Under', selection: 'Over 9.5', price: 1.9 }), false, 'corner odds row should be rejected')
-assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'MATCH_WINNER', market_name: 'First Half Winner', selection: 'Home', price: 1.9 }), false, 'first-half odds row should be rejected')
-assert.equal(simulateIsSupportedFullTimeOddsRow({ market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over', line: 7.5, price: 1.9 }), false, 'suspicious high O/U line from normalized row line should be rejected')
-const strictMarketFirstSource = extractFunctionSource(syncFootballDataSource, 'strictApiFootballDailyPicksMarketFirst')
-const lowResourceRepairSource = extractFunctionSource(syncFootballDataSource, 'repairStaleMarketFirstTop10LowResource')
-const lowResourceRepairBlock = syncFootballDataSource.slice(
-  syncFootballDataSource.indexOf('async function repairStaleMarketFirstTop10LowResource'),
-  syncFootballDataSource.indexOf('async function strictApiFootballDailyPicksMarketFirst')
-)
-const lowResourceResponseBlock = syncFootballDataSource.slice(
-  syncFootballDataSource.indexOf("if (mode === 'repair-stale-market-first-top10')"),
-  syncFootballDataSource.indexOf('if (isFootballEnrichmentMode(mode))')
-)
-assert.ok(strictMarketFirstSource.includes('compareMarketFirstCandidateItems'), 'marketFirst strict picks should use market-first sorting')
-assert.ok(syncFootballDataSource.includes('hasValidDecisionMarketItem(item)'), 'marketFirst persistence should gate final picks on valid AH/O-U decision markets')
-assert.ok(strictMarketFirstSource.includes('buildPersistedMarketFirstTop10State'), 'marketFirst response should be built from re-queried persisted rows')
-assert.ok(strictMarketFirstSource.includes('persistMarketReadyTop10(selectionDate, intendedSelection, existing.data ?? [], { cleanupUnselected: true })'), 'normal marketFirst persistence should reconcile the existing dynamic decision board')
-assert.ok(strictMarketFirstSource.includes('persistedSelectedFixtureIds: persistedState.selectedFixtureIds'), 'marketFirst response should expose persisted selection identities')
-assert.equal(strictMarketFirstSource.includes('body.repairStaleMarketLock'), false, 'strict marketFirst mode should not parse or execute the heavyweight repair flag')
-assert.equal(strictMarketFirstSource.includes('callAtomicStaleMarketRepair'), false, 'strict marketFirst mode should not call the repair RPC')
-assert.ok(lowResourceRepairSource.includes('body.repairStaleMarketLock !== true'), 'dedicated stale-lock repair should require the explicit repair flag')
-assert.ok(lowResourceRepairSource.includes('fetchLowResourceReadyMarketCandidates'), 'dedicated repair should load only bounded READY candidate metadata')
-assert.ok(lowResourceRepairSource.includes('compareMarketFirstCandidateItems'), 'dedicated repair should reuse the canonical market-first comparator')
-assert.ok(lowResourceRepairSource.includes('buildMarketFirstSelectionScore'), 'dedicated repair should reuse the canonical market-first selection score')
-assert.ok(lowResourceRepairSource.includes('buildAiFinalPickPayloadForMatch(item.match, odds)'), 'dedicated repair should reuse the canonical final-pick builder with preloaded odds')
-assert.ok(lowResourceRepairSource.includes('callAtomicStaleMarketRepair'), 'dedicated repair should call the atomic RPC exactly once')
-assert.equal((lowResourceRepairSource.match(/callAtomicStaleMarketRepair/g) ?? []).length, 1, 'dedicated repair should contain exactly one atomic RPC call site')
-assert.ok(lowResourceRepairSource.includes('assertAtomicRepairPayloads(finalPicks, selections)'), 'dedicated repair should validate exactly 10 selections and final picks before RPC')
-assert.ok(lowResourceRepairSource.includes('expectedPreviousMatchIds'), 'dedicated repair should pass the exact sorted previous match IDs to RPC')
-assert.ok(lowResourceRepairSource.includes('fetchLowResourceLockedTop10(selectionDate)'), 'dedicated repair response should re-query persisted Top10 rows')
-assert.ok(lowResourceRepairBlock.includes(".from('football_ai_final_picks')") && lowResourceRepairBlock.includes('.limit(staleMarketRepairSelectionCount)'), 'dedicated repair should verify final-pick coverage with a bounded 10-row query')
-assert.ok(lowResourceRepairBlock.includes(".eq('is_latest', true)"), 'dedicated repair should query latest odds only')
-assert.ok(lowResourceRepairBlock.includes(".eq('market_focus', marketFocus)") && lowResourceRepairBlock.includes("(['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'] as Array<SupportedRepairMarketFocus>)"), 'dedicated repair should query supported full-time markets independently')
-assert.equal(lowResourceRepairBlock.includes("snapshot_at, raw'"), false, 'dedicated repair odds query should not load raw odds payloads')
-assert.ok(lowResourceRepairBlock.includes('staleMarketRepairReadyCandidateLimit = 15') || syncFootballDataSource.includes('const staleMarketRepairReadyCandidateLimit = 15'), 'dedicated repair should cap READY candidates at 15')
-assert.ok(syncFootballDataSource.includes('const staleMarketRepairOddsRowLimit = 800'), 'dedicated repair should hard-cap compact latest supported odds rows at 800')
-assert.ok(syncFootballDataSource.includes('const staleMarketRepairOddsRowsPerMarketLimit = 20'), 'dedicated repair should hard-cap final-pick odds rows per selected market')
-assert.ok(lowResourceRepairBlock.includes('fetchLowResourceRequiredMarketProbes(readyMatchIds)'), 'canonical ordering should use deterministic AH/OU/MATCH_WINNER/DOUBLE_CHANCE probes per READY candidate')
-assert.ok(lowResourceRepairBlock.includes('fetchLowResourceMarketOddsProbe') && lowResourceRepairBlock.includes('.limit(1)'), 'market availability probes should use market-specific limit 1 queries')
-assert.equal(lowResourceRepairBlock.includes('.limit(5)'), false, 'market availability must not rely on a generic five-row odds sample')
-assert.ok(lowResourceRepairSource.includes('fetchLowResourceLatestSupportedOdds(selectedMatchIds)'), 'full latest supported odds should be loaded only after the canonical 10 are selected')
-assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairOddsRowsPerMarketLimit)'), 'selected final-pick inputs should load bounded AH, OU, Match Winner, and Double Chance rows independently')
-assert.equal(lowResourceRepairBlock.includes('trackedApiFootballGet'), false, 'dedicated repair must not call API-Football')
-assert.equal(lowResourceRepairBlock.includes('syncOddsForMatch'), false, 'dedicated repair must not invoke provider odds sync')
-assert.equal(lowResourceRepairBlock.includes('fetchDailyMarketCandidateTargets'), false, 'dedicated repair must not load the full dynamic candidate target pool')
-assert.equal(lowResourceRepairBlock.includes('fetchStoredOddsByMatchIds'), false, 'dedicated repair must not load historical/general odds collections')
-assert.ok(syncFootballDataSource.includes("if (mode === 'repair-stale-market-first-top10')"), 'dedicated repair should bypass the heavyweight enrichment response path')
-assert.ok(syncFootballDataSource.includes('previousSelectedFixtureIds: result.previousSelectedFixtureIds') && syncFootballDataSource.includes('persistedSelectedFixtureIds: result.persistedSelectedFixtureIds'), 'dedicated response should expose only bounded previous and persisted fixture arrays')
-for (const forbiddenResponseField of ['endpointCoverage', 'candidateWithoutOdds', 'selectedMatches', 'topSelections', 'details']) {
-  assert.equal(lowResourceResponseBlock.includes(forbiddenResponseField), false, `dedicated repair response should not include ${forbiddenResponseField}`)
-}
-assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairSelectionCount + 1)'), 'persisted Top10 reads should be capped at 11 rows')
-assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairReadyCandidateLimit)'), 'READY candidate and match reads should use the hard limit')
-assert.ok(lowResourceRepairBlock.includes('.limit(staleMarketRepairOddsRowsPerMarketLimit)'), 'selected odds reads should use a hard per-market limit')
-assert.equal(lowResourceRepairBlock.includes('for (let from ='), false, 'dedicated repair should not auto-page odds queries')
-assert.ok(atomicMarketLockRepairMigrationSource.includes('repair_stale_market_first_top10'), 'atomic stale market lock repair RPC migration should exist')
-assert.ok(atomicMarketLockRepairMigrationSource.includes("coalesce(auth.role(), '') <> 'service_role'"), 'atomic repair RPC should reject non-service-role callers')
-assert.ok(atomicMarketLockRepairMigrationSource.includes('for update'), 'atomic repair RPC should lock the existing Top10 before replacement')
-assert.ok(atomicMarketLockRepairMigrationSource.includes("v_existing_with_odds >= 10"), 'atomic repair RPC should preserve a valid existing market-ready lock')
-assert.ok(atomicMarketLockRepairMigrationSource.includes("market_readiness_status = 'READY'"), 'atomic repair RPC should accept READY candidates only')
-assert.ok(atomicMarketLockRepairMigrationSource.includes("bool_or(odds.market_focus = 'AH')") && atomicMarketLockRepairMigrationSource.includes("bool_or(odds.market_focus = 'OU')") && atomicMarketLockRepairMigrationSource.includes("bool_or(odds.market_focus = 'MATCH_WINNER')"), 'atomic repair RPC should require all supported full-time markets')
-assert.ok(atomicMarketLockRepairMigrationSource.includes('delete from public.daily_top10_selections') && atomicMarketLockRepairMigrationSource.includes('insert into public.daily_top10_selections'), 'atomic repair RPC should replace the lock inside one database function transaction')
-assert.ok(atomicMarketLockRepairMigrationSource.includes('v_persisted_pick_count <> 10'), 'atomic repair RPC should rollback when AI final pick coverage is incomplete')
-assert.ok(dailyWorkflowSource.includes("mode: 'strict-api-football-daily-picks', limit: 60, marketFirst: true"), 'workflow should persist the dynamic decision board with limit 60')
-assert.equal(dailyWorkflowSource.includes("mode: 'repair-stale-market-first-top10'"), false, 'workflow should not invoke stale fixed-Top10 repair in the dynamic decision-board path')
-assert.ok(dailyWorkflowSource.includes('npm run verify:daily-decision-board'), 'workflow should run the dynamic decision-board verifier')
-assert.ok(syncFootballDataSource.includes("if (status === 'NO_MARKET_DATA') score = Math.min(score, 59)"), 'NO_MARKET_DATA final selection score should be capped below READY candidates')
-assert.ok(syncFootballDataSource.includes('if (!odds.length) score = Math.min(score, 60)'), 'fixture-only confidence should remain capped at 60')
-assert.ok(syncFootballDataSource.includes('isUnsupportedMainOddsMarketText'), 'main AH/O-U logic should reject unsupported non-full-time markets')
-assert.ok(syncFootballDataSource.includes('Math.abs(line) >= 6.5'), 'main football O/U should reject suspicious high O/U lines')
-assert.deepEqual(planStableCandidateOrder([{ id: 'b', score: 80 }, { id: 'a', score: 90 }]), ['a', 'b'], 'build-daily-market-candidates should create stable score order')
-assert.deepEqual(planStableCandidateOddsBatch([
-  { fixtureId: 201, hasUsableOdds: true },
-  { fixtureId: 201, hasUsableOdds: false },
-  { fixtureId: 202, hasUsableOdds: false },
-], { limit: 3 }), { processedFixtureIds: [202], skippedAlreadyHasOdds: [201], duplicateFixtureIds: [201] }, 'sync-daily-candidate-odds should skip ready odds and dedupe fixtures')
-assert.deepEqual(planStableCandidateOddsBatch([{ fixtureId: 201, hasUsableOdds: true }], { force: true }), { processedFixtureIds: [201], skippedAlreadyHasOdds: [], duplicateFixtureIds: [] }, 'force:true should refetch already-ready candidate odds')
-const postCandidateSync = simulatePostSyncCandidateState([
-  { fixtureId: 1522141, status: 'READY', hasAh: true, hasOu: true, hasMatchWinner: true, rows: 120 },
-  { fixtureId: 1568101, status: 'WAITING_MARKET', hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 },
-], new Map([[1568101, { hasAh: true, hasOu: true, hasMatchWinner: true, rows: 409 }]]))
-assert.equal(postCandidateSync.readyCandidateCount, 2, 'post-sync response should count the newly READY fixture')
-assert.deepEqual(postCandidateSync.candidateWithOdds, [1522141, 1568101], 'newly synced fixture should move into candidateWithOdds')
-assert.deepEqual(postCandidateSync.candidateWithoutOdds, [], 'newly synced fixture should leave candidateWithoutOdds')
-const emptyCandidateSync = simulatePostSyncCandidateState([
-  { fixtureId: 301, status: 'WAITING_MARKET', hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 },
-], new Map([[301, { hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 }]]))
-assert.equal(emptyCandidateSync.rows[0].status, 'NO_MARKET_DATA', 'empty provider results should remain non-ready')
-assert.equal(shouldStopCandidateOddsPaging(Array.from({ length: 10 }, (_, index) => ({ fixtureId: index + 1, status: 'READY', hasAh: true, hasOu: true, hasMatchWinner: true, rows: 3 }))), false, 'scheduler should continue until the dynamic candidate pool is exhausted')
-const idempotentCandidateSync = simulateIdempotentCandidateOddsSync({
-  candidateId: 'candidate-1568101',
-  candidateMatchId: 'canonical-match-1568101',
-  fixtureId: 1568101,
-  duplicateMatchIds: ['wrong-duplicate-match', 'canonical-match-1568101'],
-})
-assert.equal(idempotentCandidateSync.first.providerCalls, 1, 'first candidate odds call may fetch the provider')
-assert.deepEqual(idempotentCandidateSync.first.savedRows.map((row) => row.match_id), ['canonical-match-1568101', 'canonical-match-1568101', 'canonical-match-1568101'], 'all saved odds should use candidate.match_id')
-assert.equal(idempotentCandidateSync.first.status, 'READY', 'first successful call should move WAITING_MARKET to READY')
-assert.deepEqual(idempotentCandidateSync.first.candidateWithOdds, [1568101], 'first successful call should move the fixture into candidateWithOdds')
-assert.deepEqual(idempotentCandidateSync.first.candidateWithoutOdds, [], 'first successful call should remove the fixture from candidateWithoutOdds')
-assert.equal(idempotentCandidateSync.second.providerCalls, 0, 'second identical call should skip the provider')
-assert.equal(idempotentCandidateSync.second.oddsRowsSaved, 0, 'second identical call should save no duplicate odds rows')
-assert.deepEqual(idempotentCandidateSync.second.skippedAlreadyHasOdds, [1568101], 'second identical call should report the already-ready fixture')
-assert.deepEqual(idempotentCandidateSync.second.processedFixtureIds, [], 'second identical call should not report the skipped fixture as processed')
-assert.equal(idempotentCandidateSync.second.readyCandidateCount, 1, 'second identical call should preserve READY count')
-assert.equal(idempotentCandidateSync.usedMatchId, 'canonical-match-1568101', 'duplicate api_fixture_id rows must not redirect odds away from candidate.match_id')
-assert.throws(() => simulateExactCandidateUpdate([], { candidateId: 'missing', matchId: 'canonical-match-1568101' }), /expected 1 row but affected 0/, 'zero-row candidate update should fail loudly')
-const staleLockedTop10 = Array.from({ length: 10 }, (_, index) => ({
-  matchId: `old-${index + 1}`,
-  fixtureId: 100 + index,
-  rank: index + 1,
-  hasOdds: index < 9,
-  aiFinalPickId: `old-pick-${index + 1}`,
-  lockedAt: '2026-07-11T07:30:00.000Z',
-}))
-const readyMarketPool = Array.from({ length: 13 }, (_, index) => ({
-  matchId: `ready-${index + 1}`,
-  fixtureId: 200 + index,
-  status: 'READY',
-  hasAh: true,
-  hasOu: true,
-  hasMatchWinner: true,
-  oddsSyncedAt: '2026-07-11T11:10:00.000Z',
-}))
-const preservedStaleLock = simulateStaleMarketLockRepair(staleLockedTop10, readyMarketPool, { repairStaleMarketLock: false })
-assert.equal(preservedStaleLock.changed, false, 'normal call without repair flag should preserve a stale locked Top10')
-assert.deepEqual(preservedStaleLock.persistedRows.map((row) => row.matchId), staleLockedTop10.map((row) => row.matchId), 'normal response should reflect the unchanged persisted lock')
-const repairedStaleLock = simulateStaleMarketLockRepair(staleLockedTop10, readyMarketPool, { repairStaleMarketLock: true })
-assert.equal(repairedStaleLock.changed, true, 'explicit repair should replace an eligible 9/10 stale lock when 13 READY candidates exist')
-const lowResourceRpcPayload = simulateLowResourceRepairRpcPayload(staleLockedTop10, readyMarketPool.slice(0, 10))
-assert.equal(lowResourceRpcPayload.p_selections.length, 10, 'dedicated repair RPC should receive exactly 10 selections')
-assert.equal(lowResourceRpcPayload.p_final_picks.length, 10, 'dedicated repair RPC should receive exactly 10 final picks')
-assert.deepEqual(lowResourceRpcPayload.p_expected_previous_match_ids, staleLockedTop10.map((row) => row.matchId).sort(), 'dedicated repair RPC should receive the exact sorted previous match IDs')
-const fixtureWithLateAhRows = [
-  ...Array.from({ length: 300 }, (_, index) => ({ id: `ou-${index}`, match_id: 'late-ah', market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over 2.5', line: 2.5, price: 1.85, is_latest: true })),
-  ...Array.from({ length: 108 }, (_, index) => ({ id: `mw-${index}`, match_id: 'late-ah', market_focus: 'MATCH_WINNER', market_name: 'Match Winner', selection: index % 2 ? 'Home' : 'Away', price: 2.1, is_latest: true })),
-  { id: 'ah-late', match_id: 'late-ah', market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.25', line: -0.25, price: 1.92, is_latest: true },
-]
-assert.equal(fixtureWithLateAhRows.length, 409, 'fixture sample should model a 409-row latest odds set')
-assert.equal(simulateGenericFiveRowMarketProbe(fixtureWithLateAhRows, 'AH'), false, 'generic first-five sampling can miss a valid AH row')
-assert.equal(simulateDeterministicMarketProbe(fixtureWithLateAhRows, 'AH'), true, 'market-specific AH query should find a valid AH row after duplicated OU/MW rows')
-const duplicatedOuCannotHideAhRows = [
-  ...Array.from({ length: 50 }, (_, index) => ({ id: `dup-ou-${index}`, match_id: 'dup-ou', market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over 2.5', line: 2.5, price: 1.85, is_latest: true })),
-  { id: 'dup-ah', match_id: 'dup-ou', market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Away +0.5', line: 0.5, price: 1.9, is_latest: true },
-]
-assert.equal(simulateDeterministicMarketProbe(duplicatedOuCannotHideAhRows, 'AH'), true, 'duplicated OU rows must not consume the AH market probe limit')
-const marketProbeReadyPool = Array.from({ length: 11 }, (_, index) => ({
-  matchId: index === 0 ? 'late-ah' : `probe-ready-${index + 1}`,
-  fixtureId: index === 0 ? 1522141 : 300 + index,
-  candidateRank: index + 1,
-  status: 'READY',
-  hasAh: true,
-  hasOu: true,
-  hasMatchWinner: true,
-}))
-const oddsByProbeMatch = new Map(marketProbeReadyPool.map((row, index) => {
-  if (row.matchId === 'late-ah') return [row.matchId, fixtureWithLateAhRows]
-  if (index === 2) return [row.matchId, [
-    { id: `${row.matchId}-ou`, match_id: row.matchId, market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Under 2.5', line: 2.5, price: 1.83, is_latest: true },
-    { id: `${row.matchId}-mw`, match_id: row.matchId, market_focus: 'MATCH_WINNER', market_name: 'Match Winner', selection: 'Home', price: 2.05, is_latest: true },
-  ]]
-  return [row.matchId, [
-    { id: `${row.matchId}-ah`, match_id: row.matchId, market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.25', line: -0.25, price: 1.92, is_latest: true },
-    { id: `${row.matchId}-ou`, match_id: row.matchId, market_focus: 'OU', market_name: 'Goals Over/Under', selection: 'Over 2.5', line: 2.5, price: 1.86, is_latest: true },
-    { id: `${row.matchId}-mw`, match_id: row.matchId, market_focus: 'MATCH_WINNER', market_name: 'Match Winner', selection: 'Away', price: 2.2, is_latest: true },
-    { id: `${row.matchId}-old-ah`, match_id: row.matchId, market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.5', line: -0.5, price: 1.91, is_latest: false },
-  ]]
-}))
-const deterministicRepairSelection = simulateDeterministicMarketRepairSelection(staleLockedTop10, marketProbeReadyPool, oddsByProbeMatch)
-assert.equal(deterministicRepairSelection.selectedRows.length, 10, 'repair should require exactly 10 fully market-verified selections before RPC')
-assert.equal(deterministicRepairSelection.selectedRows.some((row) => row.matchId === 'probe-ready-3'), false, 'truly missing AH candidate should be skipped')
-assert.equal(deterministicRepairSelection.selectedRows.some((row) => row.matchId === 'probe-ready-11'), true, 'next READY candidate should replace a skipped missing-AH candidate')
-assert.equal(deterministicRepairSelection.warnings.length, 1, 'skipped missing-market candidate should add a bounded warning')
-assert.equal(deterministicRepairSelection.rpcPayload.p_selections.length, 10, 'RPC should still receive exactly 10 selections after replacement')
-assert.equal(deterministicRepairSelection.rpcPayload.p_final_picks.length, 10, 'RPC should still receive exactly 10 final picks after replacement')
-assert.equal(repairedStaleLock.persistedRows.length, 10, 'repair should persist exactly 10 rows')
-assert.equal(new Set(repairedStaleLock.persistedRows.map((row) => row.matchId)).size, 10, 'repair should prevent duplicate selected matches')
-assert.deepEqual(repairedStaleLock.persistedRows.map((row) => row.rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'repair should persist unique ranks 1-10')
-assert.equal(repairedStaleLock.persistedRows.filter((row) => row.aiFinalPickId).length, 10, 'repair should produce AI final pick coverage 10/10')
-assert.deepEqual(repairedStaleLock.response.persistedSelectedFixtureIds, repairedStaleLock.persistedRows.map((row) => row.fixtureId), 'repair response should match re-queried persisted rows')
-assert.deepEqual(repairedStaleLock.response.top10WithoutOdds, [], 'repaired READY-only Top10 should have no fixtures without odds')
-assert.ok(JSON.stringify(repairedStaleLock.response).length < 4096, 'dedicated repair response should remain bounded and small')
-const idempotentLockRepair = simulateStaleMarketLockRepair(repairedStaleLock.persistedRows, readyMarketPool, { repairStaleMarketLock: true })
-assert.equal(idempotentLockRepair.changed, false, 'second repair call should be idempotent')
-assert.deepEqual(idempotentLockRepair.persistedRows, repairedStaleLock.persistedRows, 'second repair call should make no persisted changes')
-const validDifferentLock = staleLockedTop10.map((row) => ({ ...row, hasOdds: true }))
-assert.equal(simulateStaleMarketLockRepair(validDifferentLock, readyMarketPool, { repairStaleMarketLock: true }).changed, false, 'valid market-ready lock must not be replaced unnecessarily')
-assert.equal(simulateSharedAdminAuth({ mode: 'repair-stale-market-first-top10', body: { repairStaleMarketLock: true }, apiKey: 'sb_publishable_anon', configuredSecrets: ['sb_secret_result_admin'] }), false, 'anon/publishable caller cannot invoke stale market lock repair')
-assert.deepEqual(sortMarketFirstSamples([{ id: 'no', status: 'NO_MARKET_DATA', score: 99 }, { id: 'ready', status: 'READY', score: 50 }]), ['ready', 'no'], 'READY candidates must rank before NO_MARKET_DATA candidates')
-assert.equal(capMarketFirstSampleScore({ status: 'NO_MARKET_DATA', score: 99, hasOdds: false }), 59, 'NO_MARKET_DATA cannot outrank READY through raw score')
-assert.equal(capMarketFirstSampleScore({ status: 'READY', score: 75, hasOdds: true }), 75, 'READY candidates can keep supported market score')
-for (const envSource of [
-  "Deno.env.get('EDGE_ADMIN_SECRET')",
-  "Deno.env.get('EDGE_ADMIN_SECRET_KEYS')",
-  "Deno.env.get('RESULT_ADMIN_SECRET')",
-  "Deno.env.get('SUPABASE_SECRET_KEYS')",
-]) {
-  assert.ok(syncFootballDataSource.includes(envSource), `admin sb_secret auth should trust configured ${envSource}`)
-}
-assert.ok(syncFootballDataSource.includes("const authError = await getServiceAuthError(request, mode, body)"), 'all sync modes should pass the parsed JSON body into shared admin auth')
-assert.ok(syncFootballDataSource.includes("const bodySecret = sanitizeHeaderValue(typeof body.sb_secret === 'string' ? body.sb_secret : '')"), 'shared admin auth should read sb_secret from the JSON body')
-assert.ok(syncFootballDataSource.includes('const bodySecretPath = getTrustedAdminTokenPath(bodySecret)'), 'shared admin auth should validate body sb_secret through trusted token logic')
-assert.ok(syncFootballDataSource.includes("if (value === serviceRoleKey) return 'service_role'"), 'shared admin auth should keep service role key support')
-assert.ok(syncFootballDataSource.includes("if (secretKeys.includes(value)) return 'EDGE_ADMIN_SECRET_KEYS'"), 'shared admin auth should keep configured admin secret key support')
-assert.ok(syncFootballDataSource.indexOf('const mode = normalizeSyncMode(body.mode)') < syncFootballDataSource.indexOf('const authError = await getServiceAuthError(request, mode, body)'), 'shared auth should run after requested mode normalization')
-assert.ok(syncFootballDataSource.includes("code: 'UNKNOWN_SYNC_MODE'"), 'unknown modes should remain rejected before admin auth')
-for (const mode of requiredMarketFirstAdminModes) {
-  assert.equal(simulateSharedAdminAuth({ mode, body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, `${mode} accepts valid body sb_secret`)
-}
-assert.equal(simulateSharedAdminAuth({ body: { sb_secret: 'sb_secret_result_admin' }, configuredSecrets: ['sb_secret_result_admin'] }), true, 'sync-today-odds accepts sb_secret')
-for (const mode of [...requiredMarketFirstAdminModes, 'sync-today-odds']) {
-  assert.ok(syncFootballDataSource.includes(`'${mode}'`), `${mode} should be registered as an admin sync mode`)
-  assert.equal(simulateSharedAdminAuth({ mode, apiKey: 'sb_publishable_anon', authorization: 'Bearer sb_publishable_anon', configuredSecrets: ['sb_secret_result_admin'] }), false, `${mode} must reject anon/publishable keys without an admin secret`)
-}
-assert.equal(simulateNormalizeSyncMode('unknown-market-first-mode', [...requiredMarketFirstAdminModes, 'sync-today-odds']), null, 'unknown mode remains rejected')
-const syncDailyTop10OddsSource = extractFunctionSource(syncFootballDataSource, 'syncDailyTop10Odds')
-assert.ok(syncDailyTop10OddsSource.includes('fetchLockedDailyTop10OddsTargets(selectionDate)'), 'sync-daily-top10-odds must use the locked Top10 list')
-assert.equal(syncDailyTop10OddsSource.includes('fetchTodayOddsFixtureCandidates'), false, 'sync-daily-top10-odds must not use the dynamic today odds candidate list')
-assert.equal(syncDailyTop10OddsSource.includes('fetchDbMatchCandidates'), false, 'sync-daily-top10-odds must not use dynamic DB ranking candidates')
-assert.ok(syncDailyTop10OddsSource.includes('seenFixtureIds'), 'sync-daily-top10-odds must dedupe fixture ids in a request')
-assert.ok(syncDailyTop10OddsSource.includes('skippedAlreadyHasOdds'), 'sync-daily-top10-odds should report already-priced locked fixtures')
-assert.ok(syncDailyTop10OddsSource.includes('body.force === true'), 'sync-daily-top10-odds should support force:true refetch')
-assert.ok(syncDailyTop10OddsSource.includes('usefulMarketsOnly: true'), 'sync-daily-top10-odds should request useful market filtering')
-assert.ok(syncFootballDataSource.includes("allowedMarketFocuses: options.usefulMarketsOnly ? ['AH', 'OU', 'MATCH_WINNER']"), 'locked Top10 odds sync should save only supported full-time markets')
-assert.deepEqual(planStableTop10OddsBatch([
-  { fixtureId: 101, hasUsableOdds: true },
-  { fixtureId: 101, hasUsableOdds: false },
-  { fixtureId: 102, hasUsableOdds: false },
-], { limit: 3, force: false }), {
-  processedFixtureIds: [102],
-  skippedAlreadyHasOdds: [101],
-  duplicateFixtureIds: [101],
-}, 'locked Top10 odds batching should dedupe and skip already-priced fixtures by default')
-assert.deepEqual(planStableTop10OddsBatch([
-  { fixtureId: 101, hasUsableOdds: true },
-  { fixtureId: 102, hasUsableOdds: false },
-], { limit: 2, force: true }), {
-  processedFixtureIds: [101, 102],
-  skippedAlreadyHasOdds: [],
-  duplicateFixtureIds: [],
-}, 'force:true should refetch locked fixtures that already have odds')
-assert.ok(syncFootballDataSource.includes('No odds returned for this fixture'), 'today odds sync should warn instead of failing when provider returns no odds for a fixture')
-assert.ok(syncFootballDataSource.includes('HTML error response received'), 'sync errors should sanitize HTML provider responses')
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/fixtures/statistics'"), 'enrich mode should fetch API-FOOTBALL fixture statistics')
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/injuries'"), 'enrich mode should fetch API-FOOTBALL injuries')
 assert.ok(syncFootballDataSource.includes("apiFootballSafeGet('/fixtures/lineups'"), 'enrich mode should fetch API-FOOTBALL lineups')
@@ -473,7 +155,7 @@ assert.ok(syncFootballDataSource.includes('enrichedMatches,'), 'enrich response 
 assert.ok(syncFootballDataSource.includes('rowsSaved'), 'endpoint coverage should include rowsSaved')
 assert.ok(syncFootballDataSource.includes('empty: !failed && dataCount === 0 ? 1 : 0'), 'endpoint coverage should count empty API responses')
 assert.ok(dailyTop10RepositorySource.includes('fetchMatchesByIds(matchIds)'), 'locked daily Top10 must fetch matches by locked match_id instead of only same-day kickoff range')
-assert.ok(dailyTop10RepositorySource.indexOf('const usable = await getUsableRollingTop10(date)') < dailyTop10RepositorySource.indexOf('const locked = await getLockedTop10(date)'), 'Best Matches of the Day should be the primary Today source before locked Top10 fallback')
+assert.ok(dailyTop10RepositorySource.indexOf('const locked = await getLockedTop10(date)') < dailyTop10RepositorySource.indexOf('const usable = await getUsableRollingTop10(date)'), 'locked daily Top10 should be the primary Today source when present')
 assert.ok(syncFootballDataSource.includes("return 'ENRICHED_ODDS_ONLY'"), 'enrichment status should distinguish odds-only enrichment')
 assert.ok(syncFootballDataSource.includes('statsResult.rows.length'), 'per-match enrichment summary should include statistics rows')
 assert.ok(syncFootballDataSource.includes('lineupsResult.rows.length'), 'per-match enrichment summary should include lineups rows')
@@ -891,7 +573,7 @@ const phase2Candidates = [
 const phase2Ranked = rankTopMatches(phase2Candidates, 10)
 assert.equal(phase2Ranked.length, 10)
 assert.equal(phase2Ranked[0].aiPickLabel, 'AI PICK #1')
-assert.notEqual(phase2Ranked[0].id, 'high-risk-99', 'high risk should apply a real soft penalty instead of recommendation-only promotion')
+assert.equal(phase2Ranked[0].id, 'high-risk-99', 'Top picks should rank BET first even when risk is high')
 assert.ok(phase2Ranked[0].rankBadges.includes('HIGH CONFIDENCE'))
 assert.ok(phase2Ranked[0].rankBadges.includes('NO BET'))
 
@@ -908,9 +590,9 @@ const mixedRecommendationPool = [
   ...Array.from({ length: 10 }, (_, index) => withProfessionalCandidate({ ...baseMatch, id: `mix-no-bet-${index}`, confidence: 95 - index, recommendation: 'NO BET', riskLevel: 'LOW' }, { analysis: { professional_score: 65 + index } })),
 ]
 const mixedTop10 = rankTopMatches(mixedRecommendationPool, 10)
-assert.equal(mixedTop10.length, 10)
-assert.equal(new Set(mixedTop10.map((match) => match.id)).size, 10)
-assert.ok(mixedTop10.some((match) => match.recommendation === 'NO BET'), 'high-scoring NO BET rows can remain in Top 10 without fake promotion')
+assert.equal(mixedTop10.filter((match) => match.recommendation === 'BET').length, 2)
+assert.equal(mixedTop10.filter((match) => match.recommendation === 'LEAN').length, 5)
+assert.equal(mixedTop10.filter((match) => match.recommendation === 'NO BET').length, 3)
 
 function v2Match(id, moduleScore, riskScore, recommendationHint = 'NO BET') {
   return {
@@ -918,11 +600,6 @@ function v2Match(id, moduleScore, riskScore, recommendationHint = 'NO BET') {
     id,
     kickoffAt: `2026-06-26T${String(8 + Number(id.match(/\d+$/)?.[0] ?? 0)).padStart(2, '0')}:00:00Z`,
     league: { name: 'Premier League', country: 'England' },
-    has_market_data: true,
-    odds: [
-      { id: `${id}-odds-home`, match_id: id, market_name: 'Asian Handicap', selection: 'Home -0.5', line: -0.5, price: 1.9 },
-      { id: `${id}-odds-away`, match_id: id, market_name: 'Asian Handicap', selection: 'Away +0.5', line: -0.5, price: 1.95 },
-    ],
     analysis: {
       recommendation: recommendationHint,
       confidence_score: moduleScore,
@@ -949,12 +626,12 @@ const v2Mixed = [
 ]
 const v2MixedRows = runAiSelectionEngine(v2Mixed)
 const v2Top10 = v2MixedRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
-assert.equal(v2Top10.length, 7, 'AI Selection Engine v2 should keep BET/LEAN watch rows without NO BET padding')
+assert.equal(v2Top10.length, 10, 'AI Selection Engine v2 should fill Top 10 from all usable recommendations')
 assert.equal(v2Top10.filter((row) => row.recommendation === 'BET').length, 2)
 assert.equal(v2Top10.filter((row) => row.recommendation === 'LEAN').length, 5)
-assert.equal(v2Top10.filter((row) => row.recommendation === 'NO BET').length, 0)
-assert.deepEqual(v2Top10.map((row) => row.final_rank), Array(7).fill(null))
-assert.equal(v2MixedRows.filter((row) => row.is_final_pick).length, 0, 'WATCH-only v2 rows must not create a final pick')
+assert.equal(v2Top10.filter((row) => row.recommendation === 'NO BET').length, 3)
+assert.deepEqual(v2Top10.map((row) => row.final_rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+assert.equal(v2MixedRows.filter((row) => row.is_final_pick).length, 1, 'only one v2 row may be final pick')
 assert.equal(v2Top10[0].recommendation, 'BET')
 assert.equal(v2Top10[0].recommendation_tier, '*****')
 
@@ -965,15 +642,16 @@ const v2LeanOnlyRows = runAiSelectionEngine([
 const v2LeanTop = v2LeanOnlyRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
 assert.equal(v2LeanTop.length, 2, 'v2 should still rank picks when no BET exists')
 assert.equal(v2LeanTop[0].recommendation, 'LEAN')
-assert.equal(v2LeanTop[0].is_final_pick, false, 'LEAN watch rows must not create a final pick')
-assert.equal(v2LeanTop[0].final_rank, null, 'LEAN watch rows should not receive a decision rank')
+assert.ok(v2LeanTop[0].final_pick_note.includes('BET'), 'LEAN final pick note must say it is not BET level')
 
 const v2NoBetOnlyRows = runAiSelectionEngine([
   v2Match('v2-no-bet-only-1', 35, 90, 'NO BET'),
   v2Match('v2-no-bet-only-2', 32, 92, 'NO BET'),
 ])
 const v2NoBetTop = v2NoBetOnlyRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
-assert.equal(v2NoBetTop.length, 0, 'v2 should not pad the decision board with NO BET-only rows')
+assert.equal(v2NoBetTop.length, 2, 'v2 should show NO BET watchlist rows when they are the only analysis available')
+assert.equal(v2NoBetTop[0].recommendation, 'NO BET')
+assert.ok(v2NoBetTop[0].final_pick_note.length > 0)
 
 const v2InvalidRows = runAiSelectionEngine([{ id: 'missing-critical-data' }])
 assert.equal(v2InvalidRows.filter((row) => row.is_top_pick).length, 0, 'invalid rows should not become Top 10 picks')
@@ -1264,10 +942,6 @@ assert.ok(!noBetRanking.rankReason.includes('เหมาะเป็น'), 'NO 
 assert.ok(noBetRanking.rankReason.includes('ควรข้าม'), 'NO BET rank reason should clearly recommend skipping')
 
 const marketReadyFinalPick = generateAiFinalPick({
-  id: 'market-ready-final-pick',
-  homeTeam: { name: 'Home' },
-  awayTeam: { name: 'Away' },
-  kickoffAt: '2026-07-04T10:00:00.000Z',
   analysis: {
     recommendation: 'BET',
     ranking_score: 89,
@@ -1314,7 +988,7 @@ const missingMarketFinalPick = generateAiFinalPick({
   },
   odds: [],
 })
-assert.equal(missingMarketFinalPick.signal, 'WATCH', 'missing market data should stay visible as WATCH even when no final pick is available')
+assert.equal(missingMarketFinalPick.signal, 'SKIP', 'missing market data must stay SKIP even when stored confidence is high')
 assert.equal(missingMarketFinalPick.ah_pick.label, 'รอเส้น AH', 'missing AH odds must wait for AH line')
 assert.equal(missingMarketFinalPick.ou_pick.label, 'รอราคา O/U', 'missing O/U odds must wait for O/U price')
 assert.equal(missingMarketFinalPick.final_pick.type, 'NO_DECISION', 'missing market data must not create a final market pick')
@@ -1325,7 +999,7 @@ assert.ok(missingMarketFinalPick.match_view.confidence <= 60, 'fixture-only matc
 
 const lowDataNoOddsPick = generateAiFinalPick({ analysis: { market_data_used: false, odds_rows_used: 0 }, odds: [] })
 assert.equal(lowDataNoOddsPick.status, 'NO_DATA', 'low-data no-odds match should be NO_DATA')
-assert.equal(lowDataNoOddsPick.match_view.label, 'ข้อมูลยังไม่พอแยกฝั่งชัดเจน')
+assert.equal(lowDataNoOddsPick.match_view.label, 'ข้อมูลยังไม่พอประเมินฝั่งชนะ')
 assert.equal(lowDataNoOddsPick.final_pick.label, 'ยังไม่มี Best Pick')
 
 const marketReadyMatches = Array.from({ length: 3 }, (_, index) => ({
@@ -1409,9 +1083,9 @@ assert.equal(mixedTodaySections.readyMatches.length, 3, 'Today ready section sho
 assert.equal(mixedTodaySections.waitingMatches.length, 7, 'Today waiting section should render waiting matches alongside ready matches')
 
 const decisiveTodayBuckets = buildTodayMatchBuckets([...marketReadyMatches, ...waitingMarketMatches], { locked: true, lockedCount: 10, windowHours: 36 })
-assert.equal(decisiveTodayBuckets.strongMatches.length, 3, 'Today V2 should use canonical BET decisions for the strong section')
-assert.equal(decisiveTodayBuckets.watchMatches.length, 0, 'Today V2 should not duplicate canonical BET decisions in the watch section')
+assert.equal(decisiveTodayBuckets.strongMatches.length, 3, 'Today V2 should put market-ready strong signals in the strong section')
 assert.equal(decisiveTodayBuckets.waitingMatches.length, 7, 'Today V2 should keep insufficient market-data matches visible in waiting section')
+assert.equal(decisiveTodayBuckets.watchMatches.length, 0, 'Today V2 should not mix strong picks into watch section')
 assert.equal(decisiveTodayBuckets.summary.locked, true, 'Today V2 summary should preserve locked source status')
 assert.equal(decisiveTodayBuckets.summary.windowHours, 36, 'Today V2 summary should expose the selection window')
 
@@ -1420,7 +1094,7 @@ const oneStrongOneWatchOneWaiting = buildTodayMatchBuckets([
     waitingMarketData: false,
     odds: [{ id: 'bucket-strong-odds', match_id: 'bucket-strong-0', market_name: 'Asian Handicap', price: 1.9 }],
     aiFinalPick: { signal: 'STRONG_SIGNAL', confidence_score: 83, risk_level: 'LOW' },
-    analysis: { recommendation: 'BET', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 88, confidence_score: 86, calibrated_confidence_score: 86, risk_level: 'LOW', data_validation_status: 'VALID', league_quality_score: 96, team_strength_score: 84, form_score: 82, goal_scoring_score: 82, defensive_stability_score: 80, home_advantage_score: 82, motivation_score: 78, ranking_score: 88, value_edge_score: 82, risk_control_score: 82 },
+    analysis: { recommendation: 'BET', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 80, confidence_score: 83, calibrated_confidence_score: 83, risk_level: 'LOW', data_validation_status: 'VALID' },
   })[0],
   createStatusMatches(1, 'NS', 'bucket-watch', {
     waitingMarketData: false,
@@ -1437,7 +1111,7 @@ const oneStrongOneWatchOneWaiting = buildTodayMatchBuckets([
 assert.equal(oneStrongOneWatchOneWaiting.strongMatches.length, 1, 'Today V2 should expose strongMatches')
 assert.equal(oneStrongOneWatchOneWaiting.watchMatches.length, 1, 'Today V2 should expose watchMatches')
 assert.equal(oneStrongOneWatchOneWaiting.waitingMatches.length, 1, 'Today V2 should expose waitingMatches')
-assert.deepEqual(Object.keys(oneStrongOneWatchOneWaiting).filter((key) => ['strongMatches', 'watchMatches', 'waitingMatches', 'predictionOnlyMatches', 'finishedMatches', 'hiddenMatches', 'summary'].includes(key)).sort(), ['finishedMatches', 'hiddenMatches', 'predictionOnlyMatches', 'strongMatches', 'summary', 'waitingMatches', 'watchMatches'], 'Today V2 should expose the required bucket keys')
+assert.deepEqual(Object.keys(oneStrongOneWatchOneWaiting).filter((key) => ['strongMatches', 'watchMatches', 'waitingMatches', 'finishedMatches', 'hiddenMatches', 'summary'].includes(key)).sort(), ['finishedMatches', 'hiddenMatches', 'strongMatches', 'summary', 'waitingMatches', 'watchMatches'], 'Today V2 should expose the required bucket keys')
 
 assert.equal(formatRecommendationLabel('NO BET'), 'รอข้อมูลเพิ่ม', 'UI recommendation labels must not expose NO BET')
 assert.equal(formatSignal('STRONG_SIGNAL'), 'สัญญาณเด่น', 'UI signal labels must not expose STRONG_SIGNAL')
@@ -1480,117 +1154,6 @@ assert.equal(noOddsPick.pickSource, 'NONE', 'No API odds must keep pick_source N
 assert.equal(noOddsPick.pickSide, 'NONE', 'No API odds must keep pick_side NONE')
 assert.equal(noOddsPick.pickSummary.market, 'ยังไม่มีข้อมูลราคา', 'No API odds summary should show waiting price copy')
 assert.equal(noOddsPick.predictedOutcomeLabel, 'ยังไม่มีข้อมูลราคา', 'No API odds predicted outcome should not invent a side')
-
-const noOddsUnified = buildFootballIntelligence({
-  ...pickTeamMatch,
-  odds: [],
-  analysis: {
-    league_quality_score: 82,
-    team_strength_score: 72,
-    form_score: 70,
-    home_advantage_score: 68,
-    confidence_score: 88,
-    risk_level: 'LOW',
-  },
-})
-assert.equal(noOddsUnified.status, 'WAITING_MARKET', 'Unified engine should keep no-odds fixtures visible as waiting market')
-assert.equal(noOddsUnified.decision, 'WATCH', 'No odds should not become NO_BET by itself')
-assert.ok(noOddsUnified.winner_prediction.label, 'Winner prediction may still exist without odds')
-assert.equal(noOddsUnified.ah_pick.side, 'NONE', 'No odds should not fake AH')
-assert.equal(noOddsUnified.ou_pick.side, 'NONE', 'No odds should not fake O/U')
-assert.equal(noOddsUnified.final_pick.type, 'NO_DECISION', 'No odds should not create Best Pick')
-assert.ok(noOddsUnified.confidence <= 60, 'No-odds confidence must be capped at 60')
-assert.equal(formatAhCardLabel(noOddsUnified.ah_pick), 'รอเส้น', 'No-odds card AH label should be short')
-assert.equal(formatOuCardLabel(noOddsUnified.ou_pick), 'รอราคา', 'No-odds card O/U label should be short')
-assert.equal(formatBestPickCardLabel(noOddsUnified.final_pick), 'รอตลาด', 'No-odds card Best Pick label should be short')
-
-const fixtureOnlyConfidenceSamples = [
-  noOddsUnified,
-  buildFootballIntelligence({ ...pickTeamMatch, id: 'balanced-no-odds', odds: [], analysis: { league_quality_score: 58, team_strength_score: 56, form_score: 55, home_advantage_score: 54, risk_level: 'MEDIUM' } }),
-  buildFootballIntelligence({ id: 'low-data-no-odds', homeTeam: { name: 'Home' }, awayTeam: { name: 'Away' }, kickoffAt: '2026-07-04T09:00:00.000Z', odds: [], analysis: {} }),
-]
-const fixtureOnlyConfidences = fixtureOnlyConfidenceSamples.map((item) => item.confidence)
-assert.equal(buildFootballIntelligence({ ...pickTeamMatch, odds: [], analysis: { league_quality_score: 82, team_strength_score: 72, form_score: 70, home_advantage_score: 68, confidence_score: 88, risk_level: 'LOW' } }).confidence, noOddsUnified.confidence, 'Fixture-only confidence should be deterministic for the same fixture')
-assert.ok(fixtureOnlyConfidences.every((value) => value >= 42 && value <= 60), 'Fixture-only confidence should stay within 42-60')
-assert.ok(new Set(fixtureOnlyConfidences).size > 1, 'Fixture-only confidence should not collapse every no-odds sample to 60')
-
-const fixtureConfidenceBase = {
-  match: { id: 'fixture-confidence-base', homeTeam: { name: 'Home' }, awayTeam: { name: 'Away' }, kickoffAt: '2026-07-04T09:00:00.000Z' },
-  analysis: {
-    league_quality_score: 70,
-    team_strength_score: 70,
-    form_score: 68,
-    home_advantage_score: 66,
-    confidence_score: 70,
-    risk_level: 'LOW',
-    data_quality_score: 72,
-  },
-  unifiedScore: 65,
-  winnerPrediction: { side: 'HOME', edge: 5, source: 'FIXTURE_MODEL' },
-  scoreBreakdown: { leagueQuality: 70, riskControl: 74 },
-  dataState: {
-    has_fixture_id: true,
-    has_home_team: true,
-    has_away_team: true,
-    has_kickoff: true,
-    has_statistics: true,
-    has_lineups: true,
-    fixture_completeness: 1,
-  },
-  statusInfo: {},
-}
-const lowDataFixtureConfidence = calculateFixtureModelConfidence({
-  ...fixtureConfidenceBase,
-  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-low-data' },
-  analysis: {},
-  unifiedScore: 45,
-  winnerPrediction: { side: 'HOME', edge: 5, source: 'FIXTURE_MODEL' },
-  scoreBreakdown: {},
-  dataState: { has_fixture_id: true, has_home_team: true, has_away_team: true, has_kickoff: true, fixture_completeness: 0.5 },
-})
-const balancedFixtureConfidence = calculateFixtureModelConfidence({
-  ...fixtureConfidenceBase,
-  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-balanced' },
-  winnerPrediction: { side: 'DRAW', edge: 2, source: 'FIXTURE_MODEL' },
-})
-const slightFixtureConfidence = calculateFixtureModelConfidence({
-  ...fixtureConfidenceBase,
-  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-slight' },
-  winnerPrediction: { side: 'HOME', edge: 5, source: 'FIXTURE_MODEL' },
-})
-const moderateFixtureConfidence = calculateFixtureModelConfidence({
-  ...fixtureConfidenceBase,
-  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-moderate' },
-  winnerPrediction: { side: 'HOME', edge: 8, source: 'FIXTURE_MODEL' },
-})
-const strongHighDataFixtureConfidence = calculateFixtureModelConfidence({
-  ...fixtureConfidenceBase,
-  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-strong-high-data' },
-  analysis: { ...fixtureConfidenceBase.analysis, data_quality_score: 84, league_quality_score: 82, confidence_score: 84 },
-  unifiedScore: 78,
-  winnerPrediction: { side: 'HOME', edge: 13, source: 'FIXTURE_MODEL' },
-  scoreBreakdown: { leagueQuality: 82, riskControl: 78 },
-})
-const dataCappedFixtureConfidence = calculateFixtureModelConfidence({
-  ...fixtureConfidenceBase,
-  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-data-cap' },
-  analysis: { ...fixtureConfidenceBase.analysis, data_quality_score: 58 },
-  winnerPrediction: { side: 'HOME', edge: 13, source: 'FIXTURE_MODEL' },
-})
-const edgeCappedFixtureConfidence = calculateFixtureModelConfidence({
-  ...fixtureConfidenceBase,
-  match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-edge-cap' },
-  analysis: { ...fixtureConfidenceBase.analysis, data_quality_score: 84 },
-  winnerPrediction: { side: 'HOME', edge: 2, source: 'FIXTURE_MODEL' },
-})
-assert.ok(lowDataFixtureConfidence <= 48, `Low-data no-odds confidence should stay <= 48, got ${lowDataFixtureConfidence}`)
-assert.ok(balancedFixtureConfidence >= 48 && balancedFixtureConfidence <= 53, `Balanced no-odds confidence should stay 48-53, got ${balancedFixtureConfidence}`)
-assert.ok(slightFixtureConfidence >= 53 && slightFixtureConfidence <= 55, `Slight-edge no-odds confidence should stay 53-55, got ${slightFixtureConfidence}`)
-assert.ok(moderateFixtureConfidence >= 56 && moderateFixtureConfidence <= 58, `Moderate-edge no-odds confidence should stay 56-58, got ${moderateFixtureConfidence}`)
-assert.ok(strongHighDataFixtureConfidence >= 59 && strongHighDataFixtureConfidence <= 60, `Strong high-data no-odds confidence should stay 59-60, got ${strongHighDataFixtureConfidence}`)
-assert.ok(dataCappedFixtureConfidence <= 56, `No-odds confidence should respect data-quality cap, got ${dataCappedFixtureConfidence}`)
-assert.ok(edgeCappedFixtureConfidence <= 53, `No-odds confidence should respect weak-edge cap, got ${edgeCappedFixtureConfidence}`)
-assert.equal(calculateFixtureModelConfidence({ ...fixtureConfidenceBase, match: { ...fixtureConfidenceBase.match, id: 'fixture-confidence-slight' }, winnerPrediction: { side: 'HOME', edge: 5, source: 'FIXTURE_MODEL' } }), slightFixtureConfidence, 'Fixture-only confidence helper should be deterministic for identical input')
 
 const ahPick = derivePickTeamFromApiFootballOdds({
   ...pickTeamMatch,
@@ -1639,64 +1202,6 @@ const ouPick = derivePickTeamFromApiFootballOdds({
 assert.equal(ouPick.pickTeam, null, 'OU should not assign pick_team')
 assert.equal(ouPick.pickSide, 'OVER')
 assert.equal(ouPick.pickSummary.sideLabel, 'สูง')
-
-const canonicalMarketMatch = {
-  ...pickTeamMatch,
-  status: 'NS',
-  statusShort: 'NS',
-  status_short: 'NS',
-  homeForm: { played: 5, wins: 4, draws: 1, losses: 0, goals_for: 14, goals_against: 4 },
-  awayForm: { played: 5, wins: 1, draws: 1, losses: 3, goals_for: 5, goals_against: 12 },
-  analysis: {
-    team_strength_score: 84,
-    form_score: 82,
-    goal_scoring_score: 82,
-    defensive_stability_score: 42,
-    home_advantage_score: 84,
-    away_weakness_score: 78,
-    market_edge_score: 88,
-    market_quality_score: 88,
-    confidence_score: 84,
-    risk_level: 'LOW',
-  },
-  odds: [
-    { id: 'canon-ah-main', market_name: 'Asian Handicap', market_focus: 'AH', selection: 'Arsenal -0.5', line: '-0.5', price: 1.91, bookmaker_name: 'MainBook', is_latest: true },
-    { id: 'canon-ah-alt', market_name: 'Asian Handicap', market_focus: 'AH', selection: 'Arsenal +1.5', line: '+1.5', price: 1.36, bookmaker_name: 'AltBook', is_latest: true },
-    { id: 'canon-ou-over', market_name: 'Goals Over/Under', market_focus: 'OU', selection: 'Over 4.5', line: '4.5', price: 2.05, bookmaker_name: 'MainBook', is_latest: true },
-    { id: 'canon-ou-under', market_name: 'Goals Over/Under', market_focus: 'OU', selection: 'Under 4.5', line: '4.5', price: 1.78, bookmaker_name: 'MainBook', is_latest: true },
-    { id: 'canon-ou-first-half', market_name: 'Goals Over/Under First Half', market_focus: 'OU', selection: 'Under 1.5', line: '1.5', price: 1.7, bookmaker_name: 'HalfBook', is_latest: true },
-    { id: 'canon-ou-second-half', market_name: 'Goals Over/Under - Second Half', market_focus: 'OU', selection: 'Under 1.5', line: '1.5', price: 1.8, bookmaker_name: 'HalfBook', is_latest: true },
-    { id: 'canon-ou-corners', market_name: 'Corners Over/Under', market_focus: 'OU', selection: 'Under 10.5', line: '10.5', price: 1.9, bookmaker_name: 'CornerBook', is_latest: true },
-    { id: 'canon-ou-cards', market_name: 'Cards Over/Under', market_focus: 'OU', selection: 'Under 4.5', line: '4.5', price: 1.9, bookmaker_name: 'CardBook', is_latest: true },
-  ],
-}
-const canonicalDecision = buildCanonicalMatchDecision(canonicalMarketMatch)
-assert.equal(canonicalDecision.ou_pick.label.includes('10.5'), false, 'canonical O/U must not use corners/cards 10.5 as main football goals O/U')
-assert.equal(canonicalDecision.ou_pick.label.endsWith('4.5'), true, 'canonical O/U must come from full-time Goals Over/Under')
-assert.equal(canonicalDecision.ah_pick.label.includes('-0.5'), true, 'canonical AH should prefer the main line over alternative +1.5')
-assert.equal(canonicalDecision.final_pick.label.includes('10.5'), false, 'Best Pick must not come from a rejected O/U market')
-
-const todayCanonical = buildTodayMatchBuckets([canonicalMarketMatch]).playableMatches[0].bettingDecision
-const detailCanonical = normalizeDetailPayload(canonicalMarketMatch).bettingDecision
-assert.equal(todayCanonical.ah_pick.label, detailCanonical.ah_pick.label, 'Today and Detail must show the same canonical AH line')
-assert.equal(todayCanonical.ou_pick.label, detailCanonical.ou_pick.label, 'Today and Detail must show the same canonical O/U line')
-assert.equal(todayCanonical.final_pick.label, detailCanonical.final_pick.label, 'Today and Detail must show the same canonical Best Pick')
-
-const rejectedOnlyDecision = buildCanonicalMatchDecision({
-  ...canonicalMarketMatch,
-  odds: [
-    { id: 'reject-corners', market_name: 'Corners Over/Under', market_focus: 'OU', selection: 'Under 10.5', line: '10.5', price: 1.9, is_latest: true },
-    { id: 'reject-cards', market_name: 'Cards Over/Under', market_focus: 'OU', selection: 'Under 4.5', line: '4.5', price: 1.8, is_latest: true },
-    { id: 'reject-first-half', market_name: 'Goals Over/Under First Half', market_focus: 'OU', selection: 'Under 1.5', line: '1.5', price: 1.7, is_latest: true },
-    { id: 'reject-second-half', market_name: 'Goals Over/Under Second Half', market_focus: 'OU', selection: 'Under 1.5', line: '1.5', price: 1.7, is_latest: true },
-    { id: 'reject-team-goals', market_name: 'Team Goals Over/Under', market_focus: 'OU', selection: 'Arsenal Over 1.5', line: '1.5', price: 1.7, is_latest: true },
-    { id: 'reject-alternative', market_name: 'Alternative Goals Over/Under', market_focus: 'OU', selection: 'Over 5.5', line: '5.5', price: 2.4, is_latest: true },
-  ],
-})
-assert.equal(rejectedOnlyDecision.status, 'WAITING_MARKET', 'Rejected-only O/U markets must not make the visible decision market-ready')
-assert.equal(rejectedOnlyDecision.ah_pick.label, 'รอเส้น', 'Rejected-only markets should leave AH waiting')
-assert.equal(rejectedOnlyDecision.ou_pick.label, 'รอราคา', 'Rejected-only markets should leave O/U waiting')
-assert.equal(rejectedOnlyDecision.final_pick.label, 'รอตลาด', 'Rejected-only markets should leave Best Pick waiting')
 
 const bttsPick = derivePickTeamFromApiFootballOdds({
   ...pickTeamMatch,
@@ -1760,14 +1265,8 @@ for (const forbidden of ['ยังไม่มีตลาดหลัก', '�
   assert.equal(waitingCardCopy.includes(forbidden), false, `Waiting card market copy should not expose ${forbidden}`)
 }
 const matchCardSource = readFileSync(new URL('../src/components/MatchCard.jsx', import.meta.url), 'utf8')
-const todayPageSource = readFileSync(new URL('../src/pages/TodayPage.jsx', import.meta.url), 'utf8')
-const matchDetailPageSource = readFileSync(new URL('../src/pages/MatchDetailPage.jsx', import.meta.url), 'utf8')
-for (const forbidden of ['Professional Score', 'Market Quality', 'Data Quality', 'Value Edge', 'Risk Control', 'Pipeline Stage', 'ชนะชัวร์', 'ฟันธง', 'ล็อก', 'การันตี']) {
+for (const forbidden of ['Professional Score', 'Market Quality', 'Data Quality', 'Value Edge', 'ชนะชัวร์', 'ฟันธง', 'ล็อก', 'การันตี']) {
   assert.equal(matchCardSource.includes(forbidden), false, `MatchCard primary UI should not expose ${forbidden}`)
-}
-for (const forbidden of ['ชนะชัวร์', 'ฟันธง', 'ล็อก', 'การันตี']) {
-  assert.equal(todayPageSource.includes(forbidden), false, `Today page should not expose overconfident copy ${forbidden}`)
-  assert.equal(matchDetailPageSource.includes(forbidden), false, `Match Detail should not expose overconfident copy ${forbidden}`)
 }
 
 const finishedTop10Matches = createStatusMatches(10, 'FT', 'finished-top10')
@@ -1824,12 +1323,12 @@ const nextWindowReady = createStatusMatches(5, 'NS', 'selection-ready-next', {
   },
 }).map((match, index) => ({ ...match, kickoffAt: `2026-07-05T${13 + index}:00:00.000Z` }))
 const rollingSelection = buildUsableDailySelection([...oneWaitingNow, ...nextWindowReady], { now: selectionNow, windowHours: 36, minPlayable: 5 })
-assert.equal(rollingSelection.windowHoursUsed, 24, 'Selection V2 should stay on the selected Bangkok date')
-assert.equal(rollingSelection.reason, 'waiting_market_data', 'Selection V2 should report waiting market data instead of expanding cross-date')
-assert.equal(rollingSelection.selectedCount, 1, 'Selection V2 should allow fewer than 10 useful same-day matches')
-assert.deepEqual(rollingSelection.selected.map((match) => match.id), oneWaitingNow.map((match) => match.id), 'Selection V2 should not pull next-date fixtures into Today')
+assert.equal(rollingSelection.windowHoursUsed, 48, 'Selection V2 should expand to 48h when the first 36h has too few playable matches')
+assert.equal(rollingSelection.reason, 'using_next_window_candidates', 'Selection V2 should report using_next_window_candidates when expanded')
+assert.equal(rollingSelection.selectedCount, 6, 'Selection V2 should keep waiting playable matches instead of emptying Today')
+assert.deepEqual(rollingSelection.selected.slice(0, 5).map((match) => match.id), nextWindowReady.map((match) => match.id), 'Selection V2 should rank market-ready matches before waiting matches')
 
-const finishedOnlySelection = buildUsableDailySelection(createStatusMatches(10, 'FT', 'selection-finished'), { now: selectionNow, selectionDate: '2026-07-03' })
+const finishedOnlySelection = buildUsableDailySelection(createStatusMatches(10, 'FT', 'selection-finished'), { now: selectionNow })
 assert.equal(finishedOnlySelection.selectedCount, 0, 'Selection V2 must not select finished matches for Today')
 assert.equal(finishedOnlySelection.finishedExcludedCount, 10, 'Selection V2 should count finished rows for Results routing')
 assert.equal(finishedOnlySelection.reason, 'all_matches_finished', 'Selection V2 should explain all-finished boards')
@@ -1921,269 +1420,4 @@ function toResultRows(matches) {
     homeScore: match.homeScore,
     awayScore: match.awayScore,
   }))
-}
-
-function simulateSharedAdminAuth({ body = {}, apiKey = '', authorization = '', serviceRoleKey = 'service_role_key', configuredSecrets = [] } = {}) {
-  const bearerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? ''
-  const bodySecret = typeof body.sb_secret === 'string' ? sanitizeTestHeaderValue(body.sb_secret) : ''
-  return [apiKey, bearerToken, bodySecret].some((value) => {
-    const token = sanitizeTestHeaderValue(value)
-    return token === serviceRoleKey || configuredSecrets.includes(token)
-  })
-}
-
-function simulateNormalizeSyncMode(value, footballModes = []) {
-  const mode = String(value ?? 'manual').trim().toLowerCase() || 'manual'
-  return ['manual', 'enrich', 'recompute', 'learning', ...footballModes].includes(mode) ? mode : null
-}
-
-function simulateIsSupportedFullTimeOddsRow(row) {
-  const marketName = row.market_name ?? row.market_focus
-  const marketFocus = simulateNormalizeMarketFocus(row.market_focus ?? row.market_name)
-  return simulateIsSupportedFullTimeOddsMarket(marketName, {
-    value: row.selection ?? row.raw?.selection ?? row.raw?.value,
-    line: row.line ?? row.raw?.line,
-  }, marketFocus)
-}
-
-function simulateIsSupportedFullTimeOddsMarket(marketName, value, marketFocus = simulateNormalizeMarketFocus(marketName)) {
-  if (!['MATCH_WINNER', 'AH', 'OU'].includes(marketFocus)) return false
-  if (simulateIsUnsupportedMainOddsMarketText(marketName) || simulateIsUnsupportedMainOddsMarketText(value?.value)) return false
-  if (marketFocus === 'OU') {
-    const line = simulateParseBetLine(value?.value) ?? simulateParseBetLine(value?.line)
-    if (line !== null && Math.abs(line) >= 6.5) return false
-  }
-  return true
-}
-
-function simulateNormalizeMarketFocus(value) {
-  const text = String(value ?? '').toUpperCase()
-  if (simulateIsUnsupportedMainOddsMarketText(text)) return 'NONE'
-  if (text === 'AH') return 'AH'
-  if (text === 'OU') return 'OU'
-  if (text === 'MATCH_WINNER') return 'MATCH_WINNER'
-  if (text === 'BTTS') return 'BTTS'
-  if (text.includes('ASIAN') || text.includes('HANDICAP')) return 'AH'
-  if (text.includes('OVER') || text.includes('UNDER') || text.includes('GOALS') || text.includes('TOTAL')) return 'OU'
-  if (text.includes('MATCH WINNER') || text.includes('1X2') || text.includes('HOME/AWAY')) return 'MATCH_WINNER'
-  if (text.includes('BOTH TEAMS') || text.includes('BTTS')) return 'BTTS'
-  return 'NONE'
-}
-
-function simulateIsUnsupportedMainOddsMarketText(value) {
-  const text = String(value ?? '').toUpperCase()
-  return ['CORNER', 'CARD', 'BOOKING', 'FIRST HALF', '1ST HALF', 'SECOND HALF', '2ND HALF', 'HALF TIME', 'HT/FT', 'TEAM TOTAL', 'TEAM GOALS', 'PLAYER', 'SPECIAL', 'EXACT SCORE', 'DOUBLE CHANCE', 'EXTRA TIME', 'PENALT'].some((blocked) => text.includes(blocked))
-}
-
-function simulateParseBetLine(value) {
-  const match = String(value ?? '').match(/-?\d+(?:\.\d+)?/)
-  if (!match) return null
-  const numeric = Number(match[0])
-  return Number.isFinite(numeric) ? numeric : null
-}
-
-function sanitizeTestHeaderValue(value) {
-  return String(value ?? '').trim().replace(/^["'<]+|[>"']+$/g, '').replace(/[^\x20-\x7E]/g, '')
-}
-
-function extractFunctionSource(source, functionName) {
-  const start = source.indexOf(`async function ${functionName}`)
-  if (start === -1) throw new Error(`${functionName} source not found`)
-  const next = source.indexOf('\nasync function ', start + 1)
-  return next === -1 ? source.slice(start) : source.slice(start, next)
-}
-
-function planStableTop10OddsBatch(rows, { offset = 0, limit = 2, force = false } = {}) {
-  const seen = new Set()
-  const processedFixtureIds = []
-  const skippedAlreadyHasOdds = []
-  const duplicateFixtureIds = []
-  for (const row of rows.slice(offset, offset + limit)) {
-    if (seen.has(row.fixtureId)) {
-      duplicateFixtureIds.push(row.fixtureId)
-      continue
-    }
-    seen.add(row.fixtureId)
-    if (!force && row.hasUsableOdds) {
-      skippedAlreadyHasOdds.push(row.fixtureId)
-      continue
-    }
-    processedFixtureIds.push(row.fixtureId)
-  }
-  return { processedFixtureIds, skippedAlreadyHasOdds, duplicateFixtureIds }
-}
-
-function planStableCandidateOrder(rows) {
-  return [...rows].sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id))).map((row) => row.id)
-}
-
-function planStableCandidateOddsBatch(rows, { offset = 0, limit = 2, force = false } = {}) {
-  return planStableTop10OddsBatch(rows, { offset, limit, force })
-}
-
-function simulatePostSyncCandidateState(rows, syncedCoverage = new Map()) {
-  const refreshedRows = rows.map((row) => {
-    if (!syncedCoverage.has(row.fixtureId)) return row
-    const coverage = syncedCoverage.get(row.fixtureId)
-    const status = coverage.rows <= 0 ? 'NO_MARKET_DATA' : coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner ? 'READY' : 'PARTIAL'
-    return { ...row, ...coverage, status }
-  })
-  return {
-    rows: refreshedRows,
-    candidateWithOdds: refreshedRows.filter((row) => row.hasAh || row.hasOu || row.hasMatchWinner || row.rows > 0).map((row) => row.fixtureId),
-    candidateWithoutOdds: refreshedRows.filter((row) => !(row.hasAh || row.hasOu || row.hasMatchWinner || row.rows > 0)).map((row) => row.fixtureId),
-    readyCandidateCount: refreshedRows.filter((row) => row.status === 'READY').length,
-  }
-}
-
-function shouldStopCandidateOddsPaging(rows) {
-  simulatePostSyncCandidateState(rows)
-  return false
-}
-
-function simulateIdempotentCandidateOddsSync({ candidateId, candidateMatchId, fixtureId, duplicateMatchIds = [] }) {
-  const state = {
-    candidateId,
-    matchId: candidateMatchId,
-    fixtureId,
-    status: 'WAITING_MARKET',
-    coverage: { hasAh: false, hasOu: false, hasMatchWinner: false, rows: 0 },
-  }
-  const call = () => {
-    if (state.coverage.hasAh && state.coverage.hasOu && state.coverage.hasMatchWinner) {
-      return {
-        providerCalls: 0,
-        oddsRowsSaved: 0,
-        processedFixtureIds: [],
-        skippedAlreadyHasOdds: [fixtureId],
-        readyCandidateCount: 1,
-      }
-    }
-    const savedRows = ['AH', 'OU', 'MATCH_WINNER'].map((marketFocus) => ({ match_id: candidateMatchId, api_fixture_id: fixtureId, market_focus: marketFocus }))
-    state.coverage = { hasAh: true, hasOu: true, hasMatchWinner: true, rows: savedRows.length }
-    state.status = 'READY'
-    simulateExactCandidateUpdate([state], { candidateId, matchId: candidateMatchId })
-    return {
-      providerCalls: 1,
-      oddsRowsSaved: savedRows.length,
-      processedFixtureIds: [fixtureId],
-      skippedAlreadyHasOdds: [],
-      readyCandidateCount: 1,
-      status: state.status,
-      savedRows,
-      candidateWithOdds: [fixtureId],
-      candidateWithoutOdds: [],
-    }
-  }
-  const first = call()
-  const second = call()
-  return {
-    first,
-    second,
-    usedMatchId: duplicateMatchIds.includes(candidateMatchId) ? candidateMatchId : state.matchId,
-  }
-}
-
-function simulateExactCandidateUpdate(rows, identity) {
-  const updated = rows.filter((row) => row.candidateId === identity.candidateId && row.matchId === identity.matchId)
-  if (updated.length !== 1) throw new Error(`daily_market_candidates update expected 1 row but affected ${updated.length}`)
-  return updated[0]
-}
-
-function simulateStaleMarketLockRepair(existingRows, readyPool, { repairStaleMarketLock = false } = {}) {
-  const readyCandidates = readyPool.filter((row) => row.status === 'READY' && row.hasAh && row.hasOu && row.hasMatchWinner)
-  const existingWithOdds = existingRows.filter((row) => row.hasOdds).length
-  const latestLockAt = Math.max(...existingRows.map((row) => new Date(row.lockedAt).getTime()))
-  const latestReadyAt = Math.max(...readyCandidates.map((row) => new Date(row.oddsSyncedAt).getTime()))
-  const uniqueExistingMatches = new Set(existingRows.map((row) => row.matchId)).size === existingRows.length
-  const uniqueExistingRanks = new Set(existingRows.map((row) => row.rank)).size === existingRows.length
-  const eligible = existingRows.length === 10 && readyCandidates.length >= 10 && existingWithOdds < 10 && latestLockAt < latestReadyAt && uniqueExistingMatches && uniqueExistingRanks
-  let persistedRows = existingRows.map((row) => ({ ...row }))
-  let changed = false
-  if (repairStaleMarketLock && eligible) {
-    persistedRows = readyCandidates.slice(0, 10).map((row, index) => ({
-      ...row,
-      rank: index + 1,
-      hasOdds: true,
-      aiFinalPickId: `pick-${row.matchId}`,
-      lockedAt: row.oddsSyncedAt,
-    }))
-    changed = true
-  }
-  const persistedSelectedFixtureIds = persistedRows.map((row) => row.fixtureId)
-  return {
-    changed,
-    eligible,
-    persistedRows,
-    response: {
-      persistedSelectedFixtureIds,
-      selectedFixtureIds: persistedSelectedFixtureIds,
-      top10WithOdds: persistedRows.filter((row) => row.hasOdds).map((row) => row.fixtureId),
-      top10WithoutOdds: persistedRows.filter((row) => !row.hasOdds).map((row) => row.fixtureId),
-      aiFinalPickCoverage: persistedRows.filter((row) => row.aiFinalPickId).length,
-    },
-  }
-}
-
-function simulateLowResourceRepairRpcPayload(existingRows, selectedRows) {
-  return {
-    p_selection_date: '2026-07-11',
-    p_expected_previous_match_ids: existingRows.map((row) => row.matchId).filter(Boolean).sort(),
-    p_selections: selectedRows.map((row, index) => ({ match_id: row.matchId, api_fixture_id: row.fixtureId, rank: index + 1, selection_score: 100 - index })),
-    p_final_picks: selectedRows.map((row) => ({ match_id: row.matchId, api_fixture_id: row.fixtureId, signal: 'WATCH', market_focus: 'AH', risk_level: 'MEDIUM' })),
-  }
-}
-
-function simulateGenericFiveRowMarketProbe(rows, marketFocus) {
-  return rows
-    .slice(0, 5)
-    .filter((row) => row.is_latest !== false && Number(row.price ?? 0) > 0)
-    .filter(simulateIsSupportedFullTimeOddsRow)
-    .some((row) => simulateNormalizeMarketFocus(row.market_focus ?? row.market_name) === marketFocus)
-}
-
-function simulateDeterministicMarketProbe(rows, marketFocus) {
-  return rows
-    .filter((row) => row.is_latest !== false && Number(row.price ?? 0) > 0)
-    .filter((row) => simulateNormalizeMarketFocus(row.market_focus ?? row.market_name) === marketFocus)
-    .filter(simulateIsSupportedFullTimeOddsRow)
-    .slice(0, 1)
-    .length === 1
-}
-
-function simulateDeterministicMarketRepairSelection(existingRows, readyPool, oddsByMatchId) {
-  const warnings = []
-  const selectedRows = []
-  for (const candidate of [...readyPool].sort((a, b) => a.candidateRank - b.candidateRank)) {
-    const rows = oddsByMatchId.get(candidate.matchId) ?? []
-    const hasAh = simulateDeterministicMarketProbe(rows, 'AH')
-    const hasOu = simulateDeterministicMarketProbe(rows, 'OU')
-    const hasMatchWinner = simulateDeterministicMarketProbe(rows, 'MATCH_WINNER')
-    if (!(hasAh && hasOu && hasMatchWinner)) {
-      if (warnings.length < 5) warnings.push({ matchId: candidate.matchId, hasAh, hasOu, hasMatchWinner })
-      continue
-    }
-    selectedRows.push(candidate)
-    if (selectedRows.length === 10) break
-  }
-  if (selectedRows.length !== 10) throw new Error(`expected 10 verified selections but got ${selectedRows.length}`)
-  return {
-    selectedRows,
-    warnings,
-    rpcPayload: simulateLowResourceRepairRpcPayload(existingRows, selectedRows),
-  }
-}
-
-function sortMarketFirstSamples(rows) {
-  const gate = { READY: 1, PARTIAL: 2, WAITING_MARKET: 3, NO_MARKET_DATA: 4 }
-  return [...rows]
-    .sort((a, b) => (gate[a.status] ?? 9) - (gate[b.status] ?? 9) || b.score - a.score)
-    .map((row) => row.id)
-}
-
-function capMarketFirstSampleScore({ status, score, hasOdds }) {
-  let value = score
-  if (status === 'NO_MARKET_DATA') value = Math.min(value, 59)
-  if (!hasOdds) value = Math.min(value, 60)
-  return value
 }

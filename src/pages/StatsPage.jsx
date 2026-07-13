@@ -5,9 +5,9 @@ export default function StatsPage({ matches }) {
   const stats = calculateStats(matches)
   const total = Math.max(1, stats.total)
   const recommendationSegments = [
-    { label: 'พร้อมวิเคราะห์', value: stats.strongCount, className: 'bg-emerald-400' },
-    { label: 'ติดตามต่อ', value: stats.watchCount, className: 'bg-amber-400' },
-    { label: 'รอข้อมูล', value: stats.skippedCount, className: 'bg-rose-400' },
+    { label: 'BET', value: stats.strongCount, className: 'bg-emerald-400' },
+    { label: 'LEAN', value: stats.watchCount, className: 'bg-amber-400' },
+    { label: 'NO BET', value: stats.skippedCount, className: 'bg-rose-400' },
   ]
   const riskSegments = [
     { label: 'LOW', value: stats.lowRiskCount, className: 'bg-cyan-300' },

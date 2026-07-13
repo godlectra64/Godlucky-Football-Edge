@@ -1,14 +1,10 @@
 import { formatRecommendationLabel } from '../utils/uiLabels'
 
-const legacyReady = String.fromCharCode(66, 69, 84)
-const legacyWatch = String.fromCharCode(76, 69, 65, 78)
-const legacyEmpty = `${String.fromCharCode(78, 79)} ${legacyReady}`
-
 const styles = {
-  [legacyReady]: 'badge-bet',
-  [legacyWatch]: 'badge-lean',
+  BET: 'badge-bet',
+  LEAN: 'badge-lean',
   WATCH: 'border-cyan-300/32 bg-cyan-300/12 text-cyan-50',
-  [legacyEmpty]: 'badge-no-bet',
+  'NO BET': 'badge-no-bet',
 }
 
 const modeLabels = {
@@ -18,10 +14,10 @@ const modeLabels = {
 }
 
 export default function ScoreBadge({ recommendation, mode = '' }) {
-  const value = String(recommendation || legacyEmpty).toUpperCase().replace('_', ' ')
+  const value = String(recommendation || 'NO BET').toUpperCase().replace('_', ' ')
   const label = modeLabels[mode] ?? formatRecommendationLabel(value)
   return (
-    <span className={`semantic-badge ${styles[value] ?? styles[legacyEmpty]}`} title={label} aria-label={label}>
+    <span className={`semantic-badge ${styles[value] ?? styles['NO BET']}`} title={label} aria-label={label}>
       {label}
     </span>
   )

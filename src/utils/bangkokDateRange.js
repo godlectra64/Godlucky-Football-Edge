@@ -1,4 +1,4 @@
-export const bangkokTimeZone = 'Asia/Bangkok'
+const bangkokTimeZone = 'Asia/Bangkok'
 const dayMs = 24 * 60 * 60 * 1000
 
 export function getBangkokDayRange(dateInput = new Date()) {
@@ -16,25 +16,13 @@ export function getBangkokDayRange(dateInput = new Date()) {
   }
 }
 
-export function getBangkokSelectionWindow(dateInput = new Date()) {
-  const range = getBangkokDayRange(dateInput)
-  return {
-    timezone: bangkokTimeZone,
-    selectionDate: range.dateKey,
-    startUtc: range.startUtc,
-    endUtc: range.endUtc,
-    localStart: `${range.dateKey}T00:00:00+07:00`,
-    localEnd: `${range.dateTo}T00:00:00+07:00`,
-  }
-}
-
 export function isWithinBangkokDay(kickoffAt, dateInput = new Date()) {
   const { startUtc, endUtc } = getBangkokDayRange(dateInput)
   const kickoffTime = new Date(kickoffAt).getTime()
   return Number.isFinite(kickoffTime) && kickoffTime >= new Date(startUtc).getTime() && kickoffTime < new Date(endUtc).getTime()
 }
 
-export function getBangkokDateKey(dateInput) {
+function getBangkokDateKey(dateInput) {
   if (typeof dateInput === 'string') {
     const trimmed = dateInput.trim()
     if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed

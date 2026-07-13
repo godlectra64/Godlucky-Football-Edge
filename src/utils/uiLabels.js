@@ -55,37 +55,3 @@ export function formatSignal(value) {
   const normalized = String(value ?? 'SKIP').toUpperCase()
   return signalLabelsTh[normalized] ?? signalLabelsTh.SKIP
 }
-
-export function formatAhCardLabel(pick = {}) {
-  if (String(pick.side ?? 'NONE').toUpperCase() === 'NONE') return 'รอเส้น'
-  return stripMarketSuffix(pick.label)
-}
-
-export function formatOuCardLabel(pick = {}) {
-  if (String(pick.side ?? 'NONE').toUpperCase() === 'NONE') return 'รอราคา'
-  const side = String(pick.side ?? '').toUpperCase()
-  if (side === 'OVER') return stripMarketSuffix(pick.label).replace(/^OVER\b/i, 'สูง')
-  if (side === 'UNDER') return stripMarketSuffix(pick.label).replace(/^UNDER\b/i, 'ต่ำ')
-  return stripMarketSuffix(pick.label)
-}
-
-export function formatBestPickCardLabel(finalPick = {}) {
-  if (finalPick.type !== 'NO_DECISION') return finalPick.label || '-'
-  const text = `${finalPick.label ?? ''} ${finalPick.reason ?? ''}`.toLowerCase()
-  if (text.includes('ผ่าน') || text.includes('เกณฑ์') || text.includes('market')) return 'ยังไม่ผ่าน'
-  return 'รอตลาด'
-}
-
-export function formatDecisionReasonLine(decision = {}) {
-  if (decision.status === 'WAITING_MARKET' || decision.final_pick?.label === 'รอตลาด') {
-    return 'รอข้อมูลราคาเพื่อยืนยัน AH/O-U'
-  }
-  return decision.final_pick?.reason || decision.match_view?.reason || 'ข้อมูลยังไม่พอสำหรับสรุป'
-}
-
-function stripMarketSuffix(value) {
-  return String(value ?? '-')
-    .replace(/\s+AH$/i, '')
-    .replace(/\s+O\/U$/i, '')
-    .trim()
-}

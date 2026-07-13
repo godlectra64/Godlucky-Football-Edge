@@ -1,69 +1,83 @@
 import { Brain, ChevronDown } from 'lucide-react'
 import { useState } from 'react'
-import { getAnalysisStatusLabelTh, getAnalysisStatusTone } from '../utils/analysisStatus.js'
-import { buildFootballAnalyticsOutput, EXPECTED_SCORE_DISCLAIMER_TH } from '../utils/footballAnalytics.js'
+import { generateAiFinalPick } from '../utils/aiFinalPickEngine.js'
+import { buildSimpleBettingDecision, getBestPickLabel, getDecisionConfidence } from '../utils/bettingDecision.js'
+import { normalizeOddsRows } from '../utils/oddsUtils.js'
+import { formatMarketFocus } from '../utils/uiLabels.js'
+import MarketDirectionBadge from './MarketDirectionBadge'
+import MarketOddsCard from './MarketOddsCard'
+import RiskBadge from './RiskBadge'
 
 export default function AiFinalPickCard({ match, compact = false, variant = 'expanded', defaultOpen = false }) {
   const isCompact = compact || variant === 'compact'
   const [open, setOpen] = useState(defaultOpen)
-  const analytics = buildFootballAnalyticsOutput(match)
-  const tone = getAnalysisStatusTone(analytics.analysisStatus)
-  const statusLabel = getAnalysisStatusLabelTh(analytics.analysisStatus)
+  const pick = match?.aiFinalPick ?? generateAiFinalPick(match)
+  const decision = pick.bettingDecision ?? buildSimpleBettingDecision(match)
+  const odds = normalizeOddsRows(match)
+  const signal = signalFromStatus(decision.status)
+  const confidence = getDecisionConfidence(decision)
+  const displayPick = getBestPickLabel(decision)
 
   if (isCompact) {
     return (
-      <section className={`rounded-xl border px-2.5 py-2 ${cardTone(tone, true)}`}>
+      <section className={`rounded-xl border px-2.5 py-2 ${cardTone(signal, true)}`}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 text-[10px] font-black uppercase text-slate-400">
               <Brain size={13} className="text-[var(--page-accent)]" />
-              มุมมองจากโมเดล
+              Best Pick
             </p>
-            <p className="mt-1 text-clamp-1 text-sm font-black leading-5 text-white">{analytics.modelOutlook.labelTh}</p>
+            <p className="mt-1 text-clamp-1 text-sm font-black leading-5 text-white">{displayPick}</p>
           </div>
-          <StatusBadge tone={tone} label={statusLabel} />
+          <MarketDirectionBadge signal={signal} compact />
         </div>
 
         <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-          <MiniChip label="เจ้าบ้าน" value={percent(analytics.matchOutlook.homeWin)} />
-          <MiniChip label="เสมอ" value={percent(analytics.matchOutlook.draw)} />
-          <MiniChip label="ทีมเยือน" value={percent(analytics.matchOutlook.awayWin)} />
-          <MiniChip label="มั่นใจ" value={`${analytics.confidence}%`} />
+          <MiniChip label="ตลาด" value={formatDecisionMarket(decision.final_pick.type)} />
+          <MiniChip label="มั่นใจ" value={`${confidence}%`} />
+          <RiskBadge level={pick.riskLevel} compact />
         </div>
+
+        <p className="text-clamp-1 mt-2 rounded-lg border border-white/10 bg-black/15 px-2 py-1.5 text-[11px] font-semibold leading-4 text-slate-300">
+          {decision.final_pick.reason}
+        </p>
       </section>
     )
   }
 
   return (
-    <section className={`rounded-2xl border p-3 ${cardTone(tone, false)}`}>
+    <section className={`rounded-2xl border p-3 ${cardTone(signal, isCompact)}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-400">
             <Brain size={14} className="text-[var(--page-accent)]" />
-            มุมมองจากโมเดล
+            Best Pick
           </p>
-          <p className="mt-1 text-clamp-2 text-lg font-black leading-6 text-white">{analytics.modelOutlook.labelTh}</p>
-          <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{analytics.thaiReasons[0]}</p>
+          <p className="mt-1 text-clamp-2 text-lg font-black leading-6 text-white">{displayPick}</p>
+          <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{decision.final_pick.reason}</p>
         </div>
-        <StatusBadge tone={tone} label={statusLabel} />
+        <MarketDirectionBadge signal={signal} />
       </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-2">
-        <ProbabilityCell label="เจ้าบ้าน" value={analytics.matchOutlook.homeWin} />
-        <ProbabilityCell label="เสมอ" value={analytics.matchOutlook.draw} />
-        <ProbabilityCell label="ทีมเยือน" value={analytics.matchOutlook.awayWin} />
-      </div>
-
-      <div className="mt-3 grid grid-cols-[minmax(0,1fr)_88px] items-end gap-2">
+      <div className="mt-3 grid grid-cols-[minmax(0,1fr)_84px] items-end gap-2">
         <div className="min-w-0">
-          <div className="progress-bar">
-            <span className={barTone(tone)} style={{ width: `${Math.max(4, Math.min(100, analytics.confidence))}%` }} />
+          <div className="flex flex-wrap gap-1.5">
+            <MiniChip label="ตลาด" value={formatDecisionMarket(decision.final_pick.type)} />
+            <MiniChip label="ทิศทาง" value={displayPick} wide />
           </div>
-          <p className="mt-1 text-[11px] font-semibold text-slate-400">คุณภาพข้อมูล {analytics.dataQuality.level}</p>
         </div>
         <div className="text-right">
           <p className="text-[10px] font-black uppercase text-slate-500">ความมั่นใจ</p>
-          <p className="text-[1.7rem] font-black leading-8 text-white">{analytics.confidence}%</p>
+          <p className="text-[1.7rem] font-black leading-8 text-white">{confidence}%</p>
+        </div>
+      </div>
+
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <RiskBadge level={pick.riskLevel} />
+        <div className="min-w-0 flex-1">
+          <div className="progress-bar">
+            <span className={barTone(signal)} style={{ width: `${Math.max(4, Math.min(100, confidence))}%` }} />
+          </div>
         </div>
       </div>
 
@@ -73,103 +87,70 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
       </button>
       {open ? (
         <div className="mt-3 grid gap-3">
-          <AnalysisBlock title="ประตูคาดการณ์" items={[
-            ['เจ้าบ้าน', analytics.expectedGoals.home],
-            ['ทีมเยือน', analytics.expectedGoals.away],
-            ['รวม', analytics.expectedGoals.total],
-          ]} />
-          <ScoreBlock predictions={analytics.expectedScorePredictions} />
-          <AnalysisBlock title="องค์ประกอบความมั่นใจ" items={Object.entries(analytics.confidenceBreakdown).map(([key, value]) => [formatKey(key), `${Math.round(value)}/100`])} />
-          <p className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs leading-5 text-cyan-50">{EXPECTED_SCORE_DISCLAIMER_TH}</p>
+          <MarketOddsCard odds={odds} />
+          <AnalysisBlock title="AH Analysis" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence} reason={decision.ah_pick.reason} />
+          <AnalysisBlock title="O/U Analysis" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence} reason={decision.ou_pick.reason} />
+          <AnalysisBlock title="Final Decision" pick={displayPick} confidence={confidence} reason={decision.final_pick.reason} badge={decision.status} />
         </div>
       ) : null}
     </section>
   )
 }
 
-function AnalysisBlock({ title, items }) {
+function AnalysisBlock({ title, pick, confidence, reason, badge = '' }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-      <p className="text-sm font-black text-white">{title}</p>
-      <div className="mt-2 grid grid-cols-3 gap-2">
-        {items.map(([label, value]) => (
-          <MiniMetric key={label} label={label} value={value} />
-        ))}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-black text-white">{title}</p>
+          <p className="mt-1 text-xs font-semibold text-slate-400">{pick}</p>
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          {badge ? <span className={`semantic-badge ${badgeTone(badge)}`}>{badge}</span> : null}
+          <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{Math.round(confidence ?? 0)}%</span>
+        </div>
       </div>
+      <p className="mt-2 rounded-xl border border-cyan-300/20 bg-cyan-300/10 px-3 py-2 text-xs leading-5 text-cyan-50">{reason}</p>
     </div>
   )
 }
 
-function ScoreBlock({ predictions }) {
+function MiniChip({ label, value, wide = false }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-      <p className="text-sm font-black text-white">สกอร์ที่โมเดลมองเห็น</p>
-      <div className="mt-2 grid grid-cols-3 gap-2">
-        {predictions.map((row) => (
-          <MiniMetric key={row.score} label={row.score} value={percent(row.probability)} />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function ProbabilityCell({ label, value }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-black/15 p-2">
-      <p className="text-[10px] font-black text-slate-500">{label}</p>
-      <p className="mt-1 text-sm font-black text-white">{percent(value)}</p>
-    </div>
-  )
-}
-
-function MiniMetric({ label, value }) {
-  return (
-    <div className="min-w-0 rounded-xl border border-white/10 bg-black/15 p-2">
-      <p className="truncate text-[10px] font-black text-slate-500">{label}</p>
-      <p className="mt-1 truncate text-xs font-black text-white">{value}</p>
-    </div>
-  )
-}
-
-function MiniChip({ label, value }) {
-  return (
-    <span className="inline-flex min-h-8 min-w-0 items-center gap-1 rounded-full border border-white/10 bg-black/20 px-2.5 text-[11px] font-black text-white">
+    <span className={`inline-flex min-h-8 min-w-0 items-center gap-1 rounded-full border border-white/10 bg-black/20 px-2.5 text-[11px] font-black text-white ${wide ? 'max-w-full' : ''}`}>
       <span className="shrink-0 text-slate-500">{label}</span>
       <span className="truncate">{value || '-'}</span>
     </span>
   )
 }
 
-function StatusBadge({ tone, label }) {
-  return <span className={`semantic-badge shrink-0 ${badgeTone(tone)}`}>{label}</span>
+function signalFromStatus(status) {
+  if (status === 'READY') return 'STRONG_SIGNAL'
+  if (status === 'WATCH') return 'WATCH'
+  return 'SKIP'
 }
 
-function percent(value) {
-  return `${Math.round(Number(value ?? 0) * 100)}%`
+function formatDecisionMarket(type) {
+  if (type === 'NO_DECISION') return 'รอราคา'
+  if (type === 'TEAM') return 'มุมมองทีม'
+  return formatMarketFocus(type)
 }
 
-function formatKey(value) {
-  return String(value).replace(/([A-Z])/g, ' $1').replace(/^./, (letter) => letter.toUpperCase())
-}
-
-function cardTone(tone, compact) {
+function cardTone(signal, compact) {
   const inset = compact ? 'shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]' : ''
-  if (tone === 'good') return `border-emerald-300/35 bg-emerald-300/12 ${inset}`
-  if (tone === 'watch') return `border-amber-300/35 bg-amber-300/12 ${inset}`
-  if (tone === 'risk') return `border-red-300/30 bg-red-400/10 ${inset}`
+  if (signal === 'STRONG_SIGNAL') return `border-emerald-300/35 bg-emerald-300/12 ${inset}`
+  if (signal === 'WATCH') return `border-amber-300/35 bg-amber-300/12 ${inset}`
   return `border-slate-400/25 bg-slate-400/10 ${inset}`
 }
 
-function badgeTone(tone) {
-  if (tone === 'good') return 'badge-positive'
-  if (tone === 'watch') return 'badge-medium'
-  if (tone === 'risk') return 'badge-high'
-  return 'border-slate-300/25 bg-slate-300/10 text-slate-100'
+function barTone(signal) {
+  if (signal === 'STRONG_SIGNAL') return 'bg-gradient-to-r from-emerald-400 to-cyan-200'
+  if (signal === 'WATCH') return 'bg-gradient-to-r from-amber-300 to-blue-300'
+  return 'bg-gradient-to-r from-slate-400 to-slate-200'
 }
 
-function barTone(tone) {
-  if (tone === 'good') return 'bg-gradient-to-r from-emerald-400 to-cyan-200'
-  if (tone === 'watch') return 'bg-gradient-to-r from-amber-300 to-blue-300'
-  if (tone === 'risk') return 'bg-gradient-to-r from-red-400 to-rose-200'
-  return 'bg-gradient-to-r from-slate-400 to-slate-200'
+function badgeTone(status) {
+  if (status === 'READY') return 'badge-bet'
+  if (status === 'WATCH') return 'badge-lean'
+  return 'badge-no-bet'
 }

@@ -1,19 +1,5 @@
-﻿import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { getBangkokDayRange } from '../_shared/bangkokDateRange.ts'
-import { selectDailyTop10, DAILY_SELECTION_ALGORITHM_VERSION } from '../../../src/utils/dailySelectionEngine.js'
-import { buildRankingCompletionState } from '../../../src/utils/dailyRankingCompletion.js'
-import {
-  HYBRID_DAILY_PIPELINE_VERSION,
-  buildHybridCandidatePool,
-  buildHybridPipelineMetadata,
-  getHybridPhaseForDailySyncPhase,
-  getHybridPhaseForMode,
-} from '../../../src/utils/hybridDailyPipeline.js'
-import {
-  FOOTBALL_ANALYSIS_MODEL_VERSION,
-  FOOTBALL_ANALYTICS_PIPELINE_VERSION,
-  buildFootballAnalyticsOutput,
-} from '../../../src/utils/footballAnalytics.js'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -72,9 +58,7 @@ const API_FOOTBALL_KEY = sanitizeHeaderValue(Deno.env.get('API_FOOTBALL_KEY') ??
 const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
 const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
 const secretKeys = parseSupabaseSecretKeys([
-  Deno.env.get('EDGE_ADMIN_SECRET'),
   Deno.env.get('EDGE_ADMIN_SECRET_KEYS'),
-  Deno.env.get('RESULT_ADMIN_SECRET'),
   Deno.env.get('SUPABASE_SECRET_KEYS'),
 ])
 
@@ -93,22 +77,6 @@ const maxFootballEnrichmentLimit = 50
 const syncChunkSize = 10
 const enrichChunkSize = 5
 const footballEnrichmentChunkSize = 2
-const staleMarketRepairReadyCandidateLimit = 15
-const staleMarketRepairOddsRowLimit = 800
-const staleMarketRepairOddsRowsPerMarketLimit = 20
-const staleMarketRepairSelectionCount = 10
-const enablePublicMarketAnalysis = String(Deno.env.get('ENABLE_PUBLIC_MARKET_ANALYSIS') ?? 'false').toLowerCase() === 'true'
-
-const marketFirstPipelineAdminModes = [
-  'daily-sync-auto',
-  'sync-daily-top10-odds',
-  'build-daily-market-candidates',
-  'sync-daily-candidate-odds',
-  'finalize-market-ready-candidates',
-  'repair-stale-market-first-top10',
-  'diagnose-sync-today-odds',
-  'strict-api-football-daily-picks',
-]
 
 const footballEnrichmentModes = [
   'coverage',
@@ -128,12 +96,10 @@ const footballEnrichmentModes = [
   'daily-sync-phase',
   'daily-sync-status',
   'daily-sync-next',
-  ...marketFirstPipelineAdminModes,
+  'daily-sync-auto',
   'sync-bookmakers',
   'sync-odds',
   'sync-fixture-odds',
-  'sync-today-odds',
-  'sync-today-odds-finalize',
   'recompute-ai-final-picks',
   'recompute-ai-final-picks-date',
   'lock-daily-top10',
@@ -141,6 +107,7 @@ const footballEnrichmentModes = [
   'refresh-locked-top10-signals',
   'refresh-market-ready-top10',
   'select-usable-daily-picks',
+  'strict-api-football-daily-picks',
   'sync-completed-fixtures',
   'backfill-ai-pick-results',
   'settle-ai-pick-results',
@@ -151,7 +118,7 @@ const footballEnrichmentModes = [
 ]
 
 const dailySyncRunMode = 'daily-full-sync-safe'
-const dailySyncPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'odds-sync', 'ranking']
+const dailySyncPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']
 
 Deno.serve(async (request) => {
   if (request.method === 'OPTIONS') {
@@ -187,27 +154,6 @@ Deno.serve(async (request) => {
     const syncType = typeof body.mode === 'string' && body.mode ? body.mode : 'manual'
     const limit = getSyncLimit(body.limit, mode)
     const offset = getSyncOffset(body.offset)
-
-    if (mode === 'repair-stale-market-first-top10') {
-      const result = await repairStaleMarketFirstTop10LowResource(body, startedMs)
-      return json({
-        ok: true,
-        mode,
-        selectionDate: result.selectionDate,
-        repairedExistingLock: result.repairedExistingLock,
-        alreadyHealthy: result.alreadyHealthy,
-        previousSelectedFixtureIds: result.previousSelectedFixtureIds,
-        persistedSelectedFixtureIds: result.persistedSelectedFixtureIds,
-        top10Count: result.top10Count,
-        top10WithOddsCount: result.top10WithOddsCount,
-        top10WithoutOdds: result.top10WithoutOdds,
-        aiFinalPickCoverage: result.aiFinalPickCoverage,
-        candidateReadyCount: result.candidateReadyCount,
-        durationMs: Date.now() - startedMs,
-        warnings: result.warnings,
-        failures: result.failures,
-      })
-    }
 
     if (isFootballEnrichmentMode(mode)) {
       const modeResult = await runFootballEnrichmentMode(mode, body, dayRange, limit)
@@ -264,56 +210,10 @@ Deno.serve(async (request) => {
         failedFixtures: modeResult.failedFixtures,
         emptyFixtures: modeResult.emptyFixtures,
         processedFixtureIds: modeResult.processedFixtureIds,
-        processedFixtureId: modeResult.processedFixtureId,
         skippedFixtureIds: modeResult.skippedFixtureIds,
         failures: modeResult.failures ?? [],
-        warnings: modeResult.warnings ?? [],
-        offset: modeResult.offset,
         nextOffset: modeResult.nextOffset,
         hasMore: modeResult.hasMore,
-        oddsRowsSaved: modeResult.oddsRowsSaved,
-        oddsRowsInserted: modeResult.oddsRowsInserted,
-        marketsSaved: modeResult.marketsSaved,
-        hasAh: modeResult.hasAh,
-        hasOu: modeResult.hasOu,
-        hasMatchWinner: modeResult.hasMatchWinner,
-        totalTop10: modeResult.totalTop10,
-        skippedAlreadyHasOdds: modeResult.skippedAlreadyHasOdds,
-        top10WithOdds: modeResult.top10WithOdds,
-        top10WithoutOdds: modeResult.top10WithoutOdds,
-        totalFixtures: modeResult.totalFixtures,
-        playableFixtures: modeResult.playableFixtures,
-        candidateLimit: modeResult.candidateLimit,
-        candidatesSaved: modeResult.candidatesSaved,
-        candidateFixtureIds: modeResult.candidateFixtureIds,
-        topCandidateSample: modeResult.topCandidateSample,
-        candidateWithOdds: modeResult.candidateWithOdds,
-        candidateWithoutOdds: modeResult.candidateWithoutOdds,
-        dailyMarketCandidates: modeResult.dailyMarketCandidates,
-        candidateReadyCount: modeResult.candidateReadyCount,
-        candidatePartialCount: modeResult.candidatePartialCount,
-        candidateWaitingMarketCount: modeResult.candidateWaitingMarketCount,
-        candidateNoMarketDataCount: modeResult.candidateNoMarketDataCount,
-        candidateWithOddsFixtureIds: modeResult.candidateWithOddsFixtureIds,
-        candidateWithoutOddsFixtureIds: modeResult.candidateWithoutOddsFixtureIds,
-        readyCandidateFixtureIds: modeResult.readyCandidateFixtureIds,
-        readyCandidateCount: modeResult.readyCandidateCount,
-        candidatesTotal: modeResult.candidatesTotal,
-        readyCandidates: modeResult.readyCandidates,
-        partialCandidates: modeResult.partialCandidates,
-        waitingMarketCandidates: modeResult.waitingMarketCandidates,
-        noMarketDataCandidates: modeResult.noMarketDataCandidates,
-        analysisRowsUpdated: modeResult.analysisRowsUpdated,
-        selectedReadyCount: modeResult.selectedReadyCount,
-        selectedWaitingMarketCount: modeResult.selectedWaitingMarketCount,
-        selectedNoMarketDataCount: modeResult.selectedNoMarketDataCount,
-        selectedFixtureIds: modeResult.selectedFixtureIds,
-        repairedExistingLock: modeResult.repairedExistingLock,
-        previousSelectedFixtureIds: modeResult.previousSelectedFixtureIds,
-        persistedSelectedFixtureIds: modeResult.persistedSelectedFixtureIds,
-        staleMarketLockRepairEligible: modeResult.staleMarketLockRepairEligible,
-        lockPredatesMarketReadiness: modeResult.lockPredatesMarketReadiness,
-        aiFinalPickCoverage: modeResult.aiFinalPickCoverage,
         locked: modeResult.locked,
         alreadyLocked: modeResult.alreadyLocked,
         lockedCount: modeResult.lockedCount,
@@ -365,19 +265,6 @@ Deno.serve(async (request) => {
         scoreUpdatedRows: modeResult.scoreUpdatedRows,
         settledRows: modeResult.settledRows,
         fixtureDiagnostics: modeResult.fixtureDiagnostics,
-        fixturesCount: modeResult.fixturesCount,
-        playableCount: modeResult.playableCount,
-        finishedCount: modeResult.finishedCount,
-        todayOddsRows: modeResult.todayOddsRows,
-        sampleFixtureIds: modeResult.sampleFixtureIds,
-        env: modeResult.env,
-        apiFootballReachable: modeResult.apiFootballReachable,
-        apiFootballStatus: modeResult.apiFootballStatus,
-        apiFootballOddsItems: modeResult.apiFootballOddsItems,
-        apiFootballMarketsSample: modeResult.apiFootballMarketsSample,
-        apiFootballError: modeResult.apiFootballError,
-        likelySource: modeResult.likelySource,
-        likelyRootCause: modeResult.likelyRootCause,
       }, modeResult.responseStatus ?? 200)
     }
 
@@ -437,10 +324,10 @@ Deno.serve(async (request) => {
     const total = totalFetched
     const status = allFailures.length ? 'partial_success' : 'success'
     const message = total === 0
-      ? 'à¹„à¸¡à¹ˆà¸žà¸šà¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¸§à¸±à¸™à¸™à¸µà¹‰à¹à¸¥à¸°à¸žà¸£à¸¸à¹ˆà¸‡à¸™à¸µà¹‰'
+      ? 'ไม่พบคู่แข่งขันวันนี้และพรุ่งนี้'
       : allFailures.length
-      ? `à¸šà¸±à¸™à¸—à¸¶à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥ ${processed} à¸„à¸¹à¹ˆ à¸­à¸±à¸›à¹€à¸”à¸•à¸§à¸´à¹€à¸„à¸£à¸²à¸°à¸«à¹Œ ${updatedAnalysisCount} à¸£à¸²à¸¢à¸à¸²à¸£ à¹à¸à¹‰à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸œà¸´à¸” ${invalidRowsFixed} à¸£à¸²à¸¢à¸à¸²à¸£ à¹à¸¥à¸°à¸¡à¸µà¸‚à¹‰à¸­à¸œà¸´à¸”à¸žà¸¥à¸²à¸” ${allFailures.length} à¸£à¸²à¸¢à¸à¸²à¸£`
-      : `à¸šà¸±à¸™à¸—à¸¶à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥ ${processed} à¸„à¸¹à¹ˆ à¹à¸¥à¸°à¸­à¸±à¸›à¹€à¸”à¸•à¸§à¸´à¹€à¸„à¸£à¸²à¸°à¸«à¹Œ ${updatedAnalysisCount} à¸£à¸²à¸¢à¸à¸²à¸£`
+      ? `บันทึกข้อมูล ${processed} คู่ อัปเดตวิเคราะห์ ${updatedAnalysisCount} รายการ แก้ข้อมูลผิด ${invalidRowsFixed} รายการ และมีข้อผิดพลาด ${allFailures.length} รายการ`
+      : `บันทึกข้อมูล ${processed} คู่ และอัปเดตวิเคราะห์ ${updatedAnalysisCount} รายการ`
 
     await finishLog(logId, status, message, {
       provider: primaryProvider.name,
@@ -664,9 +551,6 @@ type FootballEnrichmentEndpointCounterKey = keyof FootballEnrichmentEndpointCoun
 type DailyFullSyncStepSummary = {
   step: number
   mode: string
-  pipelineVersion?: string
-  selectionAlgorithmVersion?: string
-  hybridPhase?: string
   status: 'success' | 'empty' | 'partial_success' | 'error' | 'skipped_not_due' | 'pending_retry'
   processed: number
   totalCandidates: number
@@ -680,15 +564,6 @@ type DailyFullSyncStepSummary = {
   endpointBreakdown?: Record<string, FootballEnrichmentEndpointCounter>
   details?: Record<string, unknown>
   rankingReadiness?: Record<string, number>
-  selectionCompleted?: boolean
-  selectionHealth?: string
-  rankingStatus?: string
-  retryable?: boolean
-  retryReasonCode?: string
-  marketReadinessStatus?: string
-  bettingReadiness?: string
-  expectedSelectedCount?: number
-  invariantFailures?: Array<string>
 }
 
 async function runFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
@@ -768,60 +643,13 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       partial: result.partial ?? false,
       responseStatus: result.responseStatus,
       processedFixtures: result.processedFixtures,
-      processedFixtureId: result.processedFixtureId,
       savedOdds: result.savedOdds,
       failedFixtures: result.failedFixtures,
       emptyFixtures: result.emptyFixtures,
       processedFixtureIds: result.processedFixtureIds,
       skippedFixtureIds: result.skippedFixtureIds,
-      warnings: result.warnings,
-      offset: result.offset,
       nextOffset: result.nextOffset,
       hasMore: result.hasMore,
-      oddsRowsSaved: result.oddsRowsSaved,
-      oddsRowsInserted: result.oddsRowsInserted,
-      marketsSaved: result.marketsSaved,
-      hasAh: result.hasAh,
-      hasOu: result.hasOu,
-      hasMatchWinner: result.hasMatchWinner,
-      totalTop10: result.totalTop10,
-      skippedAlreadyHasOdds: result.skippedAlreadyHasOdds,
-      top10WithOdds: result.top10WithOdds,
-      top10WithoutOdds: result.top10WithoutOdds,
-      totalFixtures: result.totalFixtures,
-      playableFixtures: result.playableFixtures,
-      candidateLimit: result.candidateLimit,
-      candidatesSaved: result.candidatesSaved,
-      candidateFixtureIds: result.candidateFixtureIds,
-      topCandidateSample: result.topCandidateSample,
-      candidateWithOdds: result.candidateWithOdds,
-      candidateWithoutOdds: result.candidateWithoutOdds,
-      dailyMarketCandidates: result.dailyMarketCandidates,
-      candidateReadyCount: result.candidateReadyCount,
-      candidatePartialCount: result.candidatePartialCount,
-      candidateWaitingMarketCount: result.candidateWaitingMarketCount,
-      candidateNoMarketDataCount: result.candidateNoMarketDataCount,
-      candidateWithOddsFixtureIds: result.candidateWithOddsFixtureIds,
-      candidateWithoutOddsFixtureIds: result.candidateWithoutOddsFixtureIds,
-      readyCandidateFixtureIds: result.readyCandidateFixtureIds,
-      readyCandidateCount: result.readyCandidateCount,
-      candidatesTotal: result.candidatesTotal,
-      readyCandidates: result.readyCandidates,
-      partialCandidates: result.partialCandidates,
-      waitingMarketCandidates: result.waitingMarketCandidates,
-      noMarketDataCandidates: result.noMarketDataCandidates,
-      analysisRowsUpdated: result.analysisRowsUpdated,
-      selectedReadyCount: result.selectedReadyCount,
-      selectedWaitingMarketCount: result.selectedWaitingMarketCount,
-      selectedNoMarketDataCount: result.selectedNoMarketDataCount,
-      selectedFixtureIds: result.selectedFixtureIds,
-      repairedExistingLock: result.repairedExistingLock,
-      previousSelectedFixtureIds: result.previousSelectedFixtureIds,
-      persistedSelectedFixtureIds: result.persistedSelectedFixtureIds,
-      staleMarketLockRepairEligible: result.staleMarketLockRepairEligible,
-      lockPredatesMarketReadiness: result.lockPredatesMarketReadiness,
-      aiFinalPickCoverage: result.aiFinalPickCoverage,
-      nextRequestExample: result.nextRequestExample,
       locked: result.locked,
       alreadyLocked: result.alreadyLocked,
       lockedCount: result.lockedCount,
@@ -834,19 +662,6 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       watchCount: result.watchCount,
       skipCount: result.skipCount,
       updated: result.updated,
-      fixturesCount: result.fixturesCount,
-      playableCount: result.playableCount,
-      finishedCount: result.finishedCount,
-      todayOddsRows: result.todayOddsRows,
-      sampleFixtureIds: result.sampleFixtureIds,
-      env: result.env,
-      apiFootballReachable: result.apiFootballReachable,
-      apiFootballStatus: result.apiFootballStatus,
-      apiFootballOddsItems: result.apiFootballOddsItems,
-      apiFootballMarketsSample: result.apiFootballMarketsSample,
-      apiFootballError: result.apiFootballError,
-      likelySource: result.likelySource,
-      likelyRootCause: result.likelyRootCause,
     }
   }
 
@@ -899,7 +714,7 @@ async function runDailySyncOrchestratorMode(mode: string, body: Record<string, u
   }
 
   if (mode === 'daily-sync-auto') {
-    const state = await startDailySyncRun({ ...body, resume: body.resume ?? true, restartCompleted: body.restartCompleted ?? !body.runId }, dayRange)
+    const state = await startDailySyncRun({ ...body, resume: body.resume ?? true }, dayRange)
     const result = await runDailySyncStepBatch(state, body, getBangkokDayRange(state.run.run_date), context, getMaxStepsPerRequest(body))
     result.reusedRunId = Boolean(state.reusedRunId)
     return withDailySyncDateDiagnostics(await buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started), dateDiagnostics, result)
@@ -939,7 +754,6 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
   const enrichmentLimit = getPositiveLimit(body.enrichmentLimit, 20, maxFootballEnrichmentLimit)
   const resume = body.resume === true
   const force = body.force === true
-  const restartCompleted = body.restartCompleted === true
   const existing = await supabase
     .from('api_football_daily_sync_runs')
     .select('*')
@@ -962,7 +776,7 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
         total_steps: dailySyncPhases.length,
         limit_value: limitValue,
         enrichment_limit: enrichmentLimit,
-        summary: buildDailySyncRunMetadata(dayRange, { phaseLimits: limits }),
+        summary: { phaseLimits: limits },
       })
       .select('*')
       .single()
@@ -972,7 +786,7 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
     return withDailySyncReuseMeta(await getDailySyncState(run.id), false)
   }
 
-  if (run.status === 'success' && !force && !restartCompleted) {
+  if (run.status === 'success' && !force) {
     return withDailySyncReuseMeta(await getDailySyncState(run.id), true)
   }
 
@@ -980,7 +794,7 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
     return withDailySyncReuseMeta(await getDailySyncState(run.id), true)
   }
 
-  if (force || restartCompleted || run.status !== 'success') {
+  if (force || run.status !== 'success') {
     const updated = await supabase
       .from('api_football_daily_sync_runs')
       .update({
@@ -993,7 +807,7 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
         started_at: new Date().toISOString(),
         finished_at: null,
         last_error: null,
-        summary: buildDailySyncRunMetadata(dayRange, { phaseLimits: limits }),
+        summary: { phaseLimits: limits },
       })
       .eq('id', run.id)
       .select('*')
@@ -1011,25 +825,8 @@ function withDailySyncReuseMeta(state: any, reusedRunId: boolean) {
   return { ...state, reusedRunId }
 }
 
-function buildDailySyncRunMetadata(dayRange: ReturnType<typeof getBangkokDayRange>, extra: Record<string, unknown> = {}) {
-  return {
-    ...buildHybridPipelineMetadata(dayRange.dateKey),
-    phaseLimits: {},
-    dailySyncPhases: dailySyncPhases.map((phase) => ({
-      phase,
-      hybridPhase: getHybridPhaseForDailySyncPhase(phase),
-    })),
-    ...extra,
-  }
-}
-
 function buildDailySyncDateDiagnostics(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
-  const metadata = buildHybridPipelineMetadata(dayRange.dateKey)
   return {
-    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-    currentPhase: getHybridPhaseForMode(String(body.mode ?? 'daily-sync-auto')),
-    selectionWindow: metadata.selectionWindow,
     requestedSelectionDate: typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : null,
     resolvedDateKey: dayRange.dateKey,
     resolvedDateFrom: dayRange.dateFrom,
@@ -1066,12 +863,7 @@ async function createDailySyncSteps(runId: string, limits: Record<string, number
     max_attempts: 3,
     next_retry_at: null,
     last_attempt_at: null,
-    summary: {
-      pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-      selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-      hybridPhase: getHybridPhaseForDailySyncPhase(phase),
-      phaseLimit: limits[phase] ?? 10,
-    },
+    summary: { phaseLimit: limits[phase] ?? 10 },
   }))
   const result = await supabase.from('api_football_daily_sync_steps').insert(rows)
   if (result.error) throw result.error
@@ -1177,9 +969,6 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
     summary = {
       step: step.step_order,
       mode: step.phase,
-      pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-      selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-      hybridPhase: getHybridPhaseForDailySyncPhase(step.phase),
       status: 'error',
       processed: 0,
       totalCandidates: 0,
@@ -1193,8 +982,6 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
   }
 
   const retry = getDailyStepRetryPlan(summary, attemptCount, maxAttempts)
-  summary.retryable = retry.retryable
-  summary.retryReasonCode = retry.retryReasonCode
   const stepStatus = retry.status
   const finishedAt = new Date().toISOString()
   const stepUpdate = await supabase
@@ -1252,6 +1039,7 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     results.push(await executeFootballEnrichmentMode('rounds', body, dayRange, context))
   } else if (phase === 'fixture-enrichment') {
     results.push(await executeFootballEnrichmentMode('fixture-enrich', body, dayRange, context))
+    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('sync-odds', body, dayRange, context))
   } else if (phase === 'team-enrichment') {
     results.push(await executeFootballEnrichmentMode('injuries', body, dayRange, context))
     if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('squads', body, dayRange, context))
@@ -1259,8 +1047,6 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('venues', body, dayRange, context))
   } else if (phase === 'league-enrichment') {
     results.push(await executeFootballEnrichmentMode('top-players', body, dayRange, context))
-  } else if (phase === 'odds-sync') {
-    results.push(await syncTodayOdds(body, dayRange, context))
   } else if (phase === 'ranking') {
     results.push(await runDailyRankingStep(dayRange, context))
   } else {
@@ -1271,30 +1057,17 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
   const endpointBreakdown = diffEndpointCounterMap(before, context.endpoints)
   const processed = sumResultField(results, 'processed')
   const totalCandidates = sumResultField(results, 'totalCandidates')
-  let rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
-  if (phase === 'odds-sync') rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved
+  const rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
   const failed = sumResultField(results, 'failed') + endpointDelta.failed
   const skipped = sumResultField(results, 'skipped') + endpointDelta.skipped
-  const rankingResult = phase === 'ranking' ? results[0] : null
-  const partial = phase === 'ranking'
-    ? Boolean(rankingResult?.retryable && failed > 0)
-    : results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
-  const status = phase === 'ranking'
-    ? rankingResult?.rankingStatus === 'success'
-      ? 'success'
-      : rankingResult?.retryable
-        ? 'partial_success'
-        : 'error'
-    : failed > 0 || partial ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
+  const partial = results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
+  const status = failed > 0 || partial ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
   await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: status === 'partial_success' ? 'success' : status, results_count: rowsSaved, finished_at: new Date().toISOString() })
   await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'finished', results_count: rowsSaved, finished_at: new Date().toISOString() })
 
   return {
     step: stepOrder,
     mode: phase,
-    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-    hybridPhase: getHybridPhaseForDailySyncPhase(phase),
     status,
     processed,
     totalCandidates,
@@ -1307,15 +1080,6 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     endpointBreakdown,
     details: buildDailyPhaseDetails(phase, results),
     rankingReadiness: phase === 'ranking' ? results[0]?.rankingReadiness : undefined,
-    selectionCompleted: phase === 'ranking' ? Boolean(results[0]?.selectionCompleted) : undefined,
-    selectionHealth: phase === 'ranking' ? results[0]?.selectionHealth : undefined,
-    rankingStatus: phase === 'ranking' ? results[0]?.rankingStatus : undefined,
-    retryable: phase === 'ranking' ? Boolean(results[0]?.retryable) : undefined,
-    retryReasonCode: phase === 'ranking' ? results[0]?.retryReasonCode : undefined,
-    marketReadinessStatus: phase === 'ranking' ? results[0]?.marketReadinessStatus : undefined,
-    bettingReadiness: phase === 'ranking' ? results[0]?.bettingReadiness : undefined,
-    expectedSelectedCount: phase === 'ranking' ? results[0]?.expectedSelectedCount : undefined,
-    invariantFailures: phase === 'ranking' ? results[0]?.invariantFailures : undefined,
   }
 }
 
@@ -1393,9 +1157,6 @@ async function buildDailySyncStepResponse(mode: string, result: any, providerRes
   const rankingReadiness = summary.rankingReadiness ?? summary.details?.rankingReadiness ?? dbFinalSummary.rankingReadiness ?? null
   return {
     providerResult,
-    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-    currentPhase: summary.hybridPhase ?? getHybridPhaseForMode(mode),
     runId: result?.run?.id ?? null,
     phase: summary.mode ?? result?.step?.phase ?? null,
     status: summary.status === 'pending_retry' || waitingRetry ? 'pending_retry' : result?.run?.status ?? summary.status,
@@ -1433,9 +1194,6 @@ function buildDailySyncSafeResponse(payload: any) {
   const nextPhase = payload.phase ?? progress.nextPhase ?? waitingRetry?.phase ?? null
   return {
     providerResult: { provider: getProviderAdapter('api-football'), fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] },
-    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-    currentPhase: payload.currentPhase ?? getHybridPhaseForMode(payload.mode ?? payload.phase ?? ''),
     runId: payload.runId,
     phase: payload.phase,
     status: payload.status,
@@ -1505,42 +1263,14 @@ function mapDailyStepStatus(summary: DailyFullSyncStepSummary) {
 
 function getDailyStepRetryPlan(summary: DailyFullSyncStepSummary, attemptCount: number, maxAttempts: number) {
   const failed = summary.status === 'error' || summary.status === 'partial_success' || summary.failed > 0
-  const retryable = isDailyStepRetryable(summary, failed)
-  const retryReasonCode = getDailyStepRetryReasonCode(summary, failed, retryable)
-  if (!failed) return { status: mapDailyStepStatus(summary), nextRetryAt: null, retryable, retryReasonCode }
-  if (!retryable) {
-    return {
-      status: summary.status === 'partial_success' ? 'partial' : mapDailyStepStatus(summary),
-      nextRetryAt: null,
-      retryable,
-      retryReasonCode,
-    }
-  }
+  if (!failed) return { status: mapDailyStepStatus(summary), nextRetryAt: null }
   if (attemptCount < maxAttempts) {
     return {
       status: 'pending_retry',
       nextRetryAt: new Date(Date.now() + getRetryDelayMs(attemptCount)).toISOString(),
-      retryable,
-      retryReasonCode,
     }
   }
-  return { status: summary.status === 'partial_success' ? 'partial' : 'failed', nextRetryAt: null, retryable, retryReasonCode }
-}
-
-function isDailyStepRetryable(summary: DailyFullSyncStepSummary, failed: boolean) {
-  if (!failed) return false
-  if (typeof summary.retryable === 'boolean') return summary.retryable
-  return Boolean(summary.rateLimited || summary.status === 'error' || summary.status === 'partial_success' || summary.failed > 0)
-}
-
-function getDailyStepRetryReasonCode(summary: DailyFullSyncStepSummary, failed: boolean, retryable: boolean) {
-  if (!failed) return summary.retryReasonCode ?? 'NONE'
-  if (summary.retryReasonCode) return summary.retryReasonCode
-  if (!retryable) return 'NON_RETRYABLE_FAILURE'
-  if (summary.rateLimited) return 'RATE_LIMITED'
-  if (summary.failed > 0) return 'STEP_FAILED'
-  if (summary.status === 'partial_success') return 'PARTIAL_SUCCESS_RETRYABLE'
-  return 'STEP_ERROR'
+  return { status: summary.status === 'partial_success' ? 'partial' : 'failed', nextRetryAt: null }
 }
 
 function getRetryDelayMs(attemptCount: number) {
@@ -1599,9 +1329,6 @@ function emptyDailyStepSummary(mode: string | null, status: DailyFullSyncStepSum
   return {
     step: 0,
     mode: mode ?? 'daily-sync',
-    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-    hybridPhase: getHybridPhaseForDailySyncPhase(mode ?? 'daily-sync'),
     status,
     processed: 0,
     totalCandidates: 0,
@@ -1644,8 +1371,6 @@ function buildFinalDailySummary(steps: Array<any>) {
   const fixtureEnrichment = findStepSummary(steps, 'fixture-enrichment')
   const ranking = findStepSummary(steps, 'ranking')
   return {
-    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
     fixtures: Number(core?.details?.fixturesProcessed ?? 0),
     coverage: endpointRows['/leagues'] ?? 0,
     rounds: endpointRows['/fixtures/rounds'] ?? 0,
@@ -1662,13 +1387,7 @@ function buildFinalDailySummary(steps: Array<any>) {
     topYellowCards: endpointRows['/players/topyellowcards'] ?? 0,
     topRedCards: endpointRows['/players/topredcards'] ?? 0,
     topPlayers: (endpointRows['/players/topscorers'] ?? 0) + (endpointRows['/players/topassists'] ?? 0) + (endpointRows['/players/topyellowcards'] ?? 0) + (endpointRows['/players/topredcards'] ?? 0),
-    ranking: ranking?.rankingStatus === 'success' || ranking?.status === 'success' || ranking?.status === 'empty' ? 'success' : ranking?.status ?? 'pending',
-    rankingSelectionCompleted: Boolean(ranking?.selectionCompleted),
-    rankingSelectionHealth: ranking?.selectionHealth ?? null,
-    rankingMarketReadinessStatus: ranking?.marketReadinessStatus ?? ranking?.details?.marketReadinessStatus ?? null,
-    bettingReadiness: ranking?.bettingReadiness ?? ranking?.details?.bettingReadiness ?? null,
-    rankingRetryable: Boolean(ranking?.retryable),
-    rankingRetryReasonCode: ranking?.retryReasonCode ?? null,
+    ranking: ranking?.status === 'success' || ranking?.status === 'empty' ? 'success' : ranking?.status ?? 'pending',
     rankingReadiness: ranking?.rankingReadiness ?? ranking?.details?.rankingReadiness ?? null,
     fixtureEnrichment: fixtureEnrichment?.details ?? null,
     totalDurationMs: (steps ?? []).reduce((total, step) => total + Number(step.duration_ms ?? step.summary?.durationMs ?? 0), 0),
@@ -1886,7 +1605,6 @@ function getDailyPhaseLimits(body: any) {
     'fixture-enrichment': getPositiveLimit(phaseLimits['fixture-enrichment'], 5, maxFootballEnrichmentLimit),
     'team-enrichment': getPositiveLimit(phaseLimits['team-enrichment'], 10, maxFootballEnrichmentLimit),
     'league-enrichment': getPositiveLimit(phaseLimits['league-enrichment'], 10, maxFootballEnrichmentLimit),
-    'odds-sync': getPositiveLimit(phaseLimits['odds-sync'], 10, maxFootballEnrichmentLimit),
     ranking: getPositiveLimit(phaseLimits.ranking, 10, maxFootballEnrichmentLimit),
   }
 }
@@ -1925,11 +1643,11 @@ async function runDailyFullSyncMode(mode: string, body: Record<string, unknown>,
     { step: 7, mode: 'coaches', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('coaches', body, dayRange, context) },
     { step: 8, mode: 'venues', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('venues', body, dayRange, context) },
     { step: 9, mode: 'top-players', limit: enrichmentLimit, worker: () => executeFootballEnrichmentMode('top-players', body, dayRange, context) },
-    { step: 10, mode: 'decision-board-ranking', limit: 60, worker: () => runDailyRankingStep(dayRange, context) },
+    { step: 10, mode: 'ai-top10-ranking', limit: 10, worker: () => runDailyRankingStep(dayRange, context) },
   ]
 
   for (const item of dailySteps) {
-    if (context.rateLimited && item.mode !== 'decision-board-ranking') {
+    if (context.rateLimited && item.mode !== 'ai-top10-ranking') {
       const skipped = await logDailyStepSkipped(context, item.step, item.mode)
       steps.push(skipped)
       continue
@@ -1951,7 +1669,7 @@ async function runDailyFullSyncMode(mode: string, body: Record<string, unknown>,
     processed,
     skippedByLimit: 0,
     failures: failed ? steps.filter((step) => step.failed > 0).map((step) => ({ message: `${step.mode}: ${step.message ?? 'failed'}` })) : [],
-    rankedSelectionRows: steps.find((step) => step.mode === 'decision-board-ranking')?.processed ?? 0,
+    rankedSelectionRows: steps.find((step) => step.mode === 'ai-top10-ranking')?.processed ?? 0,
     topSelections: await fetchTopSelectionsDebug(dayRange).catch(() => []),
     endpointCoverage: context.endpoints,
     enrichedMatches: [],
@@ -2009,39 +1727,20 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
 
 async function runDailyRankingStep(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const readinessBeforeRanking = await getRankingReadinessSummary(dayRange)
-  const rankingWrite = await updateDailySelectionRanks(dayRange)
+  const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
   const rankingReadiness = await getRankingReadinessSummary(dayRange)
-  const finalPickRows = await recomputeAiFinalPicks(dayRange, { ...context, limit: 60, mode: 'recompute-ai-final-picks' })
-  const rankedSelectionRows = Number(rankingWrite.rowsSaved ?? 0)
-  const eligibleCandidateCount = Number(rankingWrite.eligibleCandidateCount ?? rankingReadiness.totalFixtures ?? readinessBeforeRanking.totalFixtures ?? rankedSelectionRows)
-  const completion = buildRankingCompletionState({
-    selectedCount: rankedSelectionRows,
-    eligibleCandidateCount,
-    writeFailures: Number(finalPickRows.failed ?? 0),
-    invalidScores: rankingWrite.invalidScores,
-    duplicateRanks: rankingWrite.duplicateRanks,
-    duplicateFixtures: rankingWrite.duplicateFixtures,
-    hardFilterViolations: rankingWrite.hardFilterViolations,
-    finalPickViolations: rankingWrite.finalPickViolations,
-    rankingReadiness,
-  })
+  const finalPickRows = await recomputeAiFinalPicks(dayRange, { ...context, limit: 10, mode: 'recompute-ai-final-picks' })
+  const totalFixtures = Number(rankingReadiness.totalFixtures ?? readinessBeforeRanking.totalFixtures ?? rankedSelectionRows)
+  const readyFixtures = Number(rankingReadiness.ready ?? 0)
+  const partial = totalFixtures > 0 && readyFixtures === 0
   return {
     processed: rankedSelectionRows,
-    totalCandidates: eligibleCandidateCount,
+    totalCandidates: rankedSelectionRows,
     rowsSaved: rankedSelectionRows + Number(finalPickRows.rowsSaved ?? 0),
-    failed: completion.retryable ? Number(finalPickRows.failed ?? 0) : 0,
-    partial: false,
+    failed: Number(finalPickRows.failed ?? 0),
+    partial,
     rankingReadiness,
     aiFinalPickRows: finalPickRows.rowsSaved ?? 0,
-    selectionCompleted: completion.selectionCompleted,
-    selectionHealth: completion.selectionHealth,
-    rankingStatus: completion.rankingStatus,
-    retryable: completion.retryable,
-    retryReasonCode: completion.retryReasonCode,
-    marketReadinessStatus: completion.marketReadinessStatus,
-    bettingReadiness: completion.bettingReadiness,
-    expectedSelectedCount: completion.expectedSelectedCount,
-    invariantFailures: completion.invariantFailures,
   }
 }
 
@@ -2057,13 +1756,6 @@ async function executeFootballEnrichmentMode(mode: string, body: Record<string, 
   if (mode === 'sync-bookmakers') return syncApiFootballBookmakers(context)
   if (mode === 'sync-odds') return syncApiFootballOdds(body, dayRange, context)
   if (mode === 'sync-fixture-odds') return syncApiFootballFixtureOdds(body, dayRange, context)
-  if (mode === 'sync-today-odds') return syncTodayOdds(body, dayRange, context)
-  if (mode === 'sync-daily-top10-odds') return syncDailyTop10Odds(body, dayRange, context)
-  if (mode === 'build-daily-market-candidates') return buildDailyMarketCandidates(body, dayRange)
-  if (mode === 'sync-daily-candidate-odds') return syncDailyCandidateOdds(body, dayRange, context)
-  if (mode === 'finalize-market-ready-candidates') return finalizeMarketReadyCandidates(dayRange, context)
-  if (mode === 'sync-today-odds-finalize') return finalizeTodayOddsSync(dayRange, context)
-  if (mode === 'diagnose-sync-today-odds') return diagnoseSyncTodayOdds(dayRange, context)
   if (mode === 'recompute-ai-final-picks') return recomputeAiFinalPicks(dayRange, context)
   if (mode === 'recompute-ai-final-picks-date') return recomputeAiFinalPicksForSelectionDate(dayRange, context)
   if (mode === 'lock-daily-top10') return lockDailyTop10(dayRange)
@@ -2595,14 +2287,6 @@ function settleResultRow(input: any) {
     if (!['HOME', 'AWAY', 'DRAW'].includes(direction)) return resultVoid('match winner pick is missing direction')
     return resultSettled(direction === result ? 'HIT' : 'MISS', `MATCH_WINNER ${direction} vs result ${result}`)
   }
-  if (market === 'DOUBLE_CHANCE') {
-    const result = homeScore > awayScore ? 'HOME' : homeScore < awayScore ? 'AWAY' : 'DRAW'
-    if (!['1X', '12', 'X2'].includes(direction)) return resultVoid('double chance pick is missing direction')
-    const hit = (direction === '1X' && ['HOME', 'DRAW'].includes(result)) ||
-      (direction === '12' && ['HOME', 'AWAY'].includes(result)) ||
-      (direction === 'X2' && ['DRAW', 'AWAY'].includes(result))
-    return resultSettled(hit ? 'HIT' : 'MISS', `DOUBLE_CHANCE ${direction} vs result ${result}`)
-  }
   if (market === 'OU') {
     if (line === null) return resultVoid('finished OU pick is missing line')
     const total = homeScore + awayScore
@@ -2633,7 +2317,6 @@ function normalizeResultDirection(value: unknown) {
   const text = String(value ?? '').toUpperCase()
   if (text.includes('OVER')) return 'OVER'
   if (text.includes('UNDER')) return 'UNDER'
-  if (text === '1X' || text === '12' || text === 'X2') return text
   if (text.includes('HOME')) return 'HOME'
   if (text.includes('AWAY')) return 'AWAY'
   if (text.includes('DRAW')) return 'DRAW'
@@ -2687,102 +2370,6 @@ class ResultPipelineError extends Error {
   }
 }
 
-class SyncOperationError extends Error {
-  source: string
-  operation: string
-  status: number | null
-  sanitizedMessage: string
-
-  constructor({ source, operation, status = null, message }: { source: string; operation: string; status?: number | null; message: unknown }) {
-    const sanitizedMessage = sanitizeText(message)
-    super(sanitizedMessage)
-    this.name = 'SyncOperationError'
-    this.source = source
-    this.operation = operation
-    this.status = status
-    this.sanitizedMessage = sanitizedMessage
-  }
-}
-
-async function withSyncOperation<T>(source: string, operation: string, worker: () => PromiseLike<T>): Promise<T> {
-  try {
-    return await worker()
-  } catch (error) {
-    throw toSyncOperationError(error, source, operation)
-  }
-}
-
-async function withRetryableSyncOperation<T>(source: string, operation: string, worker: () => PromiseLike<T>, maxRetries = 2): Promise<T> {
-  let lastError: SyncOperationError | null = null
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    try {
-      return await worker()
-    } catch (error) {
-      lastError = toSyncOperationError(error, source, operation)
-      if (attempt >= maxRetries || !isRetryableOperationError(lastError)) throw lastError
-      await sleep(250 * (attempt + 1))
-    }
-  }
-  throw lastError ?? createSyncOperationError({ source, operation, message: 'sync operation failed' })
-}
-
-function createSyncOperationError({ source, operation, status = null, message }: { source: string; operation: string; status?: number | null; message: unknown }) {
-  return new SyncOperationError({ source, operation, status, message })
-}
-
-function toSyncOperationError(error: unknown, source: string, operation: string) {
-  if (error instanceof SyncOperationError) return error
-  const raw = error as any
-  return new SyncOperationError({
-    source: raw?.source ? String(raw.source) : source,
-    operation: raw?.operation ? String(raw.operation) : operation,
-    status: normalizeHttpStatus(raw?.status ?? raw?.statusCode),
-    message: raw?.sanitizedMessage ?? raw?.message ?? raw?.error_description ?? raw?.error ?? String(error ?? 'sync operation failed'),
-  })
-}
-
-function buildOperationFailure(error: SyncOperationError, extra: Record<string, unknown> = {}) {
-  return {
-    ...extra,
-    source: error.source,
-    operation: error.operation,
-    status: error.status,
-    sanitizedMessage: error.sanitizedMessage,
-    message: error.sanitizedMessage,
-  }
-}
-
-function isRetryableOperationError(error: SyncOperationError) {
-  const message = String(error.sanitizedMessage ?? '').toLowerCase()
-  return [408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524].includes(Number(error.status ?? 0)) ||
-    message.includes('timeout') ||
-    message.includes('temporarily') ||
-    message.includes('network') ||
-    message.includes('web server is down') ||
-    message.includes('html error response received')
-}
-
-function throwIfAllOddsFixturesFailed(result: any) {
-  const attempted = Number(result?.oddsAttempted ?? 0)
-  const failed = Number(result?.oddsFailedFixtures ?? result?.failedFixtures ?? result?.failed ?? 0)
-  const failures = Array.isArray(result?.failures) ? result.failures : []
-  if (!attempted || failed < attempted || !failures.length) return
-
-  const first = failures[0] ?? {}
-  const sameInfrastructureFailure = failures.every((failure: any) => (
-    String(failure?.source ?? '') === String(first.source ?? '') &&
-    String(failure?.operation ?? '') === String(first.operation ?? '') &&
-    Number(failure?.status ?? 0) === Number(first.status ?? 0)
-  ))
-  if (!sameInfrastructureFailure) return
-  throw createSyncOperationError({
-    source: String(first.source ?? 'unknown'),
-    operation: String(first.operation ?? 'sync_fixture_odds'),
-    status: normalizeHttpStatus(first.status),
-    message: first.sanitizedMessage ?? first.message ?? 'All odds fixtures failed from the same infrastructure error',
-  })
-}
-
 async function withResultStage<T>(errorStage: string, errorCode: string, worker: () => PromiseLike<T>, provider = 'supabase'): Promise<T> {
   try {
     const result = await worker()
@@ -2810,10 +2397,6 @@ function buildSyncErrorResponse(error: unknown, mode: string, fallbackProvider: 
     errorStage: resultError.errorStage,
     errorMessage: sanitizeText(resultError.message || 'sync failed'),
     errorDetails: resultError.errorDetails,
-    source: resultError.errorDetails.source ?? null,
-    operation: resultError.errorDetails.operation ?? null,
-    status: resultError.errorDetails.status ?? null,
-    sanitizedMessage: resultError.errorDetails.sanitizedMessage ?? sanitizeText(resultError.message || 'sync failed'),
     failures: resultError.failures,
   }
 }
@@ -2842,9 +2425,6 @@ function sanitizeErrorDetails(error: unknown): Record<string, unknown> {
     code: raw?.code ? sanitizeText(raw.code) : null,
     status: raw?.status ?? raw?.statusCode ?? null,
     name: raw?.name ? sanitizeText(raw.name) : null,
-    source: raw?.source ? sanitizeText(raw.source) : null,
-    operation: raw?.operation ? sanitizeText(raw.operation) : null,
-    sanitizedMessage: raw?.sanitizedMessage ? sanitizeText(raw.sanitizedMessage) : sanitizeText(raw?.message ?? String(error ?? 'sync failed')),
   }
 }
 
@@ -2861,7 +2441,6 @@ function sanitizeDiagnosticValue(value: unknown): unknown {
 
 function sanitizeText(value: unknown) {
   let text = String(value ?? '')
-  if (looksLikeHtml(text)) return 'HTML error response received'
   const secretValues = [serviceRoleKey, API_FOOTBALL_KEY, FOOTBALL_DATA_TOKEN, ...secretKeys].filter(Boolean)
   for (const secret of secretValues) {
     text = text.split(secret).join('[masked]')
@@ -2871,20 +2450,6 @@ function sanitizeText(value: unknown) {
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [masked]')
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, 'jwt_[masked]')
     .replace(/(api[_-]?key|apikey|secret|token)=([^&\s]+)/gi, '$1=[masked]')
-}
-
-function looksLikeHtml(value: string) {
-  const text = String(value ?? '').trim().slice(0, 400).toLowerCase()
-  return text.startsWith('<!doctype html') ||
-    text.startsWith('<html') ||
-    text.includes('<body') ||
-    text.includes('</html>') ||
-    text.includes('cloudflare') && /<[^>]+>/.test(text)
-}
-
-function normalizeHttpStatus(value: unknown) {
-  const numeric = Number(value)
-  return Number.isFinite(numeric) && numeric >= 100 && numeric <= 599 ? Math.floor(numeric) : null
 }
 
 function sanitizeProviderName(value: string) {
@@ -3236,1037 +2801,6 @@ async function syncApiFootballFixtureOdds(body: Record<string, unknown>, dayRang
   })
 }
 
-async function syncTodayOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const requestedFixtureId = nullableNumber(body.fixtureId ?? body.apiFixtureId ?? body.api_fixture_id)
-  const offset = Math.max(0, getSyncOffset(body.offset))
-  const skipRecompute = body.skipRecompute !== false
-  const candidates = await withRetryableSyncOperation('supabase', 'load_today_fixtures', () => fetchTodayOddsFixtureCandidates(dayRange))
-  const playable = candidates.rows.filter((match: any) => isTodayOddsPlayableFixture(match))
-  const target = requestedFixtureId
-    ? playable.find((match: any) => Number(match.api_sports_fixture_id ?? 0) === requestedFixtureId) ?? null
-    : playable[offset] ?? null
-  const warnings: Array<string> = []
-
-  if (!skipRecompute) warnings.push('skipRecompute=false ignored; run sync-today-odds-finalize after odds batches')
-  if (!target) {
-    return {
-      status: 'success',
-      processed: 0,
-      totalCandidates: candidates.totalFixtures,
-      totalFetched: candidates.totalFixtures,
-      rowsSaved: 0,
-      failed: 0,
-      skipped: 0,
-      dateKey: dayRange.dateKey,
-      processedFixtures: 0,
-      processedFixtureId: null,
-      offset,
-      nextOffset: null,
-      totalFixtures: candidates.totalFixtures,
-      oddsRowsSaved: 0,
-      oddsRowsInserted: 0,
-      marketsSaved: [],
-      hasAh: false,
-      hasOu: false,
-      partial: false,
-      hasMore: false,
-      warnings: [
-        ...warnings,
-        requestedFixtureId ? `Fixture ${requestedFixtureId} not found in playable Bangkok-date fixtures` : 'No playable fixture found for this offset',
-      ],
-      failures: [],
-      nextRequestExample: { mode: 'sync-today-odds-finalize', selectionDate: dayRange.dateKey },
-    }
-  }
-
-  const result = await withSyncOperation('unknown', 'sync_today_odds_fixture', () => syncOddsForMatch(target, context, { usefulMarketsOnly: true, maxInsertChunkSize: 100 }))
-  if (result.rowsSaved === 0) warnings.push('No odds returned for this fixture')
-  if (result.rowsSaved > 0 && (!result.hasAh || !result.hasOu)) warnings.push('No AH/O-U market returned for this fixture')
-  const nextOffset = requestedFixtureId ? null : offset + 1 < playable.length ? offset + 1 : null
-  const hasMore = nextOffset !== null
-  const partial = context.mode === 'sync-today-odds' ? hasMore || Boolean(result.partial) : Boolean(result.partial)
-
-  return {
-    status: result.failed > 0 ? 'partial_success' : 'success',
-    processed: result.processed,
-    totalCandidates: candidates.totalFixtures,
-    totalFetched: candidates.totalFixtures,
-    rowsSaved: result.rowsSaved,
-    failed: result.failed,
-    skipped: result.empty,
-    dateKey: dayRange.dateKey,
-    processedFixtures: result.processed,
-    processedFixtureId: result.fixtureId,
-    offset,
-    nextOffset,
-    totalFixtures: candidates.totalFixtures,
-    playableFixtures: playable.length,
-    oddsRowsSaved: result.rowsSaved,
-    oddsRowsInserted: result.rowsSaved,
-    marketsSaved: result.marketsSaved ?? [],
-    hasAh: Boolean(result.hasAh),
-    hasOu: Boolean(result.hasOu),
-    partial,
-    hasMore,
-    warnings,
-    failures: result.failure ? [result.failure] : [],
-    nextRequestExample: hasMore
-      ? { mode: 'sync-today-odds', selectionDate: dayRange.dateKey, offset: nextOffset, skipRecompute: true }
-      : { mode: 'sync-today-odds-finalize', selectionDate: dayRange.dateKey },
-  }
-}
-
-async function syncDailyTop10Odds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const selectionDate = dayRange.dateKey
-  const requestedFixtureId = nullableNumber(body.fixtureId ?? body.apiFixtureId ?? body.api_fixture_id)
-  const offset = Math.max(0, getSyncOffset(body.offset))
-  const limit = getPositiveLimit(body.maxFixturesPerRun ?? body.limit, 2, 10)
-  const force = body.force === true
-  const warnings: Array<string> = []
-  const failures: Array<any> = []
-  const processedFixtureIds: Array<number> = []
-  const skippedAlreadyHasOdds: Array<number> = []
-  const skippedFixtureIds: Array<number> = []
-  const seenFixtureIds = new Set<number>()
-  let oddsRowsSaved = 0
-  let failed = 0
-  let emptyFixtures = 0
-  let hasAh = false
-  let hasOu = false
-
-  const lockedTargets = await withRetryableSyncOperation('supabase', 'load_locked_daily_top10_odds_targets', () => fetchLockedDailyTop10OddsTargets(selectionDate))
-  const totalTop10 = lockedTargets.length
-  const requestedTargets = requestedFixtureId
-    ? lockedTargets.filter((target: any) => Number(target.api_sports_fixture_id ?? 0) === requestedFixtureId)
-    : lockedTargets.slice(offset, offset + limit)
-
-  if (requestedFixtureId && !requestedTargets.length) warnings.push(`Fixture ${requestedFixtureId} is not in locked Top10 for ${selectionDate}`)
-
-  const initialCoverage = await fetchUsableTop10OddsCoverage(lockedTargets)
-  for (const target of requestedTargets) {
-    const fixtureId = Number(target.api_sports_fixture_id ?? target.raw?.raw_fixture_id ?? 0)
-    if (!fixtureId) {
-      warnings.push(`Locked Top10 row ${target.selectionId ?? target.id ?? 'unknown'} has no API-Football fixture id`)
-      continue
-    }
-    if (seenFixtureIds.has(fixtureId)) {
-      warnings.push(`Duplicate locked Top10 fixture ${fixtureId} skipped in this request`)
-      skippedFixtureIds.push(fixtureId)
-      continue
-    }
-    seenFixtureIds.add(fixtureId)
-
-    if (!force && initialCoverage.matchIds.has(target.id)) {
-      skippedAlreadyHasOdds.push(fixtureId)
-      skippedFixtureIds.push(fixtureId)
-      continue
-    }
-
-    try {
-      const result = await withSyncOperation('unknown', 'sync_daily_top10_odds_fixture', () => syncOddsForMatch(target, context, { usefulMarketsOnly: true, maxInsertChunkSize: 100 }))
-      processedFixtureIds.push(fixtureId)
-      oddsRowsSaved += Number(result.rowsSaved ?? 0)
-      failed += Number(result.failed ?? 0)
-      emptyFixtures += Number(result.empty ?? 0)
-      hasAh = hasAh || Boolean(result.hasAh)
-      hasOu = hasOu || Boolean(result.hasOu)
-      if (result.skipped || Number(result.empty ?? 0) > 0) skippedFixtureIds.push(fixtureId)
-      if (result.failure) failures.push(result.failure)
-      if (result.rowsSaved === 0 && !result.failure) warnings.push(`No supported odds returned for locked Top10 fixture ${fixtureId}`)
-      if (result.rowsSaved > 0 && (!result.hasAh || !result.hasOu)) warnings.push(`No AH/O-U market returned for locked Top10 fixture ${fixtureId}`)
-    } catch (error) {
-      failed += 1
-      skippedFixtureIds.push(fixtureId)
-      const operationError = toSyncOperationError(error, 'unknown', 'sync_daily_top10_odds_fixture')
-      failures.push(buildOperationFailure(operationError, { fixtureId }))
-    }
-  }
-
-  const finalCoverage = await fetchUsableTop10OddsCoverage(lockedTargets)
-  const consumedCount = requestedTargets.length
-  const nextOffset = requestedFixtureId ? null : offset + consumedCount < totalTop10 ? offset + consumedCount : null
-  const hasMore = nextOffset !== null
-  const skippedAlreadyHasOddsSet = new Set(skippedAlreadyHasOdds)
-  const skippedUnique = [...new Set(skippedFixtureIds)]
-  const processed = processedFixtureIds.length
-  const partial = failed > 0 || hasMore || (processed > 0 && oddsRowsSaved === 0 && emptyFixtures === 0)
-
-  return {
-    status: failed > 0 ? (processed > 0 || oddsRowsSaved > 0 || skippedAlreadyHasOdds.length > 0 ? 'partial_success' : 'failed') : 'success',
-    processed,
-    totalCandidates: totalTop10,
-    totalFetched: totalTop10,
-    rowsSaved: oddsRowsSaved,
-    failed,
-    skipped: skippedUnique.length,
-    partial,
-    selectionDate,
-    totalTop10,
-    processedFixtures: processed,
-    processedFixtureIds,
-    skippedFixtureIds: skippedUnique,
-    skippedAlreadyHasOdds: [...skippedAlreadyHasOddsSet],
-    offset,
-    nextOffset,
-    hasMore,
-    oddsRowsSaved,
-    oddsRowsInserted: oddsRowsSaved,
-    hasAh,
-    hasOu,
-    top10WithOdds: finalCoverage.fixtureIds,
-    top10WithoutOdds: lockedTargets.map((target: any) => Number(target.api_sports_fixture_id ?? 0)).filter((fixtureId: number) => fixtureId && !finalCoverage.fixtureIds.includes(fixtureId)),
-    warnings,
-    failures,
-    nextRequestExample: hasMore
-      ? { mode: 'sync-daily-top10-odds', selectionDate, offset: nextOffset, limit, force }
-      : { mode: 'sync-today-odds-finalize', selectionDate },
-  }
-}
-
-async function buildDailyMarketCandidates(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
-  const selectionDate = dayRange.dateKey
-  const candidateLimit = getPositiveLimit(body.limit, 60, 60)
-  const forceRebuild = body.forceRebuild === true || body.force === true
-  const existing = await fetchDailyMarketCandidateRows(selectionDate)
-  const warnings: Array<string> = []
-
-  if (existing.length && !forceRebuild) {
-    return {
-      status: 'success',
-      processed: 0,
-      totalCandidates: existing.length,
-      rowsSaved: 0,
-      failed: 0,
-      skipped: existing.length,
-      selectionDate,
-      pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-      selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-      currentPhase: 'CANDIDATE_POOL_READY',
-      totalFixtures: existing.length,
-      playableFixtures: existing.length,
-      candidateLimit,
-      candidatesSaved: existing.length,
-      candidatePoolCount: existing.length,
-      candidateCoreCount: Math.min(existing.length, 30),
-      candidateExpandedCount: Math.max(0, Math.min(existing.length - 30, 10)),
-      candidateReserveCount: Math.max(0, existing.length - 40),
-      candidateFixtureIds: existing.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
-      topCandidateSample: existing.slice(0, 5).map(formatDailyMarketCandidateRow),
-      warnings: ['Reused stable daily_market_candidates; pass forceRebuild:true to rebuild'],
-      failures: [],
-    }
-  }
-
-  const matches = await fetchDailyTop10LockCandidates(dayRange)
-  const playable = matches.filter((match: any) =>
-    isPlayableStatusText(match.status_short ?? match.match_status ?? match.status) &&
-    hasStrictDailyFixtureCompleteness(match) &&
-      nullableNumber(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id)
-  )
-  const candidatePool = buildHybridCandidatePool(playable, { selectionDate, limit: candidateLimit })
-  const ranked = candidatePool.candidates.map((candidate: any) => ({
-    match: candidate.match,
-    preSelectionScore: candidate.preRanking.finalScore,
-    candidateTier: candidate.candidateTier,
-    candidateRank: candidate.candidateRank,
-  }))
-
-  const duplicateFixtureIds = findDuplicateNumbers(ranked.map((item: any) => nullableNumber(item.match.api_sports_fixture_id ?? item.match.raw?.raw_fixture_id)))
-  if (duplicateFixtureIds.length) warnings.push(`Duplicate fixture ids removed from candidate pool: ${duplicateFixtureIds.join(', ')}`)
-  const seenFixtureIds = new Set<number>()
-  const rows = ranked
-    .filter((item: any) => {
-      const fixtureId = Number(item.match.api_sports_fixture_id ?? item.match.raw?.raw_fixture_id ?? 0)
-      if (!fixtureId || seenFixtureIds.has(fixtureId)) return false
-      seenFixtureIds.add(fixtureId)
-      return true
-    })
-    .map((item: any, index: number) => ({
-      selection_date: selectionDate,
-      match_id: item.match.id,
-      api_fixture_id: nullableNumber(item.match.api_sports_fixture_id ?? item.match.raw?.raw_fixture_id),
-      candidate_rank: index + 1,
-      pre_selection_score: item.preSelectionScore,
-      market_readiness_status: 'WAITING_MARKET',
-      market_readiness_score: 0,
-      has_usable_ah: false,
-      has_usable_ou: false,
-      has_usable_match_winner: false,
-      odds_rows_count: 0,
-      odds_sync_status: 'PENDING',
-      excluded_reason: null,
-    }))
-
-  if (forceRebuild) {
-    const deleted = await supabase.from('daily_market_candidates').delete().eq('selection_date', selectionDate)
-    if (deleted.error) throw deleted.error
-  }
-  if (rows.length) {
-    const inserted = await supabase.from('daily_market_candidates').insert(rows)
-    if (inserted.error) throw inserted.error
-  }
-
-  return {
-    status: rows.length ? 'success' : 'empty',
-    processed: rows.length,
-    totalCandidates: rows.length,
-    rowsSaved: rows.length,
-    failed: 0,
-    skipped: Math.max(0, playable.length - rows.length),
-    selectionDate,
-    pipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-    selectionAlgorithmVersion: DAILY_SELECTION_ALGORITHM_VERSION,
-    currentPhase: 'CANDIDATE_POOL_READY',
-    totalFixtures: matches.length,
-    playableFixtures: playable.length,
-    candidateLimit,
-    candidatesSaved: rows.length,
-    candidatePoolCount: rows.length,
-    candidateCoreCount: rows.filter((row: any) => Number(row.candidate_rank ?? 0) <= 30).length,
-    candidateExpandedCount: rows.filter((row: any) => Number(row.candidate_rank ?? 0) > 30 && Number(row.candidate_rank ?? 0) <= 40).length,
-    candidateReserveCount: rows.filter((row: any) => Number(row.candidate_rank ?? 0) > 40).length,
-    candidateFixtureIds: rows.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean),
-    topCandidateSample: rows.slice(0, 5).map(formatDailyMarketCandidateRow),
-    warnings,
-    failures: [],
-  }
-}
-
-async function syncDailyCandidateOdds(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const selectionDate = dayRange.dateKey
-  const requestedFixtureId = nullableNumber(body.fixtureId ?? body.apiFixtureId ?? body.api_fixture_id)
-  const offset = Math.max(0, getSyncOffset(body.offset))
-  const limit = getPositiveLimit(body.maxFixturesPerRun ?? body.limit, 2, 10)
-  const force = body.force === true
-  const candidates = await fetchDailyMarketCandidateTargets(selectionDate)
-  if (!candidates.length) throw new Error(`daily_market_candidates is empty for ${selectionDate}; run build-daily-market-candidates first`)
-
-  const targets = requestedFixtureId
-    ? candidates.filter((target: any) => Number(target.api_sports_fixture_id ?? 0) === requestedFixtureId)
-    : candidates.slice(offset, offset + limit)
-  const warnings: Array<string> = []
-  warnings.push(...await findDuplicateFootballMatchWarnings(targets))
-  const initialCoverage = await fetchUsableOddsCoverageForTargets(targets)
-  const failures: Array<any> = []
-  const processedFixtureIds: Array<number> = []
-  const skippedAlreadyHasOdds: Array<number> = []
-  const skippedFixtureIds: Array<number> = []
-  const seenFixtureIds = new Set<number>()
-  let oddsRowsSaved = 0
-  let failed = 0
-  let emptyFixtures = 0
-  let hasAh = false
-  let hasOu = false
-  let hasMatchWinner = false
-
-  if (requestedFixtureId && !targets.length) warnings.push(`Fixture ${requestedFixtureId} is not in daily_market_candidates for ${selectionDate}`)
-
-  for (const target of targets) {
-    const canonicalMatchId = getCanonicalCandidateMatchId(target)
-    const fixtureId = Number(target.api_sports_fixture_id ?? target.raw?.raw_fixture_id ?? 0)
-    if (!fixtureId) {
-      warnings.push(`Candidate ${target.candidateId ?? target.id ?? 'unknown'} has no API-Football fixture id`)
-      continue
-    }
-    if (seenFixtureIds.has(fixtureId)) {
-      warnings.push(`Duplicate candidate fixture ${fixtureId} skipped in this request`)
-      skippedFixtureIds.push(fixtureId)
-      continue
-    }
-    seenFixtureIds.add(fixtureId)
-
-    const existingCoverage = initialCoverage.byMatchId.get(canonicalMatchId)
-    if (!force && classifyCandidateMarketReadiness(existingCoverage) === 'READY') {
-      skippedAlreadyHasOdds.push(fixtureId)
-      skippedFixtureIds.push(fixtureId)
-      await updateDailyMarketCandidateFromCoverage(target.candidateId, existingCoverage, 'SKIPPED_ALREADY_READY', {
-        selectionDate,
-        matchId: canonicalMatchId,
-      })
-      continue
-    }
-
-    try {
-      const result = await withSyncOperation('unknown', 'sync_daily_candidate_odds_fixture', () => syncOddsForMatch(target, context, {
-        usefulMarketsOnly: true,
-        maxInsertChunkSize: 100,
-        canonicalMatchId,
-      }))
-      processedFixtureIds.push(fixtureId)
-      oddsRowsSaved += Number(result.rowsSaved ?? 0)
-      failed += Number(result.failed ?? 0)
-      emptyFixtures += Number(result.empty ?? 0)
-      hasAh = hasAh || Boolean(result.hasAh)
-      hasOu = hasOu || Boolean(result.hasOu)
-      hasMatchWinner = hasMatchWinner || Boolean(result.marketsSaved?.includes('MATCH_WINNER'))
-      if (result.skipped || Number(result.empty ?? 0) > 0) skippedFixtureIds.push(fixtureId)
-      if (result.failure) failures.push(result.failure)
-      const coverage = await fetchUsableOddsCoverageForTargets([target])
-      await updateDailyMarketCandidateFromCoverage(target.candidateId, coverage.byMatchId.get(canonicalMatchId), result.failed ? 'FAILED' : null, {
-        selectionDate,
-        matchId: canonicalMatchId,
-      })
-      if (result.rowsSaved === 0 && !result.failure) warnings.push(`No supported odds returned for candidate fixture ${fixtureId}`)
-    } catch (error) {
-      failed += 1
-      skippedFixtureIds.push(fixtureId)
-      const operationError = toSyncOperationError(error, 'unknown', 'sync_daily_candidate_odds_fixture')
-      failures.push(buildOperationFailure(operationError, { fixtureId }))
-      await updateDailyMarketCandidatePatch(target.candidateId, { odds_sync_status: 'FAILED' }, {
-        selectionDate,
-        matchId: canonicalMatchId,
-      }).catch(() => {})
-    }
-  }
-
-  const refreshedCandidates = await fetchDailyMarketCandidateRows(selectionDate)
-  const postSyncState = summarizeDailyMarketCandidateRows(refreshedCandidates)
-  const consumedCount = targets.length
-  const nextOffset = requestedFixtureId ? null : offset + consumedCount < candidates.length ? offset + consumedCount : null
-
-  return {
-    status: failed > 0 ? (processedFixtureIds.length ? 'partial_success' : 'failed') : 'success',
-    processed: processedFixtureIds.length,
-    totalCandidates: candidates.length,
-    totalFetched: candidates.length,
-    rowsSaved: oddsRowsSaved,
-    failed,
-    skipped: [...new Set(skippedFixtureIds)].length,
-    partial: failed > 0 || nextOffset !== null,
-    selectionDate,
-    processedFixtureIds,
-    skippedFixtureIds: [...new Set(skippedFixtureIds)],
-    skippedAlreadyHasOdds: [...new Set(skippedAlreadyHasOdds)],
-    oddsRowsSaved,
-    oddsRowsInserted: oddsRowsSaved,
-    hasAh,
-    hasOu,
-    hasMatchWinner,
-    candidateWithOdds: postSyncState.candidateWithOdds,
-    candidateWithoutOdds: postSyncState.candidateWithoutOdds,
-    readyCandidateCount: postSyncState.readyCandidateCount,
-    candidateReadyCount: postSyncState.readyCandidateCount,
-    nextOffset,
-    hasMore: nextOffset !== null,
-    warnings,
-    failures,
-  }
-}
-
-async function finalizeMarketReadyCandidates(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const selectionDate = dayRange.dateKey
-  const candidates = await fetchDailyMarketCandidateTargets(selectionDate)
-  if (!candidates.length) throw new Error(`daily_market_candidates is empty for ${selectionDate}; run build-daily-market-candidates first`)
-  const coverage = await fetchUsableOddsCoverageForTargets(candidates)
-  let updated = 0
-  for (const candidate of candidates) {
-    const canonicalMatchId = getCanonicalCandidateMatchId(candidate)
-    await updateDailyMarketCandidateFromCoverage(candidate.candidateId, coverage.byMatchId.get(canonicalMatchId), null, {
-      selectionDate,
-      matchId: canonicalMatchId,
-    })
-    updated += 1
-  }
-  const finalPicks = await recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 50, mode: 'recompute-ai-final-picks-date' })
-  const refreshed = await fetchDailyMarketCandidateRows(selectionDate)
-  const counts = countCandidateReadiness(refreshed)
-  return {
-    status: Number(finalPicks.failed ?? 0) > 0 ? 'partial_success' : 'success',
-    processed: updated,
-    totalCandidates: candidates.length,
-    rowsSaved: updated + Number(finalPicks.rowsSaved ?? 0),
-    failed: Number(finalPicks.failed ?? 0),
-    skipped: 0,
-    selectionDate,
-    candidatesTotal: candidates.length,
-    readyCandidates: counts.READY,
-    partialCandidates: counts.PARTIAL,
-    waitingMarketCandidates: counts.WAITING_MARKET,
-    noMarketDataCandidates: counts.NO_MARKET_DATA,
-    analysisRowsUpdated: finalPicks.rowsSaved ?? 0,
-    warnings: counts.READY === 0 ? ['READY count is 0; strict picks may produce WATCH/WAITING_MARKET only'] : [],
-    failures: finalPicks.failures ?? [],
-  }
-}
-
-async function finalizeTodayOddsSync(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const rankedSelectionRows = await withRetryableSyncOperation('database', 'recompute_ranking', () => updateDailySelectionRanks(dayRange))
-  const finalPickRows = await withRetryableSyncOperation('database', 'recompute_ai_final_picks', () => recomputeAiFinalPicksForSelectionDate(dayRange, { ...context, limit: 60, mode: 'recompute-ai-final-picks-date' }))
-  return {
-    status: finalPickRows.failed > 0 ? 'partial_success' : 'success',
-    processed: rankedSelectionRows + Number(finalPickRows.processed ?? 0),
-    totalCandidates: rankedSelectionRows,
-    totalFetched: rankedSelectionRows,
-    rowsSaved: rankedSelectionRows + Number(finalPickRows.rowsSaved ?? 0),
-    failed: Number(finalPickRows.failed ?? 0),
-    skipped: 0,
-    dateKey: dayRange.dateKey,
-    rankedSelectionRows,
-    aiFinalPickRows: finalPickRows.rowsSaved ?? 0,
-    failures: finalPickRows.failures ?? [],
-    partial: Number(finalPickRows.failed ?? 0) > 0,
-  }
-}
-
-async function diagnoseSyncTodayOdds(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
-  const candidates = await withSyncOperation('supabase', 'load_today_fixtures', () => fetchDbMatchCandidates(dayRange, 200, true))
-  const oddsSummary = await withSyncOperation('supabase', 'count_today_odds', () => getDailyOddsSummary(dayRange))
-  const dailyMarketCandidateRows = await fetchDailyMarketCandidateRows(dayRange.dateKey).catch(() => [])
-  const fixtures = candidates.rows ?? []
-  const playableFixtures = fixtures.filter((match: any) => !isResultFinishedStatus(match.status ?? match.status_short ?? match.match_status))
-  const finishedFixtures = fixtures.filter((match: any) => isResultFinishedStatus(match.status ?? match.status_short ?? match.match_status))
-  const fixture = playableFixtures.find((match: any) => Number(match.api_sports_fixture_id ?? 0) > 0) ?? fixtures.find((match: any) => Number(match.api_sports_fixture_id ?? 0) > 0) ?? null
-  const apiFixtureId = Number(fixture?.api_sports_fixture_id ?? 0) || null
-  let apiFootballReachable = false
-  let apiFootballStatus: number | null = null
-  let apiFootballOddsItems = 0
-  let apiFootballMarketsSample: Array<string> = []
-  let apiFootballError: any = null
-
-  if (apiFixtureId) {
-    try {
-      const raw = await withSyncOperation('api-football', 'diagnose_fetch_api_football_odds', () => apiFootballGet('/odds', { fixture: apiFixtureId }))
-      apiFootballReachable = true
-      apiFootballStatus = 200
-      apiFootballOddsItems = Array.isArray(raw?.response) ? raw.response.length : 0
-      apiFootballMarketsSample = getMarketNamesSample(raw?.response ?? [])
-    } catch (error) {
-      const rawOperationError = toSyncOperationError(error, 'api-football', 'diagnose_fetch_api_football_odds')
-      const operationError = createSyncOperationError({ source: rawOperationError.source, operation: 'diagnose_fetch_api_football_odds', status: rawOperationError.status, message: rawOperationError.sanitizedMessage })
-      apiFootballReachable = false
-      apiFootballStatus = operationError.status
-      apiFootballError = buildOperationFailure(operationError)
-    }
-  }
-
-  const likelySource = !supabaseUrl || !serviceRoleKey
-    ? 'supabase'
-    : !API_FOOTBALL_KEY
-      ? 'api-football'
-      : apiFootballError
-        ? apiFootballError.source
-        : oddsSummary.oddsRows === 0
-          ? 'provider-or-not-yet-synced'
-          : 'unknown'
-  const candidateCounts = countCandidateReadiness(dailyMarketCandidateRows)
-  const candidateWithOddsFixtureIds = dailyMarketCandidateRows
-    .filter((row: any) => Boolean(row.has_usable_ah || row.has_usable_ou || row.has_usable_match_winner || Number(row.odds_rows_count ?? 0) > 0))
-    .map((row: any) => Number(row.api_fixture_id ?? 0))
-    .filter(Boolean)
-  const candidateWithoutOddsFixtureIds = dailyMarketCandidateRows
-    .filter((row: any) => !candidateWithOddsFixtureIds.includes(Number(row.api_fixture_id ?? 0)))
-    .map((row: any) => Number(row.api_fixture_id ?? 0))
-    .filter(Boolean)
-  const readyCandidateFixtureIds = dailyMarketCandidateRows
-    .filter((row: any) => String(row.market_readiness_status ?? '').toUpperCase() === 'READY')
-    .map((row: any) => Number(row.api_fixture_id ?? 0))
-    .filter(Boolean)
-  const likelyRootCause = getDailyOddsLikelyRootCause({
-    fixturesCount: oddsSummary.totalFixtures,
-    todayOddsRows: oddsSummary.oddsRows,
-    candidateCount: dailyMarketCandidateRows.length,
-    readyCandidateCount: candidateCounts.READY,
-    candidateWithoutOddsCount: candidateWithoutOddsFixtureIds.length,
-  })
-
-  return {
-    status: 'success',
-    processed: 0,
-    rowsSaved: 0,
-    failed: 0,
-    skipped: 0,
-    totalCandidates: candidates.totalCandidates,
-    mode: 'diagnose-sync-today-odds',
-    dateKey: dayRange.dateKey,
-    fixturesCount: oddsSummary.totalFixtures,
-    playableCount: playableFixtures.length,
-    finishedCount: finishedFixtures.length,
-    sampleFixtureIds: fixtures.slice(0, 2).map((match: any) => Number(match.api_sports_fixture_id ?? 0)).filter(Boolean),
-    todayOddsRows: oddsSummary.oddsRows,
-    dailyMarketCandidates: dailyMarketCandidateRows.length,
-    candidateReadyCount: candidateCounts.READY,
-    candidatePartialCount: candidateCounts.PARTIAL,
-    candidateWaitingMarketCount: candidateCounts.WAITING_MARKET,
-    candidateNoMarketDataCount: candidateCounts.NO_MARKET_DATA,
-    candidateWithOddsFixtureIds,
-    candidateWithoutOddsFixtureIds,
-    readyCandidateFixtureIds,
-    env: {
-      supabaseUrlPresent: Boolean(supabaseUrl),
-      supabaseServiceKeyPresent: Boolean(serviceRoleKey),
-      apiFootballKeyPresent: Boolean(API_FOOTBALL_KEY),
-    },
-    apiFootballReachable,
-    apiFootballStatus,
-    apiFootballOddsItems,
-    apiFootballMarketsSample,
-    apiFootballError,
-    likelySource,
-    likelyRootCause,
-  }
-}
-
-function getDailyOddsLikelyRootCause(input: { fixturesCount: number; todayOddsRows: number; candidateCount: number; readyCandidateCount: number; candidateWithoutOddsCount: number }) {
-  if (!input.fixturesCount) return 'UNKNOWN'
-  if (!input.candidateCount) return 'DAILY_MARKET_CANDIDATES_NOT_BUILT'
-  if (input.readyCandidateCount === 0 && input.candidateWithoutOddsCount > 0) return 'CANDIDATE_ODDS_SYNC_INCOMPLETE_OR_PROVIDER_EMPTY'
-  if (input.readyCandidateCount > 0) return 'READY_CANDIDATES_AVAILABLE'
-  if (input.todayOddsRows > 0) return 'UNKNOWN'
-  return 'ODDS_SYNC_NOT_RUN_FOR_TODAY'
-}
-
-async function fetchTodayOddsFixtureCandidates(dayRange: ReturnType<typeof getBangkokDayRange>) {
-  const result = await supabase
-    .from('football_matches')
-    .select(`
-      id,
-      api_sports_fixture_id,
-      kickoff_at,
-      status,
-      status_short,
-      match_status,
-      raw
-    `, { count: 'exact' })
-    .gte('kickoff_at', dayRange.startUtc)
-    .lt('kickoff_at', dayRange.endUtc)
-    .not('api_sports_fixture_id', 'is', null)
-    .order('kickoff_at', { ascending: true })
-    .limit(1000)
-
-  if (result.error) throw result.error
-  const rows = result.data ?? []
-  return { rows, totalFixtures: result.count ?? rows.length }
-}
-
-async function fetchLockedDailyTop10OddsTargets(selectionDate: string) {
-  const selections = await supabase
-    .from('daily_top10_selections')
-    .select('id, rank, match_id, api_fixture_id, selection_score')
-    .eq('selection_date', selectionDate)
-    .order('rank', { ascending: true })
-    .order('id', { ascending: true })
-
-  if (selections.error) throw selections.error
-  const rows = selections.data ?? []
-  const matchIds = [...new Set(rows.map((row: any) => row.match_id).filter(Boolean))]
-  if (!matchIds.length) return []
-
-  const matches = await supabase
-    .from('football_matches')
-    .select(`
-      id,
-      api_sports_fixture_id,
-      kickoff_at,
-      status,
-      status_short,
-      match_status,
-      raw,
-      analysis:match_analysis(id, match_id, final_rank, ranking_score, confidence_score, recommendation, risk_level, raw)
-    `)
-    .in('id', matchIds)
-
-  if (matches.error) throw matches.error
-  const matchById = new Map((matches.data ?? []).map((match: any) => [match.id, match]))
-  const seenFixtureIds = new Set<number>()
-
-  return rows
-    .map((selection: any, selectionOrder: number) => {
-      const match = matchById.get(selection.match_id)
-      const fixtureId = nullableNumber(selection.api_fixture_id ?? match?.api_sports_fixture_id ?? match?.raw?.raw_fixture_id)
-      if (!match || !fixtureId) return null
-      const analysis = getAnalysis(match)
-      return {
-        ...match,
-        api_sports_fixture_id: fixtureId,
-        selectionId: selection.id,
-        selectionRank: nullableNumber(selection.rank),
-        selectionOrder,
-        finalRank: nullableNumber(analysis?.final_rank ?? selection.rank),
-      }
-    })
-    .filter(Boolean)
-    .sort(compareLockedDailyTop10OddsTarget)
-    .filter((target: any) => {
-      const fixtureId = Number(target.api_sports_fixture_id ?? 0)
-      if (!fixtureId || seenFixtureIds.has(fixtureId)) return false
-      seenFixtureIds.add(fixtureId)
-      return true
-    })
-}
-
-function compareLockedDailyTop10OddsTarget(a: any, b: any) {
-  const finalRankDiff = numericSortValue(a.finalRank, 999) - numericSortValue(b.finalRank, 999)
-  if (finalRankDiff !== 0) return finalRankDiff
-  const rankDiff = numericSortValue(a.selectionRank, 999) - numericSortValue(b.selectionRank, 999)
-  if (rankDiff !== 0) return rankDiff
-  return numericSortValue(a.selectionOrder, 999) - numericSortValue(b.selectionOrder, 999)
-}
-
-async function fetchUsableTop10OddsCoverage(targets: Array<any>) {
-  const matchIds = [...new Set(targets.map((target: any) => target.id).filter(Boolean))]
-  if (!matchIds.length) return { matchIds: new Set<string>(), fixtureIds: [] as Array<number> }
-
-  const result = await supabase
-    .from('football_match_odds')
-    .select('match_id, api_fixture_id, market_focus, market_name')
-    .in('match_id', matchIds)
-
-  if (result.error) {
-    if (isMissingColumnError(result.error)) return { matchIds: new Set<string>(), fixtureIds: [] as Array<number> }
-    throw result.error
-  }
-
-  const targetByMatchId = new Map(targets.map((target: any) => [target.id, target]))
-  const matchIdsWithOdds = new Set<string>()
-  const fixtureIdsWithOdds = new Set<number>()
-  for (const row of result.data ?? []) {
-    if (!row.match_id || !isUsableFullTimeOddsRow(row)) continue
-    matchIdsWithOdds.add(row.match_id)
-    const target = targetByMatchId.get(row.match_id)
-    const fixtureId = nullableNumber(row.api_fixture_id ?? target?.api_sports_fixture_id)
-    if (fixtureId) fixtureIdsWithOdds.add(fixtureId)
-  }
-
-  return {
-    matchIds: matchIdsWithOdds,
-    fixtureIds: [...fixtureIdsWithOdds],
-  }
-}
-
-function isSupportedFullTimeOddsRow(row: any) {
-  const marketName = row.market_name ?? row.market_focus
-  const marketFocus = normalizeMarketFocus(row.market_focus ?? row.market_name)
-  return isSupportedFullTimeOddsMarket(marketName, {
-    value: row.selection ?? row.raw?.selection ?? row.raw?.value,
-    line: row.line ?? row.raw?.line,
-  }, marketFocus)
-}
-
-function isUsableFullTimeOddsRow(row: any) {
-  return isSupportedFullTimeOddsRow(row)
-}
-
-async function fetchDailyMarketCandidateRows(selectionDate: string) {
-  const result = await supabase
-    .from('daily_market_candidates')
-    .select('*')
-    .eq('selection_date', selectionDate)
-    .order('candidate_rank', { ascending: true })
-  if (result.error) {
-    if (isMissingTableError(result.error)) throw new Error('Missing daily_market_candidates table. Apply migration 20260712_add_daily_market_candidates.sql before running the market-first daily pipeline.')
-    throw result.error
-  }
-  return result.data ?? []
-}
-
-async function fetchDailyMarketCandidateTargets(selectionDate: string) {
-  const rows = await fetchDailyMarketCandidateRows(selectionDate)
-  const matchIds = [...new Set(rows.map((row: any) => row.match_id).filter(Boolean))]
-  if (!matchIds.length) return []
-  const matches = await supabase
-    .from('football_matches')
-    .select(`
-      id,
-      api_sports_fixture_id,
-      kickoff_at,
-      status,
-      status_short,
-      status_long,
-      match_status,
-      odds_updated_at,
-      has_market_data,
-      has_fixture_detail,
-      data_readiness_status,
-      raw,
-      league:football_leagues(id, api_league_id, name, country, priority),
-      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
-      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
-    `)
-    .in('id', matchIds)
-  if (matches.error) throw matches.error
-  const matchById = new Map((matches.data ?? []).map((match: any) => [match.id, match]))
-  const seenFixtureIds = new Set<number>()
-  return rows
-    .map((candidate: any) => {
-      const canonicalMatchId = String(candidate.match_id ?? '').trim()
-      if (!canonicalMatchId) throw new Error(`daily_market_candidates row ${candidate.id ?? 'unknown'} has no canonical match_id`)
-      const match = matchById.get(canonicalMatchId)
-      if (!match) throw new Error(`daily_market_candidates row ${candidate.id ?? 'unknown'} references missing football_matches.id ${canonicalMatchId}`)
-      const fixtureId = nullableNumber(candidate.api_fixture_id ?? match.api_sports_fixture_id ?? match.raw?.raw_fixture_id)
-      if (!fixtureId || seenFixtureIds.has(fixtureId)) return null
-      seenFixtureIds.add(fixtureId)
-      return {
-        ...match,
-        id: canonicalMatchId,
-        canonicalMatchId,
-        api_sports_fixture_id: fixtureId,
-        footballMatchApiFixtureId: nullableNumber(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id),
-        candidateId: candidate.id,
-        candidate,
-      }
-    })
-    .filter(Boolean)
-    .sort((a: any, b: any) => numericSortValue(a.candidate?.candidate_rank, 999) - numericSortValue(b.candidate?.candidate_rank, 999))
-}
-
-function getCanonicalCandidateMatchId(target: any) {
-  const canonicalMatchId = String(target?.canonicalMatchId ?? target?.candidate?.match_id ?? '').trim()
-  if (!canonicalMatchId) throw new Error(`Candidate ${target?.candidateId ?? target?.candidate?.id ?? 'unknown'} has no canonical match_id`)
-  if (target?.id && String(target.id) !== canonicalMatchId) {
-    throw new Error(`Candidate identity mismatch: candidate.match_id=${canonicalMatchId}, football_matches.id=${target.id}`)
-  }
-  return canonicalMatchId
-}
-
-async function findDuplicateFootballMatchWarnings(targets: Array<any>) {
-  const fixtureIds = [...new Set(targets.map((target: any) => nullableNumber(target.api_sports_fixture_id)).filter((value): value is number => value !== null))]
-  if (!fixtureIds.length) return [] as Array<string>
-  const result = await supabase
-    .from('football_matches')
-    .select('id, api_fixture_id, api_sports_fixture_id')
-    .or(`api_sports_fixture_id.in.(${fixtureIds.join(',')}),api_fixture_id.in.(${fixtureIds.join(',')})`)
-  if (result.error) throw result.error
-  const matchIdsByFixtureId = new Map<number, Array<string>>()
-  const requestedFixtureIds = new Set(fixtureIds)
-  for (const row of result.data ?? []) {
-    if (!row.id) continue
-    const rowFixtureIds = [...new Set([nullableNumber(row.api_sports_fixture_id), nullableNumber(row.api_fixture_id)].filter((value): value is number => value !== null && requestedFixtureIds.has(value)))]
-    for (const fixtureId of rowFixtureIds) {
-      const ids = matchIdsByFixtureId.get(fixtureId) ?? []
-      ids.push(String(row.id))
-      matchIdsByFixtureId.set(fixtureId, ids)
-    }
-  }
-  return targets.flatMap((target: any) => {
-    const fixtureId = nullableNumber(target.api_sports_fixture_id)
-    const matchIds = fixtureId ? [...new Set(matchIdsByFixtureId.get(fixtureId) ?? [])] : []
-    if (!fixtureId) return []
-    const warnings: Array<string> = []
-    if (target.footballMatchApiFixtureId && Number(target.footballMatchApiFixtureId) !== fixtureId) {
-      warnings.push(`Candidate provider identity mismatch for match_id ${getCanonicalCandidateMatchId(target)}: candidate api_fixture_id=${fixtureId}, football_matches api_fixture_id=${target.footballMatchApiFixtureId}; using candidate api_fixture_id for provider lookup`)
-    }
-    if (matchIds.length > 1) warnings.push(`Duplicate football_matches rows for api_fixture_id ${fixtureId}: ${matchIds.join(', ')}; using candidate.match_id ${getCanonicalCandidateMatchId(target)}`)
-    return warnings
-  })
-}
-
-function buildPreSelectionScore(match: any) {
-  const analysis = getAnalysis(match)
-  const fixturePriority = getFixtureSyncPriority({
-    league: { name: match.league?.name, country: match.league?.country, id: match.league?.api_league_id },
-    homeTeam: { name: match.homeTeam?.name },
-    awayTeam: { name: match.awayTeam?.name },
-  })
-  const leagueQuality = normalizeScore(analysis?.league_quality_score ?? fixturePriority.leagueQualityScore ?? match.league?.priority ?? 50)
-  const teamMetadata = Number(Boolean(match.homeTeam?.api_team_id)) * 8 + Number(Boolean(match.awayTeam?.api_team_id)) * 8
-  const fixtureIdScore = nullableNumber(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id) ? 12 : -40
-  const detailScore = Number(Boolean(match.has_fixture_detail)) * 8
-  const readiness = String(match.data_readiness_status ?? '').toUpperCase()
-  const readinessScore = readiness === 'READY' ? 10 : readiness === 'PARTIAL' ? 6 : 2
-  return normalizeScore(leagueQuality * 0.55 + fixturePriority.syncPriorityScore * 0.25 + teamMetadata + fixtureIdScore + detailScore + readinessScore)
-}
-
-function formatDailyMarketCandidateRow(row: any) {
-  return {
-    matchId: row.match_id,
-    apiFixtureId: row.api_fixture_id,
-    candidateRank: row.candidate_rank,
-    preSelectionScore: row.pre_selection_score,
-    marketReadinessStatus: row.market_readiness_status,
-    hasUsableAh: Boolean(row.has_usable_ah),
-    hasUsableOu: Boolean(row.has_usable_ou),
-    hasUsableMatchWinner: Boolean(row.has_usable_match_winner),
-    oddsRowsCount: row.odds_rows_count ?? 0,
-  }
-}
-
-function findDuplicateNumbers(values: Array<number | null>) {
-  const seen = new Set<number>()
-  const duplicates = new Set<number>()
-  for (const value of values) {
-    if (!value) continue
-    if (seen.has(value)) duplicates.add(value)
-    else seen.add(value)
-  }
-  return [...duplicates]
-}
-
-async function fetchUsableOddsCoverageForTargets(targets: Array<any>) {
-  const matchIds = [...new Set(targets.map((target: any) => getCanonicalCandidateMatchId(target)))]
-  if (!matchIds.length) return { byMatchId: new Map<string, any>(), fixtureIds: [] as Array<number> }
-  const rows: Array<any> = []
-  const pageSize = 1000
-  for (let from = 0; ; from += pageSize) {
-    const result = await supabase
-      .from('football_match_odds')
-      .select('id, match_id, api_fixture_id, market_focus, market_name, line, selection, price, is_latest')
-      .in('match_id', matchIds)
-      .eq('is_latest', true)
-      .order('id', { ascending: true })
-      .range(from, from + pageSize - 1)
-    if (result.error) {
-      if (isMissingColumnError(result.error)) return { byMatchId: new Map<string, any>(), fixtureIds: [] as Array<number> }
-      throw result.error
-    }
-    const page = result.data ?? []
-    rows.push(...page)
-    if (page.length < pageSize) break
-  }
-
-  const targetByMatchId = new Map(targets.map((target: any) => [getCanonicalCandidateMatchId(target), target]))
-  const byMatchId = new Map<string, any>()
-  for (const row of rows) {
-    if (!row.match_id || !isSupportedFullTimeOddsRow(row)) continue
-    const current = byMatchId.get(row.match_id) ?? { matchId: row.match_id, fixtureId: nullableNumber(row.api_fixture_id ?? targetByMatchId.get(row.match_id)?.api_sports_fixture_id), rows: 0, hasAh: false, hasOu: false, hasMatchWinner: false }
-    const focus = normalizeMarketFocus(row.market_focus ?? row.market_name)
-    current.rows += 1
-    if (focus === 'AH') current.hasAh = true
-    if (focus === 'OU') current.hasOu = true
-    if (focus === 'MATCH_WINNER') current.hasMatchWinner = true
-    current.usable = current.hasAh || current.hasOu || current.hasMatchWinner
-    byMatchId.set(row.match_id, current)
-  }
-  return {
-    byMatchId,
-    fixtureIds: [...new Set([...byMatchId.values()].map((item: any) => Number(item.fixtureId ?? 0)).filter(Boolean))],
-  }
-}
-
-function summarizeCandidateCoverage(targets: Array<any>, coverage: { byMatchId: Map<string, any> }) {
-  const summary: Record<string, number> = { READY: 0, PARTIAL: 0, WAITING_MARKET: 0, NO_MARKET_DATA: 0 }
-  for (const target of targets) {
-    const status = classifyCandidateMarketReadiness(coverage.byMatchId.get(target.id))
-    summary[status] += 1
-  }
-  return summary
-}
-
-function countCandidateReadiness(rows: Array<any>) {
-  const summary: Record<string, number> = { READY: 0, PARTIAL: 0, WAITING_MARKET: 0, NO_MARKET_DATA: 0 }
-  for (const row of rows) {
-    const status = String(row.market_readiness_status ?? 'WAITING_MARKET').toUpperCase()
-    if (status in summary) summary[status] += 1
-  }
-  return summary
-}
-
-function summarizeDailyMarketCandidateRows(rows: Array<any>) {
-  const candidateWithOdds: Array<number> = []
-  const candidateWithoutOdds: Array<number> = []
-  const seenFixtureIds = new Set<number>()
-  let readyCandidateCount = 0
-  for (const row of rows) {
-    const fixtureId = Number(row.api_fixture_id ?? 0)
-    if (!fixtureId || seenFixtureIds.has(fixtureId)) continue
-    seenFixtureIds.add(fixtureId)
-    const hasSupportedOdds = Boolean(row.has_usable_ah || row.has_usable_ou || row.has_usable_match_winner || Number(row.odds_rows_count ?? 0) > 0)
-    if (hasSupportedOdds) candidateWithOdds.push(fixtureId)
-    else candidateWithoutOdds.push(fixtureId)
-    if (String(row.market_readiness_status ?? '').toUpperCase() === 'READY') readyCandidateCount += 1
-  }
-  return {
-    candidateWithOdds,
-    candidateWithoutOdds,
-    readyCandidateCount,
-  }
-}
-
-function classifyCandidateMarketReadiness(coverage: any) {
-  if (!coverage || Number(coverage.rows ?? 0) <= 0) return 'NO_MARKET_DATA'
-  if (coverage.hasAh || coverage.hasOu || coverage.hasMatchWinner || coverage.hasDoubleChance) return 'READY'
-  return 'PARTIAL'
-}
-
-function candidateMarketReadinessScore(coverage: any) {
-  if (!coverage || Number(coverage.rows ?? 0) <= 0) return 0
-  return normalizeScore(Number(coverage.hasAh) * 35 + Number(coverage.hasOu) * 35 + Number(coverage.hasMatchWinner) * 20 + Number(coverage.hasDoubleChance) * 20)
-}
-
-async function updateDailyMarketCandidateFromCoverage(
-  candidateId: string,
-  coverage: any,
-  overrideStatus: string | null,
-  identity: { selectionDate: string; matchId: string },
-) {
-  const readiness = classifyCandidateMarketReadiness(coverage)
-  const status = overrideStatus ?? readiness
-  return updateDailyMarketCandidatePatch(candidateId, {
-    market_readiness_status: readiness,
-    market_readiness_score: candidateMarketReadinessScore(coverage),
-    has_usable_ah: Boolean(coverage?.hasAh),
-    has_usable_ou: Boolean(coverage?.hasOu),
-    has_usable_match_winner: Boolean(coverage?.hasMatchWinner),
-    has_usable_double_chance: Boolean(coverage?.hasDoubleChance),
-    has_usable_correct_score: Boolean(coverage?.hasCorrectScore),
-    odds_rows_count: Number(coverage?.rows ?? 0),
-    odds_synced_at: new Date().toISOString(),
-    odds_sync_status: status,
-  }, identity)
-}
-
-async function updateDailyMarketCandidatePatch(
-  candidateId: string,
-  patch: Record<string, unknown>,
-  identity: { selectionDate: string; matchId: string },
-) {
-  if (!candidateId) throw new Error('Cannot update daily_market_candidates without candidate id')
-  if (!identity?.selectionDate || !identity?.matchId) throw new Error(`Cannot update daily_market_candidates ${candidateId} without canonical identity`)
-  const result = await supabase
-    .from('daily_market_candidates')
-    .update(patch)
-    .eq('id', candidateId)
-    .eq('selection_date', identity.selectionDate)
-    .eq('match_id', identity.matchId)
-    .select('id, match_id')
-  if (result.error) throw result.error
-  const updatedRows = result.data ?? []
-  if (updatedRows.length !== 1) {
-    throw new Error(`daily_market_candidates update expected 1 row but affected ${updatedRows.length}: candidate_id=${candidateId}, match_id=${identity.matchId}, selection_date=${identity.selectionDate}`)
-  }
-  return updatedRows[0]
-}
-
-function getMarketFirstReadinessStatus(item: any) {
-  return String(item.candidate?.market_readiness_status ?? (item.strict?.hasApiFootballOdds ? 'PARTIAL' : 'NO_MARKET_DATA')).toUpperCase()
-}
-
-function getMarketReadinessGateRank(status: string) {
-  if (status === 'READY') return 1
-  if (status === 'PARTIAL') return 2
-  if (status === 'WAITING_MARKET') return 3
-  return 4
-}
-
-function buildMarketFirstSelectionScore(match: any, odds: Array<any>, strict: any) {
-  const candidate = match.candidate ?? {}
-  const analysis = getAnalysis(match)
-  const status = String(candidate.market_readiness_status ?? 'NO_MARKET_DATA').toUpperCase()
-  const marketReadinessScore = normalizeScore(candidate.market_readiness_score ?? 0)
-  const valueEdgeScore = normalizeScore(analysis?.value_edge_score ?? analysis?.raw?.value_edge_score ?? strict.marketReadinessScore ?? 0)
-  const modelConfidenceScore = normalizeScore(analysis?.calibrated_confidence_score ?? analysis?.confidence_score ?? strict.strictRankingScore ?? 0)
-  const dataQualityScore = normalizeScore(analysis?.data_quality_score ?? analysis?.raw?.data_quality_score ?? strict.dataReadinessScore ?? 0)
-  const leagueQualityScore = normalizeScore(analysis?.league_quality_score ?? match.league?.priority ?? 50)
-  const riskPenalty = riskSortValue(analysis?.risk_level) * 20
-  let score = marketReadinessScore * 0.25 + valueEdgeScore * 0.25 + modelConfidenceScore * 0.2 + dataQualityScore * 0.1 + leagueQualityScore * 0.1 - riskPenalty * 0.1
-  if (status === 'NO_MARKET_DATA') score = Math.min(score, 59)
-  if (!odds.length) score = Math.min(score, 60)
-  return normalizeScore(score)
-}
-
-function compareMarketFirstCandidateItems(a: any, b: any) {
-  const gateDiff = getMarketReadinessGateRank(getMarketFirstReadinessStatus(a)) - getMarketReadinessGateRank(getMarketFirstReadinessStatus(b))
-  if (gateDiff !== 0) return gateDiff
-  const scoreDiff = b.finalSelectionScore - a.finalSelectionScore
-  if (scoreDiff !== 0) return scoreDiff
-  return numericSortValue(a.candidate?.candidate_rank, 999) - numericSortValue(b.candidate?.candidate_rank, 999)
-}
-
-function isTodayOddsPlayableFixture(match: any) {
-  const status = match.status_short ?? match.status ?? match.match_status
-  return !isResultFinishedStatus(status) && !isResultVoidStatus(status)
-}
-
 async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: FootballEnrichmentContext, options: { offset: number; batchSize: number; hardStopMs: number }) {
   const startedAt = Date.now()
   const processedFixtureIds: Array<number> = []
@@ -4299,9 +2833,8 @@ async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: 
       const fixtureId = Number(match?.api_sports_fixture_id ?? match?.raw?.raw_fixture_id ?? 0) || null
       failedFixtures += 1
       if (fixtureId) skippedFixtureIds.push(fixtureId)
-      const operationError = toSyncOperationError(error, 'unknown', 'sync_fixture_odds')
-      const message = operationError.sanitizedMessage
-      failures.push(buildOperationFailure(operationError, { fixtureId }))
+      const message = formatErrorMessage(error, 'odds fixture sync failed')
+      failures.push({ fixtureId, message })
       await updateMatchReadinessMetadata(match.id, {
         fixtureId,
         odds: endpointAttemptSummary({ attempted: 1, success: 0, rowsSaved: 0, empty: 0, error: 1, message }),
@@ -4350,18 +2883,13 @@ async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: 
   }
 }
 
-async function syncOddsForMatch(match: any, context: FootballEnrichmentContext, options: { usefulMarketsOnly?: boolean; maxInsertChunkSize?: number; canonicalMatchId?: string } = {}) {
-  const canonicalMatchId = String(options.canonicalMatchId ?? match.id ?? '').trim()
-  if (!canonicalMatchId) throw new Error('Cannot sync odds without canonical football_matches.id')
-  if (options.canonicalMatchId && match.id && String(match.id) !== canonicalMatchId) {
-    throw new Error(`Odds identity mismatch: canonical match_id=${canonicalMatchId}, supplied football_matches.id=${match.id}`)
-  }
+async function syncOddsForMatch(match: any, context: FootballEnrichmentContext) {
   const fixtureId = Number(match.api_sports_fixture_id ?? match.raw?.raw_fixture_id ?? 0)
   if (!fixtureId) return { processed: 0, rowsSaved: 0, failed: 0, empty: 0, fixtureId: null, skipped: true, failure: null }
 
   let response: any = null
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    response = await withSyncOperation('api-football', 'fetch_api_football_odds', () => trackedApiFootballGet(context, '/odds', { fixture: fixtureId }, { apiFixtureId: fixtureId }))
+    response = await trackedApiFootballGet(context, '/odds', { fixture: fixtureId }, { apiFixtureId: fixtureId })
     if (response.ok) break
     const message = String(response.error ?? '')
     const retryable = response.rateLimited || message.includes('api-football 429') || /api-football 5\d\d/i.test(message) || /network|fetch|timeout/i.test(message)
@@ -4370,19 +2898,13 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext, 
   }
 
   if (!response?.ok) {
-    const operationError = createSyncOperationError({
-      source: response?.source ?? 'api-football',
-      operation: response?.operation ?? 'fetch_api_football_odds',
-      status: response?.status ?? (response?.rateLimited ? 429 : null),
-      message: response?.error ?? 'odds sync failed',
-    })
-    await withRetryableSyncOperation('supabase', 'update_match_readiness_failed_odds', () => updateMatchReadinessMetadata(canonicalMatchId, {
+    await updateMatchReadinessMetadata(match.id, {
       fixtureId,
-      odds: endpointAttemptSummary({ attempted: 1, success: 0, rowsSaved: 0, empty: 0, error: 1, message: operationError.sanitizedMessage }),
+      odds: endpointAttemptSummary({ attempted: 1, success: 0, rowsSaved: 0, empty: 0, error: 1, message: response?.error ?? 'odds sync failed' }),
       hasMarketData: false,
       status: 'FAILED',
-      error: operationError.sanitizedMessage,
-    }))
+      error: response?.error ?? 'odds sync failed',
+    })
     return {
       processed: 0,
       rowsSaved: 0,
@@ -4392,42 +2914,33 @@ async function syncOddsForMatch(match: any, context: FootballEnrichmentContext, 
       skipped: false,
       failure: {
         fixtureId,
-        ...buildOperationFailure(operationError),
+        message: response?.error ?? 'odds sync failed',
         rateLimited: Boolean(response?.rateLimited),
       },
-      marketsSaved: [],
-      hasAh: false,
-      hasOu: false,
     }
   }
 
-  const normalized = await withSyncOperation('unknown', 'parse_api_football_odds', () => Promise.resolve(normalizeMatchOddsRows(match, fixtureId, response.data ?? [], {
-    allowedMarketFocuses: options.usefulMarketsOnly ? ['AH', 'OU', 'MATCH_WINNER'] : undefined,
-    canonicalMatchId,
-  })))
-  const marketsSaved = [...new Set(normalized.rows.map((row: any) => row.market_focus).filter(Boolean))]
-  const hasAh = marketsSaved.includes('AH')
-  const hasOu = marketsSaved.includes('OU')
+  const normalized = normalizeMatchOddsRows(match, fixtureId, response.data ?? [])
   if (!normalized.rows.length) {
-    await withRetryableSyncOperation('supabase', 'update_match_readiness_no_market_data', () => updateMatchReadinessMetadata(canonicalMatchId, {
+    await updateMatchReadinessMetadata(match.id, {
       fixtureId,
       odds: endpointAttemptSummary({ attempted: 1, success: 1, rowsSaved: 0, empty: 1, error: 0 }),
       hasMarketData: false,
       status: 'NO_MARKET_DATA',
-    }))
-    return { processed: 1, rowsSaved: 0, failed: 0, empty: 1, fixtureId, skipped: true, failure: null, marketsSaved, hasAh, hasOu }
+    })
+    return { processed: 1, rowsSaved: 0, failed: 0, empty: 1, fixtureId, skipped: true, failure: null }
   }
 
-  await withRetryableSyncOperation('supabase', 'upsert_football_bookmakers', () => storeFootballBookmakers(normalized.bookmakers))
-  await withRetryableSyncOperation('supabase', 'upsert_football_match_odds', () => storeFootballMatchOdds(canonicalMatchId, normalized.rows, { chunkSize: options.maxInsertChunkSize ?? 100 }))
+  await storeFootballBookmakers(normalized.bookmakers)
+  await storeFootballMatchOdds(match.id, normalized.rows)
   addEndpointRowsSaved(context, '/odds', normalized.rows.length)
-  await withRetryableSyncOperation('supabase', 'update_match_readiness_market_ready', () => updateMatchReadinessMetadata(canonicalMatchId, {
+  await updateMatchReadinessMetadata(match.id, {
     fixtureId,
     odds: endpointAttemptSummary({ attempted: 1, success: 1, rowsSaved: normalized.rows.length, empty: 0, error: 0 }),
     hasMarketData: true,
     status: 'READY',
-  }))
-  return { processed: 1, rowsSaved: normalized.rows.length, failed: 0, empty: 0, fixtureId, skipped: false, failure: null, marketsSaved, hasAh, hasOu }
+  })
+  return { processed: 1, rowsSaved: normalized.rows.length, failed: 0, empty: 0, fixtureId, skipped: false, failure: null }
 }
 
 async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
@@ -4502,18 +3015,10 @@ async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof
       .map((match: any) => ({ match, lockedRow: null, rank: Number(getAnalysis(match)?.final_rank ?? 999) }))
       .filter((item) => Boolean(getAnalysis(item.match)?.is_top_pick || Number(item.rank) < 999))
       .sort((a, b) => a.rank - b.rank)
-      .slice(0, 60)
+      .slice(0, 10)
   }
 
   const matchIds = items.map((item) => item.match?.id).filter(Boolean)
-  const oddsByMatchId = await fetchStoredOddsByMatchIds(matchIds, { latestOnly: true })
-  items = items.map((item: any) => ({
-    ...item,
-    match: {
-      ...item.match,
-      odds: oddsByMatchId.get(item.match?.id) ?? [],
-    },
-  }))
   const beforePicks = await fetchAiFinalPicksForMatches(matchIds)
   let recomputedFinalPicks = 0
   let rowsSaved = 0
@@ -4522,24 +3027,6 @@ async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof
 
   for (const item of items) {
     try {
-      if (!hasValidDecisionMarketItem({ match: item.match, odds: item.match.odds ?? [] })) {
-        if (item.lockedRow?.id) {
-          const patch = await supabase
-            .from('daily_top10_selections')
-            .update({
-              ai_final_pick_id: null,
-              signal: 'SKIP',
-              market_focus: 'NONE',
-              confidence_score: null,
-              market_ready: false,
-              selection_status: 'WAITING_MARKET',
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', item.lockedRow.id)
-          if (patch.error && !isMissingColumnError(patch.error)) throw patch.error
-        }
-        continue
-      }
       const pick = await upsertAiFinalPickForMatch(item.match)
       recomputedFinalPicks += 1
       rowsSaved += 1
@@ -4552,8 +3039,6 @@ async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof
             market_focus: pick.market_focus,
             confidence_score: pick.confidence_score,
             risk_level: pick.risk_level,
-            market_ready: true,
-            selection_status: 'READY',
             updated_at: new Date().toISOString(),
           })
           .eq('id', item.lockedRow.id)
@@ -4593,16 +3078,9 @@ async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof
 }
 
 async function upsertAiFinalPickForMatch(match: any) {
-  const payload = await buildAiFinalPickPayloadForMatch(match)
-  const upsert = await upsertAiFinalPickPayload(payload)
-  if (upsert.error) throw upsert.error
-  return upsert.data
-}
-
-async function buildAiFinalPickPayloadForMatch(match: any, preloadedOdds?: Array<any>) {
-  const odds = preloadedOdds ?? await fetchStoredMatchOdds(match.id)
+  const odds = await fetchStoredMatchOdds(match.id)
   const pick = buildEdgeAiFinalPick({ ...match, odds })
-  return {
+  const payload = {
     match_id: match.id,
     api_fixture_id: nullableNumber(match.api_sports_fixture_id),
     signal: pick.signal,
@@ -4636,6 +3114,9 @@ async function buildAiFinalPickPayloadForMatch(match: any, preloadedOdds?: Array
     raw: pick,
     updated_at: new Date().toISOString(),
   }
+  const upsert = await upsertAiFinalPickPayload(payload)
+  if (upsert.error) throw upsert.error
+  return upsert.data
 }
 
 async function upsertAiFinalPickPayload(payload: Record<string, unknown>) {
@@ -4683,35 +3164,44 @@ async function lockDailyTop10(dayRange: ReturnType<typeof getBangkokDayRange>) {
     fetchStoredOddsByMatchIds(matchIds),
   ])
   const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
-  const candidates = matches
+  const selected = matches
     .map((match: any) => ({
-      match: {
-        ...match,
-        has_market_data: (oddsByMatchId.get(match.id) ?? []).length > 0 || match.has_market_data,
-        analysis: getAnalysis(match),
-        odds: oddsByMatchId.get(match.id) ?? [],
-      },
+      match,
       analysis: getAnalysis(match),
       pick: pickByMatch.get(match.id) ?? null,
       odds: oddsByMatchId.get(match.id) ?? [],
     }))
-  const itemByMatchId = new Map(candidates.map((item: any) => [item.match.id, item]))
-  const dailySelection = selectDailyTop10(candidates.map((item: any) => item.match), { selectionDate })
-  const selected = dailySelection.selected.map((row: any) => itemByMatchId.get(row.match.id)).filter(Boolean)
-  const persistResult = await persistMarketReadyTop10(selectionDate, selected, [], { cleanupUnselected: true })
-  const rows = await fetchPersistedDailyTop10Rows(selectionDate)
-  const status = summarizeDailyTop10(selectionDate, rows)
-  return {
-    processed: rows.length,
-    totalCandidates: matches.length,
-    rowsSaved: persistResult.rowsSaved,
-    failed: persistResult.failed,
-    partial: persistResult.failed > 0,
-    locked: true,
-    alreadyLocked: false,
-    ...status,
-    failures: persistResult.failures,
+    .sort(compareDailyTop10LockCandidate)
+    .slice(0, 10)
+
+  for (const item of selected) {
+    try {
+      item.pick = await upsertAiFinalPickForMatch(item.match)
+    } catch (error) {
+      console.warn('lock-daily-top10 ai final pick refresh failed', { matchId: item.match?.id, error: formatErrorMessage(error, 'ai final pick failed') })
+    }
   }
+
+  const rows = selected.map((item: any, index: number) => ({
+    selection_date: selectionDate,
+    match_id: item.match.id,
+    api_fixture_id: nullableNumber(item.match.api_sports_fixture_id),
+    rank: index + 1,
+    selection_score: nullableNumber(item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
+    ai_final_pick_id: item.pick?.id ?? null,
+    signal: item.pick?.signal ?? 'SKIP',
+    market_focus: item.pick?.market_focus ?? 'NONE',
+    confidence_score: nullableNumber(item.pick?.confidence_score ?? item.analysis?.confidence_score),
+    risk_level: normalizeRiskLevelText(item.pick?.risk_level ?? item.analysis?.risk_level ?? 'MEDIUM'),
+    updated_at: new Date().toISOString(),
+  }))
+
+  if (rows.length) {
+    const insert = await supabase.from('daily_top10_selections').insert(rows)
+    if (insert.error) throw insert.error
+  }
+  const status = summarizeDailyTop10(selectionDate, rows)
+  return { processed: rows.length, totalCandidates: matches.length, rowsSaved: rows.length, failed: 0, partial: rows.length < 10, locked: true, alreadyLocked: false, ...status }
 }
 
 async function getDailyTop10Status(dayRange: ReturnType<typeof getBangkokDayRange>) {
@@ -4805,23 +3295,17 @@ async function refreshMarketReadyTop10(dayRange: ReturnType<typeof getBangkokDay
   const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
   const candidates = matches
     .map((match: any) => ({
-      match: {
-        ...match,
-        has_market_data: (oddsByMatchId.get(match.id) ?? []).length > 0 || match.has_market_data,
-        analysis: getAnalysis(match),
-        odds: oddsByMatchId.get(match.id) ?? [],
-      },
+      match,
       analysis: getAnalysis(match),
       pick: pickByMatch.get(match.id) ?? null,
       odds: oddsByMatchId.get(match.id) ?? [],
     }))
     .filter((item: any) => item.analysis)
-  const itemByMatchId = new Map(candidates.map((item: any) => [item.match.id, item]))
-  const dailySelection = selectDailyTop10(candidates.map((item: any) => item.match), { selectionDate })
-  const selected = dailySelection.selected.map((row: any) => itemByMatchId.get(row.match.id)).filter(Boolean)
+    .sort(compareDailyTop10LockCandidate)
 
   const readyCandidates = candidates.filter((item: any) => isMarketReadyCandidate(item))
   const waitingCandidates = candidates.filter((item: any) => isWaitingMarketCandidate(item))
+  const selected = candidates.slice(0, 10)
   const selectedReady = selected.filter((item: any) => isMarketReadyCandidate(item))
   const selectedWaiting = selected.filter((item: any) => isWaitingMarketCandidate(item))
   const existingSummary = summarizeExistingMarketLock(existingRows, oddsByMatchId)
@@ -4863,13 +3347,6 @@ async function refreshMarketReadyTop10(dayRange: ReturnType<typeof getBangkokDay
     staleNoMarketLockCount: existingSummary.staleNoMarketLockCount,
     readyMatches: selectedReady.map(formatTop10RefreshMatch),
     waitingMatches: selectedWaiting.map(formatTop10RefreshMatch),
-    summary: buildFootballAnalyticsSummary({
-      fixturesDiscovered: matches.length,
-      playableFixtures: candidates.length,
-      candidates,
-      selected,
-      failedFixtures: failed,
-    }),
     refreshedBecause,
     refreshed: shouldPersist || !existingRows.length,
   }
@@ -4907,20 +3384,14 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
   const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
   const candidates = playableMatches
     .map((match: any) => ({
-      match: {
-        ...match,
-        has_market_data: (oddsByMatchId.get(match.id) ?? []).length > 0 || match.has_market_data,
-        analysis: getAnalysis(match),
-        odds: oddsByMatchId.get(match.id) ?? [],
-      },
+      match,
       analysis: getAnalysis(match),
       pick: pickByMatch.get(match.id) ?? null,
       odds: oddsByMatchId.get(match.id) ?? [],
     }))
-  const itemByMatchId = new Map(candidates.map((item: any) => [item.match.id, item]))
-  const dailySelection = selectDailyTop10(candidates.map((item: any) => item.match), { selectionDate: resolvedDateKey })
-  const selected = dailySelection.selected.map((row: any) => itemByMatchId.get(row.match.id)).filter(Boolean)
+    .sort(compareDailyTop10LockCandidate)
 
+  const selected = candidates.slice(0, 10)
   const persistResult = await persistMarketReadyTop10(resolvedDateKey, selected, existing.data ?? [])
   const selectedReady = selected.filter((item: any) => dailyMarketReadinessPriority(item) <= 2)
   const selectedWaiting = selected.filter((item: any) => isWaitingMarketCandidate(item))
@@ -4968,20 +3439,11 @@ async function selectUsableDailyPicks(dayRange: ReturnType<typeof getBangkokDayR
     skippedBecause: null,
     readyMatches: selectedReady.map(formatTop10RefreshMatch),
     waitingMatches: selectedWaiting.map(formatTop10RefreshMatch),
-    summary: buildFootballAnalyticsSummary({
-      fixturesDiscovered: windowMatches.length,
-      playableFixtures: playableMatches.length,
-      candidates,
-      selected,
-      failedFixtures: persistResult.failed,
-    }),
     refreshed: true,
   }
 }
 
 async function strictApiFootballDailyPicks(dayRange: ReturnType<typeof getBangkokDayRange>, body: Record<string, unknown>) {
-  if (body.marketFirst === true) return strictApiFootballDailyPicksMarketFirst(dayRange, body)
-
   const selectionDate = typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : dayRange.dateKey
   const limit = getPositiveNumber(body.limit, 10, 10)
   const strictRange = getBangkokDayRange(selectionDate)
@@ -5064,556 +3526,6 @@ async function strictApiFootballDailyPicks(dayRange: ReturnType<typeof getBangko
   }
 }
 
-async function repairStaleMarketFirstTop10LowResource(body: Record<string, unknown>, startedMs: number) {
-  if (body.repairStaleMarketLock !== true) throw new Error('repair-stale-market-first-top10 requires repairStaleMarketLock:true')
-  const selectionDate = getRequiredRepairSelectionDate(body.selectionDate)
-  const existingRows = await fetchLowResourceLockedTop10(selectionDate)
-  if (existingRows.length !== staleMarketRepairSelectionCount) {
-    throw new Error(`Stale market repair requires exactly 10 persisted Top10 rows; found ${existingRows.length}`)
-  }
-
-  const duplicateMatches = existingRows.length - new Set(existingRows.map((row: any) => row.match_id).filter(Boolean)).size
-  const duplicateRanks = existingRows.length - new Set(existingRows.map((row: any) => Number(row.rank)).filter(Boolean)).size
-  if (duplicateMatches || duplicateRanks) throw new Error(`Persisted Top10 identity invariant failed: duplicateMatches=${duplicateMatches}, duplicateRanks=${duplicateRanks}`)
-
-  const previousSelectedFixtureIds = existingRows.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean).slice(0, staleMarketRepairSelectionCount)
-  const readyCandidates = await fetchLowResourceReadyMarketCandidates(selectionDate)
-  const candidateReadyCount = readyCandidates.totalCount
-  if (candidateReadyCount < staleMarketRepairSelectionCount) throw new Error(`Stale market repair requires at least 10 READY candidates; found ${candidateReadyCount}`)
-  if (candidateReadyCount > staleMarketRepairReadyCandidateLimit) {
-    throw new Error(`READY candidate count ${candidateReadyCount} exceeds low-resource canonical ordering cap ${staleMarketRepairReadyCandidateLimit}`)
-  }
-
-  const repairWarnings: Array<string> = []
-  const readyMatchIds = readyCandidates.rows.map((row: any) => row.match_id).filter(Boolean)
-  const readyMarketProbes = await fetchLowResourceRequiredMarketProbes(readyMatchIds)
-  const existingOutsideReadyIds = existingRows.map((row: any) => row.match_id).filter((matchId: string) => matchId && !readyMarketProbes.has(matchId))
-  const existingMarketProbes = await fetchLowResourceRequiredMarketProbes(existingOutsideReadyIds)
-  const initialOddsProbes = new Map([...readyMarketProbes, ...existingMarketProbes])
-  const initialState = summarizeLowResourcePersistedTop10(existingRows, initialOddsProbes)
-  if (initialState.top10WithOddsCount === staleMarketRepairSelectionCount) {
-    const aiFinalPickCoverage = await fetchLowResourceFinalPickCoverage(existingRows.map((row: any) => row.match_id).filter(Boolean))
-    return {
-      selectionDate,
-      repairedExistingLock: false,
-      alreadyHealthy: true,
-      previousSelectedFixtureIds,
-      persistedSelectedFixtureIds: initialState.persistedSelectedFixtureIds,
-      top10Count: initialState.top10Count,
-      top10WithOddsCount: initialState.top10WithOddsCount,
-      top10WithoutOdds: initialState.top10WithoutOdds,
-      aiFinalPickCoverage,
-      candidateReadyCount,
-      warnings: ['Persisted Top10 already has supported latest odds for all 10 fixtures; no repair performed'],
-      failures: [],
-    }
-  }
-
-  const latestLockAt = maxIsoTimestamp(existingRows.map((row: any) => row.locked_at ?? row.created_at))
-  const latestReadyAt = maxIsoTimestamp(readyCandidates.rows.map((row: any) => row.odds_synced_at))
-  if (!latestLockAt || !latestReadyAt || new Date(latestLockAt).getTime() >= new Date(latestReadyAt).getTime()) {
-    throw new Error('Persisted Top10 is not proven to predate market readiness; lock preserved')
-  }
-
-  const repairTargets = await fetchLowResourceRepairMatchTargets(readyCandidates.rows)
-  const candidateItems = repairTargets.flatMap((match: any) => {
-    const odds = readyMarketProbes.get(match.id) ?? []
-    const coverage = summarizeSupportedOddsRows(odds)
-    if (!(coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner)) {
-      const missing = [
-        coverage.hasAh ? null : 'AH',
-        coverage.hasOu ? null : 'OU',
-        coverage.hasMatchWinner ? null : 'MATCH_WINNER',
-      ].filter(Boolean).join('/')
-      if (repairWarnings.length < 5) repairWarnings.push(`Skipped READY candidate ${match.id}: missing supported latest ${missing} odds`)
-      return []
-    }
-    const pickTeam = deriveEdgePickTeamFromApiFootballOdds(match, odds)
-    const strict = buildStrictApiFootballCandidate(match, odds, pickTeam)
-    return [{
-      match,
-      analysis: getAnalysis(match),
-      pick: null,
-      odds,
-      pickTeam,
-      strict,
-      candidate: match.candidate,
-      finalSelectionScore: buildMarketFirstSelectionScore(match, odds, strict),
-    }]
-  }).sort(compareMarketFirstCandidateItems)
-  if (candidateItems.length < staleMarketRepairSelectionCount) {
-    throw new Error(`Stale market repair found only ${candidateItems.length} READY candidates with verified latest AH/OU/MATCH_WINNER odds; need 10`)
-  }
-
-  const selected = candidateItems.slice(0, staleMarketRepairSelectionCount)
-  assertUniqueMarketFirstRepairSelection(selected)
-  const fixtureIds = selected.map((item: any) => Number(item.match.api_sports_fixture_id ?? 0)).filter(Boolean)
-  if (fixtureIds.length !== staleMarketRepairSelectionCount || new Set(fixtureIds).size !== staleMarketRepairSelectionCount) {
-    throw new Error('Stale market lock repair requires exactly 10 unique api_fixture_id values')
-  }
-
-  const selectedMatchIds = selected.map((item: any) => item.match.id)
-  const selectedOddsByMatchId = await fetchLowResourceLatestSupportedOdds(selectedMatchIds)
-  const finalPicks = []
-  for (const item of selected) {
-    const odds = dedupeOddsRowsById([
-      ...(selectedOddsByMatchId.get(item.match.id) ?? []),
-      ...(readyMarketProbes.get(item.match.id) ?? []),
-    ])
-    const coverage = summarizeSupportedOddsRows(odds)
-    if (!(coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner)) throw new Error(`Selected READY candidate ${item.match.id} is missing required latest AH/OU/MATCH_WINNER odds`)
-    item.odds = odds
-    const { updated_at: _updatedAt, ...finalPick } = await buildAiFinalPickPayloadForMatch(item.match, odds)
-    finalPicks.push(finalPick)
-  }
-  const selections = selected.map((item: any, index: number) => ({
-    match_id: item.match.id,
-    api_fixture_id: nullableNumber(item.match.api_sports_fixture_id),
-    rank: index + 1,
-    selection_score: nullableNumber(item.finalSelectionScore),
-  }))
-  assertAtomicRepairPayloads(finalPicks, selections)
-
-  const expectedPreviousMatchIds = existingRows.map((row: any) => row.match_id).filter(Boolean).sort()
-  const repairResult = await callAtomicStaleMarketRepair(selectionDate, expectedPreviousMatchIds, finalPicks, selections)
-  const repairedExistingLock = Boolean(repairResult?.repaired)
-
-  for (const item of selected) item.odds = []
-  readyMarketProbes.clear()
-  existingMarketProbes.clear()
-  initialOddsProbes.clear()
-
-  const persistedRows = await fetchLowResourceLockedTop10(selectionDate)
-  const persistedMatchIds = persistedRows.map((row: any) => row.match_id).filter(Boolean)
-  const persistedOddsByMatchId = repairedExistingLock ? selectedOddsByMatchId : await fetchLowResourceLatestSupportedOdds(persistedMatchIds)
-  const persistedState = summarizeLowResourcePersistedTop10(persistedRows, persistedOddsByMatchId)
-  persistedState.aiFinalPickCoverage = await fetchLowResourceFinalPickCoverage(persistedMatchIds)
-  selectedOddsByMatchId.clear()
-  if (persistedOddsByMatchId !== selectedOddsByMatchId) persistedOddsByMatchId.clear()
-  if (repairedExistingLock) assertLowResourceRepairResult(persistedState)
-  if (!repairedExistingLock && persistedState.top10WithOddsCount < staleMarketRepairSelectionCount) {
-    throw new Error('Atomic repair returned without replacement while persisted Top10 is still unhealthy')
-  }
-
-  return {
-    selectionDate,
-    repairedExistingLock,
-    alreadyHealthy: !repairedExistingLock && persistedState.top10WithOddsCount === staleMarketRepairSelectionCount,
-    previousSelectedFixtureIds,
-    persistedSelectedFixtureIds: persistedState.persistedSelectedFixtureIds,
-    top10Count: persistedState.top10Count,
-    top10WithOddsCount: persistedState.top10WithOddsCount,
-    top10WithoutOdds: persistedState.top10WithoutOdds,
-    aiFinalPickCoverage: persistedState.aiFinalPickCoverage,
-    candidateReadyCount,
-    durationMs: Date.now() - startedMs,
-    warnings: repairWarnings,
-    failures: [],
-  }
-}
-
-function getRequiredRepairSelectionDate(value: unknown) {
-  const selectionDate = String(value ?? '').trim()
-  const parsed = new Date(`${selectionDate}T00:00:00.000Z`)
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(selectionDate) || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== selectionDate || getBangkokDayRange(selectionDate).dateKey !== selectionDate) {
-    throw new Error('repair-stale-market-first-top10 requires a valid selectionDate in YYYY-MM-DD format')
-  }
-  return selectionDate
-}
-
-async function fetchLowResourceLockedTop10(selectionDate: string) {
-  const result = await supabase
-    .from('daily_top10_selections')
-    .select('id, rank, match_id, api_fixture_id, ai_final_pick_id, locked_at, created_at')
-    .eq('selection_date', selectionDate)
-    .order('rank', { ascending: true })
-    .limit(staleMarketRepairSelectionCount + 1)
-  if (result.error) throw result.error
-  return result.data ?? []
-}
-
-async function fetchLowResourceReadyMarketCandidates(selectionDate: string) {
-  const baseFilters = (query: any) => query
-    .eq('selection_date', selectionDate)
-    .eq('market_readiness_status', 'READY')
-    .eq('has_usable_ah', true)
-    .eq('has_usable_ou', true)
-    .eq('has_usable_match_winner', true)
-  const [countResult, rowsResult] = await Promise.all([
-    baseFilters(supabase.from('daily_market_candidates').select('id', { count: 'exact', head: true })),
-    baseFilters(supabase
-      .from('daily_market_candidates')
-      .select('id, match_id, api_fixture_id, candidate_rank, pre_selection_score, market_readiness_status, market_readiness_score, has_usable_ah, has_usable_ou, has_usable_match_winner, odds_rows_count, odds_synced_at'))
-      .order('candidate_rank', { ascending: true })
-      .limit(staleMarketRepairReadyCandidateLimit),
-  ])
-  if (countResult.error) throw countResult.error
-  if (rowsResult.error) throw rowsResult.error
-  return { rows: rowsResult.data ?? [], totalCount: Number(countResult.count ?? rowsResult.data?.length ?? 0) }
-}
-
-async function fetchLowResourceRepairMatchTargets(candidateRows: Array<any>) {
-  const matchIds = [...new Set(candidateRows.map((row: any) => row.match_id).filter(Boolean))]
-  if (matchIds.length < staleMarketRepairSelectionCount || matchIds.length > staleMarketRepairReadyCandidateLimit) {
-    throw new Error(`Low-resource repair match target count out of bounds: ${matchIds.length}`)
-  }
-  const result = await supabase
-    .from('football_matches')
-    .select(`
-      id,
-      api_sports_fixture_id,
-      kickoff_at,
-      status,
-      status_short,
-      status_long,
-      match_status,
-      odds_updated_at,
-      has_market_data,
-      has_fixture_detail,
-      data_readiness_status,
-      raw,
-      league:football_leagues(id, api_league_id, name, country, priority),
-      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
-      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
-    `)
-    .in('id', matchIds)
-    .limit(staleMarketRepairReadyCandidateLimit)
-  if (result.error) throw result.error
-  const candidateByMatchId = new Map(candidateRows.map((row: any) => [row.match_id, row]))
-  const targets = (result.data ?? []).map((match: any) => {
-    const candidate = candidateByMatchId.get(match.id)
-    if (!candidate) throw new Error(`Missing READY candidate metadata for match ${match.id}`)
-    return {
-      ...match,
-      canonicalMatchId: candidate.match_id,
-      api_sports_fixture_id: nullableNumber(candidate.api_fixture_id ?? match.api_sports_fixture_id),
-      candidateId: candidate.id,
-      candidate,
-    }
-  })
-  if (targets.length !== matchIds.length) throw new Error(`Missing football_matches rows for ${matchIds.length - targets.length} READY candidates`)
-  return targets
-}
-
-type SupportedRepairMarketFocus = 'AH' | 'OU' | 'MATCH_WINNER' | 'DOUBLE_CHANCE'
-
-async function fetchLowResourceRequiredMarketProbes(matchIds: Array<string>) {
-  const ids = [...new Set(matchIds.filter(Boolean))]
-  if (ids.length > staleMarketRepairReadyCandidateLimit) throw new Error(`Repair odds probe target count exceeds 15: ${ids.length}`)
-  const marketResults = await Promise.all((['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'] as Array<SupportedRepairMarketFocus>)
-    .map((marketFocus) => fetchLowResourceMarketOddsProbe(ids, marketFocus)))
-  const merged = new Map<string, Array<any>>()
-  for (const matchId of ids) {
-    merged.set(matchId, dedupeOddsRowsById(marketResults.flatMap((result) => result.get(matchId) ?? [])))
-  }
-  return merged
-}
-
-async function fetchLowResourceMarketOddsProbe(matchIds: Array<string>, marketFocus: SupportedRepairMarketFocus) {
-  const ids = [...new Set(matchIds.filter(Boolean))]
-  if (ids.length > staleMarketRepairReadyCandidateLimit) throw new Error(`Repair odds probe target count exceeds 15: ${ids.length}`)
-  const entries = await Promise.all(ids.map(async (matchId) => {
-    const result = await supabase
-      .from('football_match_odds')
-      .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at')
-      .eq('match_id', matchId)
-      .eq('is_latest', true)
-      .eq('market_focus', marketFocus)
-      .not('price', 'is', null)
-      .gt('price', 0)
-      .order('snapshot_at', { ascending: false })
-      .order('id', { ascending: true })
-      .limit(1)
-    if (result.error) throw result.error
-    const supported = (result.data ?? []).filter(isSupportedFullTimeOddsRow)
-    return [matchId, supported] as const
-  }))
-  return new Map<string, Array<any>>(entries)
-}
-
-async function fetchLowResourceLatestSupportedOdds(matchIds: Array<string>) {
-  const ids = [...new Set(matchIds.filter(Boolean))]
-  if (!ids.length || ids.length > staleMarketRepairSelectionCount) {
-    throw new Error(`Low-resource repair odds target count out of bounds: ${ids.length}`)
-  }
-  const entries = await Promise.all(ids.map(async (matchId) => {
-    const marketEntries = await Promise.all((['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'] as Array<SupportedRepairMarketFocus>).map(async (marketFocus) => {
-      const result = await supabase
-        .from('football_match_odds')
-        .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at')
-        .eq('match_id', matchId)
-        .eq('is_latest', true)
-        .eq('market_focus', marketFocus)
-        .not('price', 'is', null)
-        .gt('price', 0)
-        .order('snapshot_at', { ascending: false })
-        .order('id', { ascending: true })
-        .limit(staleMarketRepairOddsRowsPerMarketLimit)
-      if (result.error) throw result.error
-      return (result.data ?? []).filter(isSupportedFullTimeOddsRow)
-    }))
-    return [matchId, dedupeOddsRowsById(marketEntries.flat())] as const
-  }))
-  const totalRows = entries.reduce((total, [, rows]) => total + rows.length, 0)
-  if (totalRows > staleMarketRepairOddsRowLimit) throw new Error(`Latest supported odds row count ${totalRows} exceeds repair cap ${staleMarketRepairOddsRowLimit}`)
-
-  return new Map<string, Array<any>>(entries)
-}
-
-function dedupeOddsRowsById(rows: Array<any>) {
-  const seen = new Set<string>()
-  return rows.filter((row: any) => {
-    const id = String(row.id ?? '')
-    if (!id || seen.has(id)) return false
-    seen.add(id)
-    return true
-  })
-}
-
-function summarizeSupportedOddsRows(rows: Array<any>) {
-  const focuses = new Set(rows.filter(isSupportedFullTimeOddsRow).map((row: any) => normalizeMarketFocus(row.market_focus ?? row.market_name)))
-  return { rows: rows.length, hasAh: focuses.has('AH'), hasOu: focuses.has('OU'), hasMatchWinner: focuses.has('MATCH_WINNER'), hasDoubleChance: focuses.has('DOUBLE_CHANCE'), hasCorrectScore: focuses.has('CORRECT_SCORE') }
-}
-
-function summarizeLowResourcePersistedTop10(rows: Array<any>, oddsByMatchId: Map<string, Array<any>>) {
-  const withOddsMatchIds = new Set(rows.filter((row: any) => {
-    const coverage = summarizeSupportedOddsRows(oddsByMatchId.get(row.match_id) ?? [])
-    return coverage.hasAh && coverage.hasOu && coverage.hasMatchWinner
-  }).map((row: any) => row.match_id))
-  const persistedSelectedFixtureIds = rows.map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean).slice(0, staleMarketRepairSelectionCount)
-  return {
-    top10Count: rows.length,
-    top10WithOddsCount: withOddsMatchIds.size,
-    top10WithoutOdds: rows.filter((row: any) => !withOddsMatchIds.has(row.match_id)).map((row: any) => Number(row.api_fixture_id ?? 0)).filter(Boolean).slice(0, staleMarketRepairSelectionCount),
-    persistedSelectedFixtureIds,
-    aiFinalPickCoverage: rows.filter((row: any) => row.ai_final_pick_id).length,
-    duplicateMatches: rows.length - new Set(rows.map((row: any) => row.match_id).filter(Boolean)).size,
-    duplicateRanks: rows.length - new Set(rows.map((row: any) => Number(row.rank)).filter(Boolean)).size,
-  }
-}
-
-async function fetchLowResourceFinalPickCoverage(matchIds: Array<string>) {
-  const ids = [...new Set(matchIds.filter(Boolean))]
-  if (ids.length > staleMarketRepairSelectionCount) throw new Error(`Final-pick coverage target count exceeds 10: ${ids.length}`)
-  if (!ids.length) return 0
-  const result = await supabase
-    .from('football_ai_final_picks')
-    .select('id, match_id')
-    .in('match_id', ids)
-    .limit(staleMarketRepairSelectionCount)
-  if (result.error) throw result.error
-  return new Set((result.data ?? []).map((row: any) => row.match_id).filter(Boolean)).size
-}
-
-function assertAtomicRepairPayloads(finalPicks: Array<any>, selections: Array<any>) {
-  const finalPickIds = finalPicks.map((row: any) => row.match_id).filter(Boolean)
-  const selectionIds = selections.map((row: any) => row.match_id).filter(Boolean)
-  const ranks = selections.map((row: any) => Number(row.rank))
-  if (finalPicks.length !== 10 || selections.length !== 10 || new Set(finalPickIds).size !== 10 || new Set(selectionIds).size !== 10 || new Set(ranks).size !== 10 || ranks.some((rank: number) => rank < 1 || rank > 10)) {
-    throw new Error('Atomic stale market repair payload invariant failed')
-  }
-  if (finalPickIds.sort().join('|') !== selectionIds.sort().join('|')) throw new Error('Atomic repair final-pick and selection match IDs differ')
-}
-
-function assertLowResourceRepairResult(state: any) {
-  if (state.top10Count !== 10 || state.top10WithOddsCount !== 10 || state.top10WithoutOdds.length || state.aiFinalPickCoverage !== 10 || state.duplicateMatches || state.duplicateRanks) {
-    throw new Error(`Low-resource repair persisted invariant failed: count=${state.top10Count}, withOdds=${state.top10WithOddsCount}, finalPicks=${state.aiFinalPickCoverage}`)
-  }
-}
-
-async function strictApiFootballDailyPicksMarketFirst(dayRange: ReturnType<typeof getBangkokDayRange>, body: Record<string, unknown>) {
-  const selectionDate = typeof body.selectionDate === 'string' && body.selectionDate ? body.selectionDate : dayRange.dateKey
-  const limit = getPositiveNumber(body.limit, 60, 60)
-  const [candidateTargets, existing] = await Promise.all([
-    fetchDailyMarketCandidateTargets(selectionDate),
-    supabase
-      .from('daily_top10_selections')
-      .select('*')
-      .eq('selection_date', selectionDate)
-      .order('rank', { ascending: true }),
-  ])
-  if (existing.error) throw existing.error
-  if (!candidateTargets.length) throw new Error(`daily_market_candidates is empty for ${selectionDate}; run build-daily-market-candidates and finalize-market-ready-candidates before strict marketFirst picks`)
-
-  const matchIds = candidateTargets.map((match: any) => match.id).filter(Boolean)
-  const [picks, oddsByMatchId] = await Promise.all([
-    fetchAiFinalPicksForMatches(matchIds),
-    fetchStoredOddsByMatchIds(matchIds, { latestOnly: true }),
-  ])
-  const pickByMatch = new Map(picks.map((pick: any) => [pick.match_id, pick]))
-  const candidates = candidateTargets
-    .map((match: any) => {
-      const odds = oddsByMatchId.get(match.id) ?? []
-      const pickTeam = deriveEdgePickTeamFromApiFootballOdds(match, odds)
-      const strict = buildStrictApiFootballCandidate(match, odds, pickTeam)
-      return {
-        match,
-        analysis: getAnalysis(match),
-        pick: pickByMatch.get(match.id) ?? null,
-        odds,
-        pickTeam,
-        strict,
-        candidate: match.candidate,
-        finalSelectionScore: buildMarketFirstSelectionScore(match, odds, strict),
-      }
-    })
-    .sort(compareMarketFirstCandidateItems)
-
-  const readyCandidates = candidates.filter((item: any) => getMarketFirstReadinessStatus(item) === 'READY')
-  const watchCandidates = candidates.filter((item: any) => getMarketFirstReadinessStatus(item) === 'PARTIAL')
-  const waitingCandidates = candidates.filter((item: any) => ['WAITING_MARKET', 'NO_MARKET_DATA'].includes(getMarketFirstReadinessStatus(item)))
-  const intendedSelection = [...readyCandidates, ...watchCandidates, ...waitingCandidates].slice(0, limit)
-
-  const previousState = await buildPersistedMarketFirstTop10State(selectionDate, existing.data ?? [], candidates, readyCandidates.length)
-  const previousSelectedFixtureIds = previousState.selectedFixtureIds
-  let persistResult = emptyTop10PersistResult(existing.data?.length ?? 0)
-  const warnings: Array<string> = []
-
-  persistResult = await persistMarketReadyTop10(selectionDate, intendedSelection, existing.data ?? [], { cleanupUnselected: true })
-  if (persistResult.failed > 0) throw new Error(`Dynamic decision board persistence failed for ${persistResult.failed} row(s)`)
-  if (previousState.staleMarketLockRepairEligible) warnings.push('Existing persisted board predated market readiness and was reconciled by the dynamic decision board pipeline')
-
-  const persistedRows = await fetchPersistedDailyTop10Rows(selectionDate)
-  const persistedState = await buildPersistedMarketFirstTop10State(selectionDate, persistedRows, candidates, readyCandidates.length)
-  const persistedItems = persistedState.rows.map((row: any) => candidates.find((item: any) => item.match.id === row.match_id)).filter(Boolean)
-  const selectedStrict = persistedItems.map((item: any) => item.strict)
-  if (readyCandidates.length === 0) warnings.push('READY count is 0; dynamic board may contain WATCH/WAITING_MARKET only')
-
-  return {
-    processed: persistedState.rows.length,
-    selectedCount: persistedState.rows.length,
-    totalCandidates: candidates.length,
-    rowsSaved: persistResult.rowsSaved,
-    rowsUpdated: persistResult.rowsUpdated,
-    rowsInserted: persistResult.rowsInserted,
-    rowsSkipped: persistResult.rowsSkipped,
-    rowsDeleted: persistResult.rowsDeleted,
-    duplicateRankResolved: persistResult.duplicateRankResolved,
-    failed: persistResult.failed,
-    failures: persistResult.failures,
-    status: persistResult.failed > 0 ? (persistResult.rowsSaved > 0 ? 'partial_success' : 'failed') : 'success',
-    selectionDate,
-    requestedSelectionDate: selectionDate,
-    resolvedDateKey: selectionDate,
-    readyCandidates: readyCandidates.length,
-    candidateReadyCount: readyCandidates.length,
-    selectedReadyCount: persistedState.selectedReadyCount,
-    selectedPartialCount: persistedState.selectedPartialCount,
-    selectedWaitingMarketCount: persistedState.selectedWaitingMarketCount,
-    selectedNoMarketDataCount: persistedState.selectedNoMarketDataCount,
-    top10WithOdds: persistedState.top10WithOdds,
-    top10WithoutOdds: persistedState.top10WithoutOdds,
-    selectedFixtureIds: persistedState.selectedFixtureIds,
-    previousSelectedFixtureIds,
-    persistedSelectedFixtureIds: persistedState.selectedFixtureIds,
-    repairedExistingLock: false,
-    staleMarketLockRepairEligible: persistedState.staleMarketLockRepairEligible,
-    lockPredatesMarketReadiness: persistedState.lockPredatesMarketReadiness,
-    aiFinalPickCoverage: persistedState.aiFinalPickCoverage,
-    selectedWithOddsCount: persistedState.top10WithOdds.length,
-    selectedWithoutOddsCount: persistedState.top10WithoutOdds.length,
-    selectedWithPickTeamCount: selectedStrict.filter((item: any) => Boolean(item.pickTeam)).length,
-    selectedWithoutPickTeamCount: selectedStrict.filter((item: any) => !item.pickTeam).length,
-    primaryMarketCount: selectedStrict.filter((item: any) => item.hasPrimaryMarket).length,
-    marketPrioritySummary: summarizeStrictMarketPriority(selectedStrict),
-    pickTeamCoverage: {
-      withPickTeam: selectedStrict.filter((item: any) => Boolean(item.pickTeam)).length,
-      withoutPickTeam: selectedStrict.filter((item: any) => !item.pickTeam).length,
-    },
-    usedRollingWindow: false,
-    usedNextDateFallback: false,
-    warnings,
-    selectedMatches: persistedItems.map((item: any, index: number) => formatStrictSelectedMatch({ ...item, rank: persistedState.rows[index]?.rank ?? index + 1 })),
-  }
-}
-
-function emptyTop10PersistResult(rowsSkipped = 0) {
-  return { rowsSaved: 0, rowsUpdated: 0, rowsInserted: 0, rowsSkipped, rowsDeleted: 0, duplicateRankResolved: 0, failed: 0, failures: [] as Array<any> }
-}
-
-async function fetchPersistedDailyTop10Rows(selectionDate: string) {
-  const result = await supabase
-    .from('daily_top10_selections')
-    .select('*')
-    .eq('selection_date', selectionDate)
-    .order('rank', { ascending: true })
-  if (result.error) throw result.error
-  return result.data ?? []
-}
-
-async function buildPersistedMarketFirstTop10State(selectionDate: string, rows: Array<any>, candidates: Array<any>, candidateReadyCount: number) {
-  const candidateByMatchId = new Map(candidates.map((item: any) => [item.match.id, item]))
-  const coverageTargets = rows.map((row: any) => candidateByMatchId.get(row.match_id)?.match ?? {
-    id: row.match_id,
-    canonicalMatchId: row.match_id,
-    api_sports_fixture_id: row.api_fixture_id,
-  })
-  const coverage = await fetchUsableOddsCoverageForTargets(coverageTargets)
-  const selectedFixtureIds = rows.map((row: any) => Number(row.api_fixture_id ?? candidateByMatchId.get(row.match_id)?.match?.api_sports_fixture_id ?? 0)).filter(Boolean)
-  const top10WithOdds = rows
-    .filter((row: any) => Number(coverage.byMatchId.get(row.match_id)?.rows ?? 0) > 0)
-    .map((row: any) => Number(row.api_fixture_id ?? candidateByMatchId.get(row.match_id)?.match?.api_sports_fixture_id ?? 0))
-    .filter(Boolean)
-  const statuses = rows.map((row: any) => getMarketFirstReadinessStatus(candidateByMatchId.get(row.match_id) ?? {}))
-  const latestLockAt = maxIsoTimestamp(rows.map((row: any) => row.locked_at))
-  const latestReadyAt = maxIsoTimestamp(candidates
-    .filter((item: any) => getMarketFirstReadinessStatus(item) === 'READY')
-    .map((item: any) => item.candidate?.odds_synced_at))
-  const lockPredatesMarketReadiness = Boolean(latestLockAt && latestReadyAt && new Date(latestLockAt).getTime() < new Date(latestReadyAt).getTime())
-  const duplicateMatchCount = rows.length - new Set(rows.map((row: any) => row.match_id).filter(Boolean)).size
-  const duplicateRankCount = rows.length - new Set(rows.map((row: any) => Number(row.rank)).filter(Boolean)).size
-  const staleMarketLockRepairEligible = rows.length === 10 && candidateReadyCount >= 10 && top10WithOdds.length < 10 && lockPredatesMarketReadiness && duplicateMatchCount === 0 && duplicateRankCount === 0
-  return {
-    selectionDate,
-    rows,
-    selectedFixtureIds,
-    top10WithOdds,
-    top10WithoutOdds: selectedFixtureIds.filter((fixtureId: number) => !top10WithOdds.includes(fixtureId)),
-    selectedReadyCount: statuses.filter((status: string) => status === 'READY').length,
-    selectedPartialCount: statuses.filter((status: string) => status === 'PARTIAL').length,
-    selectedWaitingMarketCount: statuses.filter((status: string) => status === 'WAITING_MARKET').length,
-    selectedNoMarketDataCount: statuses.filter((status: string) => status === 'NO_MARKET_DATA').length,
-    aiFinalPickCoverage: rows.filter((row: any) => row.ai_final_pick_id).length,
-    lockPredatesMarketReadiness,
-    staleMarketLockRepairEligible,
-    duplicateMatchCount,
-    duplicateRankCount,
-  }
-}
-
-async function callAtomicStaleMarketRepair(selectionDate: string, expectedPreviousMatchIds: Array<string>, finalPicks: Array<any>, selections: Array<any>) {
-  const result = await supabase.rpc('repair_stale_market_first_top10', {
-    p_selection_date: selectionDate,
-    p_expected_previous_match_ids: expectedPreviousMatchIds,
-    p_final_picks: finalPicks,
-    p_selections: selections,
-  })
-  if (result.error) {
-    if (isMissingFunctionError(result.error)) throw new Error('Missing repair_stale_market_first_top10 RPC. Apply migration 20260713_add_atomic_market_first_top10_repair.sql before repair.')
-    throw result.error
-  }
-  return result.data
-}
-
-function assertUniqueMarketFirstRepairSelection(selected: Array<any>) {
-  const matchIds = selected.map((item: any) => item.match?.id).filter(Boolean)
-  if (selected.length !== 10 || matchIds.length !== 10 || new Set(matchIds).size !== 10) {
-    throw new Error('Stale market lock repair requires exactly 10 unique READY match ids')
-  }
-  if (selected.some((item: any) => getMarketFirstReadinessStatus(item) !== 'READY')) {
-    throw new Error('Stale market lock repair cannot include a non-READY candidate')
-  }
-}
-
-function maxIsoTimestamp(values: Array<unknown>) {
-  return values
-    .filter(Boolean)
-    .map((value) => String(value))
-    .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())
-    .at(-1) ?? null
-}
-
 async function persistMarketReadyTop10(selectionDate: string, selected: Array<any>, existingRows: Array<any>, options: { cleanupUnselected?: boolean } = {}) {
   const exactRows = new Map(existingRows.map((row: any) => [row.match_id, row]))
   const rankRows = new Map(existingRows.map((row: any) => [Number(row.rank), row]))
@@ -5650,11 +3562,7 @@ async function persistMarketReadyTop10(selectionDate: string, selected: Array<an
 
   for (const [index, item] of selected.entries()) {
     try {
-      if (hasValidDecisionMarketItem(item)) {
-        item.pick = await upsertAiFinalPickForMatch(item.match)
-      } else {
-        item.pick = null
-      }
+      item.pick = await upsertAiFinalPickForMatch(item.match)
       const payload = buildDailyTop10RowPayload(selectionDate, item, index)
       const desiredRank = index + 1
       const rawRankRow = rankRows.get(desiredRank)
@@ -5707,196 +3615,30 @@ async function persistMarketReadyTop10(selectionDate: string, selected: Array<an
 }
 
 function buildDailyTop10RowPayload(selectionDate: string, item: any, index: number) {
-  const marketReady = hasValidDecisionMarketItem(item)
-  const decisionStatus = getDecisionBoardStatus(item)
-  const analytics = buildFootballAnalyticsOutput({
-    ...item.match,
-    analysis: item.analysis ?? item.match?.analysis,
-    odds: item.odds ?? item.match?.odds ?? [],
-    selection_status: decisionStatus,
-    decisionStatus,
-  }, {
-    selectionDate,
-    generatedAt: new Date().toISOString(),
-  })
   return {
     selection_date: selectionDate,
     match_id: item.match.id,
     api_fixture_id: nullableNumber(item.match.api_sports_fixture_id),
     rank: index + 1,
-    selection_score: nullableNumber(item.finalSelectionScore ?? item.candidate?.pre_selection_score ?? item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
-    ai_final_pick_id: marketReady ? item.pick?.id ?? null : null,
-    signal: marketReady ? item.pick?.signal ?? 'WATCH' : 'SKIP',
-    market_focus: marketReady ? item.pick?.market_focus ?? item.strict?.pickMarket ?? 'NONE' : 'NONE',
-    pick_team: marketReady ? item.strict?.pickTeam ?? item.pickTeam?.pickTeam ?? null : null,
-    pick_team_id: marketReady ? item.strict?.pickTeamId ?? item.pickTeam?.pickTeamId ?? null : null,
-    pick_side: marketReady ? item.strict?.pickSide ?? item.pickTeam?.pickSide ?? null : 'NONE',
-    pick_source: marketReady ? item.strict?.pickSource ?? item.pickTeam?.pickSource ?? null : 'NONE',
-    pick_market: marketReady ? item.strict?.pickMarket ?? item.pickTeam?.pickMarket ?? null : null,
-    pick_market_id: marketReady ? item.strict?.pickMarketId ?? item.pickTeam?.pickMarketId ?? null : null,
-    pick_selection: marketReady ? item.strict?.pickSelection ?? item.pickTeam?.pickSelection ?? null : null,
-    pick_price: marketReady ? nullableNumber(item.strict?.pickPrice ?? item.pickTeam?.pickPrice) : null,
-    pick_confidence: marketReady ? nullableNumber(item.pick?.pick_confidence ?? item.pickTeam?.pickConfidence) : null,
-    market_data_used: marketReady,
-    analysis_status: analytics.analysisStatus,
-    analysis_dimension: marketReady ? 'FULL_ANALYSIS' : 'FIXTURE_ANALYSIS',
-    model_outlook: analytics.modelOutlook,
-    win_draw_loss_probabilities: analytics.matchOutlook,
-    expected_goals: analytics.expectedGoals,
-    expected_score_predictions: analytics.expectedScorePredictions,
-    confidence_breakdown: analytics.confidenceBreakdown,
-    data_quality: analytics.dataQuality,
-    analysis_reason_codes: analytics.reasonCodes,
-    analysis_model_version: FOOTBALL_ANALYSIS_MODEL_VERSION,
-    analysis_generated_at: analytics.generatedAt,
-    selection_status: decisionStatus,
-    market_ready: marketReady,
-    pipeline_version: FOOTBALL_ANALYTICS_PIPELINE_VERSION,
-    selection_algorithm_version: DAILY_SELECTION_ALGORITHM_VERSION,
-    decision_market: marketReady ? canonicalDecisionMarket(item.pick?.market_focus ?? item.strict?.pickMarket) : null,
-    market_tier: getDecisionMarketTier(item.pick?.market_focus ?? item.strict?.pickMarket),
-    primary_market_ready: hasPrimaryDecisionMarketItem(item),
-    alternative_market_ready: hasAlternativeDecisionMarketItem(item),
-    available_markets: getAvailableDecisionMarkets(item.odds ?? []),
-    market_quality: buildDecisionMarketAudit(item),
-    market_snapshot_at: latestOddsSnapshotAt(item.odds ?? []),
-    decision_model_version: 'multi-market-decision-v1',
-    market_quality_version: 'market-quality-v2',
-    decision_reason: decisionStatus === 'WAITING_MARKET' || decisionStatus === 'INSUFFICIENT_DATA' ? 'No valid primary or alternative market available' : `${decisionStatus} by market-ready dynamic decision board`,
-    decision_audit: {
-      candidateRank: item.candidate?.candidate_rank ?? null,
-      candidateTier: item.candidate?.candidate_tier ?? null,
-      preSelectionScore: item.candidate?.pre_selection_score ?? null,
-      marketReadinessStatus: getMarketFirstReadinessStatus(item),
-      hasAhMarket: Boolean(item.candidate?.has_usable_ah),
-      hasOuMarket: Boolean(item.candidate?.has_usable_ou),
-      oddsRowsCount: item.odds?.length ?? item.candidate?.odds_rows_count ?? 0,
-      publicMarketAnalysisEnabled: enablePublicMarketAnalysis,
-      compatibilityPipelineVersion: HYBRID_DAILY_PIPELINE_VERSION,
-    },
-    confidence_score: analytics.confidence,
+    selection_score: nullableNumber(item.analysis?.ranking_score ?? item.analysis?.calibrated_confidence_score ?? item.analysis?.confidence_score),
+    ai_final_pick_id: item.pick?.id ?? null,
+    signal: item.pick?.signal ?? 'SKIP',
+    market_focus: item.pick?.market_focus ?? 'NONE',
+    pick_team: item.strict?.pickTeam ?? item.pickTeam?.pickTeam ?? null,
+    pick_team_id: item.strict?.pickTeamId ?? item.pickTeam?.pickTeamId ?? null,
+    pick_side: item.strict?.pickSide ?? item.pickTeam?.pickSide ?? null,
+    pick_source: item.strict?.pickSource ?? item.pickTeam?.pickSource ?? null,
+    pick_market: item.strict?.pickMarket ?? item.pickTeam?.pickMarket ?? null,
+    pick_market_id: item.strict?.pickMarketId ?? item.pickTeam?.pickMarketId ?? null,
+    pick_selection: item.strict?.pickSelection ?? item.pickTeam?.pickSelection ?? null,
+    pick_price: nullableNumber(item.strict?.pickPrice ?? item.pickTeam?.pickPrice),
+    pick_confidence: nullableNumber(item.pick?.pick_confidence ?? item.pickTeam?.pickConfidence),
+    market_data_used: Boolean(item.pick?.market_data_used ?? item.strict?.hasApiFootballOdds ?? item.pickTeam?.hasApiFootballOdds ?? false),
+    analysis_status: item.pick?.analysis_status ?? (item.strict?.hasApiFootballOdds ? 'API_FOOTBALL_ODDS_READY' : 'INSUFFICIENT_MARKET_DATA'),
+    confidence_score: nullableNumber(item.pick?.confidence_score ?? item.analysis?.confidence_score),
     risk_level: normalizeRiskLevelText(item.pick?.risk_level ?? item.analysis?.risk_level ?? 'MEDIUM'),
     updated_at: new Date().toISOString(),
   }
-}
-
-function buildFootballAnalyticsSummary({ fixturesDiscovered = 0, playableFixtures = 0, candidates = [], selected = [], failedFixtures = 0 }: {
-  fixturesDiscovered?: number
-  playableFixtures?: number
-  candidates?: Array<any>
-  selected?: Array<any>
-  failedFixtures?: number
-}) {
-  const rows = (selected.length ? selected : candidates).map((item: any) => {
-    const analytics = buildFootballAnalyticsOutput({
-      ...item.match,
-      analysis: item.analysis ?? item.match?.analysis,
-      odds: item.odds ?? item.match?.odds ?? [],
-      selection_status: getDecisionBoardStatus(item),
-    })
-    return analytics.analysisStatus
-  })
-  return {
-    fixturesDiscovered,
-    playableFixtures,
-    candidatesScanned: candidates.length,
-    analysisReady: rows.filter((status: string) => status === 'ANALYSIS_READY').length,
-    partialAnalysis: rows.filter((status: string) => status === 'PARTIAL_ANALYSIS').length,
-    waitingData: rows.filter((status: string) => status === 'WAITING_DATA').length,
-    insufficientData: rows.filter((status: string) => status === 'INSUFFICIENT_DATA').length,
-    finished: rows.filter((status: string) => status === 'FINISHED').length,
-    failedFixtures,
-    duplicateFixtures: countDuplicateValues(candidates.map((item: any) => item.match?.api_sports_fixture_id ?? item.match?.id).filter(Boolean)),
-  }
-}
-
-function countDuplicateValues(values: Array<unknown>) {
-  const seen = new Set()
-  let duplicates = 0
-  for (const value of values) {
-    if (seen.has(value)) duplicates += 1
-    else seen.add(value)
-  }
-  return duplicates
-}
-
-function hasValidDecisionMarketItem(item: any) {
-  const rows = Array.isArray(item?.odds) ? item.odds : []
-  if (rows.some(isValidDecisionOddsRow)) return true
-  const market = String(item?.strict?.pickMarket ?? item?.pickTeam?.pickMarket ?? '').toUpperCase()
-  return ['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'].includes(market) && nullableNumber(item?.strict?.pickPrice ?? item?.pickTeam?.pickPrice) !== null
-}
-
-function isValidDecisionOddsRow(row: any) {
-  const focus = String(row?.market_focus ?? '').toUpperCase()
-  const name = String(row?.market_name ?? '').toLowerCase()
-  const price = nullableNumber(row?.price)
-  if (price === null || price <= 0) return false
-  return focus === 'AH' || focus === 'OU' || focus === 'MATCH_WINNER' || focus === 'DOUBLE_CHANCE' ||
-    name.includes('asian handicap') || name.includes('handicap') || name.includes('over/under') || name.includes('goals over') ||
-    name.includes('match winner') || name.includes('1x2') || name.includes('double chance')
-}
-
-function getDecisionBoardStatus(item: any) {
-  if (hasPrimaryDecisionMarketItem(item)) return 'READY_PRIMARY'
-  if (hasAlternativeDecisionMarketItem(item)) return 'READY_ALTERNATIVE'
-  const readiness = getMarketFirstReadinessStatus(item)
-  if (readiness === 'WAITING_MARKET' || readiness === 'NO_MARKET_DATA' || readiness === 'PARTIAL') return 'WAITING_MARKET'
-  if (readiness === 'INSUFFICIENT_DATA') return 'INSUFFICIENT_DATA'
-  return 'REJECTED'
-}
-
-function hasPrimaryDecisionMarketItem(item: any) {
-  const markets = getAvailableDecisionMarkets(item?.odds ?? [])
-  return markets.includes('AH') || markets.includes('OU')
-}
-
-function hasAlternativeDecisionMarketItem(item: any) {
-  const markets = getAvailableDecisionMarkets(item?.odds ?? [])
-  return markets.includes('MATCH_WINNER') || markets.includes('DOUBLE_CHANCE')
-}
-
-function getAvailableDecisionMarkets(rows: Array<any>) {
-  return [...new Set((rows ?? [])
-    .filter((row: any) => nullableNumber(row?.price) !== null && Number(row.price) > 1 && isSupportedFullTimeOddsRow(row))
-    .map((row: any) => normalizeMarketFocus(row.market_focus ?? row.market_name))
-    .filter((market: string) => market !== 'NONE'))]
-}
-
-function canonicalDecisionMarket(value: unknown) {
-  const focus = normalizeMarketFocus(value)
-  if (focus === 'AH') return 'ASIAN_HANDICAP'
-  if (focus === 'OU') return 'OVER_UNDER'
-  if (focus === 'MATCH_WINNER') return 'MATCH_WINNER_1X2'
-  if (focus === 'DOUBLE_CHANCE') return 'DOUBLE_CHANCE'
-  return null
-}
-
-function getDecisionMarketTier(value: unknown) {
-  const focus = normalizeMarketFocus(value)
-  if (focus === 'AH' || focus === 'OU') return 'PRIMARY'
-  if (focus === 'MATCH_WINNER' || focus === 'DOUBLE_CHANCE') return 'ALTERNATIVE'
-  return null
-}
-
-function buildDecisionMarketAudit(item: any) {
-  const markets = getAvailableDecisionMarkets(item?.odds ?? [])
-  return {
-    version: 'market-quality-v2',
-    availableMarkets: markets,
-    primaryMarketReady: markets.some((market: string) => market === 'AH' || market === 'OU'),
-    alternativeMarketReady: markets.some((market: string) => market === 'MATCH_WINNER' || market === 'DOUBLE_CHANCE'),
-    supportingOnly: markets.length > 0 && markets.every((market: string) => market === 'CORRECT_SCORE'),
-    oddsRows: item?.odds?.length ?? 0,
-  }
-}
-
-function latestOddsSnapshotAt(rows: Array<any>) {
-  return (rows ?? [])
-    .map((row: any) => row.snapshot_at)
-    .filter(Boolean)
-    .sort((a: string, b: string) => new Date(a).getTime() - new Date(b).getTime())
-    .at(-1) ?? null
 }
 
 async function updateDailyTop10Row(rowId: string, selectionDate: string, payload: Record<string, unknown>) {
@@ -5943,31 +3685,6 @@ function stripApiFootballPickPayload(payload: Record<string, unknown>) {
     'pipeline_stage',
     'pipeline_reasons',
     'pipeline_warnings',
-    'selection_status',
-    'market_ready',
-    'pipeline_version',
-    'selection_algorithm_version',
-    'decision_reason',
-    'decision_audit',
-    'decision_market',
-    'market_tier',
-    'primary_market_ready',
-    'alternative_market_ready',
-    'available_markets',
-    'market_quality',
-    'market_snapshot_at',
-    'decision_model_version',
-    'market_quality_version',
-    'analysis_dimension',
-    'model_outlook',
-    'win_draw_loss_probabilities',
-    'expected_goals',
-    'expected_score_predictions',
-    'confidence_breakdown',
-    'data_quality',
-    'analysis_reason_codes',
-    'analysis_model_version',
-    'analysis_generated_at',
   ]) {
     delete stripped[key]
   }
@@ -6086,45 +3803,24 @@ async function fetchMatchIdsWithOdds(matchIds: Array<string>) {
   return new Set((result.data ?? []).map((row: any) => row.match_id).filter(Boolean))
 }
 
-async function fetchStoredOddsByMatchIds(matchIds: Array<string>, options: { latestOnly?: boolean } = {}) {
+async function fetchStoredOddsByMatchIds(matchIds: Array<string>) {
   const oddsByMatchId = new Map<string, Array<any>>()
   const ids = [...new Set(matchIds.filter(Boolean))]
   if (!ids.length) return oddsByMatchId
 
-  const fetchedRows: Array<any> = []
-  if (!options.latestOnly) {
-    const result = await supabase
-      .from('football_match_odds')
-      .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at, raw')
-      .in('match_id', ids)
-      .order('is_latest', { ascending: false })
-      .order('snapshot_at', { ascending: false })
-    if (result.error) {
-      if (isMissingColumnError(result.error)) return oddsByMatchId
-      throw result.error
-    }
-    fetchedRows.push(...(result.data ?? []))
-  } else {
-    const pageSize = 1000
-    for (let from = 0; ; from += pageSize) {
-      const result = await supabase
-        .from('football_match_odds')
-        .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at, raw')
-        .in('match_id', ids)
-        .eq('is_latest', true)
-        .order('id', { ascending: true })
-        .range(from, from + pageSize - 1)
-      if (result.error) {
-        if (isMissingColumnError(result.error)) return oddsByMatchId
-        throw result.error
-      }
-      const page = result.data ?? []
-      fetchedRows.push(...page)
-      if (page.length < pageSize) break
-    }
+  const result = await supabase
+    .from('football_match_odds')
+    .select('id, match_id, api_fixture_id, api_bookmaker_id, bookmaker_name, market_focus, market_name, selection, line, price, odd_text, is_opening, is_latest, snapshot_at, raw')
+    .in('match_id', ids)
+    .order('is_latest', { ascending: false })
+    .order('snapshot_at', { ascending: false })
+
+  if (result.error) {
+    if (isMissingColumnError(result.error)) return oddsByMatchId
+    throw result.error
   }
 
-  for (const row of fetchedRows) {
+  for (const row of result.data ?? []) {
     if (!row.match_id) continue
     const rows = oddsByMatchId.get(row.match_id) ?? []
     rows.push(row)
@@ -6145,7 +3841,7 @@ function deriveEdgePickTeamFromApiFootballOdds(match: any, oddsRows: Array<any>)
     pickSelection: null,
     pickPrice: null,
     pickSource: 'NONE',
-    reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²',
+    reason: 'ยังไม่มีข้อมูลราคา',
     marketPriority: 0,
     hasApiFootballOdds: false,
     hasPrimaryMarket: false,
@@ -6176,28 +3872,22 @@ function deriveEdgePickTeamFromApiFootballOdds(match: any, oddsRows: Array<any>)
 
   if (market === 'AH') {
     const side = inferEdgeTeamSide(selection, homeName, awayName)
-    if (side === 'HOME') return withEdgePickSummary({ ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸”à¹à¸®à¸™à¸”à¸´à¹à¸„à¸›à¸‚à¸­à¸‡ API-Football' }, match, rows)
-    if (side === 'AWAY') return withEdgePickSummary({ ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸”à¹à¸®à¸™à¸”à¸´à¹à¸„à¸›à¸‚à¸­à¸‡ API-Football' }, match, rows)
-    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸£à¸°à¸šà¸¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸”à¹à¸®à¸™à¸”à¸´à¹à¸„à¸›à¹„à¸”à¹‰' }, match, rows)
+    if (side === 'HOME') return withEdgePickSummary({ ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }, match, rows)
+    if (side === 'AWAY') return withEdgePickSummary({ ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาดแฮนดิแคปของ API-Football' }, match, rows)
+    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาดแฮนดิแคปได้' }, match, rows)
   }
 
   if (market === 'MATCH_WINNER') {
     const side = inferEdgeTeamSide(selection, homeName, awayName)
-    if (side === 'HOME') return withEdgePickSummary({ ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸” 1X2 à¸‚à¸­à¸‡ API-Football' }, match, rows)
-    if (side === 'AWAY') return withEdgePickSummary({ ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸” 1X2 à¸‚à¸­à¸‡ API-Football' }, match, rows)
-    if (isEdgeDrawSelection(selection)) return withEdgePickSummary({ ...base, pickSide: 'DRAW', reason: 'à¸•à¸¥à¸²à¸”à¸™à¸µà¹‰à¹€à¸›à¹‡à¸™à¸œà¸¥à¹€à¸ªà¸¡à¸­ à¹„à¸¡à¹ˆà¸¡à¸µà¸—à¸µà¸¡à¸—à¸µà¹ˆà¹€à¸¥à¸·à¸­à¸' }, match, rows)
-    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸£à¸°à¸šà¸¸à¸—à¸µà¸¡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸” 1X2 à¹„à¸”à¹‰' }, match, rows)
+    if (side === 'HOME') return withEdgePickSummary({ ...base, pickTeam: homeName, pickTeamId: homeId, pickSide: 'HOME', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }, match, rows)
+    if (side === 'AWAY') return withEdgePickSummary({ ...base, pickTeam: awayName, pickTeamId: awayId, pickSide: 'AWAY', reason: 'เลือกทีมจากตลาด 1X2 ของ API-Football' }, match, rows)
+    if (isEdgeDrawSelection(selection)) return withEdgePickSummary({ ...base, pickSide: 'DRAW', reason: 'ตลาดนี้เป็นผลเสมอ ไม่มีทีมที่เลือก' }, match, rows)
+    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'ไม่สามารถระบุทีมจากตลาด 1X2 ได้' }, match, rows)
   }
 
-  if (market === 'DOUBLE_CHANCE') {
-    const side = inferEdgeDoubleChanceSide(selection)
-    if (side !== 'NONE') return withEdgePickSummary({ ...base, pickSide: side, reason: 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸£à¸²à¸„à¸² Double Chance à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football' }, match, rows)
-    return withEdgePickSummary({ ...base, pickSource: 'NONE', reason: 'à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸£à¸°à¸šà¸¸à¸à¸±à¹ˆà¸‡à¸ˆà¸²à¸à¸•à¸¥à¸²à¸” Double Chance à¹„à¸”à¹‰' }, match, rows)
-  }
-
-  if (market === 'OU') return withEdgePickSummary({ ...base, pickSide: inferEdgeOverUnderSide(selection), reason: 'à¸•à¸¥à¸²à¸”à¸ªà¸¹à¸‡à¸•à¹ˆà¸³à¹„à¸¡à¹ˆà¸¡à¸µà¸—à¸µà¸¡à¸—à¸µà¹ˆà¹€à¸¥à¸·à¸­à¸' }, match, rows)
-  if (market === 'BTTS') return withEdgePickSummary({ ...base, pickSide: inferEdgeYesNoSide(selection), reason: 'à¸•à¸¥à¸²à¸”à¸—à¸±à¹‰à¸‡à¸ªà¸­à¸‡à¸—à¸µà¸¡à¸¢à¸´à¸‡à¹„à¸”à¹‰à¹„à¸¡à¹ˆà¸¡à¸µà¸—à¸µà¸¡à¸—à¸µà¹ˆà¹€à¸¥à¸·à¸­à¸' }, match, rows)
-  return withEdgePickSummary({ ...base, reason: 'à¸•à¸¥à¸²à¸”à¸ˆà¸²à¸ API-Football à¹„à¸¡à¹ˆà¹ƒà¸Šà¹ˆà¸•à¸¥à¸²à¸”à¹€à¸¥à¸·à¸­à¸à¸—à¸µà¸¡' }, match, rows)
+  if (market === 'OU') return withEdgePickSummary({ ...base, pickSide: inferEdgeOverUnderSide(selection), reason: 'ตลาดสูงต่ำไม่มีทีมที่เลือก' }, match, rows)
+  if (market === 'BTTS') return withEdgePickSummary({ ...base, pickSide: inferEdgeYesNoSide(selection), reason: 'ตลาดทั้งสองทีมยิงได้ไม่มีทีมที่เลือก' }, match, rows)
+  return withEdgePickSummary({ ...base, reason: 'ตลาดจาก API-Football ไม่ใช่ตลาดเลือกทีม' }, match, rows)
 }
 
 function choosePrimaryEdgeOddsMarket(rows: Array<any>) {
@@ -6229,16 +3919,16 @@ function createEdgePickSummary(match: any, pick: any, oddsRows: Array<any>) {
   const hasOdds = Array.isArray(oddsRows) && oddsRows.length > 0
   const analysis = getAnalysis(match) ?? {}
   const confidence = Math.round(Number(pick.pickConfidence ?? analysis.calibrated_confidence_score ?? analysis.confidence_score ?? match.confidence_score ?? 0))
-  const market = hasOdds ? firstText(oddsRows[0]?.market_name, pick.pickMarket, 'API-Football') : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²'
+  const market = hasOdds ? firstText(oddsRows[0]?.market_name, pick.pickMarket, 'API-Football') : 'ยังไม่มีข้อมูลราคา'
   return {
-    title: 'à¸ªà¸£à¸¸à¸›à¸¡à¸¸à¸¡à¸¡à¸­à¸‡à¸£à¸°à¸šà¸š',
+    title: 'สรุปมุมมองระบบ',
     side: pick.pickSide ?? 'NONE',
     sideLabel: getEdgePickSideLabel(pick),
     team: pick.pickTeam ?? null,
     market,
-    reason: hasOdds ? getEdgePickSummaryReason(pick) : 'à¸£à¸°à¸šà¸šà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸šà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¸ˆà¸²à¸ API-Football à¸ªà¸³à¸«à¸£à¸±à¸šà¸„à¸¹à¹ˆà¸™à¸µà¹‰',
+    reason: hasOdds ? getEdgePickSummaryReason(pick) : 'ระบบยังไม่พบข้อมูลราคาจาก API-Football สำหรับคู่นี้',
     predictedOutcomeLabel: getEdgePredictedOutcomeLabel(pick),
-    confidenceLabel: confidence ? `${confidence}%` : 'à¸£à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹€à¸žà¸´à¹ˆà¸¡',
+    confidenceLabel: confidence ? `${confidence}%` : 'รอข้อมูลเพิ่ม',
     hasApiFootballOdds: hasOdds,
   }
 }
@@ -6246,14 +3936,14 @@ function createEdgePickSummary(match: any, pick: any, oddsRows: Array<any>) {
 function getEdgePickSideLabel(pick: any) {
   if (pick.pickTeam) return pick.pickTeam
   const labels: Record<string, string> = {
-    HOME: 'à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™',
-    AWAY: 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™',
-    DRAW: 'à¹€à¸ªà¸¡à¸­',
-    OVER: 'à¸ªà¸¹à¸‡',
-    UNDER: 'à¸•à¹ˆà¸³',
-    YES: 'à¹ƒà¸Šà¹ˆ',
-    NO: 'à¹„à¸¡à¹ˆà¹ƒà¸Šà¹ˆ',
-    NONE: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡',
+    HOME: 'เจ้าบ้าน',
+    AWAY: 'ทีมเยือน',
+    DRAW: 'เสมอ',
+    OVER: 'สูง',
+    UNDER: 'ต่ำ',
+    YES: 'ใช่',
+    NO: 'ไม่ใช่',
+    NONE: 'ยังไม่เลือกฝั่ง',
   }
   return labels[String(pick.pickSide ?? 'NONE').toUpperCase()] ?? labels.NONE
 }
@@ -6261,24 +3951,24 @@ function getEdgePickSideLabel(pick: any) {
 function getEdgePredictedOutcomeLabel(pick: any) {
   const side = String(pick.pickSide ?? 'NONE').toUpperCase()
   const market = String(pick.pickMarket ?? '').toUpperCase()
-  if (!pick.hasApiFootballOdds) return 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²'
-  if (pick.pickTeam && market === 'AH') return `${pick.pickTeam} à¹€à¸›à¹‡à¸™à¸à¸±à¹ˆà¸‡à¸—à¸µà¹ˆà¸£à¸°à¸šà¸šà¹ƒà¸«à¹‰à¸ à¸²à¸©à¸µà¸”à¸µà¸à¸§à¹ˆà¸²`
-  if (pick.pickTeam && market === 'MATCH_WINNER') return `${pick.pickTeam} à¸¡à¸µà¹‚à¸­à¸à¸²à¸ªà¹€à¸«à¸™à¸·à¸­à¸à¸§à¹ˆà¸²`
-  if (side === 'DRAW') return 'à¹€à¸à¸¡à¸¡à¸µà¹‚à¸­à¸à¸²à¸ªà¸­à¸­à¸à¹€à¸ªà¸¡à¸­'
-  if (side === 'OVER') return 'à¹€à¸à¸¡à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸›à¸£à¸°à¸•à¸¹à¸£à¸§à¸¡à¸ªà¸¹à¸‡'
-  if (side === 'UNDER') return 'à¹€à¸à¸¡à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸›à¸£à¸°à¸•à¸¹à¸£à¸§à¸¡à¸•à¹ˆà¸³'
-  if (side === 'YES') return 'à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸—à¸µà¹ˆà¸—à¸±à¹‰à¸‡à¸ªà¸­à¸‡à¸—à¸µà¸¡à¸—à¸³à¸›à¸£à¸°à¸•à¸¹à¹„à¸”à¹‰'
-  if (side === 'NO') return 'à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸—à¸µà¹ˆà¸­à¸¢à¹ˆà¸²à¸‡à¸™à¹‰à¸­à¸¢à¸«à¸™à¸¶à¹ˆà¸‡à¸—à¸µà¸¡à¸—à¸³à¸›à¸£à¸°à¸•à¸¹à¹„à¸¡à¹ˆà¹„à¸”à¹‰'
-  return 'à¸£à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹€à¸žà¸´à¹ˆà¸¡à¸à¹ˆà¸­à¸™à¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡'
+  if (!pick.hasApiFootballOdds) return 'ยังไม่มีข้อมูลราคา'
+  if (pick.pickTeam && market === 'AH') return `${pick.pickTeam} เป็นฝั่งที่ระบบให้ภาษีดีกว่า`
+  if (pick.pickTeam && market === 'MATCH_WINNER') return `${pick.pickTeam} มีโอกาสเหนือกว่า`
+  if (side === 'DRAW') return 'เกมมีโอกาสออกเสมอ'
+  if (side === 'OVER') return 'เกมมีแนวโน้มประตูรวมสูง'
+  if (side === 'UNDER') return 'เกมมีแนวโน้มประตูรวมต่ำ'
+  if (side === 'YES') return 'มีแนวโน้มที่ทั้งสองทีมทำประตูได้'
+  if (side === 'NO') return 'มีแนวโน้มที่อย่างน้อยหนึ่งทีมทำประตูไม่ได้'
+  return 'รอข้อมูลเพิ่มก่อนเลือกฝั่ง'
 }
 
 function getEdgePickSummaryReason(pick: any) {
   const market = String(pick.pickMarket ?? '').toUpperCase()
-  if (market === 'AH') return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸•à¸¥à¸²à¸”à¹à¸®à¸™à¸”à¸´à¹à¸„à¸›à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
-  if (market === 'MATCH_WINNER') return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸•à¸¥à¸²à¸”à¸œà¸¥à¹à¸žà¹‰à¸Šà¸™à¸°à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
-  if (market === 'OU') return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸•à¸¥à¸²à¸”à¸›à¸£à¸°à¸•à¸¹à¸£à¸§à¸¡à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
-  if (market === 'BTTS') return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸•à¸¥à¸²à¸”à¸—à¸±à¹‰à¸‡à¸ªà¸­à¸‡à¸—à¸µà¸¡à¸—à¸³à¸›à¸£à¸°à¸•à¸¹à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
-  return 'à¸­à¹‰à¸²à¸‡à¸­à¸´à¸‡à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¸ˆà¸£à¸´à¸‡à¸ˆà¸²à¸ API-Football'
+  if (market === 'AH') return 'อ้างอิงตลาดแฮนดิแคปจริงจาก API-Football'
+  if (market === 'MATCH_WINNER') return 'อ้างอิงตลาดผลแพ้ชนะจริงจาก API-Football'
+  if (market === 'OU') return 'อ้างอิงตลาดประตูรวมจริงจาก API-Football'
+  if (market === 'BTTS') return 'อ้างอิงตลาดทั้งสองทีมทำประตูจริงจาก API-Football'
+  return 'อ้างอิงข้อมูลราคาจริงจาก API-Football'
 }
 
 function getStrictDailyScoreParts(match: any, oddsRows: Array<any>, pickTeam: any) {
@@ -6431,9 +4121,7 @@ function getEdgeMarketPriority(value: unknown) {
   if (market === 'AH') return 100
   if (market === 'OU') return 90
   if (market === 'MATCH_WINNER') return 80
-  if (market === 'DOUBLE_CHANCE') return 75
   if (market === 'BTTS') return 70
-  if (market === 'CORRECT_SCORE') return 20
   return market === 'NONE' ? (String(value ?? '').trim() && String(value).toUpperCase() !== 'NONE' ? 50 : 0) : 50
 }
 
@@ -6472,14 +4160,6 @@ function inferEdgeYesNoSide(selection: unknown) {
   const text = normalizeEdgeName(selection)
   if (['yes', 'y'].includes(text) || text.includes('yes')) return 'YES'
   if (['no', 'n'].includes(text) || text.includes('no')) return 'NO'
-  return 'NONE'
-}
-
-function inferEdgeDoubleChanceSide(selection: unknown) {
-  const text = normalizeEdgeName(selection).replace(/\s+/g, '')
-  if (text === '1x' || text.includes('homedraw')) return '1X'
-  if (text === '12' || text.includes('homeaway')) return '12'
-  if (text === 'x2' || text.includes('drawaway')) return 'X2'
   return 'NONE'
 }
 
@@ -6711,9 +4391,6 @@ function summarizeDailyTop10(selectionDate: string, rows: Array<any>) {
     strongSignalCount: rows.filter((row) => row.signal === 'STRONG_SIGNAL').length,
     watchCount: rows.filter((row) => row.signal === 'WATCH').length,
     skipCount: rows.filter((row) => row.signal === 'SKIP').length,
-    readyCount: rows.filter((row) => String(row.selection_status ?? '').toUpperCase() === 'READY' || row.market_ready === true).length,
-    waitingMarketCount: rows.filter((row) => String(row.selection_status ?? '').toUpperCase() === 'WAITING_MARKET' || row.market_ready === false).length,
-    decisionBoardCount: rows.length,
   }
 }
 
@@ -7339,15 +5016,11 @@ async function trackedApiFootballGet(context: FootballEnrichmentContext, endpoin
     await logEnrichmentSync({ mode: context.mode, endpoint, status, results_count: results, started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
     return { ok: true, data: raw?.response ?? [], raw, rateLimited: false }
   } catch (error) {
-    const rawOperationError = toSyncOperationError(error, 'api-football', endpoint === '/odds' ? 'fetch_api_football_odds' : `fetch_api_football:${endpoint}`)
-    const operationError = endpoint === '/odds'
-      ? createSyncOperationError({ source: rawOperationError.source, operation: 'fetch_api_football_odds', status: rawOperationError.status, message: rawOperationError.sanitizedMessage })
-      : rawOperationError
-    const message = operationError.sanitizedMessage
+    const message = error instanceof Error ? error.message : 'api-football request failed'
     if (message.includes('api-football 429')) context.rateLimited = true
     bumpEndpoint(context, endpoint, 'failed')
     await logEnrichmentSync({ mode: context.mode, endpoint, status: 'error', error_message: message, started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
-    return { ok: false, data: [], raw: null, error: message, source: operationError.source, operation: operationError.operation, status: operationError.status, rateLimited: context.rateLimited }
+    return { ok: false, data: [], raw: null, error: message, rateLimited: context.rateLimited }
   }
 }
 
@@ -7925,36 +5598,10 @@ function buildDailyPhaseDetails(phase: string, results: Array<any>) {
       partial: isFixtureEnrichmentPartial(results, {}),
     }
   }
-  if (phase === 'odds-sync') {
-    const odds = results[0] ?? {}
-    return {
-      dateKey: odds.dateKey ?? null,
-      totalFixtures: Number(odds.totalFixtures ?? odds.totalCandidates ?? 0),
-      processedFixtures: Number(odds.processedFixtures ?? odds.processed ?? 0),
-      oddsAttempted: Number(odds.oddsAttempted ?? 0),
-      oddsRowsSaved: Number(odds.oddsRowsSaved ?? odds.rowsSaved ?? 0),
-      oddsEmptyFixtures: Number(odds.oddsEmptyFixtures ?? odds.emptyFixtures ?? 0),
-      oddsFailedFixtures: Number(odds.oddsFailedFixtures ?? odds.failedFixtures ?? 0),
-      fixturesWithOdds: Number(odds.fixturesWithOdds ?? 0),
-      fixturesWithAh: Number(odds.fixturesWithAh ?? 0),
-      fixturesWithOu: Number(odds.fixturesWithOu ?? 0),
-      warnings: odds.warnings ?? [],
-    }
-  }
   if (phase === 'ranking') {
-    const ranking = results[0] ?? {}
     return {
-      rankingStatus: ranking.rankingStatus ?? (Number(ranking.failed ?? 0) > 0 ? 'failed' : 'success'),
-      selectionCompleted: Boolean(ranking.selectionCompleted),
-      selectionHealth: ranking.selectionHealth ?? null,
-      expectedSelectedCount: Number(ranking.expectedSelectedCount ?? 0),
-      marketReadinessStatus: ranking.marketReadinessStatus ?? null,
-      bettingReadiness: ranking.bettingReadiness ?? null,
-      retryable: Boolean(ranking.retryable),
-      retryReasonCode: ranking.retryReasonCode ?? null,
-      invariantFailures: ranking.invariantFailures ?? [],
-      aiFinalPickRows: Number(ranking.aiFinalPickRows ?? 0),
-      rankingReadiness: ranking.rankingReadiness ?? null,
+      rankingStatus: Number(results[0]?.failed ?? 0) > 0 ? 'failed' : results[0]?.partial ? 'partial' : 'success',
+      rankingReadiness: results[0]?.rankingReadiness ?? null,
     }
   }
   return {}
@@ -8008,12 +5655,9 @@ async function storeOddsSnapshots(match: any, fixtureId: number, response: any) 
   return normalized
 }
 
-function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<any>, options: { allowedMarketFocuses?: Array<string>; canonicalMatchId?: string } = {}) {
+function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<any>) {
   const rows: Array<any> = []
   const bookmakers = new Map<number, any>()
-  const allowedMarketFocuses = options.allowedMarketFocuses?.length ? new Set(options.allowedMarketFocuses) : null
-  const canonicalMatchId = String(options.canonicalMatchId ?? match.id ?? '').trim()
-  if (!canonicalMatchId) throw new Error('Cannot normalize odds without canonical football_matches.id')
   for (const item of rawRows ?? []) {
     for (const bookmaker of item.bookmakers ?? []) {
       const bookmakerId = nullableNumber(bookmaker.id)
@@ -8026,11 +5670,9 @@ function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<an
       for (const bet of bookmaker.bets ?? []) {
         const marketFocus = normalizeMarketFocus(bet.name)
         if (marketFocus === 'NONE') continue
-        if (allowedMarketFocuses && !allowedMarketFocuses.has(marketFocus)) continue
         for (const value of bet.values ?? []) {
-          if (!isSupportedFullTimeOddsMarket(bet.name, value, marketFocus)) continue
           rows.push({
-            match_id: canonicalMatchId,
+            match_id: match.id,
             api_fixture_id: fixtureId,
             api_bookmaker_id: bookmakerId,
             bookmaker_name: bookmaker.name ?? null,
@@ -8053,35 +5695,16 @@ function normalizeMatchOddsRows(match: any, fixtureId: number, rawRows: Array<an
   return { rows, bookmakers: [...bookmakers.values()] }
 }
 
-function getMarketNamesSample(rawRows: Array<any>) {
-  const names = new Set<string>()
-  for (const item of rawRows ?? []) {
-    for (const bookmaker of item.bookmakers ?? []) {
-      for (const bet of bookmaker.bets ?? []) {
-        const name = String(bet.name ?? '').trim()
-        if (name) names.add(name)
-        if (names.size >= 8) return [...names]
-      }
-    }
-  }
-  return [...names]
-}
-
 async function storeFootballBookmakers(rows: Array<any>) {
   if (!rows.length) return { count: 0 }
   return upsertApiFootballData('football_bookmakers', 'api_bookmaker_id', rows)
 }
 
-async function storeFootballMatchOdds(matchId: string, rows: Array<any>, options: { chunkSize?: number } = {}) {
+async function storeFootballMatchOdds(matchId: string, rows: Array<any>) {
   if (!rows.length) return { count: 0 }
-  const mismatchedRow = rows.find((row: any) => String(row.match_id ?? '') !== String(matchId))
-  if (mismatchedRow) throw new Error(`Refusing to store odds with mismatched match_id: expected ${matchId}, received ${mismatchedRow.match_id ?? 'missing'}`)
   await supabase.from('football_match_odds').update({ is_latest: false }).eq('match_id', matchId)
-  const chunkSize = Math.max(1, Math.min(Number(options.chunkSize ?? 100), 100))
-  for (let index = 0; index < rows.length; index += chunkSize) {
-    const result = await supabase.from('football_match_odds').insert(rows.slice(index, index + chunkSize))
-    if (result.error) throw result.error
-  }
+  const result = await supabase.from('football_match_odds').insert(rows)
+  if (result.error) throw result.error
   return { count: rows.length }
 }
 
@@ -8128,7 +5751,7 @@ function normalizeOddsPayload(match: any, response: any) {
   const opening = rows[0]
   const available = rows.length > 0
   const pickSide = getAnalysis(match)?.pick_side ?? null
-  const movement = opening && latest && opening.line !== latest.line ? `${opening.line ?? '-'} -> ${latest.line ?? '-'}` : available ? 'à¸£à¸²à¸„à¸²à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸žà¸£à¹‰à¸­à¸¡à¹ƒà¸Šà¹‰à¸‡à¸²à¸™ à¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸«à¹‡à¸™à¸à¸²à¸£à¹„à¸«à¸¥à¸Šà¸±à¸”à¹€à¸ˆà¸™' : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²'
+  const movement = opening && latest && opening.line !== latest.line ? `${opening.line ?? '-'} -> ${latest.line ?? '-'}` : available ? 'ราคาล่าสุดพร้อมใช้งาน แต่ยังไม่เห็นการไหลชัดเจน' : 'ยังไม่มีข้อมูลราคา'
   return {
     available,
     rows,
@@ -8148,51 +5771,11 @@ function normalizeOddsPayload(match: any, response: any) {
 
 function normalizeMarketFocus(value: unknown) {
   const text = String(value ?? '').toUpperCase()
-  if (isUnsupportedMainOddsMarketText(text)) return 'NONE'
-  if (text === 'AH') return 'AH'
-  if (text === 'OU') return 'OU'
-  if (text === 'MATCH_WINNER') return 'MATCH_WINNER'
-  if (text === 'DOUBLE_CHANCE') return 'DOUBLE_CHANCE'
-  if (text === 'CORRECT_SCORE') return 'CORRECT_SCORE'
-  if (text === 'BTTS') return 'BTTS'
-  if (text.includes('DOUBLE CHANCE')) return 'DOUBLE_CHANCE'
-  if (text.includes('CORRECT SCORE') || text.includes('EXACT SCORE')) return 'CORRECT_SCORE'
   if (text.includes('ASIAN') || text.includes('HANDICAP')) return 'AH'
   if (text.includes('OVER') || text.includes('UNDER') || text.includes('GOALS') || text.includes('TOTAL')) return 'OU'
   if (text.includes('MATCH WINNER') || text.includes('1X2') || text.includes('HOME/AWAY')) return 'MATCH_WINNER'
   if (text.includes('BOTH TEAMS') || text.includes('BTTS')) return 'BTTS'
   return 'NONE'
-}
-
-function isUnsupportedMainOddsMarketText(value: unknown) {
-  const text = String(value ?? '').toUpperCase()
-  return [
-    'CORNER',
-    'CARD',
-    'BOOKING',
-    'FIRST HALF',
-    '1ST HALF',
-    'SECOND HALF',
-    '2ND HALF',
-    'HALF TIME',
-    'HT/FT',
-    'TEAM TOTAL',
-    'TEAM GOALS',
-    'PLAYER',
-    'SPECIAL',
-    'EXTRA TIME',
-    'PENALT',
-  ].some((blocked) => text.includes(blocked))
-}
-
-function isSupportedFullTimeOddsMarket(marketName: unknown, value: any, marketFocus = normalizeMarketFocus(marketName)) {
-  if (!['MATCH_WINNER', 'AH', 'OU', 'DOUBLE_CHANCE', 'CORRECT_SCORE'].includes(marketFocus)) return false
-  if (isUnsupportedMainOddsMarketText(marketName) || isUnsupportedMainOddsMarketText(value?.value)) return false
-  if (marketFocus === 'OU') {
-    const line = parseBetLine(value?.value) ?? parseBetLine(value?.line)
-    if (line !== null && Math.abs(line) >= 6.5) return false
-  }
-  return true
 }
 
 function buildEdgeAiFinalPick(match: any) {
@@ -8202,11 +5785,7 @@ function buildEdgeAiFinalPick(match: any) {
   const selected = chooseEdgeMarket(ahAnalysis, ouAnalysis)
   const odds = match.odds ?? []
   const apiPick = deriveEdgePickTeamFromApiFootballOdds(match, odds)
-  const apiPickMarket = normalizeMarketFocus(apiPick.pickMarket)
-  const hasAlternativeProviderPick = ['MATCH_WINNER', 'DOUBLE_CHANCE'].includes(apiPickMarket) && nullableNumber(apiPick.pickPrice) !== null
-  const hasOdds = odds.length > 0 && (Boolean(selected.hasMarket) || hasAlternativeProviderPick)
-  const decisionMarketFocus = selected.hasMarket ? selected.marketFocus : hasAlternativeProviderPick ? apiPickMarket : selected.marketFocus
-  const decisionDirection = selected.hasMarket ? selected.direction : firstText(apiPick.pickSelection, apiPick.pickSide, 'No market direction')
+  const hasOdds = odds.length > 0 && Boolean(selected.hasMarket)
   const totalAnalysisScore = normalizeScore(analysis.ranking_score ?? analysis.ai_score ?? analysis.confidence_score ?? 0)
   const selectionScore = normalizeScore(selected.confidenceScore)
   const confidenceScore = normalizeScore(Math.max(selectionScore, Number(analysis.calibrated_confidence_score ?? analysis.confidence_score ?? selectionScore)))
@@ -8231,8 +5810,8 @@ function buildEdgeAiFinalPick(match: any) {
   ) signal = 'STRONG_SIGNAL'
   else if (totalAnalysisScore >= 75 && selectionScore >= 70 && confidenceScore >= 70 && bookmakerCount >= 1 && keyReasons.length >= 3) signal = 'STRONG_SIGNAL'
 
-  const marketFocus = signal === 'SKIP' && !hasOdds ? 'NONE' : decisionMarketFocus
-  const direction = signal === 'SKIP' && !hasOdds ? 'No market direction' : decisionDirection
+  const marketFocus = signal === 'SKIP' && !hasOdds ? 'NONE' : selected.marketFocus
+  const direction = signal === 'SKIP' && !hasOdds ? 'No market direction' : selected.direction
   return {
     signal,
     marketFocus,
@@ -8241,7 +5820,7 @@ function buildEdgeAiFinalPick(match: any) {
     riskLevel,
     keyReasons,
     warningSigns,
-    marketSignal: hasOdds ? selected.marketSignal : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²',
+    marketSignal: hasOdds ? selected.marketSignal : 'ยังไม่มีข้อมูลตลาดราคา',
     finalSummary: buildEdgeAiFinalSummary(signal, marketFocus, direction, confidenceScore, riskLevel, hasOdds),
     ahAnalysis,
     ouAnalysis,
@@ -8255,9 +5834,9 @@ function buildEdgeAiFinalPick(match: any) {
     pickPrice: apiPick.pickPrice,
     pickConfidence: apiPick.hasApiFootballOdds ? confidenceScore : null,
     primaryBookmaker: odds.find((row: any) => row.bookmaker_name)?.bookmaker_name ?? null,
-    latestOdds: odds.find((row: any) => row.market_focus === marketFocus)?.odd_text ?? null,
+    latestOdds: odds.find((row: any) => row.market_focus === selected.marketFocus)?.odd_text ?? null,
     analysisStatus: analysis.analysis_status ?? analysis.raw?.analysis_status ?? (marketDataUsed ? 'MARKET_DATA_READY_RECALCULATED' : 'INSUFFICIENT_MARKET_DATA'),
-    recommendationReason: analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? (marketDataUsed ? 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¹à¸¥à¹‰à¸§ à¹à¸•à¹ˆà¸„à¸°à¹à¸™à¸™ edge/risk à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œ' : 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³'),
+    recommendationReason: analysis.recommendation_reason ?? analysis.raw?.recommendation_reason ?? (marketDataUsed ? 'มีข้อมูลตลาดแล้ว แต่คะแนน edge/risk ยังไม่ผ่านเกณฑ์' : 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ'),
     marketDataUsed,
     oddsRowsUsed,
     recalculatedAt: analysis.recalculated_at ?? new Date().toISOString(),
@@ -8278,7 +5857,7 @@ function edgeAnalyzeAh(match: any) {
     rows.length ? 'AH market data is available from API-FOOTBALL' : '',
   ].filter(Boolean)
   const warnings = [
-    !rows.length ? 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²' : '',
+    !rows.length ? 'ยังไม่มีข้อมูลตลาดราคา' : '',
     Math.abs(gap) < 5 ? 'Team edge is narrow' : '',
     normalizeRiskLevelText(analysis.risk_level) === 'HIGH' ? 'Risk level is high' : '',
   ].filter(Boolean)
@@ -8288,7 +5867,7 @@ function edgeAnalyzeAh(match: any) {
     confidenceScore: normalizeScore(48 + Math.abs(gap) * 0.55 + (rows.length ? 8 : -10) - warnings.length * 3),
     reasons: reasons.length ? reasons : ['AH data direction is conservative'],
     warnings,
-    marketSignal: rows.length ? 'Latest AH market data is available' : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²',
+    marketSignal: rows.length ? 'Latest AH market data is available' : 'ยังไม่มีข้อมูลตลาดราคา',
     hasMarket: rows.length > 0,
     bookmakerCount: new Set(rows.map((row: any) => row.bookmaker_name).filter(Boolean)).size,
   }
@@ -8308,7 +5887,7 @@ function edgeAnalyzeOu(match: any) {
     rows.length ? 'OU market data is available from API-FOOTBALL' : '',
   ].filter(Boolean)
   const warnings = [
-    !rows.length ? 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²' : '',
+    !rows.length ? 'ยังไม่มีข้อมูลตลาดราคา' : '',
     tempo > 47 && tempo < 57 ? 'Goal tempo is close to neutral' : '',
     normalizeRiskLevelText(analysis.risk_level) === 'HIGH' ? 'Risk level is high' : '',
   ].filter(Boolean)
@@ -8318,7 +5897,7 @@ function edgeAnalyzeOu(match: any) {
     confidenceScore: normalizeScore(46 + Math.abs(tempo - 52) * 0.58 + (rows.length ? 8 : -10) - warnings.length * 3),
     reasons: reasons.length ? reasons : ['OU data direction is conservative'],
     warnings,
-    marketSignal: rows.length ? 'Latest OU market data is available' : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸²',
+    marketSignal: rows.length ? 'Latest OU market data is available' : 'ยังไม่มีข้อมูลตลาดราคา',
     hasMarket: rows.length > 0,
     bookmakerCount: new Set(rows.map((row: any) => row.bookmaker_name).filter(Boolean)).size,
   }
@@ -8333,7 +5912,7 @@ function chooseEdgeMarket(ahAnalysis: any, ouAnalysis: any) {
 }
 
 function buildEdgeAiFinalSummary(signal: string, marketFocus: string, direction: string, confidenceScore: number, riskLevel: string, hasOdds: boolean) {
-  if (!hasOdds) return 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸£à¸²à¸„à¸² AI Final Pick à¸ˆà¸¶à¸‡à¸ˆà¸³à¸à¸±à¸”à¸ªà¸±à¸à¸à¸²à¸“à¸ªà¸¹à¸‡à¸ªà¸¸à¸”à¹„à¸¡à¹ˆà¹ƒà¸«à¹‰à¹€à¸›à¹‡à¸™ Strong Signal'
+  if (!hasOdds) return 'ยังไม่มีข้อมูลตลาดราคา AI Final Pick จึงจำกัดสัญญาณสูงสุดไม่ให้เป็น Strong Signal'
   if (signal === 'STRONG_SIGNAL') return `Strong Signal on ${marketFocus} ${direction} with ${confidenceScore}% confidence and ${riskLevel} risk.`
   if (signal === 'WATCH') return `Watch ${marketFocus} ${direction}. Data direction is useful but still needs confirmation.`
   return `Skip ${marketFocus} ${direction}. Risk or data conflict is too high for a final signal.`
@@ -8633,7 +6212,7 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
       risk_level: getRiskLevelFromRiskScore(riskScore),
       recommendation: 'NO BET',
       analysis_status: 'INSUFFICIENT_MARKET_DATA',
-      recommendation_reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³',
+      recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
       market_data_used: false,
       odds_rows_used: oddsRows.length,
       pick_team: null,
@@ -8650,7 +6229,7 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
       raw: {
         ...raw,
         analysis_status: 'INSUFFICIENT_MARKET_DATA',
-        recommendation_reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³',
+        recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
         market_data_used: false,
         odds_rows_used: oddsRows.length,
         pick_team: null,
@@ -8693,8 +6272,8 @@ function buildMarketReadinessRecomputeAnalysis(match: any, analysis: any, oddsRo
   const rankingScore = roundScore(calibrated * 0.5 + metrics.marketEdgeScore * 0.22 + metrics.oddsMovementScore * 0.13 + depth * 0.15 - (riskScore >= 70 ? 4 : 0))
   const analysisStatus = recommendation === 'NO BET' ? 'MODEL_NO_EDGE' : 'MARKET_DATA_READY_RECALCULATED'
   const recommendationReason = recommendation === 'NO BET'
-    ? 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¹à¸¥à¹‰à¸§ à¹à¸•à¹ˆà¸„à¸°à¹à¸™à¸™ edge/risk à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œ'
-    : 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¹à¸¥à¸°à¸„à¸°à¹à¸™à¸™ edge/risk à¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œà¸‚à¸­à¸‡à¹‚à¸¡à¹€à¸”à¸¥'
+    ? 'มีข้อมูลตลาดแล้ว แต่คะแนน edge/risk ยังไม่ผ่านเกณฑ์'
+    : 'มีข้อมูลตลาดและคะแนน edge/risk ผ่านเกณฑ์ของโมเดล'
 
   return {
     market_edge_score: metrics.marketEdgeScore,
@@ -8959,8 +6538,6 @@ function normalizeMarketName(value: unknown) {
   if (!text) return null
   if (text.includes('asian')) return 'AH'
   if (text.includes('goals') || text.includes('over') || text.includes('under')) return 'OU'
-  if (text.includes('double chance')) return 'DOUBLE_CHANCE'
-  if (text.includes('correct score') || text.includes('exact score')) return 'CORRECT_SCORE'
   if (text.includes('match winner') || text.includes('1x2') || text.includes('winner')) return 'ML'
   return null
 }
@@ -9124,45 +6701,16 @@ async function apiFootballGet(path: string, params: Record<string, string | numb
   })
 
   const text = await response.text()
-  if (looksLikeHtml(text)) {
-    throw createSyncOperationError({
-      source: 'api-football',
-      operation: `api_football_get:${path}`,
-      status: response.status,
-      message: 'HTML error response received',
-    })
-  }
-
-  let data: any = {}
-  try {
-    data = text ? JSON.parse(text) : {}
-  } catch (error) {
-    throw createSyncOperationError({
-      source: 'api-football',
-      operation: `api_football_get:${path}`,
-      status: response.status,
-      message: error instanceof Error ? error.message : 'Non-JSON API-Football response',
-    })
-  }
+  const data = text ? JSON.parse(text) : {}
 
   if (!response.ok) {
     const message = data?.message ?? data?.error ?? text ?? `api-football ${response.status}`
-    throw createSyncOperationError({
-      source: 'api-football',
-      operation: `api_football_get:${path}`,
-      status: response.status,
-      message: `api-football ${response.status}: ${message}`,
-    })
+    throw new Error(`api-football ${response.status}: ${message}`)
   }
 
   const apiErrors = data?.errors
   const hasApiErrors = Array.isArray(apiErrors) ? apiErrors.length > 0 : apiErrors && typeof apiErrors === 'object' ? Object.keys(apiErrors).length > 0 : Boolean(apiErrors)
-  if (hasApiErrors) throw createSyncOperationError({
-    source: 'api-football',
-    operation: `api_football_get:${path}`,
-    status: response.status,
-    message: `api-football error: ${JSON.stringify(apiErrors)}`,
-  })
+  if (hasApiErrors) throw new Error(`api-football error: ${JSON.stringify(apiErrors)}`)
 
   return data
 }
@@ -9464,7 +7012,7 @@ function normalizeAnalysisPayload(analysis: any) {
     selectionV2.analysis_summary ||
       analysis?.analysis_summary ||
       analysis?.thai_reason ||
-      `à¹à¸™à¸°à¸™à¸³ ${recommendation} à¹€à¸žà¸£à¸²à¸°à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence}/100 à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸£à¸°à¸”à¸±à¸š${riskLevel}. à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸„à¸§à¸£à¸•à¸£à¸§à¸ˆà¸£à¸²à¸„à¸²à¸à¹ˆà¸­à¸™à¸•à¸±à¸”à¸ªà¸´à¸™à¹ƒà¸ˆ`,
+      `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskLevel}. ข้อมูลบางส่วนยังจำกัด ควรตรวจราคาก่อนตัดสินใจ`,
   ).trim()
   const pick = derivePickSideFromAnalysis(analysis ?? {}, {
     home_advantage_score: analysis?.home_advantage_score ?? analysis?.modules?.homeAwayAdvantage,
@@ -9612,14 +7160,14 @@ function buildProfessionalSelectionScoreEdge(match: any = {}, analysis: any = {}
       ? 'LEAN'
       : 'NO BET'
   const reasons = [
-    `Professional score ${Math.round(totalScore)}/100 à¸ˆà¸²à¸ league/data/market/stat/value pipeline`,
-    leagueQuality >= 55 ? 'à¸¥à¸µà¸à¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œà¸„à¸¸à¸“à¸ à¸²à¸žà¸‚à¸±à¹‰à¸™à¸•à¹ˆà¸³' : 'à¸¥à¸µà¸à¸•à¹ˆà¸³à¸à¸§à¹ˆà¸²à¹€à¸à¸“à¸‘à¹Œà¸„à¸¸à¸“à¸ à¸²à¸ž',
-    valueEdge >= 70 ? 'à¸žà¸š value edge à¸Šà¸±à¸”à¹€à¸ˆà¸™à¸ˆà¸²à¸à¸£à¸²à¸„à¸²/à¹‚à¸¡à¹€à¸”à¸¥' : 'value edge à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸Šà¸±à¸”à¸žà¸­',
+    `Professional score ${Math.round(totalScore)}/100 จาก league/data/market/stat/value pipeline`,
+    leagueQuality >= 55 ? 'ลีกผ่านเกณฑ์คุณภาพขั้นต่ำ' : 'ลีกต่ำกว่าเกณฑ์คุณภาพ',
+    valueEdge >= 70 ? 'พบ value edge ชัดเจนจากราคา/โมเดล' : 'value edge ยังไม่ชัดพอ',
   ]
   const warnings = [
-    ...(!gates.passedMarketQuality ? ['à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹à¸‚à¹‡à¸‡à¹à¸£à¸‡à¸žà¸­à¸ªà¸³à¸«à¸£à¸±à¸š BET'] : []),
-    ...(!gates.passedDataQuality ? ['à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¹„à¸¡à¹ˆà¸„à¸£à¸š à¸£à¸°à¸šà¸šà¸¥à¸”à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ'] : []),
-    ...(riskControl < 60 ? ['risk control à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸–à¸¶à¸‡à¸£à¸°à¸”à¸±à¸šà¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸•à¹ˆà¸³'] : []),
+    ...(!gates.passedMarketQuality ? ['ข้อมูลตลาดยังไม่แข็งแรงพอสำหรับ BET'] : []),
+    ...(!gates.passedDataQuality ? ['ข้อมูลบางส่วนไม่ครบ ระบบลดความมั่นใจ'] : []),
+    ...(riskControl < 60 ? ['risk control ยังไม่ถึงระดับเสี่ยงต่ำ'] : []),
   ]
   return {
     totalScore,
@@ -9638,8 +7186,8 @@ function buildProfessionalSelectionScoreEdge(match: any = {}, analysis: any = {}
       side: analysis.value_side ?? analysis.pick_side ?? 'NONE',
       market: analysis.value_market ?? analysis.market_type ?? null,
       line: analysis.value_line ?? analysis.market_line ?? null,
-      label: recommendation === 'BET' ? 'AI BET' : recommendation === 'LEAN' ? 'à¸£à¸­à¸”à¸¹à¸£à¸²à¸„à¸²' : 'à¸œà¹ˆà¸²à¸™à¸à¸²à¸£à¸§à¸´à¹€à¸„à¸£à¸²à¸°à¸«à¹Œà¹à¸¥à¹‰à¸§ à¹à¸•à¹ˆà¹„à¸¡à¹ˆà¸„à¸¸à¹‰à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡',
-      reason: recommendation === 'BET' ? 'Value, confidence à¹à¸¥à¸° risk à¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œ' : 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸œà¹ˆà¸²à¸™à¸„à¸£à¸šà¸—à¸¸à¸ gate à¸ªà¸³à¸„à¸±à¸',
+      label: recommendation === 'BET' ? 'AI BET' : recommendation === 'LEAN' ? 'รอดูราคา' : 'ผ่านการวิเคราะห์แล้ว แต่ไม่คุ้มเสี่ยง',
+      reason: recommendation === 'BET' ? 'Value, confidence และ risk ผ่านเกณฑ์' : 'ยังไม่ผ่านครบทุก gate สำคัญ',
     },
   }
 }
@@ -10035,7 +7583,7 @@ async function normalizeLegacyAnalysisRows() {
     const confidence = Math.round(clamp(Number(row.confidence_score ?? row.raw?.confidence_score ?? 0), 0, 100))
     const riskLevel = normalizeRiskLevel(row.risk_level ?? row.raw?.risk_level)
     const recommendation = getRecommendationFromConfidence(confidence, riskLevel)
-    const analysisSummary = row.analysis_summary || row.raw?.analysis_summary || row.thai_reason || `à¹à¸™à¸°à¸™à¸³ ${recommendation} à¹€à¸žà¸£à¸²à¸°à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence}/100 à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸£à¸°à¸”à¸±à¸š${riskLevel}. à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸„à¸§à¸£à¸•à¸£à¸§à¸ˆà¸£à¸²à¸„à¸²à¸à¹ˆà¸­à¸™à¸•à¸±à¸”à¸ªà¸´à¸™à¹ƒà¸ˆ`
+    const analysisSummary = row.analysis_summary || row.raw?.analysis_summary || row.thai_reason || `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskLevel}. ข้อมูลบางส่วนยังจำกัด ควรตรวจราคาก่อนตัดสินใจ`
     const pick = derivePickSideFromAnalysis(row.raw?.raw_match ?? row.raw ?? {}, {
       home_advantage_score: row.home_advantage_score ?? row.raw?.home_advantage_score,
       away_weakness_score: row.away_weakness_score ?? row.raw?.away_weakness_score,
@@ -10199,26 +7747,18 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
       has_fixture_detail,
       data_readiness_score,
       data_readiness_status,
-      status,
-      status_short,
-      status_long,
-      match_status,
-      raw,
-      league:football_leagues(id, api_league_id, name, country, enabled, priority),
-      homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name, country),
-      awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name, country),
       analysis:match_analysis(id, match_id, recommendation, ranking_score, confidence_score, calibrated_confidence_score, risk_level, risk_score, market_edge_score, professional_score, value_edge_score, risk_control_score, league_quality_score, data_quality_score, market_quality_score, data_validation_status, data_validation_notes, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', range.startUtc)
     .lt('kickoff_at', range.endUtc)
 
   if (result.error) {
-    if (isMissingColumnError(result.error)) return emptyDailyRankingWriteResult()
+    if (isMissingColumnError(result.error)) return 0
     throw result.error
   }
 
   const matchIds = (result.data ?? []).map((match: any) => match.id).filter(Boolean)
-  if (!matchIds.length) return emptyDailyRankingWriteResult()
+  if (!matchIds.length) return 0
   const oddsMatchIds = await fetchMatchIdsWithOdds(matchIds)
 
   const rows = (result.data ?? [])
@@ -10226,17 +7766,7 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
       const analysis = Array.isArray(match.analysis) ? match.analysis[0] : match.analysis
       if (!analysis) return null
       const readiness = classifyRankingReadiness(match, oddsMatchIds)
-      return {
-        matchId: match.id,
-        match: {
-          ...match,
-          analysis,
-          has_market_data: oddsMatchIds.has(match.id) || match.has_market_data,
-          hasMarketData: oddsMatchIds.has(match.id) || match.has_market_data,
-        },
-        analysis,
-        readiness,
-      }
+      return { matchId: match.id, analysis, readiness }
     })
     .filter(Boolean)
 
@@ -10246,83 +7776,48 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
     .in('match_id', matchIds)
 
   if (resetResult.error) {
-    if (isMissingColumnError(resetResult.error)) return emptyDailyRankingWriteResult()
+    if (isMissingColumnError(resetResult.error)) return 0
     throw resetResult.error
   }
 
-  if (!rows.length) return emptyDailyRankingWriteResult()
-  const selectionDate = (range as any).dateKey ?? getBangkokDayRange(range.startUtc).dateKey
-  const selection = selectDailyTop10(rows.map((row: any) => row.match), { selectionDate })
-  const ranked = selection.selected.map((selected: any) => ({
-    ...rows.find((row: any) => row.matchId === selected.match.id),
-    selected,
-  })).filter(Boolean)
+  if (!rows.length) return 0
+  await markInsufficientMarketDataRows(rows)
+
+  const ranked = rows
+    .filter((row: any) => String(row.analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID')
+    .filter((row: any) => isProfessionalRankingCandidate(row))
+    .sort((a: any, b: any) => {
+      const recommendationDiff = recommendationPriority(getCoverageAwareRecommendation(a)) - recommendationPriority(getCoverageAwareRecommendation(b))
+      const professionalDiff = Number(b.analysis.professional_score ?? b.analysis.raw?.professional_pipeline?.totalScore ?? b.analysis.ranking_score ?? 0) - Number(a.analysis.professional_score ?? a.analysis.raw?.professional_pipeline?.totalScore ?? a.analysis.ranking_score ?? 0)
+      const confidenceDiff = Number(b.analysis.calibrated_confidence_score ?? b.analysis.confidence_score ?? 0) - Number(a.analysis.calibrated_confidence_score ?? a.analysis.confidence_score ?? 0)
+      const valueDiff = Number(b.analysis.value_edge_score ?? b.analysis.market_edge_score ?? 0) - Number(a.analysis.value_edge_score ?? a.analysis.market_edge_score ?? 0)
+      const riskControlDiff = Number(b.analysis.risk_control_score ?? 100 - Number(b.analysis.risk_score ?? 100)) - Number(a.analysis.risk_control_score ?? 100 - Number(a.analysis.risk_score ?? 100))
+      const leagueQualityDiff = Number(b.analysis.league_quality_score ?? 0) - Number(a.analysis.league_quality_score ?? 0)
+      return recommendationDiff || professionalDiff || confidenceDiff || valueDiff || riskControlDiff || leagueQualityDiff
+    })
+    .slice(0, 10)
 
   let updated = 0
   for (const [index, row] of ranked.entries()) {
-    const recommendation = row.selected?.softRanking?.recommendation ?? row.analysis.recommendation ?? 'NO BET'
+    const recommendation = getCoverageAwareRecommendation(row)
     const updateResult = await supabase
       .from('match_analysis')
       .update({
         is_top_pick: true,
-        is_final_pick: index === 0 && Boolean(row.selected?.hasMarketData),
+        is_final_pick: index === 0,
         final_rank: index + 1,
         final_pick_note: index === 0 ? buildFinalPickNoteV2(recommendation) : null,
-        ranking_score: row.selected?.softRanking?.finalScore ?? row.analysis.ranking_score,
-        analysis_version: DAILY_SELECTION_ALGORITHM_VERSION,
-        data_validation_status: row.selected?.hardFilter?.passed ? (row.selected?.hardFilter?.warnings?.length ? 'PARTIAL' : 'VALID') : 'INVALID',
-        data_validation_notes: row.selected?.hardFilter?.warnings?.map((item: any) => item.code).join(', ') || row.analysis.data_validation_notes,
       })
       .eq('match_id', row.matchId)
 
     if (updateResult.error) {
-      if (isMissingColumnError(updateResult.error)) {
-        return buildDailyRankingWriteResult(selection, updated)
-      }
+      if (isMissingColumnError(updateResult.error)) return updated
       throw updateResult.error
     }
     updated += 1
   }
 
-  return buildDailyRankingWriteResult(selection, updated)
-}
-
-function emptyDailyRankingWriteResult() {
-  return {
-    rowsSaved: 0,
-    eligibleCandidateCount: 0,
-    invalidScores: 0,
-    duplicateRanks: 0,
-    duplicateFixtures: 0,
-    hardFilterViolations: 0,
-    finalPickViolations: 0,
-  }
-}
-
-function buildDailyRankingWriteResult(selection: any, rowsSaved: number) {
-  const selected = selection?.selected ?? []
-  return {
-    rowsSaved,
-    eligibleCandidateCount: Number(selection?.summary?.eligibleCandidateCount ?? selected.length),
-    invalidScores: (selection?.candidates ?? []).filter((row: any) => {
-      const score = Number(row?.softRanking?.finalScore)
-      return !Number.isFinite(score) || score < 0 || score > 100
-    }).length,
-    duplicateRanks: countDuplicateDecisionValues(selected.map((row: any) => row.rank).filter((rank: any) => rank !== null && rank !== undefined)),
-    duplicateFixtures: countDuplicateDecisionValues(selected.map((row: any) => row.fixtureId ?? row.match?.id).filter(Boolean)),
-    hardFilterViolations: selected.filter((row: any) => row?.hardFilter && !row.hardFilter.passed).length,
-    finalPickViolations: selected.filter((row: any) => !row.hasMarketData && row?.softRanking?.finalPickAllowed).length,
-  }
-}
-
-function countDuplicateDecisionValues(values: Array<any>) {
-  const seen = new Set()
-  let duplicates = 0
-  for (const value of values) {
-    if (seen.has(value)) duplicates += 1
-    else seen.add(value)
-  }
-  return duplicates
+  return updated
 }
 
 function classifyRankingReadiness(match: any, oddsMatchIds: Set<string>) {
@@ -10373,7 +7868,7 @@ async function markInsufficientMarketDataRows(rows: Array<any>) {
       .update({
         recommendation: 'NO BET',
         analysis_status: 'INSUFFICIENT_MARKET_DATA',
-        recommendation_reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³',
+        recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
         market_data_used: false,
         odds_rows_used: 0,
         recalculated_at: new Date().toISOString(),
@@ -10384,7 +7879,7 @@ async function markInsufficientMarketDataRows(rows: Array<any>) {
         raw: {
           ...raw,
           analysis_status: 'INSUFFICIENT_MARKET_DATA',
-          recommendation_reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”/à¸£à¸²à¸„à¸²/odds à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸£à¹‰à¸­à¸¡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸¢à¸à¸£à¸°à¸”à¸±à¸šà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¹à¸™à¸°à¸™à¸³',
+          recommendation_reason: 'ข้อมูลตลาด/ราคา/odds ยังไม่พร้อม จึงไม่ยกระดับเป็นคู่แนะนำ',
           market_data_used: false,
           odds_rows_used: 0,
           data_readiness_status: row.readiness,
@@ -10612,49 +8107,6 @@ async function getRankingReadinessSummary(range: { startUtc: string; endUtc: str
   return summarizeRankingReadiness(result.data ?? [], oddsIds)
 }
 
-async function getDailyOddsSummary(range: { startUtc: string; endUtc: string }) {
-  const matches = await supabase
-    .from('football_matches')
-    .select('id')
-    .gte('kickoff_at', range.startUtc)
-    .lt('kickoff_at', range.endUtc)
-  if (matches.error) throw matches.error
-
-  const matchIds = (matches.data ?? []).map((row: any) => row.id).filter(Boolean)
-  if (!matchIds.length) {
-    return { totalFixtures: 0, oddsRows: 0, fixturesWithOdds: 0, fixturesWithAh: 0, fixturesWithOu: 0 }
-  }
-
-  const odds = await supabase
-    .from('football_match_odds')
-    .select('match_id, market_focus, market_name')
-    .in('match_id', matchIds)
-  if (odds.error) {
-    if (isMissingColumnError(odds.error)) return { totalFixtures: matchIds.length, oddsRows: 0, fixturesWithOdds: 0, fixturesWithAh: 0, fixturesWithOu: 0 }
-    throw odds.error
-  }
-
-  const fixturesWithOdds = new Set<string>()
-  const fixturesWithAh = new Set<string>()
-  const fixturesWithOu = new Set<string>()
-  for (const row of odds.data ?? []) {
-    if (!row.match_id) continue
-    fixturesWithOdds.add(row.match_id)
-    const focus = String(row.market_focus ?? '').toUpperCase()
-    const name = String(row.market_name ?? '').toLowerCase()
-    if (focus === 'AH' || name.includes('handicap')) fixturesWithAh.add(row.match_id)
-    if (focus === 'OU' || name.includes('over/under') || name.includes('goals over')) fixturesWithOu.add(row.match_id)
-  }
-
-  return {
-    totalFixtures: matchIds.length,
-    oddsRows: odds.data?.length ?? 0,
-    fixturesWithOdds: fixturesWithOdds.size,
-    fixturesWithAh: fixturesWithAh.size,
-    fixturesWithOu: fixturesWithOu.size,
-  }
-}
-
 function summarizeRankingReadiness(rows: Array<any>, oddsIds: Set<string>) {
   const summary = {
     totalFixtures: rows.length,
@@ -10734,16 +8186,6 @@ async function fetchTopSelectionsDebug(range: { startUtc: string; endUtc: string
 function isMissingColumnError(error: any) {
   const message = String(error?.message ?? error?.details ?? '')
   return error?.code === '42703' || /column .* does not exist/i.test(message) || /Could not find .* column/i.test(message)
-}
-
-function isMissingTableError(error: any) {
-  const message = String(error?.message ?? error?.details ?? '')
-  return error?.code === '42P01' || /relation .* does not exist/i.test(message) || /Could not find the table/i.test(message)
-}
-
-function isMissingFunctionError(error: any) {
-  const message = String(error?.message ?? error?.details ?? '')
-  return error?.code === '42883' || error?.code === 'PGRST202' || /function .* does not exist/i.test(message) || /Could not find the function/i.test(message)
 }
 
 function analyzeMatch({ match, homeForm, awayForm, standings, leaguePriority, recentMatches, recentOpponents }: any) {
@@ -10886,24 +8328,24 @@ function scoreTeamStrength(match: any, homeForm: any, awayForm: any, homeStandin
     const pointsGap = Number(homeStanding.points ?? 0) - Number(awayStanding.points ?? 0)
     const goalDiffGap = Number(homeStanding.goalDifference ?? 0) - Number(awayStanding.goalDifference ?? 0)
     const score = clamp(58 + standingGap * 2 + pointsGap * 0.7 + goalDiffGap * 0.8, 28, 90)
-    return moduleResult(score, standingGap >= 0 ? 'à¸­à¸±à¸™à¸”à¸±à¸šà¹à¸¥à¸°à¹à¸•à¹‰à¸¡à¹‚à¸”à¸¢à¸£à¸§à¸¡à¸«à¸™à¸¸à¸™à¸à¸±à¹ˆà¸‡à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸¡à¸²à¸à¸à¸§à¹ˆà¸²' : 'à¸­à¸±à¸™à¸”à¸±à¸šà¸•à¸²à¸£à¸²à¸‡à¹„à¸¡à¹ˆà¹„à¸”à¹‰à¸«à¸™à¸¸à¸™à¸à¸±à¹ˆà¸‡à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸Šà¸±à¸”à¹€à¸ˆà¸™')
+    return moduleResult(score, standingGap >= 0 ? 'อันดับและแต้มโดยรวมหนุนฝั่งเจ้าบ้านมากกว่า' : 'อันดับตารางไม่ได้หนุนฝั่งเจ้าบ้านชัดเจน')
   }
 
   const formGap = formPoints(homeForm) - formPoints(awayForm)
   const goalDiffGap = formGoalDiff(homeForm) - formGoalDiff(awayForm)
   const nameSignal = (match.homeTeam?.name ? 3 : 0) + (match.awayTeam?.name ? 2 : 0)
   const score = clamp(55 + formGap * 1.4 + goalDiffGap * 1.8 + nameSignal, 35, 78)
-  return moduleResult(score, 'à¹„à¸¡à¹ˆà¸¡à¸µà¸•à¸²à¸£à¸²à¸‡à¸„à¸°à¹à¸™à¸™à¸„à¸£à¸š à¸ˆà¸¶à¸‡à¹ƒà¸Šà¹‰à¸Ÿà¸­à¸£à¹Œà¸¡à¹à¸¥à¸°à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸—à¸µà¸¡à¸—à¸µà¹ˆà¸¡à¸µà¹€à¸›à¹‡à¸™ proxy')
+  return moduleResult(score, 'ไม่มีตารางคะแนนครบ จึงใช้ฟอร์มและข้อมูลทีมที่มีเป็น proxy')
 }
 
 function scoreRecentForm(homeForm: any, awayForm: any) {
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return moduleResult(56, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸Ÿà¸­à¸£à¹Œà¸¡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¹à¸šà¸šà¸à¸¥à¸²à¸‡à¸ˆà¸²à¸à¸šà¸£à¸´à¸šà¸—à¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡')
+  if (!played) return moduleResult(56, 'ข้อมูลฟอร์มล่าสุดจำกัด จึงประเมินแบบกลางจากบริบทคู่แข่ง')
 
   const pointsRate = ((formPoints(homeForm) + formPoints(awayForm)) / Math.max(played * 3, 1)) * 100
   const goalBalance = clamp((formGoalDiff(homeForm) + formGoalDiff(awayForm)) * 2.5, -18, 18)
   const score = clamp(42 + pointsRate * 0.38 + goalBalance, 25, 86)
-  return moduleResult(score, played >= 8 ? 'à¸Ÿà¸­à¸£à¹Œà¸¡ 5 à¸™à¸±à¸”à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸­à¸‡à¸£à¸±à¸šà¹€à¸žà¸µà¸¢à¸‡à¸žà¸­' : 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸Ÿà¸­à¸£à¹Œà¸¡à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™ à¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸•à¹‡à¸¡à¸«à¸™à¹‰à¸²à¸•à¹ˆà¸²à¸‡ 5 à¸™à¸±à¸”')
+  return moduleResult(score, played >= 8 ? 'ฟอร์ม 5 นัดล่าสุดมีข้อมูลรองรับเพียงพอ' : 'มีข้อมูลฟอร์มบางส่วน แต่ยังไม่เต็มหน้าต่าง 5 นัด')
 }
 
 function scoreAttackQuality(homeForm: any, awayForm: any, homeStanding: any, awayStanding: any) {
@@ -10911,32 +8353,32 @@ function scoreAttackQuality(homeForm: any, awayForm: any, homeStanding: any, awa
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
   const standingBoost = homeStanding || awayStanding ? clamp((Number(homeStanding?.goalsFor ?? 0) + Number(awayStanding?.goalsFor ?? 0)) * 0.25, 0, 12) : 0
 
-  if (!played && !standingBoost) return moduleResult(57, 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µ xG à¸«à¸£à¸·à¸­à¸ªà¸–à¸´à¸•à¸´à¹€à¸à¸¡à¸£à¸¸à¸à¸¥à¸°à¹€à¸­à¸µà¸¢à¸” à¸ˆà¸¶à¸‡à¹ƒà¸Šà¹‰à¸„à¹ˆà¸²à¸à¸¥à¸²à¸‡à¹à¸šà¸šà¸£à¸°à¸¡à¸±à¸”à¸£à¸°à¸§à¸±à¸‡')
+  if (!played && !standingBoost) return moduleResult(57, 'ยังไม่มี xG หรือสถิติเกมรุกละเอียด จึงใช้ค่ากลางแบบระมัดระวัง')
 
   const goalsPerMatch = goalsFor / Math.max(played, 1)
   const score = clamp(48 + goalsPerMatch * 18 + standingBoost, 30, 88)
-  return moduleResult(score, goalsPerMatch >= 1.4 ? 'à¹€à¸à¸¡à¸£à¸¸à¸à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸ªà¸£à¹‰à¸²à¸‡à¸›à¸£à¸°à¸•à¸¹à¹„à¸”à¹‰à¸”à¸µà¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¥à¹ˆà¸²à¸ªà¸¸à¸”' : 'à¹€à¸à¸¡à¸£à¸¸à¸à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹„à¸”à¹‰à¹€à¸”à¹ˆà¸™à¸Šà¸±à¸”à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸›à¸£à¸°à¸•à¸¹à¸—à¸µà¹ˆà¸¡à¸µ')
+  return moduleResult(score, goalsPerMatch >= 1.4 ? 'เกมรุกมีแนวโน้มสร้างประตูได้ดีจากข้อมูลล่าสุด' : 'เกมรุกยังไม่ได้เด่นชัดจากข้อมูลประตูที่มี')
 }
 
 function scoreDefensiveStability(homeForm: any, awayForm: any) {
   const goalsAgainst = Number(homeForm?.goals_against ?? 0) + Number(awayForm?.goals_against ?? 0)
   const cleanSheets = Number(homeForm?.clean_sheets ?? 0) + Number(awayForm?.clean_sheets ?? 0)
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return moduleResult(58, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹€à¸à¸¡à¸£à¸±à¸šà¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¸¢à¸±à¸‡à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¸„à¸‡à¹ƒà¸™à¸£à¸°à¸”à¸±à¸šà¸à¸¥à¸²à¸‡')
+  if (!played) return moduleResult(58, 'ข้อมูลเกมรับจำกัด จึงยังประเมินความมั่นคงในระดับกลาง')
 
   const concededPerMatch = goalsAgainst / Math.max(played, 1)
   const score = clamp(74 - concededPerMatch * 22 + cleanSheets * 4, 25, 90)
-  return moduleResult(score, concededPerMatch <= 1 ? 'à¹€à¸à¸¡à¸£à¸±à¸šà¸„à¹ˆà¸­à¸™à¸‚à¹‰à¸²à¸‡à¸¡à¸±à¹ˆà¸™à¸„à¸‡à¸ˆà¸²à¸à¸­à¸±à¸•à¸£à¸²à¹€à¸ªà¸µà¸¢à¸›à¸£à¸°à¸•à¸¹' : 'à¹€à¸à¸¡à¸£à¸±à¸šà¸¢à¸±à¸‡à¸¡à¸µà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ˆà¸²à¸à¸­à¸±à¸•à¸£à¸²à¹€à¸ªà¸µà¸¢à¸›à¸£à¸°à¸•à¸¹')
+  return moduleResult(score, concededPerMatch <= 1 ? 'เกมรับค่อนข้างมั่นคงจากอัตราเสียประตู' : 'เกมรับยังมีความเสี่ยงจากอัตราเสียประตู')
 }
 
 function scoreHomeAwayAdvantage(match: any, homeForm: any) {
   const venueText = String(match.venue ?? match.raw?.venue ?? '').toLowerCase()
-  if (venueText.includes('neutral')) return moduleResult(52, 'à¸ªà¸™à¸²à¸¡à¹€à¸›à¹‡à¸™à¸à¸¥à¸²à¸‡à¸«à¸£à¸·à¸­à¸¡à¸µà¸ªà¸±à¸à¸à¸²à¸“à¸§à¹ˆà¸²à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¹„à¸¡à¹ˆà¹„à¸”à¹‰à¹€à¸›à¸£à¸µà¸¢à¸šà¹€à¸•à¹‡à¸¡à¸—à¸µà¹ˆ')
+  if (venueText.includes('neutral')) return moduleResult(52, 'สนามเป็นกลางหรือมีสัญญาณว่าเจ้าบ้านไม่ได้เปรียบเต็มที่')
 
   const played = Number(homeForm?.played ?? 0)
   const homeWinRate = played ? Number(homeForm?.wins ?? 0) / played : 0.4
   const score = clamp(57 + homeWinRate * 22 + Math.max(formGoalDiff(homeForm), 0) * 1.3, 48, 78)
-  return moduleResult(score, played ? 'à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸¡à¸µà¹à¸£à¸‡à¸«à¸™à¸¸à¸™à¸ˆà¸²à¸à¸ªà¸ à¸²à¸žà¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¹à¸¥à¸°à¸Ÿà¸­à¸£à¹Œà¸¡à¸à¸±à¹ˆà¸‡à¹€à¸«à¸¢à¹‰à¸²' : 'à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ªà¸™à¸²à¸¡à¸¥à¸°à¹€à¸­à¸µà¸¢à¸” à¸ˆà¸¶à¸‡à¹ƒà¸«à¹‰à¸™à¹‰à¸³à¸«à¸™à¸±à¸à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¹à¸šà¸šà¸ˆà¸³à¸à¸±à¸”')
+  return moduleResult(score, played ? 'เจ้าบ้านมีแรงหนุนจากสภาพการแข่งขันและฟอร์มฝั่งเหย้า' : 'ไม่มีข้อมูลสนามละเอียด จึงให้น้ำหนักเจ้าบ้านแบบจำกัด')
 }
 
 function scoreAwayWeakness(awayForm: any, awayStanding: any) {
@@ -10944,7 +8386,7 @@ function scoreAwayWeakness(awayForm: any, awayStanding: any) {
   const standingPosition = Number(awayStanding?.position ?? 0)
 
   if (!played && !standingPosition) {
-    return moduleResult(55, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸¸à¸”à¸­à¹ˆà¸­à¸™à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¹à¸šà¸šà¸£à¸°à¸¡à¸±à¸”à¸£à¸°à¸§à¸±à¸‡')
+    return moduleResult(55, 'ข้อมูลจุดอ่อนทีมเยือนยังจำกัด จึงประเมินแบบระมัดระวัง')
   }
 
   const lossRate = played ? Number(awayForm?.losses ?? 0) / played : 0.25
@@ -10956,8 +8398,8 @@ function scoreAwayWeakness(awayForm: any, awayStanding: any) {
   return moduleResult(
     score,
     score >= 68
-      ? 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸¡à¸µà¸ªà¸±à¸à¸à¸²à¸“à¹€à¸›à¸£à¸²à¸°à¸ˆà¸²à¸à¸Ÿà¸­à¸£à¹Œà¸¡à¹à¸žà¹‰/à¹€à¸ªà¸µà¸¢à¸›à¸£à¸°à¸•à¸¹à¹à¸¥à¸°à¸­à¸±à¸™à¸”à¸±à¸šà¸•à¸²à¸£à¸²à¸‡'
-      : 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸«à¹‡à¸™à¸ˆà¸¸à¸”à¸­à¹ˆà¸­à¸™à¸Šà¸±à¸”à¸žà¸­ à¸ˆà¸¶à¸‡à¹ƒà¸«à¹‰à¸„à¸°à¹à¸™à¸™à¹à¸šà¸šà¸à¸¥à¸²à¸‡à¸„à¹ˆà¸­à¸™à¹„à¸›à¸—à¸²à¸‡à¸£à¸°à¸§à¸±à¸‡',
+      ? 'ทีมเยือนมีสัญญาณเปราะจากฟอร์มแพ้/เสียประตูและอันดับตาราง'
+      : 'ทีมเยือนยังไม่เห็นจุดอ่อนชัดพอ จึงให้คะแนนแบบกลางค่อนไปทางระวัง',
   )
 }
 
@@ -10966,21 +8408,21 @@ function scoreMotivationContext(match: any, leaguePriority: number) {
   const knockoutBoost = ['final', 'semi', 'quarter', 'last_16', 'playoff'].some((item) => stage.includes(item)) ? 8 : 0
   const priorityScore = leaguePriority <= 15 ? 65 : leaguePriority <= 30 ? 61 : leaguePriority <= 50 ? 58 : 55
   const score = clamp(priorityScore + knockoutBoost, 52, 78)
-  return moduleResult(score, knockoutBoost ? 'à¸£à¸²à¸¢à¸à¸²à¸£à¸«à¸£à¸·à¸­à¸£à¸­à¸šà¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¹€à¸žà¸´à¹ˆà¸¡à¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¹€à¸Šà¸´à¸‡à¸šà¸£à¸´à¸šà¸—' : 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¹ƒà¸Šà¹‰à¸„à¸°à¹à¸™à¸™à¸à¸¥à¸²à¸‡à¸•à¸²à¸¡à¸„à¸§à¸²à¸¡à¸ªà¸³à¸„à¸±à¸à¸£à¸²à¸¢à¸à¸²à¸£')
+  return moduleResult(score, knockoutBoost ? 'รายการหรือรอบการแข่งขันเพิ่มแรงจูงใจเชิงบริบท' : 'ข้อมูลแรงจูงใจยังจำกัด จึงใช้คะแนนกลางตามความสำคัญรายการ')
 }
 
 function scoreMarketOddsRisk(match: any, homeForm: any, awayForm: any) {
   const hasOdds = hasMarketData(match)
   if (!hasOdds) {
     return {
-      ...moduleResult(52, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¸•à¸¥à¸²à¸”à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¹ƒà¸«à¹‰à¸„à¸°à¹à¸™à¸™ conservative à¹à¸¥à¸°à¹„à¸¡à¹ˆà¹ƒà¸Šà¹‰à¹€à¸›à¹‡à¸™à¹€à¸«à¸•à¸¸à¸œà¸¥à¸«à¸™à¸¸à¸™ BET à¹€à¸•à¹‡à¸¡à¸•à¸±à¸§'),
+      ...moduleResult(52, 'ข้อมูลราคาตลาดยังจำกัด จึงให้คะแนน conservative และไม่ใช้เป็นเหตุผลหนุน BET เต็มตัว'),
       has_market_data: false,
     }
   }
 
   const formGap = Math.abs(formPoints(homeForm) - formPoints(awayForm))
   const score = clamp(58 + Math.min(formGap, 8) * 2.2, 42, 82)
-  return { ...moduleResult(score, 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¹à¸¥à¸°à¹ƒà¸Šà¹‰à¸£à¹ˆà¸§à¸¡à¸à¸±à¸šà¸„à¸§à¸²à¸¡à¸•à¹ˆà¸²à¸‡à¸‚à¸­à¸‡à¸Ÿà¸­à¸£à¹Œà¸¡à¹€à¸žà¸·à¹ˆà¸­à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡'), has_market_data: true }
+  return { ...moduleResult(score, 'มีข้อมูลตลาดบางส่วนและใช้ร่วมกับความต่างของฟอร์มเพื่อประเมินความเสี่ยง'), has_market_data: true }
 }
 
 function calculateOverallRiskV2Legacy(breakdown: any, confidence: number, dataCompleteness: number) {
@@ -10997,12 +8439,12 @@ function calculateOverallRiskV2Legacy(breakdown: any, confidence: number, dataCo
   const weakCore = ['team_strength', 'recent_form', 'attack_quality', 'defensive_stability'].filter((key) => breakdown[key].score < 45).length
 
   if (confidence < 48 || weakCore >= 2 || spread >= 42) {
-    return { level: 'HIGH', reason: 'à¸„à¸°à¹à¸™à¸™à¸ªà¸³à¸„à¸±à¸à¸«à¸¥à¸²à¸¢à¸”à¹‰à¸²à¸™à¸­à¹ˆà¸­à¸™à¸«à¸£à¸·à¸­à¸‚à¸±à¸”à¹à¸¢à¹‰à¸‡à¸à¸±à¸™à¸¡à¸²à¸ à¸ˆà¸¶à¸‡à¸ˆà¸±à¸”à¹€à¸›à¹‡à¸™à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡' }
+    return { level: 'HIGH', reason: 'คะแนนสำคัญหลายด้านอ่อนหรือขัดแย้งกันมาก จึงจัดเป็นความเสี่ยงสูง' }
   }
   if (confidence >= 72 && dataCompleteness >= 70 && spread <= 28) {
-    return { level: 'LOW', reason: 'à¸«à¸¥à¸²à¸¢à¹‚à¸¡à¸”à¸¹à¸¥à¹ƒà¸«à¹‰à¸ à¸²à¸žà¸ªà¸­à¸”à¸„à¸¥à¹‰à¸­à¸‡à¸à¸±à¸™à¹à¸¥à¸°à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸­à¸‡à¸£à¸±à¸šà¸„à¹ˆà¸­à¸™à¸‚à¹‰à¸²à¸‡à¸„à¸£à¸š' }
+    return { level: 'LOW', reason: 'หลายโมดูลให้ภาพสอดคล้องกันและข้อมูลรองรับค่อนข้างครบ' }
   }
-  return { level: 'MEDIUM', reason: 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ªà¸™à¸±à¸šà¸ªà¸™à¸¸à¸™à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™ à¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸„à¸£à¸šà¸—à¸¸à¸à¸¡à¸´à¸•à¸´à¸«à¸£à¸·à¸­à¸„à¸°à¹à¸™à¸™à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸ªà¸­à¸”à¸„à¸¥à¹‰à¸­à¸‡à¹€à¸•à¹‡à¸¡à¸—à¸µà¹ˆ' }
+  return { level: 'MEDIUM', reason: 'มีข้อมูลสนับสนุนบางส่วน แต่ยังไม่ครบทุกมิติหรือคะแนนยังไม่สอดคล้องเต็มที่' }
 }
 
 function moduleResult(score: number, reason: string) {
@@ -11206,10 +8648,10 @@ function recommendationBoost(recommendation: unknown) {
 }
 
 function buildSelectionSummaryV2(recommendation: string, confidence: number, risk: number, league: number, quality: number, edge: number) {
-  if (recommendation === 'BET') return `à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¸œà¹ˆà¸²à¸™à¸à¸²à¸£à¸„à¸±à¸”à¹€à¸¥à¸·à¸­à¸à¸”à¹‰à¸§à¸¢à¸„à¸°à¹à¸™à¸™à¸£à¸§à¸¡ ${confidence} à¸ˆà¸²à¸à¸„à¸¸à¸“à¸ à¸²à¸žà¸¥à¸µà¸ ${league}, à¸„à¸¸à¸“à¸ à¸²à¸žà¸‚à¹‰à¸­à¸¡à¸¹à¸¥ ${quality} à¹à¸¥à¸° Edge Score ${edge} à¹‚à¸”à¸¢à¸¡à¸µà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡ ${risk} à¸ˆà¸¶à¸‡à¸­à¸¢à¸¹à¹ˆà¹ƒà¸™à¸£à¸°à¸”à¸±à¸š BET`
-  if (recommendation === 'LEAN') return `à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¸¡à¸µà¹à¸™à¸§à¹‚à¸™à¹‰à¸¡à¸”à¸µà¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸Šà¸±à¸”à¸žà¸­à¸ªà¸³à¸«à¸£à¸±à¸š BET à¸ˆà¸¶à¸‡à¸ˆà¸±à¸”à¹€à¸›à¹‡à¸™ LEAN à¸”à¹‰à¸§à¸¢à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence} à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡ ${risk}`
-  if (recommendation === 'WATCH') return `à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¸™à¹ˆà¸²à¸•à¸´à¸”à¸•à¸²à¸¡ à¹à¸•à¹ˆà¸¢à¸±à¸‡à¸¡à¸µà¸›à¸±à¸ˆà¸ˆà¸±à¸¢à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸«à¸£à¸·à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹„à¸¡à¹ˆà¸Šà¸±à¸”à¸žà¸­ à¸ˆà¸¶à¸‡à¸ˆà¸±à¸”à¹€à¸›à¹‡à¸™ WATCH à¸”à¹‰à¸§à¸¢à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence}`
-  return `à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¹€à¸«à¸¡à¸²à¸°à¸ªà¸³à¸«à¸£à¸±à¸šà¸à¸²à¸£à¹€à¸”à¸´à¸¡à¸žà¸±à¸™ à¹€à¸™à¸·à¹ˆà¸­à¸‡à¸ˆà¸²à¸à¸„à¸°à¹à¸™à¸™à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence} à¸«à¸£à¸·à¸­à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡ ${risk} à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸œà¹ˆà¸²à¸™à¹€à¸à¸“à¸‘à¹Œ`
+  if (recommendation === 'BET') return `คู่นี้ผ่านการคัดเลือกด้วยคะแนนรวม ${confidence} จากคุณภาพลีก ${league}, คุณภาพข้อมูล ${quality} และ Edge Score ${edge} โดยมีความเสี่ยง ${risk} จึงอยู่ในระดับ BET`
+  if (recommendation === 'LEAN') return `คู่นี้มีแนวโน้มดีแต่ยังไม่ชัดพอสำหรับ BET จึงจัดเป็น LEAN ด้วยความมั่นใจ ${confidence} และความเสี่ยง ${risk}`
+  if (recommendation === 'WATCH') return `คู่นี้น่าติดตาม แต่ยังมีปัจจัยเสี่ยงหรือข้อมูลไม่ชัดพอ จึงจัดเป็น WATCH ด้วยความมั่นใจ ${confidence}`
+  return `คู่นี้ยังไม่เหมาะสำหรับการเดิมพัน เนื่องจากคะแนนความมั่นใจ ${confidence} หรือความเสี่ยง ${risk} ยังไม่ผ่านเกณฑ์`
 }
 
 function getRiskLevelFromRiskScore(riskScore: number) {
@@ -11219,9 +8661,9 @@ function getRiskLevelFromRiskScore(riskScore: number) {
 }
 
 function buildFinalPickNoteV2(recommendation: string) {
-  if (recommendation === 'LEAN') return 'à¸­à¸±à¸™à¸”à¸±à¸š 1 à¸§à¸±à¸™à¸™à¸µà¹‰à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸–à¸¶à¸‡à¸£à¸°à¸”à¸±à¸š BET à¹à¸•à¹ˆà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¸—à¸µà¹ˆ AI à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸”à¸µà¸—à¸µà¹ˆà¸ªà¸¸à¸”'
-  if (recommendation === 'WATCH' || recommendation === 'NO BET') return 'à¸­à¸±à¸™à¸”à¸±à¸š 1 à¸§à¸±à¸™à¸™à¸µà¹‰à¸¢à¸±à¸‡à¸¡à¸µà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡ AI à¹„à¸¡à¹ˆà¹à¸™à¸°à¸™à¸³à¹ƒà¸«à¹‰à¹€à¸”à¸´à¸¡à¸žà¸±à¸™ à¹à¸•à¹ˆà¹€à¸›à¹‡à¸™à¸„à¸¹à¹ˆà¸—à¸µà¹ˆà¸™à¹ˆà¸²à¸•à¸´à¸”à¸•à¸²à¸¡à¸—à¸µà¹ˆà¸ªà¸¸à¸”à¸‚à¸­à¸‡à¸§à¸±à¸™'
-  return 'à¸§à¸±à¸™à¸™à¸µà¹‰ AI à¹€à¸¥à¸·à¸­à¸à¸„à¸¹à¹ˆà¸™à¸µà¹‰à¹€à¸›à¹‡à¸™à¸­à¸±à¸™à¸”à¸±à¸š 1 à¸‚à¸­à¸‡à¸§à¸±à¸™'
+  if (recommendation === 'LEAN') return 'อันดับ 1 วันนี้ยังไม่ถึงระดับ BET แต่เป็นคู่ที่ AI ประเมินดีที่สุด'
+  if (recommendation === 'WATCH' || recommendation === 'NO BET') return 'อันดับ 1 วันนี้ยังมีความเสี่ยงสูง AI ไม่แนะนำให้เดิมพัน แต่เป็นคู่ที่น่าติดตามที่สุดของวัน'
+  return 'วันนี้ AI เลือกคู่นี้เป็นอันดับ 1 ของวัน'
 }
 
 function recommendationPriority(recommendation: unknown) {
@@ -11302,11 +8744,11 @@ function normalizeValueStatus(value: unknown, context: { recommendation: string;
 function getValueReason(status: string, storedReason: unknown, marketLine: string | null, fairLine: string | null) {
   const reason = String(storedReason ?? '').trim()
   if (reason) return reason
-  if (status === 'YES') return 'à¸£à¸²à¸„à¸²à¸•à¸¥à¸²à¸”à¸”à¸µà¸à¸§à¹ˆà¸² Fair Line à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡à¸—à¸µà¹ˆà¸¡à¸µ'
-  if (status === 'NO') return 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¹à¸¥à¹‰à¸§ à¹à¸•à¹ˆà¸ªà¹ˆà¸§à¸™à¸•à¹ˆà¸²à¸‡à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸„à¸¸à¹‰à¸¡à¸žà¸­'
-  if (status === 'NOT_APPLICABLE') return 'à¹„à¸¡à¹ˆà¹ƒà¸Šà¹ˆà¸ˆà¸±à¸‡à¸«à¸§à¸°à¹€à¸”à¸´à¸¡à¸žà¸±à¸™ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸›à¸£à¸°à¹€à¸¡à¸´à¸™ Value à¹€à¸Šà¸´à¸‡à¸£à¸¸à¸'
-  if (!marketLine || !fairLine) return 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸£à¸²à¸„à¸²à¸•à¸¥à¸²à¸”à¸«à¸£à¸·à¸­ Fair Line à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­à¸ªà¸³à¸«à¸£à¸±à¸šà¸›à¸£à¸°à¹€à¸¡à¸´à¸™ Value'
-  return 'à¸£à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸²à¸„à¸²à¹€à¸žà¸´à¹ˆà¸¡à¹€à¸•à¸´à¸¡'
+  if (status === 'YES') return 'ราคาตลาดดีกว่า Fair Line จากข้อมูลจริงที่มี'
+  if (status === 'NO') return 'มีข้อมูลราคาแล้ว แต่ส่วนต่างยังไม่คุ้มพอ'
+  if (status === 'NOT_APPLICABLE') return 'ไม่ใช่จังหวะเดิมพัน จึงไม่ประเมิน Value เชิงรุก'
+  if (!marketLine || !fairLine) return 'ยังไม่มีราคาตลาดหรือ Fair Line เพียงพอสำหรับประเมิน Value'
+  return 'รอข้อมูลราคาเพิ่มเติม'
 }
 
 function firstText(...values: Array<unknown>) {
@@ -11354,13 +8796,13 @@ function derivePickSideFromAnalysis(match: any, analysis: any) {
   }
 
   if (recommendation === 'NO BET') {
-    return buildPickResult('NONE', homeName, awayName, 'à¹„à¸¡à¹ˆà¹à¸™à¸°à¸™à¸³à¹€à¸”à¸´à¸¡à¸žà¸±à¸™ à¹€à¸žà¸£à¸²à¸°à¸£à¸°à¸šà¸šà¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸§à¹ˆà¸²à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸„à¸§à¸²à¸¡à¸„à¸¸à¹‰à¸¡à¸„à¹ˆà¸²à¸žà¸­')
+    return buildPickResult('NONE', homeName, awayName, 'ไม่แนะนำเดิมพัน เพราะระบบประเมินว่ายังไม่มีความคุ้มค่าพอ')
   }
   if (riskLevel === 'HIGH') {
-    return buildPickResult('NONE', homeName, awayName, 'à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¹à¸™à¸°à¸™à¸³à¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡')
+    return buildPickResult('NONE', homeName, awayName, 'ความเสี่ยงสูง จึงไม่แนะนำเลือกฝั่ง')
   }
   if (confidence < 58) {
-    return buildPickResult('NONE', homeName, awayName, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸­à¹ƒà¸«à¹‰à¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡à¸­à¸¢à¹ˆà¸²à¸‡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ')
+    return buildPickResult('NONE', homeName, awayName, 'ข้อมูลยังไม่พอให้เลือกฝั่งอย่างมั่นใจ')
   }
 
   const homeAdvantage = normalizeScore(analysis?.home_advantage_score ?? analysis?.modules?.homeAwayAdvantage ?? 56)
@@ -11373,18 +8815,18 @@ function derivePickSideFromAnalysis(match: any, analysis: any) {
   const awayEdge = (50 - homeAdvantage) * 0.7 + (50 - awayWeakness) * 0.55 + (goalScoring - 55) * 0.05 + (defensiveStability - 55) * 0.05 - marketPenalty
 
   if (homeEdge >= 14 && homeAdvantage >= 62 && awayWeakness >= 60 && marketRisk >= 48) {
-    return buildPickResult('HOME', homeName, awayName, 'à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¹„à¸”à¹‰à¹€à¸›à¸£à¸µà¸¢à¸šà¸Šà¸±à¸”à¸ˆà¸²à¸à¸„à¸°à¹à¸™à¸™à¹€à¸«à¸¢à¹‰à¸²à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¸­à¹ˆà¸­à¸™à¹à¸­à¸‚à¸­à¸‡à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™')
+    return buildPickResult('HOME', homeName, awayName, 'เจ้าบ้านได้เปรียบชัดจากคะแนนเหย้าและความอ่อนแอของทีมเยือน')
   }
   if (awayEdge >= 16 && homeAdvantage <= 42 && awayWeakness <= 42 && marketRisk >= 52) {
-    return buildPickResult('AWAY', homeName, awayName, 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸¡à¸µà¸ à¸²à¸©à¸µà¸”à¸µà¸à¸§à¹ˆà¸²à¸ˆà¸²à¸à¸„à¸°à¹à¸™à¸™à¸à¸±à¹ˆà¸‡à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸—à¸µà¹ˆà¸­à¹ˆà¸­à¸™à¹à¸¥à¸°à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¹„à¸¡à¹ˆà¹€à¸›à¸£à¸²à¸°à¸Šà¸±à¸”')
+    return buildPickResult('AWAY', homeName, awayName, 'ทีมเยือนมีภาษีดีกว่าจากคะแนนฝั่งเจ้าบ้านที่อ่อนและทีมเยือนไม่เปราะชัด')
   }
 
-  return buildPickResult('NONE', homeName, awayName, 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸­à¹ƒà¸«à¹‰à¹€à¸¥à¸·à¸­à¸à¸à¸±à¹ˆà¸‡à¸­à¸¢à¹ˆà¸²à¸‡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ')
+  return buildPickResult('NONE', homeName, awayName, 'ข้อมูลยังไม่พอให้เลือกฝั่งอย่างมั่นใจ')
 }
 
 function buildPickResult(pickSide: string, homeName: string | null, awayName: string | null, pickReason: string) {
   const normalized = normalizePickSide(pickSide)
-  const pickTeam = normalized === 'HOME' ? homeName : normalized === 'AWAY' ? awayName : normalized === 'DRAW' ? 'à¹€à¸ªà¸¡à¸­' : null
+  const pickTeam = normalized === 'HOME' ? homeName : normalized === 'AWAY' ? awayName : normalized === 'DRAW' ? 'เสมอ' : null
 
   return {
     pick_side: normalized,
@@ -11427,8 +8869,8 @@ function logAnalysisV2Breakdown({ match, confidence, riskLevel, recommendation, 
 }
 
 function buildAnalysisSummaryV2Legacy(match: any, confidence: number, riskLevel: string, recommendation: string, breakdown: any) {
-  const summaryHome = match.homeTeam?.name ?? 'à¸—à¸µà¸¡à¹€à¸«à¸¢à¹‰à¸²'
-  const summaryAway = match.awayTeam?.name ?? 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™'
+  const summaryHome = match.homeTeam?.name ?? 'ทีมเหย้า'
+  const summaryAway = match.awayTeam?.name ?? 'ทีมเยือน'
   const summaryModules = [
     { label: 'Team Strength', score: breakdown.team_strength.score },
     { label: 'Recent Form', score: breakdown.recent_form.score },
@@ -11443,29 +8885,29 @@ function buildAnalysisSummaryV2Legacy(match: any, confidence: number, riskLevel:
   const riskReason = breakdown.overall_risk.reason
 
   if (recommendation === 'BET') {
-    return `${summaryHome} à¸žà¸š ${summaryAway}: à¸„à¸°à¹à¸™à¸™à¸£à¸§à¸¡ ${confidence}/100 à¹€à¸‚à¹‰à¸²à¸£à¸°à¸”à¸±à¸š BET à¹€à¸žà¸£à¸²à¸° ${bestModule.label} à¹€à¸”à¹ˆà¸™ (${bestModule.score}/100) à¹à¸¥à¸° risk_level à¹€à¸›à¹‡à¸™ ${riskLevel}. ${riskReason}`
+    return `${summaryHome} พบ ${summaryAway}: คะแนนรวม ${confidence}/100 เข้าระดับ BET เพราะ ${bestModule.label} เด่น (${bestModule.score}/100) และ risk_level เป็น ${riskLevel}. ${riskReason}`
   }
   if (recommendation === 'LEAN') {
-    return `${summaryHome} à¸žà¸š ${summaryAway}: à¸„à¸°à¹à¸™à¸™à¸£à¸§à¸¡ ${confidence}/100 à¹€à¸«à¸¡à¸²à¸°à¹€à¸›à¹‡à¸™ LEAN à¸¡à¸²à¸à¸à¸§à¹ˆà¸² BET à¸ˆà¸¸à¸”à¸«à¸™à¸¸à¸™à¸«à¸¥à¸±à¸à¸„à¸·à¸­ ${bestModule.label} (${bestModule.score}/100) à¹à¸•à¹ˆ ${weakestModule.label} à¸¢à¸±à¸‡à¸–à¹ˆà¸§à¸‡à¸­à¸¢à¸¹à¹ˆ (${weakestModule.score}/100). ${riskReason}`
+    return `${summaryHome} พบ ${summaryAway}: คะแนนรวม ${confidence}/100 เหมาะเป็น LEAN มากกว่า BET จุดหนุนหลักคือ ${bestModule.label} (${bestModule.score}/100) แต่ ${weakestModule.label} ยังถ่วงอยู่ (${weakestModule.score}/100). ${riskReason}`
   }
-  return `${summaryHome} à¸žà¸š ${summaryAway}: à¸„à¸°à¹à¸™à¸™à¸£à¸§à¸¡ ${confidence}/100 à¸¢à¸±à¸‡à¹€à¸›à¹‡à¸™ NO BET à¹à¸¡à¹‰à¸¡à¸µà¸ˆà¸¸à¸”à¹€à¸”à¹ˆà¸™à¸—à¸µà¹ˆ ${bestModule.label} (${bestModule.score}/100) à¹à¸•à¹ˆ ${weakestModule.label} à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸ªà¸™à¸±à¸šà¸ªà¸™à¸¸à¸™à¸žà¸­ (${weakestModule.score}/100). ${riskReason}`
+  return `${summaryHome} พบ ${summaryAway}: คะแนนรวม ${confidence}/100 ยังเป็น NO BET แม้มีจุดเด่นที่ ${bestModule.label} (${bestModule.score}/100) แต่ ${weakestModule.label} ยังไม่สนับสนุนพอ (${weakestModule.score}/100). ${riskReason}`
 
   const modules: Record<string, number> = {}
-  const home = match.homeTeam?.name ?? 'à¸—à¸µà¸¡à¹€à¸«à¸¢à¹‰à¸²'
-  const away = match.awayTeam?.name ?? 'à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™'
+  const home = match.homeTeam?.name ?? 'ทีมเหย้า'
+  const away = match.awayTeam?.name ?? 'ทีมเยือน'
   const topModule = Object.entries(modules).sort(([, a], [, b]) => b - a)[0]?.[0] ?? 'teamStrength'
   const moduleText: Record<string, string> = {
-    teamStrength: 'à¸„à¸§à¸²à¸¡à¹à¸‚à¹‡à¸‡à¹à¸£à¸‡à¸—à¸µà¸¡',
-    recentForm: 'à¸Ÿà¸­à¸£à¹Œà¸¡ 5 à¸™à¸±à¸”à¸«à¸¥à¸±à¸‡',
-    homeAdvantage: 'à¸„à¸§à¸²à¸¡à¹„à¸”à¹‰à¹€à¸›à¸£à¸µà¸¢à¸šà¹ƒà¸™à¸šà¹‰à¸²à¸™',
-    awayWeakness: 'à¸ˆà¸¸à¸”à¸­à¹ˆà¸­à¸™à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™',
-    goalScoring: 'à¸¨à¸±à¸à¸¢à¸ à¸²à¸žà¸à¸²à¸£à¸—à¸³à¸›à¸£à¸°à¸•à¸¹',
-    defensiveStability: 'à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¸„à¸‡à¹€à¸à¸¡à¸£à¸±à¸š',
-    motivation: 'à¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¸ªà¸³à¸„à¸±à¸à¸£à¸²à¸¢à¸à¸²à¸£',
-    marketRisk: 'à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸•à¸¥à¸²à¸”',
+    teamStrength: 'ความแข็งแรงทีม',
+    recentForm: 'ฟอร์ม 5 นัดหลัง',
+    homeAdvantage: 'ความได้เปรียบในบ้าน',
+    awayWeakness: 'จุดอ่อนทีมเยือน',
+    goalScoring: 'ศักยภาพการทำประตู',
+    defensiveStability: 'ความมั่นคงเกมรับ',
+    motivation: 'แรงจูงใจและความสำคัญรายการ',
+    marketRisk: 'ความเสี่ยงตลาด',
   }
 
-  return `${home} à¸žà¸š ${away}: Football Master Framework à¹ƒà¸«à¹‰à¸„à¸°à¹à¸™à¸™ ${confidence}/100 à¸„à¸³à¹à¸™à¸°à¸™à¸³ ${getRecommendationFromConfidence(confidence, riskLevel)} à¸ˆà¸¸à¸”à¹€à¸”à¹ˆà¸™à¸„à¸·à¸­${moduleText[topModule]} à¹à¸¥à¸° risk_level à¹€à¸›à¹‡à¸™ ${riskLevel}`
+  return `${home} พบ ${away}: Football Master Framework ให้คะแนน ${confidence}/100 คำแนะนำ ${getRecommendationFromConfidence(confidence, riskLevel)} จุดเด่นคือ${moduleText[topModule]} และ risk_level เป็น ${riskLevel}`
 }
 
 function calculateDataIntelligence(match: any, context: any = {}) {
@@ -11493,22 +8935,22 @@ function calculateLeaguePositionData(match: any) {
   const standings = match.standings ?? []
   const homeStanding = findStanding(standings, getTeamId(match.homeTeam))
   const awayStanding = findStanding(standings, getTeamId(match.awayTeam))
-  if (!homeStanding || !awayStanding) return { score: 58, confidence: 'low', home_rank: null, away_rank: null, point_gap: null, goal_difference_gap: null, edge: 'unknown', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸­à¸±à¸™à¸”à¸±à¸šà¸¥à¸µà¸à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­' }
+  if (!homeStanding || !awayStanding) return { score: 58, confidence: 'low', home_rank: null, away_rank: null, point_gap: null, goal_difference_gap: null, edge: 'unknown', reason: 'ยังไม่มีข้อมูลอันดับลีกเพียงพอ' }
 
   const homeRank = Number(homeStanding.position ?? 0)
   const awayRank = Number(awayStanding.position ?? 0)
   const pointGap = Number(homeStanding.points ?? 0) - Number(awayStanding.points ?? 0)
   const goalDiffGap = Number(homeStanding.goalDifference ?? 0) - Number(awayStanding.goalDifference ?? 0)
   const score = Math.round(clamp(58 + (awayRank - homeRank) * 1.8 + pointGap * 0.45 + goalDiffGap * 0.35, 35, 85))
-  return { score, confidence: 'high', home_rank: homeRank || null, away_rank: awayRank || null, point_gap: pointGap, goal_difference_gap: goalDiffGap, edge: score >= 62 ? 'home' : score <= 54 ? 'away' : 'none', reason: `à¸­à¸±à¸™à¸”à¸±à¸šà¸¥à¸µà¸à¸ˆà¸£à¸´à¸‡ à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸­à¸±à¸™à¸”à¸±à¸š ${homeRank || '-'} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸­à¸±à¸™à¸”à¸±à¸š ${awayRank || '-'} à¹à¸•à¹‰à¸¡à¸•à¹ˆà¸²à¸‡ ${pointGap} à¹à¸¥à¸°à¸›à¸£à¸°à¸•à¸¹à¹„à¸”à¹‰à¹€à¸ªà¸µà¸¢à¸•à¹ˆà¸²à¸‡ ${goalDiffGap}` }
+  return { score, confidence: 'high', home_rank: homeRank || null, away_rank: awayRank || null, point_gap: pointGap, goal_difference_gap: goalDiffGap, edge: score >= 62 ? 'home' : score <= 54 ? 'away' : 'none', reason: `อันดับลีกจริง เจ้าบ้านอันดับ ${homeRank || '-'} ทีมเยือนอันดับ ${awayRank || '-'} แต้มต่าง ${pointGap} และประตูได้เสียต่าง ${goalDiffGap}` }
 }
 
 function calculateRecentFormData(homeForm: any, awayForm: any) {
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return { score: 58, confidence: 'low', home: emptyDataForm(), away: emptyDataForm(), trend: 'unknown', reason: 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸Ÿà¸­à¸£à¹Œà¸¡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸”' }
+  if (!played) return { score: 58, confidence: 'low', home: emptyDataForm(), away: emptyDataForm(), trend: 'unknown', reason: 'ข้อมูลฟอร์มล่าสุดยังจำกัด' }
 
   const score = Math.round(clamp(56 + (formPoints(homeForm) - formPoints(awayForm)) * 1.4 + (formGoalDiff(homeForm) - formGoalDiff(awayForm)) * 1.2, 35, 82))
-  return { score, confidence: played >= 8 ? 'high' : played >= 4 ? 'medium' : 'low', home: summarizeDataForm(homeForm), away: summarizeDataForm(awayForm), trend: score >= 63 ? 'positive' : score <= 49 ? 'negative' : 'neutral', reason: `à¸Ÿà¸­à¸£à¹Œà¸¡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${played} à¸™à¸±à¸” à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™ ${formatDataForm(homeForm)} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™ ${formatDataForm(awayForm)}` }
+  return { score, confidence: played >= 8 ? 'high' : played >= 4 ? 'medium' : 'low', home: summarizeDataForm(homeForm), away: summarizeDataForm(awayForm), trend: score >= 63 ? 'positive' : score <= 49 ? 'negative' : 'neutral', reason: `ฟอร์มล่าสุดมีข้อมูลจริง ${played} นัด เจ้าบ้าน ${formatDataForm(homeForm)} ทีมเยือน ${formatDataForm(awayForm)}` }
 }
 
 function calculateHomeAwayFormData(match: any) {
@@ -11516,41 +8958,41 @@ function calculateHomeAwayFormData(match: any) {
   const homeForm = venueData.home ?? match.homeHomeForm
   const awayForm = venueData.away ?? match.awayAwayForm
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return { score: 58, confidence: 'low', home_win_rate: null, away_win_rate: null, home: emptyDataForm(), away: emptyDataForm(), advantage: 'unknown', reason: 'à¸Ÿà¸­à¸£à¹Œà¸¡à¹€à¸«à¸¢à¹‰à¸²/à¹€à¸¢à¸·à¸­à¸™à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸Šà¸±à¸”' }
+  if (!played) return { score: 58, confidence: 'low', home_win_rate: null, away_win_rate: null, home: emptyDataForm(), away: emptyDataForm(), advantage: 'unknown', reason: 'ฟอร์มเหย้า/เยือนยังไม่ชัด' }
 
   const homeRate = Number(homeForm?.played ?? 0) ? Number(homeForm?.wins ?? 0) / Number(homeForm?.played ?? 1) : null
   const awayRate = Number(awayForm?.played ?? 0) ? Number(awayForm?.wins ?? 0) / Number(awayForm?.played ?? 1) : null
   const score = Math.round(clamp(57 + ((homeRate ?? 0.4) - (awayRate ?? 0.35)) * 28 + (formGoalDiff(homeForm) - formGoalDiff(awayForm)) * 0.9, 35, 82))
-  return { score, confidence: played >= 8 ? 'high' : 'medium', home_win_rate: homeRate === null ? null : Math.round(homeRate * 100), away_win_rate: awayRate === null ? null : Math.round(awayRate * 100), home: summarizeDataForm(homeForm), away: summarizeDataForm(awayForm), advantage: score >= 63 ? 'home' : score <= 51 ? 'away' : 'none', reason: `à¹ƒà¸Šà¹‰à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹€à¸«à¸¢à¹‰à¸²/à¹€à¸¢à¸·à¸­à¸™à¸ˆà¸£à¸´à¸‡ advantage ${score >= 63 ? 'home' : score <= 51 ? 'away' : 'none'}` }
+  return { score, confidence: played >= 8 ? 'high' : 'medium', home_win_rate: homeRate === null ? null : Math.round(homeRate * 100), away_win_rate: awayRate === null ? null : Math.round(awayRate * 100), home: summarizeDataForm(homeForm), away: summarizeDataForm(awayForm), advantage: score >= 63 ? 'home' : score <= 51 ? 'away' : 'none', reason: `ใช้ข้อมูลเหย้า/เยือนจริง advantage ${score >= 63 ? 'home' : score <= 51 ? 'away' : 'none'}` }
 }
 
 function calculateHeadToHeadData(match: any, context: any) {
   const matches = getH2HMatches(match, context)
-  if (!matches.length) return { score: 58, confidence: 'low', matches_count: 0, home_wins: 0, away_wins: 0, draws: 0, goals_average: null, reason: 'à¹„à¸¡à¹ˆà¸¡à¸µ H2H à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­' }
+  if (!matches.length) return { score: 58, confidence: 'low', matches_count: 0, home_wins: 0, away_wins: 0, draws: 0, goals_average: null, reason: 'ไม่มี H2H เพียงพอ' }
 
   const summary = summarizeH2H(matches.slice(0, 10), getTeamId(match.homeTeam), getTeamId(match.awayTeam))
-  return { score: Math.round(clamp(56 + (summary.homeWins - summary.awayWins) * 3 + Math.min(summary.played, 5), 42, 78)), confidence: summary.played >= 8 ? 'high' : summary.played >= 4 ? 'medium' : 'low', matches_count: summary.played, home_wins: summary.homeWins, away_wins: summary.awayWins, draws: summary.draws, goals_average: summary.played ? Math.round((summary.goals / summary.played) * 100) / 100 : null, reason: `H2H à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${summary.played} à¸™à¸±à¸” à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸Šà¸™à¸° ${summary.homeWins} à¹€à¸ªà¸¡à¸­ ${summary.draws} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸Šà¸™à¸° ${summary.awayWins}` }
+  return { score: Math.round(clamp(56 + (summary.homeWins - summary.awayWins) * 3 + Math.min(summary.played, 5), 42, 78)), confidence: summary.played >= 8 ? 'high' : summary.played >= 4 ? 'medium' : 'low', matches_count: summary.played, home_wins: summary.homeWins, away_wins: summary.awayWins, draws: summary.draws, goals_average: summary.played ? Math.round((summary.goals / summary.played) * 100) / 100 : null, reason: `H2H มีข้อมูลจริง ${summary.played} นัด เจ้าบ้านชนะ ${summary.homeWins} เสมอ ${summary.draws} ทีมเยือนชนะ ${summary.awayWins}` }
 }
 
 function calculateStrengthOfScheduleData(recentOpponents: any) {
   const ranks = flattenRecentOpponents(recentOpponents).map((item: any) => Number(item.opponent?.position ?? item.position ?? item.rank ?? 0)).filter((rank: number) => rank > 0)
-  if (!ranks.length) return { score: 58, confidence: 'low', average_opponent_rank: null, difficulty: 'unknown', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸„à¸¸à¸“à¸ à¸²à¸žà¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡ 3-5 à¸™à¸±à¸”à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­' }
+  if (!ranks.length) return { score: 58, confidence: 'low', average_opponent_rank: null, difficulty: 'unknown', reason: 'ยังไม่มีข้อมูลคุณภาพคู่แข่ง 3-5 นัดล่าสุดเพียงพอ' }
 
   const average = ranks.reduce((total: number, rank: number) => total + rank, 0) / ranks.length
   const difficulty = average <= 6 ? 'hard' : average >= 14 ? 'easy' : 'medium'
-  return { score: difficulty === 'hard' ? 55 : difficulty === 'easy' ? 62 : 58, confidence: ranks.length >= 6 ? 'high' : ranks.length >= 3 ? 'medium' : 'low', average_opponent_rank: Math.round(average * 100) / 100, difficulty, reason: `à¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸¡à¸µà¸­à¸±à¸™à¸”à¸±à¸šà¹€à¸‰à¸¥à¸µà¹ˆà¸¢ ${Math.round(average * 100) / 100} à¸£à¸°à¸”à¸±à¸šà¸„à¸§à¸²à¸¡à¸¢à¸²à¸ ${difficulty}` }
+  return { score: difficulty === 'hard' ? 55 : difficulty === 'easy' ? 62 : 58, confidence: ranks.length >= 6 ? 'high' : ranks.length >= 3 ? 'medium' : 'low', average_opponent_rank: Math.round(average * 100) / 100, difficulty, reason: `คู่แข่งล่าสุดมีอันดับเฉลี่ย ${Math.round(average * 100) / 100} ระดับความยาก ${difficulty}` }
 }
 
 function calculateGoalStatisticsData(homeForm: any, awayForm: any) {
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
-  if (!played) return { score: 58, confidence: 'low', average_goals_scored: null, average_goals_conceded: null, clean_sheet_rate: null, btts_rate: null, over_2_5_rate: null, reason: 'à¸ªà¸–à¸´à¸•à¸´à¸›à¸£à¸°à¸•à¸¹à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¹à¸¥à¸°à¹„à¸¡à¹ˆà¸ªà¸£à¹‰à¸²à¸‡à¸„à¹ˆà¸² xG à¹€à¸­à¸‡' }
+  if (!played) return { score: 58, confidence: 'low', average_goals_scored: null, average_goals_conceded: null, clean_sheet_rate: null, btts_rate: null, over_2_5_rate: null, reason: 'สถิติประตูยังจำกัด และไม่สร้างค่า xG เอง' }
 
   const goalsFor = Number(homeForm?.goals_for ?? 0) + Number(awayForm?.goals_for ?? 0)
   const goalsAgainst = Number(homeForm?.goals_against ?? 0) + Number(awayForm?.goals_against ?? 0)
   const cleanSheets = Number(homeForm?.clean_sheets ?? 0) + Number(awayForm?.clean_sheets ?? 0)
   const averageFor = goalsFor / played
   const averageAgainst = goalsAgainst / played
-  return { score: Math.round(clamp(52 + averageFor * 10 - averageAgainst * 5 + (cleanSheets / played) * 8, 35, 84)), confidence: played >= 8 ? 'high' : played >= 4 ? 'medium' : 'low', average_goals_scored: Math.round(averageFor * 100) / 100, average_goals_conceded: Math.round(averageAgainst * 100) / 100, clean_sheet_rate: Math.round((cleanSheets / played) * 100), btts_rate: null, over_2_5_rate: null, reason: `à¸ªà¸–à¸´à¸•à¸´à¸›à¸£à¸°à¸•à¸¹à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${played} à¸™à¸±à¸” à¸¢à¸´à¸‡à¹€à¸‰à¸¥à¸µà¹ˆà¸¢ ${Math.round(averageFor * 100) / 100} à¹€à¸ªà¸µà¸¢à¹€à¸‰à¸¥à¸µà¹ˆà¸¢ ${Math.round(averageAgainst * 100) / 100}` }
+  return { score: Math.round(clamp(52 + averageFor * 10 - averageAgainst * 5 + (cleanSheets / played) * 8, 35, 84)), confidence: played >= 8 ? 'high' : played >= 4 ? 'medium' : 'low', average_goals_scored: Math.round(averageFor * 100) / 100, average_goals_conceded: Math.round(averageAgainst * 100) / 100, clean_sheet_rate: Math.round((cleanSheets / played) * 100), btts_rate: null, over_2_5_rate: null, reason: `สถิติประตูจากข้อมูลจริง ${played} นัด ยิงเฉลี่ย ${Math.round(averageFor * 100) / 100} เสียเฉลี่ย ${Math.round(averageAgainst * 100) / 100}` }
 }
 
 function calculateDataConfidenceScore(sections: any) {
@@ -11567,7 +9009,7 @@ function calculateDataConfidenceScore(sections: any) {
   const missing = keys.filter((key) => !available.includes(key))
   const score = Math.round((available.length / keys.length) * 100)
   const level = score >= 75 ? 'high' : score >= 45 ? 'medium' : 'low'
-  return { score, level, available, missing, reason: `à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡à¸žà¸£à¹‰à¸­à¸¡à¹ƒà¸Šà¹‰ ${available.length}/${keys.length} à¸«à¸¡à¸§à¸” à¸£à¸°à¸”à¸±à¸š ${level}` }
+  return { score, level, available, missing, reason: `ข้อมูลจริงพร้อมใช้ ${available.length}/${keys.length} หมวด ระดับ ${level}` }
 }
 
 function calculateDataIntelligenceModifier(data: any, baseConfidence = 0, footballModifier = 0) {
@@ -11647,7 +9089,7 @@ function calculateFootballIntelligence(match: any, context: any = {}) {
 function calculateH2HIntelligence(match: any, context: any = {}) {
   const h2hMatches = getH2HMatches(match, context)
   if (!h2hMatches.length) {
-    return { score: 58, confidence: 'low', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥ H2H à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­', signals: ['missing_h2h'] }
+    return { score: 58, confidence: 'low', reason: 'ยังไม่มีข้อมูล H2H เพียงพอ', signals: ['missing_h2h'] }
   }
 
   const latest10 = h2hMatches.slice(0, 10)
@@ -11668,7 +9110,7 @@ function calculateH2HIntelligence(match: any, context: any = {}) {
   return {
     score: Math.round(clamp(56 + (samples.homeWins - samples.awayWins) * 3 + Math.min(latest5.length, 5), 45, 76)),
     confidence,
-    reason: `H2H à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${latest10.length} à¸™à¸±à¸”à¸¥à¹ˆà¸²à¸ªà¸¸à¸” à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™à¸Šà¸™à¸° ${samples.homeWins} à¹€à¸ªà¸¡à¸­ ${samples.draws} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸Šà¸™à¸° ${samples.awayWins}${goalsAverage ? ` à¸„à¹ˆà¸²à¹€à¸‰à¸¥à¸µà¹ˆà¸¢à¸›à¸£à¸°à¸•à¸¹ ${goalsAverage}` : ''}`,
+    reason: `H2H มีข้อมูลจริง ${latest10.length} นัดล่าสุด เจ้าบ้านชนะ ${samples.homeWins} เสมอ ${samples.draws} ทีมเยือนชนะ ${samples.awayWins}${goalsAverage ? ` ค่าเฉลี่ยประตู ${goalsAverage}` : ''}`,
     signals,
   }
 }
@@ -11676,13 +9118,13 @@ function calculateH2HIntelligence(match: any, context: any = {}) {
 function calculateLeagueContext(match: any) {
   const type = classifyCompetition(getCompetitionText(match))
   const byType: Record<string, any> = {
-    league: { score: 62, risk_modifier: -1, reason: 'à¸£à¸²à¸¢à¸à¸²à¸£à¸¥à¸µà¸à¸¡à¸µà¸šà¸£à¸´à¸šà¸—à¸•à¹ˆà¸­à¹€à¸™à¸·à¹ˆà¸­à¸‡à¹à¸¥à¸°à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¹€à¸ªà¸–à¸µà¸¢à¸£à¸à¸§à¹ˆà¸²' },
-    cup: { score: 58, risk_modifier: 2, reason: 'à¸£à¸²à¸¢à¸à¸²à¸£à¸–à¹‰à¸§à¸¢à¸¡à¸µà¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¸ªà¸¹à¸‡ à¹à¸•à¹ˆà¸„à¸§à¸²à¸¡à¸œà¸±à¸™à¸œà¸§à¸™à¸¡à¸²à¸à¸‚à¸¶à¹‰à¸™' },
-    friendly: { score: 52, risk_modifier: 3, reason: 'à¹€à¸à¸¡à¸à¸£à¸°à¸Šà¸±à¸šà¸¡à¸´à¸•à¸£à¸¡à¸µà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ˆà¸²à¸à¸à¸²à¸£à¸—à¸”à¸¥à¸­à¸‡à¸—à¸µà¸¡à¹à¸¥à¸°à¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¸•à¹ˆà¸³à¸à¸§à¹ˆà¸²' },
-    international: { score: 57, risk_modifier: 1, reason: 'à¹€à¸à¸¡à¸—à¸µà¸¡à¸Šà¸²à¸•à¸´à¸¡à¸µà¸šà¸£à¸´à¸šà¸—à¹€à¸‰à¸žà¸²à¸°à¹à¸¥à¸°à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ªà¹‚à¸¡à¸ªà¸£à¹ƒà¸Šà¹‰à¹„à¸”à¹‰à¸ˆà¸³à¸à¸±à¸”' },
-    youth: { score: 53, risk_modifier: 2, reason: 'à¸£à¸²à¸¢à¸à¸²à¸£à¹€à¸¢à¸²à¸§à¸Šà¸™à¸¡à¸µà¸„à¸§à¸²à¸¡à¸™à¸´à¹ˆà¸‡à¸‚à¸­à¸‡à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¹ˆà¸³à¸à¸§à¹ˆà¸²à¸£à¸²à¸¢à¸à¸²à¸£à¸«à¸¥à¸±à¸' },
-    women: { score: 54, risk_modifier: 2, reason: 'à¸£à¸²à¸¢à¸à¸²à¸£à¸«à¸à¸´à¸‡à¸­à¸²à¸ˆà¸¡à¸µ coverage à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸™à¹‰à¸­à¸¢à¸à¸§à¹ˆà¸²à¸£à¸²à¸¢à¸à¸²à¸£à¸«à¸¥à¸±à¸' },
-    unknown: { score: 58, risk_modifier: 0, reason: 'à¸¢à¸±à¸‡à¸ˆà¸³à¹à¸™à¸à¸›à¸£à¸°à¹€à¸ à¸—à¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¹„à¸¡à¹ˆà¹„à¸”à¹‰à¸Šà¸±à¸” à¸ˆà¸¶à¸‡à¹ƒà¸«à¹‰à¸„à¹ˆà¸²à¸à¸¥à¸²à¸‡' },
+    league: { score: 62, risk_modifier: -1, reason: 'รายการลีกมีบริบทต่อเนื่องและประเมินเสถียรกว่า' },
+    cup: { score: 58, risk_modifier: 2, reason: 'รายการถ้วยมีแรงจูงใจสูง แต่ความผันผวนมากขึ้น' },
+    friendly: { score: 52, risk_modifier: 3, reason: 'เกมกระชับมิตรมีความเสี่ยงจากการทดลองทีมและแรงจูงใจต่ำกว่า' },
+    international: { score: 57, risk_modifier: 1, reason: 'เกมทีมชาติมีบริบทเฉพาะและข้อมูลสโมสรใช้ได้จำกัด' },
+    youth: { score: 53, risk_modifier: 2, reason: 'รายการเยาวชนมีความนิ่งของข้อมูลต่ำกว่ารายการหลัก' },
+    women: { score: 54, risk_modifier: 2, reason: 'รายการหญิงอาจมี coverage ข้อมูลน้อยกว่ารายการหลัก' },
+    unknown: { score: 58, risk_modifier: 0, reason: 'ยังจำแนกประเภทการแข่งขันไม่ได้ชัด จึงให้ค่ากลาง' },
   }
 
   return { type, ...byType[type] }
@@ -11693,7 +9135,7 @@ function calculateRestDays(match: any, recentMatches: any) {
   const awayRestDays = getRestDays(match, getTeamRecentMatches(recentMatches, 'away'))
 
   if (homeRestDays === null && awayRestDays === null) {
-    return { home_rest_days: null, away_rest_days: null, score: 58, advantage: 'none', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸§à¸±à¸™à¸žà¸±à¸à¸—à¸µà¸¡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”' }
+    return { home_rest_days: null, away_rest_days: null, score: 58, advantage: 'none', reason: 'ยังไม่มีข้อมูลวันพักทีมล่าสุด' }
   }
 
   const diff = (homeRestDays ?? 0) - (awayRestDays ?? 0)
@@ -11704,7 +9146,7 @@ function calculateRestDays(match: any, recentMatches: any) {
     away_rest_days: awayRestDays,
     score: Math.round(clamp(58 + scoreRestDays(homeRestDays) - scoreRestDays(awayRestDays), 45, 72)),
     advantage,
-    reason: `à¸§à¸±à¸™à¸žà¸±à¸à¸¥à¹ˆà¸²à¸ªà¸¸à¸” à¹€à¸ˆà¹‰à¸²à¸šà¹‰à¸²à¸™ ${formatRestDays(homeRestDays)} à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™ ${formatRestDays(awayRestDays)} à¸ à¸²à¸žà¸£à¸§à¸¡à¹„à¸”à¹‰à¹€à¸›à¸£à¸µà¸¢à¸š: ${advantage}`,
+    reason: `วันพักล่าสุด เจ้าบ้าน ${formatRestDays(homeRestDays)} ทีมเยือน ${formatRestDays(awayRestDays)} ภาพรวมได้เปรียบ: ${advantage}`,
   }
 }
 
@@ -11713,7 +9155,7 @@ function calculateScheduleDifficulty(recentOpponents: any) {
   const rated = opponents.map(getOpponentDifficulty).filter((value: number | null) => value !== null)
 
   if (!rated.length) {
-    return { score: 58, difficulty: 'unknown', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸„à¸¸à¸“à¸ à¸²à¸žà¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡ 3-5 à¸™à¸±à¸”à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­', confidence: 'low' }
+    return { score: 58, difficulty: 'unknown', reason: 'ยังไม่มีข้อมูลคุณภาพคู่แข่ง 3-5 นัดล่าสุดเพียงพอ', confidence: 'low' }
   }
 
   const average = rated.reduce((total: number, value: number | null) => total + Number(value ?? 0), 0) / rated.length
@@ -11722,7 +9164,7 @@ function calculateScheduleDifficulty(recentOpponents: any) {
   return {
     score: difficulty === 'hard' ? 54 : difficulty === 'easy' ? 62 : 58,
     difficulty,
-    reason: `à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸„à¸§à¸²à¸¡à¸¢à¸²à¸à¸„à¸¹à¹ˆà¹à¸‚à¹ˆà¸‡à¸¥à¹ˆà¸²à¸ªà¸¸à¸”à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸ˆà¸£à¸´à¸‡ ${rated.length} à¸£à¸²à¸¢à¸à¸²à¸£ à¸£à¸°à¸”à¸±à¸š ${difficulty}`,
+    reason: `ประเมินความยากคู่แข่งล่าสุดจากข้อมูลจริง ${rated.length} รายการ ระดับ ${difficulty}`,
     confidence: rated.length >= 6 ? 'high' : rated.length >= 3 ? 'medium' : 'low',
   }
 }
@@ -11730,7 +9172,7 @@ function calculateScheduleDifficulty(recentOpponents: any) {
 function calculateSquadContext(match: any, squadData: any) {
   const data = squadData ?? match.squadData
   if (!data || (Array.isArray(data) && !data.length)) {
-    return { score: 58, confidence: 'low', reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸±à¸§à¸œà¸¹à¹‰à¹€à¸¥à¹ˆà¸™/à¸­à¸²à¸à¸²à¸£à¸šà¸²à¸”à¹€à¸ˆà¹‡à¸šà¹€à¸žà¸µà¸¢à¸‡à¸žà¸­', signals: ['missing_squad_data'] }
+    return { score: 58, confidence: 'low', reason: 'ยังไม่มีข้อมูลตัวผู้เล่น/อาการบาดเจ็บเพียงพอ', signals: ['missing_squad_data'] }
   }
 
   const injuries = countItems(data.injuries ?? data.injury)
@@ -11747,7 +9189,7 @@ function calculateSquadContext(match: any, squadData: any) {
   return {
     score: Math.round(clamp(62 - penalty, 35, 68)),
     confidence: signals.length ? 'medium' : 'low',
-    reason: signals.length ? 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥ squad à¸ˆà¸£à¸´à¸‡à¸šà¸²à¸‡à¸ªà¹ˆà¸§à¸™à¹à¸¥à¸°à¸™à¸³à¸¡à¸²à¸«à¸±à¸à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸•à¸²à¸¡à¸œà¸¥à¸à¸£à¸°à¸—à¸š' : 'à¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥ squad à¹à¸•à¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸žà¸šà¸ªà¸±à¸à¸à¸²à¸“à¸œà¸¹à¹‰à¹€à¸¥à¹ˆà¸™à¸ªà¸³à¸„à¸±à¸à¸Šà¸±à¸”à¹€à¸ˆà¸™',
+    reason: signals.length ? 'มีข้อมูล squad จริงบางส่วนและนำมาหักความเสี่ยงตามผลกระทบ' : 'มีข้อมูล squad แต่ยังไม่พบสัญญาณผู้เล่นสำคัญชัดเจน',
     signals,
   }
 }
@@ -11758,7 +9200,7 @@ function calculateMomentum(formData: any) {
   const played = Number(homeForm?.played ?? 0) + Number(awayForm?.played ?? 0)
 
   if (!played) {
-    return { score: 56, momentum: 'unknown', signals: ['missing_detailed_form'], reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µà¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹‚à¸¡à¹€à¸¡à¸™à¸•à¸±à¸¡à¸¥à¸°à¹€à¸­à¸µà¸¢à¸” à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¹€à¸”à¸²à¹€à¸žà¸´à¹ˆà¸¡à¸ˆà¸²à¸à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸—à¸µà¹ˆà¹„à¸¡à¹ˆà¸¡à¸µ' }
+    return { score: 56, momentum: 'unknown', signals: ['missing_detailed_form'], reason: 'ยังไม่มีข้อมูลโมเมนตัมละเอียด จึงไม่เดาเพิ่มจากข้อมูลที่ไม่มี' }
   }
 
   const pointsRate = ((formPoints(homeForm) + formPoints(awayForm)) / Math.max(played * 3, 1)) * 100
@@ -11775,7 +9217,7 @@ function calculateMomentum(formData: any) {
     score,
     momentum: score >= 63 ? 'positive' : score <= 49 ? 'negative' : 'neutral',
     signals: signals.length ? signals : ['form_proxy_used'],
-    reason: 'à¹ƒà¸Šà¹‰à¸‚à¹‰à¸­à¸¡à¸¹à¸¥ goals/form à¸ˆà¸²à¸ v2 à¹€à¸›à¹‡à¸™ proxy à¹‚à¸”à¸¢à¹„à¸¡à¹ˆà¹€à¸”à¸²à¸ªà¸–à¸´à¸•à¸´à¸—à¸µà¹ˆà¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µ',
+    reason: 'ใช้ข้อมูล goals/form จาก v2 เป็น proxy โดยไม่เดาสถิติที่ยังไม่มี',
   }
 }
 
@@ -11784,10 +9226,10 @@ function calculateMatchImportance(match: any) {
   const leagueContext = calculateLeagueContext(match)
   const knockout = ['final', 'semi', 'quarter', 'last 16', 'last_16', 'playoff', 'knockout'].some((item) => text.includes(item))
 
-  if (leagueContext.type === 'friendly') return { score: 50, importance: 'low', risk_modifier: 2, reason: 'Friendly à¸¡à¸µà¸„à¸§à¸²à¸¡à¸ªà¸³à¸„à¸±à¸à¹€à¸Šà¸´à¸‡à¸œà¸¥à¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¸•à¹ˆà¸³à¸à¸§à¹ˆà¸²' }
-  if (knockout) return { score: 64, importance: 'high', risk_modifier: 2, reason: 'à¸£à¸­à¸šà¸™à¹‡à¸­à¸à¹€à¸­à¸²à¸•à¹Œ/à¸£à¸­à¸šà¸¥à¸¶à¸à¸¡à¸µà¸„à¸§à¸²à¸¡à¸ªà¸³à¸„à¸±à¸à¸ªà¸¹à¸‡ à¹à¸•à¹ˆ variance à¸ªà¸¹à¸‡à¸‚à¸¶à¹‰à¸™' }
-  if (leagueContext.type === 'league') return { score: 59, importance: 'medium', risk_modifier: -1, reason: 'à¹€à¸à¸¡à¸¥à¸µà¸à¸›à¸à¸•à¸´à¸¡à¸µà¹à¸£à¸‡à¸ˆà¸¹à¸‡à¹ƒà¸ˆà¹à¸¥à¸°à¸£à¸¹à¸›à¹à¸šà¸šà¸„à¹ˆà¸­à¸™à¸‚à¹‰à¸²à¸‡à¹€à¸ªà¸–à¸µà¸¢à¸£' }
-  return { score: 58, importance: leagueContext.type === 'unknown' ? 'unknown' : 'medium', risk_modifier: leagueContext.risk_modifier > 0 ? 1 : 0, reason: 'à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸¡à¸µ league table context à¹€à¸žà¸µà¸¢à¸‡à¸žà¸­ à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸ªà¸£à¸¸à¸› must-win à¹€à¸­à¸‡' }
+  if (leagueContext.type === 'friendly') return { score: 50, importance: 'low', risk_modifier: 2, reason: 'Friendly มีความสำคัญเชิงผลการแข่งขันต่ำกว่า' }
+  if (knockout) return { score: 64, importance: 'high', risk_modifier: 2, reason: 'รอบน็อกเอาต์/รอบลึกมีความสำคัญสูง แต่ variance สูงขึ้น' }
+  if (leagueContext.type === 'league') return { score: 59, importance: 'medium', risk_modifier: -1, reason: 'เกมลีกปกติมีแรงจูงใจและรูปแบบค่อนข้างเสถียร' }
+  return { score: 58, importance: leagueContext.type === 'unknown' ? 'unknown' : 'medium', risk_modifier: leagueContext.risk_modifier > 0 ? 1 : 0, reason: 'ยังไม่มี league table context เพียงพอ จึงไม่สรุป must-win เอง' }
 }
 
 function calculateIntelligenceModifier(intelligence: any, baseConfidence = 0) {
@@ -11831,16 +9273,16 @@ function calculateOverallRisk(breakdown: any, confidence: number, dataCompletene
   const lowConfidenceSignals = [intelligence?.h2h, intelligence?.schedule_difficulty, intelligence?.squad_context].filter((item) => item?.confidence === 'low').length
 
   if (confidence < 48 || weakCore >= 2 || spread >= 42 || marketRiskWeak || (leagueType === 'friendly' && dataConfidence === 'low') || (totalRiskModifier >= 4 && confidence < 68) || (marketDataMissing && confidence < 50)) {
-    return { level: 'HIGH', reason: 'à¸„à¸°à¹à¸™à¸™à¸ªà¸³à¸„à¸±à¸à¸­à¹ˆà¸­à¸™/à¸‚à¸±à¸”à¹à¸¢à¹‰à¸‡ à¸«à¸£à¸·à¸­à¸šà¸£à¸´à¸šà¸—à¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¸¡à¸µ variance à¸ªà¸¹à¸‡ à¸ˆà¸¶à¸‡à¸ˆà¸±à¸”à¹€à¸›à¹‡à¸™à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡' }
+    return { level: 'HIGH', reason: 'คะแนนสำคัญอ่อน/ขัดแย้ง หรือบริบทการแข่งขันมี variance สูง จึงจัดเป็นความเสี่ยงสูง' }
   }
   if (!marketDataMissing && confidence >= 72 && dataCompleteness >= 70 && spread <= 28 && totalRiskModifier <= 1 && lowConfidenceSignals <= 1) {
-    return { level: 'LOW', reason: 'à¸«à¸¥à¸²à¸¢à¹‚à¸¡à¸”à¸¹à¸¥à¹ƒà¸«à¹‰à¸ à¸²à¸žà¸ªà¸­à¸”à¸„à¸¥à¹‰à¸­à¸‡à¸à¸±à¸™ à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸£à¸­à¸‡à¸£à¸±à¸šà¸„à¹ˆà¸­à¸™à¸‚à¹‰à¸²à¸‡à¸„à¸£à¸š à¹à¸¥à¸° risk modifier à¸•à¹ˆà¸³' }
+    return { level: 'LOW', reason: 'หลายโมดูลให้ภาพสอดคล้องกัน ข้อมูลรองรับค่อนข้างครบ และ risk modifier ต่ำ' }
   }
   return {
     level: 'MEDIUM',
     reason: marketDataMissing
-      ? 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¸„à¸¸à¸¡à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¹„à¸§à¹‰à¸£à¸°à¸”à¸±à¸šà¸à¸¥à¸²à¸‡à¹à¸¥à¸°à¸«à¸¥à¸µà¸à¹€à¸¥à¸µà¹ˆà¸¢à¸‡ BET à¹€à¸§à¹‰à¸™à¹à¸•à¹ˆà¸„à¸°à¹à¸™à¸™à¸à¸±à¹ˆà¸‡à¸Ÿà¸¸à¸•à¸šà¸­à¸¥à¹à¸‚à¹‡à¸‡à¸¡à¸²à¸'
-      : 'à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸¢à¸±à¸‡à¹„à¸¡à¹ˆà¸„à¸£à¸šà¸—à¸¸à¸à¸¡à¸´à¸•à¸´ à¹à¸•à¹ˆà¹„à¸¡à¹ˆà¸¡à¸µà¸ªà¸±à¸à¸à¸²à¸“à¸­à¸±à¸™à¸•à¸£à¸²à¸¢à¸Šà¸±à¸” à¸ˆà¸¶à¸‡à¸„à¸‡à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸£à¸°à¸”à¸±à¸šà¸à¸¥à¸²à¸‡',
+      ? 'ข้อมูลตลาดยังจำกัด จึงคุมความเสี่ยงไว้ระดับกลางและหลีกเลี่ยง BET เว้นแต่คะแนนฝั่งฟุตบอลแข็งมาก'
+      : 'ข้อมูลยังไม่ครบทุกมิติ แต่ไม่มีสัญญาณอันตรายชัด จึงคงความเสี่ยงระดับกลาง',
   }
 }
 
@@ -11858,15 +9300,15 @@ function buildAnalysisSummary(match: any, confidence: number, riskLevel: string,
   const bestModule = [...summaryModules].sort((a, b) => b.score - a.score)[0]
   const weakestModule = [...summaryModules].sort((a, b) => a.score - b.score)[0]
   const marketMissing = breakdown.market_odds_risk?.has_market_data === false
-  const riskText = riskLevel === 'LOW' ? 'à¸•à¹ˆà¸³' : riskLevel === 'HIGH' ? 'à¸ªà¸¹à¸‡' : 'à¸à¸¥à¸²à¸‡'
-  const marketText = marketMissing ? ' à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸¥à¸²à¸”à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸” à¸ˆà¸¶à¸‡à¹„à¸¡à¹ˆà¸„à¸§à¸£à¹„à¸¥à¹ˆà¸£à¸²à¸„à¸²à¹à¸£à¸‡' : ''
+  const riskText = riskLevel === 'LOW' ? 'ต่ำ' : riskLevel === 'HIGH' ? 'สูง' : 'กลาง'
+  const marketText = marketMissing ? ' ข้อมูลตลาดยังจำกัด จึงไม่ควรไล่ราคาแรง' : ''
   const caution = recommendation === 'BET'
-    ? 'à¸¢à¸±à¸‡à¸„à¸§à¸£à¹€à¸Šà¹‡à¸à¹„à¸¥à¸™à¹Œà¸­à¸±à¸›à¹à¸¥à¸°à¸£à¸²à¸„à¸²à¹ƒà¸à¸¥à¹‰à¹à¸‚à¹ˆà¸‡à¸à¹ˆà¸­à¸™à¹€à¸‚à¹‰à¸²'
+    ? 'ยังควรเช็กไลน์อัปและราคาใกล้แข่งก่อนเข้า'
     : recommendation === 'LEAN'
-      ? 'à¹€à¸«à¸¡à¸²à¸°à¸•à¸´à¸”à¸•à¸²à¸¡à¸«à¸£à¸·à¸­à¸£à¸­à¸£à¸²à¸„à¸²à¸™à¸´à¹ˆà¸‡à¸¡à¸²à¸à¸à¸§à¹ˆà¸² BET à¹€à¸•à¹‡à¸¡à¸•à¸±à¸§'
-      : 'à¸„à¸§à¸£à¸‚à¹‰à¸²à¸¡à¸«à¸£à¸·à¸­à¸£à¸­à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¹ƒà¸«à¸¡à¹ˆà¸à¹ˆà¸­à¸™'
+      ? 'เหมาะติดตามหรือรอราคานิ่งมากกว่า BET เต็มตัว'
+      : 'ควรข้ามหรือรอข้อมูลใหม่ก่อน'
 
-  return `à¹à¸™à¸°à¸™à¸³ ${recommendation} à¹€à¸žà¸£à¸²à¸°à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆ ${confidence}/100 à¹à¸¥à¸°à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸£à¸°à¸”à¸±à¸š${riskText}. à¸ˆà¸¸à¸”à¸«à¸™à¸¸à¸™à¸„à¸·à¸­ ${bestModule.label} ${bestModule.score}/100 à¹à¸•à¹ˆà¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸«à¸¥à¸±à¸à¸­à¸¢à¸¹à¹ˆà¸—à¸µà¹ˆ ${weakestModule.label} ${weakestModule.score}/100.${marketText} ${caution}`
+  return `แนะนำ ${recommendation} เพราะความมั่นใจ ${confidence}/100 และความเสี่ยงระดับ${riskText}. จุดหนุนคือ ${bestModule.label} ${bestModule.score}/100 แต่ความเสี่ยงหลักอยู่ที่ ${weakestModule.label} ${weakestModule.score}/100.${marketText} ${caution}`
 }
 
 function logFootballIntelligenceV3({ match, baseConfidence, footballModifier, dataIntelligenceModifier, intelligenceModifier, confidence, riskLevel, recommendation, modules, intelligenceSignals }: any) {
@@ -11887,17 +9329,17 @@ function logFootballIntelligenceV3({ match, baseConfidence, footballModifier, da
 }
 
 function buildFootballIntelligenceExplanation(intelligence: any, modifier: number) {
-  return `v3 à¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸šà¸£à¸´à¸šà¸—à¹€à¸›à¹‡à¸™ ${intelligence.league_context.type}, momentum ${intelligence.momentum.momentum}, H2H confidence ${intelligence.h2h.confidence}, squad confidence ${intelligence.squad_context.confidence}; modifier ${formatSigned(modifier)}`
+  return `v3 ประเมินบริบทเป็น ${intelligence.league_context.type}, momentum ${intelligence.momentum.momentum}, H2H confidence ${intelligence.h2h.confidence}, squad confidence ${intelligence.squad_context.confidence}; modifier ${formatSigned(modifier)}`
 }
 
 function buildContextSummary(intelligence: any) {
   const parts = [
-    `à¸šà¸£à¸´à¸šà¸—à¸à¸²à¸£à¹à¸‚à¹ˆà¸‡à¸‚à¸±à¸™à¹€à¸›à¹‡à¸™ ${intelligence?.league_context?.type ?? 'unknown'}`,
-    `à¹‚à¸¡à¹€à¸¡à¸™à¸•à¸±à¸¡ ${intelligence?.momentum?.momentum ?? 'unknown'}`,
+    `บริบทการแข่งขันเป็น ${intelligence?.league_context?.type ?? 'unknown'}`,
+    `โมเมนตัม ${intelligence?.momentum?.momentum ?? 'unknown'}`,
   ]
-  if (intelligence?.h2h?.confidence === 'low') parts.push('à¸‚à¹‰à¸­à¸¡à¸¹à¸¥ H2H à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸”')
-  if (intelligence?.squad_context?.confidence === 'low') parts.push('à¸‚à¹‰à¸­à¸¡à¸¹à¸¥à¸•à¸±à¸§à¸œà¸¹à¹‰à¹€à¸¥à¹ˆà¸™à¸¢à¸±à¸‡à¸ˆà¸³à¸à¸±à¸”')
-  if (Number(intelligence?.match_importance?.risk_modifier ?? 0) > 0) parts.push('à¸£à¸²à¸¢à¸à¸²à¸£à¸¡à¸µà¸„à¸§à¸²à¸¡à¸œà¸±à¸™à¸œà¸§à¸™à¹€à¸žà¸´à¹ˆà¸¡à¸‚à¸¶à¹‰à¸™')
+  if (intelligence?.h2h?.confidence === 'low') parts.push('ข้อมูล H2H ยังจำกัด')
+  if (intelligence?.squad_context?.confidence === 'low') parts.push('ข้อมูลตัวผู้เล่นยังจำกัด')
+  if (Number(intelligence?.match_importance?.risk_modifier ?? 0) > 0) parts.push('รายการมีความผันผวนเพิ่มขึ้น')
   return parts.join(', ')
 }
 
@@ -11999,7 +9441,7 @@ function scoreRestDays(days: number | null) {
 }
 
 function formatRestDays(days: number | null) {
-  return days === null ? 'à¹„à¸¡à¹ˆà¸—à¸£à¸²à¸š' : `${days} à¸§à¸±à¸™`
+  return days === null ? 'ไม่ทราบ' : `${days} วัน`
 }
 
 function flattenRecentOpponents(recentOpponents: any) {
@@ -12075,12 +9517,12 @@ async function resetMatchesForRange(range: { startUtc: string; endUtc: string })
 }
 
 function formatRound(match: any) {
-  return [match.stage, match.group, match.matchday ? `Matchday ${match.matchday}` : ''].filter(Boolean).join(' Â· ') || null
+  return [match.stage, match.group, match.matchday ? `Matchday ${match.matchday}` : ''].filter(Boolean).join(' · ') || null
 }
 
 function buildThaiReason(homeForm: Record<string, number>, awayForm: Record<string, number>, confidence: number, riskLevel: string) {
-  const riskText = riskLevel === 'low' ? 'à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¹‚à¸”à¸¢à¸£à¸§à¸¡à¸•à¹ˆà¸³' : riskLevel === 'medium' ? 'à¸¢à¸±à¸‡à¸¡à¸µà¸ˆà¸¸à¸”à¸—à¸µà¹ˆà¸•à¹‰à¸­à¸‡à¸•à¸´à¸”à¸•à¸²à¸¡à¸à¹ˆà¸­à¸™à¹à¸‚à¹ˆà¸‡' : 'à¸„à¸§à¸²à¸¡à¹€à¸ªà¸µà¹ˆà¸¢à¸‡à¸ªà¸¹à¸‡à¸à¸§à¹ˆà¸²à¸›à¸à¸•à¸´'
-  return `à¸—à¸µà¸¡à¹€à¸«à¸¢à¹‰à¸²à¸¡à¸µà¸œà¸¥à¸‡à¸²à¸™ 5 à¸™à¸±à¸”à¸«à¸¥à¸±à¸‡ à¸Šà¸™à¸° ${homeForm.wins} à¹€à¸ªà¸¡à¸­ ${homeForm.draws} à¹à¸žà¹‰ ${homeForm.losses} à¸¢à¸´à¸‡à¹„à¸”à¹‰ ${homeForm.goals_for} à¸›à¸£à¸°à¸•à¸¹ à¸ªà¹ˆà¸§à¸™à¸—à¸µà¸¡à¹€à¸¢à¸·à¸­à¸™à¸Šà¸™à¸° ${awayForm.wins} à¹€à¸ªà¸¡à¸­ ${awayForm.draws} à¹à¸žà¹‰ ${awayForm.losses} à¸£à¸°à¸šà¸šà¸›à¸£à¸°à¹€à¸¡à¸´à¸™à¸„à¸§à¸²à¸¡à¸¡à¸±à¹ˆà¸™à¹ƒà¸ˆà¸—à¸µà¹ˆ ${confidence}% à¹à¸¥à¸°${riskText}`
+  const riskText = riskLevel === 'low' ? 'ความเสี่ยงโดยรวมต่ำ' : riskLevel === 'medium' ? 'ยังมีจุดที่ต้องติดตามก่อนแข่ง' : 'ความเสี่ยงสูงกว่าปกติ'
+  return `ทีมเหย้ามีผลงาน 5 นัดหลัง ชนะ ${homeForm.wins} เสมอ ${homeForm.draws} แพ้ ${homeForm.losses} ยิงได้ ${homeForm.goals_for} ประตู ส่วนทีมเยือนชนะ ${awayForm.wins} เสมอ ${awayForm.draws} แพ้ ${awayForm.losses} ระบบประเมินความมั่นใจที่ ${confidence}% และ${riskText}`
 }
 
 async function finishLog(logId: string | null, status: string, message: string, raw: unknown) {
@@ -12250,10 +9692,6 @@ function getSupportedSyncModes() {
 
 function getSyncLimit(value: unknown, mode = 'manual') {
   if (mode === 'sync-odds') return getPositiveLimit(value, 10, maxFootballEnrichmentLimit)
-  if (mode === 'sync-today-odds') return 1
-  if (mode === 'sync-daily-top10-odds') return getPositiveLimit(value, 2, 10)
-  if (mode === 'sync-daily-candidate-odds') return getPositiveLimit(value, 2, 10)
-  if (mode === 'build-daily-market-candidates') return getPositiveLimit(value, 60, 60)
   if (mode === 'sync-fixture-odds') return getPositiveLimit(value, 1, 3)
   if (isResultPipelineMode(mode)) return getPositiveLimit(value, 10, 20)
   const defaultLimit = isFootballEnrichmentMode(mode) ? defaultFootballEnrichmentLimit : mode === 'enrich' ? defaultEnrichLimit : defaultManualLimit
