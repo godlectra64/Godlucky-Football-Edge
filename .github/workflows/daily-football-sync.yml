@@ -100,27 +100,63 @@ jobs:
             return body
           }
 
-          function normalizeAction(value) {
-            return String(value ?? '').trim().toLowerCase()
+          const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']
+
+          function getRequiredSteps(result) {
+            const byPhase = new Map((result.steps ?? []).map((step) => [step.phase ?? step.mode, step]))
+            return requiredPhases.map((phase) => byPhase.get(phase)).filter(Boolean)
           }
 
           function isComplete(result) {
-            const nextAction = normalizeAction(result.nextAction)
+            const required = getRequiredSteps(result)
             return result.status === 'success'
-              || Number(result.progressPercent ?? 0) >= 100
-              || nextAction === 'daily sync complete'
-              || nextAction === 'no action required'
+              && required.length === requiredPhases.length
+              && required.every((step) => step.status === 'success')
           }
 
-          function shouldContinue(result) {
-            return !isComplete(result) && ['running', 'pending_retry', 'partial_success'].includes(result.status)
+          function getBlockingStep(result) {
+            const byPhase = new Map((result.steps ?? []).map((step) => [step.phase ?? step.mode, step]))
+            return requiredPhases.map((phase) => byPhase.get(phase)).find((step) => !step || step.status !== 'success') ?? null
+          }
+
+          function assertPipelineState(result, expectedRunId) {
+            if (result.runId !== expectedRunId) throw new Error(`Continuation changed run id from ${expectedRunId} to ${result.runId ?? 'missing'}`)
+            const blocking = getBlockingStep(result)
+            if (result.status === 'failed' || blocking?.status === 'failed') {
+              throw new Error(`Daily pipeline failed at ${blocking?.phase ?? result.phase ?? 'unknown'}: ${blocking?.error_message ?? result.failures?.[0]?.message ?? 'no reason supplied'}`)
+            }
+          }
+
+          function logContinuation(result, invocation) {
+            const step = getBlockingStep(result)
+            const cursor = step?.continuation_state ?? {}
+            console.log(JSON.stringify(sanitize({
+              runId: result.runId,
+              phase: step?.phase ?? result.phase ?? null,
+              step: step?.step_order ?? null,
+              invocation,
+              attempt: step?.attempt_count ?? null,
+              cursor: {
+                providerPage: cursor.providerPage ?? step?.provider_page ?? null,
+                fixtureOffset: cursor.fixtureOffset ?? step?.fixture_offset ?? null,
+                oddsOffset: cursor.oddsOffset ?? step?.odds_offset ?? null,
+                lastProcessedFixtureId: cursor.lastProcessedFixtureId ?? step?.last_processed_fixture_id ?? null,
+                batchSignature: cursor.batchSignature ?? step?.batch_signature ?? null,
+              },
+              nextRetryAt: step?.next_retry_at ?? null,
+              status: result.status,
+            })))
           }
 
           async function waitForRetryWindow(result) {
-            const retryAfterSeconds = Number(result.retryAfterSeconds ?? 0)
-            if (result.status !== 'pending_retry' || !Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) return
-            const waitSeconds = Math.min(retryAfterSeconds, 60)
-            console.log(`daily-sync-auto pending_retry; waiting ${waitSeconds}s before continuing`)
+            const step = getBlockingStep(result)
+            if (step?.status !== 'pending_retry') return
+            if (!step.next_retry_at) throw new Error(`pending_retry step ${step.phase} is missing next_retry_at`)
+            const retryAfterSeconds = Math.ceil((new Date(step.next_retry_at).getTime() - Date.now()) / 1000)
+            if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) return
+            if (retryAfterSeconds > 60) throw new Error(`Daily pipeline deferred until ${step.next_retry_at}; required phase ${step.phase} is incomplete`)
+            const waitSeconds = Math.max(1, retryAfterSeconds)
+            console.log(`daily-sync-auto pending_retry; waiting ${waitSeconds}s for the persisted retry window`)
             await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000))
           }
 
@@ -129,23 +165,28 @@ jobs:
           if (!runId) {
             throw new Error('daily-sync-auto response did not include runId')
           }
+          assertPipelineState(dailySync, runId)
+          logContinuation(dailySync, 1)
 
-          for (let attempt = 1; attempt <= 5 && shouldContinue(dailySync); attempt += 1) {
+          for (let invocation = 2; invocation <= 12 && !isComplete(dailySync); invocation += 1) {
             await waitForRetryWindow(dailySync)
-            console.log(`Continuing daily-sync-auto run ${runId}; attempt ${attempt}/5`)
+            console.log(`Continuing daily-sync-auto run ${runId}; invocation ${invocation}/12`)
             dailySync = await postSync({
               mode: 'daily-sync-auto',
               runId,
               autoAdvance: true,
               maxStepsPerRequest: 2,
             })
+            assertPipelineState(dailySync, runId)
+            logContinuation(dailySync, invocation)
           }
 
           if (!isComplete(dailySync)) {
-            console.log(`daily-sync-auto stopped without a real failure: status=${dailySync.status ?? 'unknown'}, progressPercent=${dailySync.progressPercent ?? 'unknown'}, nextAction=${dailySync.nextAction ?? 'unknown'}`)
+            const step = getBlockingStep(dailySync)
+            throw new Error(`Daily pipeline incomplete after continuation budget: status=${dailySync.status ?? 'unknown'}, phase=${step?.phase ?? dailySync.phase ?? 'unknown'}, next_retry_at=${step?.next_retry_at ?? 'missing'}`)
           }
 
-          await postSync({ mode: 'strict-api-football-daily-picks', limit: 10 })
+          console.log(`Daily Market-Ready pipeline ${runId} completed all required phases.`)
           await postSync({ mode: 'result-refresh', limit: 20 })
           console.log('Daily football sync workflow completed successfully.')
           NODE

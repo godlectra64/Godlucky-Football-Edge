@@ -41,6 +41,11 @@ export function buildTodayMatchBuckets(matches = [], options = {}) {
       return result
     }
 
+    if (decisionStatus === 'REJECTED') {
+      result.rejectedMatches.push(enriched)
+      return result
+    }
+
     if (decisionStatus === 'READY' && decision.final_pick?.type !== 'NO_DECISION') {
       result.strongMatches.push(enriched)
       return result
@@ -66,6 +71,7 @@ function createEmptyBuckets() {
     strongMatches: [],
     watchMatches: [],
     waitingMatches: [],
+    rejectedMatches: [],
     finishedMatches: [],
     hiddenMatches: [],
     notPlayableMatches: [],
@@ -74,7 +80,7 @@ function createEmptyBuckets() {
 }
 
 function buildSummary(buckets, options = {}) {
-  const totalVisible = buckets.strongMatches.length + buckets.watchMatches.length + buckets.waitingMatches.length
+  const totalVisible = buckets.strongMatches.length + buckets.watchMatches.length + buckets.waitingMatches.length + buckets.rejectedMatches.length
   const sourceLockedCount = Number(options.lockedCount ?? 0)
   return {
     totalMatches: buckets.allMatches.length,
@@ -83,6 +89,7 @@ function buildSummary(buckets, options = {}) {
     strongCount: buckets.strongMatches.length,
     watchCount: buckets.watchMatches.length,
     waitingCount: buckets.waitingMatches.length,
+    rejectedCount: buckets.rejectedMatches.length,
     finishedCount: Number(options.finishedCount ?? buckets.finishedMatches.length),
     hiddenCount: buckets.hiddenMatches.length,
     visibleCount: totalVisible,
@@ -93,7 +100,7 @@ function buildSummary(buckets, options = {}) {
     hasStrongPick: buckets.strongMatches.length > 0,
     hasWaitingOnly: totalVisible > 0 && buckets.strongMatches.length === 0 && buckets.watchMatches.length === 0,
     hasFinishedOnly: totalVisible === 0 && (buckets.finishedMatches.length > 0 || Number(options.finishedCount ?? 0) > 0),
-    notReadyReasons: buildNotReadyReasons([...buckets.watchMatches, ...buckets.waitingMatches]),
+    notReadyReasons: buildNotReadyReasons([...buckets.watchMatches, ...buckets.waitingMatches, ...buckets.rejectedMatches]),
   }
 }
 

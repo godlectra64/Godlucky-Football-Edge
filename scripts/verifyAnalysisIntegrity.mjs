@@ -158,8 +158,8 @@ const optionalV2Checks = [
     },
   },
   {
-    label: 'top pick final_rank outside 1-10',
-    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('is_top_pick', true).or('final_rank.lt.1,final_rank.gt.10'),
+    label: 'selected row final_rank below 1',
+    query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('is_top_pick', true).lt('final_rank', 1),
   },
 ]
 
@@ -235,12 +235,8 @@ const optionalProfessionalChecks = [
     query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).or('value_edge_score.lt.0,value_edge_score.gt.100'),
   },
   {
-    label: 'top 10 missing professional score',
+    label: 'selected row missing professional score',
     query: () => supabase.from('match_analysis').select('id', { count: 'exact', head: true }).eq('is_top_pick', true).is('professional_score', null),
-  },
-  {
-    label: 'daily top10 locked missing professional score',
-    query: checkDailyTop10LockedProfessionalScore,
   },
   {
     label: 'null pipeline_stage when column exists',
@@ -283,7 +279,7 @@ const footballEnrichmentChecks = [
     query: () => supabase.from('api_football_enrichment_sync_log').select('id', { count: 'exact', head: true }).eq('status', 'error').gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()),
   },
   {
-    label: 'top 10 fixture enrichment rows',
+    label: 'selected fixture enrichment rows',
     query: checkTopFixtureEnrichment,
   },
   {
@@ -397,7 +393,7 @@ for (const check of footballEnrichmentChecks) {
 
   if (warning) console.warn(`${check.label}: ${warning}`)
   else console.log(`${check.label}: ${count ?? 0}`)
-  if ((count ?? 0) > 0 && check.label !== 'top 10 fixture enrichment rows' && !check.label.startsWith('enrichment table ')) failed = true
+  if ((count ?? 0) > 0 && check.label !== 'selected fixture enrichment rows' && !check.label.startsWith('enrichment table ')) failed = true
 }
 
 if (failed) {
@@ -481,7 +477,7 @@ async function runLinkedCliVerification() {
       count(*) filter (where is_top_pick is true and recommendation not in ('BET', 'LEAN', 'WATCH', 'NO BET')) as "invalid top pick recommendation",
       (select count(*) from duplicate_final_pick_days) as "duplicate final pick per day",
       (select count(*) from duplicate_rank_days) as "duplicate final_rank per day",
-      count(*) filter (where is_top_pick is true and (final_rank < 1 or final_rank > 10)) as "top pick final_rank outside 1-10",
+      count(*) filter (where is_top_pick is true and final_rank < 1) as "selected row final_rank below 1",
       (select count(*) from enrichment_tables where to_regclass('public.' || name) is null) as "missing enrichment tables"
     from base;
   `
@@ -578,13 +574,12 @@ async function checkTopFixtureEnrichment() {
     .eq('is_top_pick', true)
     .not('final_rank', 'is', null)
     .order('final_rank', { ascending: true })
-    .limit(10)
   if (error) return { error }
 
   const fixtureIds = (matches ?? [])
     .map((item) => item.football_matches?.api_sports_fixture_id)
     .filter(Boolean)
-  if (!fixtureIds.length) return { count: 0, warning: 'no top 10 API-FOOTBALL fixtures available yet' }
+  if (!fixtureIds.length) return { count: 0, warning: 'no selected API-FOOTBALL fixtures available yet' }
 
   const tables = ['api_football_fixture_statistics', 'api_football_fixture_events', 'api_football_fixture_lineups', 'api_football_fixture_players']
   let enrichedRows = 0
@@ -596,7 +591,7 @@ async function checkTopFixtureEnrichment() {
     }
     enrichedRows += count ?? 0
   }
-  return enrichedRows > 0 ? { count: 0 } : { count: 0, warning: 'top 10 exists, but enrichment rows are still empty' }
+  return enrichedRows > 0 ? { count: 0 } : { count: 0, warning: 'selected fixtures exist, but enrichment rows are still empty' }
 }
 
 async function checkTodayDataCoverage() {
@@ -769,31 +764,6 @@ async function checkProfessionalPipelineJsonArrays() {
   return { count: invalid.length }
 }
 
-async function checkDailyTop10LockedProfessionalScore() {
-  const { data: locks, error: lockError } = await fetchAllRows((from, to) => supabase
-    .from('daily_top10_selections')
-    .select('match_id')
-    .not('match_id', 'is', null)
-    .range(from, to))
-  if (lockError) {
-    if (isOptionalV2Missing(lockError)) return { count: 0, warning: lockError.message }
-    return { error: lockError }
-  }
-
-  const matchIds = [...new Set((locks ?? []).map((row) => row.match_id).filter(Boolean))]
-  if (!matchIds.length) return { count: 0 }
-
-  const { data: analysisRows, error } = await supabase
-    .from('match_analysis')
-    .select('match_id, professional_score')
-    .in('match_id', matchIds)
-  if (error) return { error }
-
-  const byMatchId = new Map((analysisRows ?? []).map((row) => [row.match_id, row]))
-  const missing = matchIds.filter((matchId) => !byMatchId.get(matchId)?.professional_score && byMatchId.get(matchId)?.professional_score !== 0)
-  return { count: missing.length }
-}
-
 async function fetchAllRows(queryPage, pageSize = 1000) {
   const rows = []
   for (let from = 0; ; from += pageSize) {
@@ -831,8 +801,7 @@ async function checkFrontendEmptyEnrichment() {
 
 async function checkFootballEnrichmentKeywordScan() {
   const files = [
-    'supabase/migrations/20260630_add_api_football_enrichment_tables.sql',
-    'supabase/migrations/20260703_add_daily_sync_orchestrator.sql',
+    'supabase/migrations/20260715000000_reconcile_unrecorded_schema.sql',
     'src/repositories/matchesRepository.js',
   ]
   const banned = /\b(betting tips|betting recommendations|stake|bankroll|profit|ROI)\b|เดิมพัน|แทง/i
@@ -863,7 +832,7 @@ async function checkDailySyncDocs() {
 }
 
 async function checkDailySyncRetryMigration() {
-  const text = await readFile('supabase/migrations/20260704_upgrade_daily_sync_orchestrator.sql', 'utf8').catch((error) => `missing:${error.message}`)
+  const text = await readFile('supabase/migrations/20260715000000_reconcile_unrecorded_schema.sql', 'utf8').catch((error) => `missing:${error.message}`)
   const required = ['attempt_count', 'max_attempts', 'last_attempt_at', 'next_retry_at', 'pending_retry']
   const missing = required.filter((item) => !text.includes(item))
   return missing.length ? { count: 1, warning: `daily sync retry migration missing: ${missing.join(', ')}` } : { count: 0 }

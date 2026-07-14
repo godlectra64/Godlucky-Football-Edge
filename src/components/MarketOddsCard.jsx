@@ -2,7 +2,7 @@ import { LineChart } from 'lucide-react'
 import { formatMarketFocus } from '../utils/uiLabels'
 
 const compactMarkets = ['AH', 'OU']
-const expandedMarkets = ['AH', 'OU', 'MATCH_WINNER', 'BTTS']
+const expandedMarkets = ['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE', 'BTTS', 'CORRECT_SCORE']
 
 export default function MarketOddsCard({ odds = [], compact = false }) {
   const rows = odds.filter(Boolean)
@@ -67,6 +67,7 @@ function MarketBlock({ market, rows, compact }) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="text-[10px] font-black uppercase text-slate-500">{marketLabel(market)}</p>
+          {market === 'CORRECT_SCORE' ? <p className="text-[9px] font-bold text-amber-200">Insight only</p> : null}
           <p className="mt-1 truncate text-sm font-black text-white">{formatMarketLine(primary)}</p>
         </div>
         <span className="shrink-0 text-sm font-black text-[var(--page-accent)]">{primary.oddText ?? primary.price ?? '-'}</span>

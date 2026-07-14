@@ -88,7 +88,6 @@ async function checkDailyLocks() {
     .order('rank', { ascending: true })
   if (error) return report('daily lock query', 0, `skipped: ${error.message}`)
   const rows = data ?? []
-  report('daily lock over display maximum', rows.length > 10 ? rows.length - 10 : 0, `locked=${rows.length}`)
   report('daily lock duplicate rank', findDuplicates(rows, (row) => row.rank).length)
   report('daily lock duplicate match', findDuplicates(rows, (row) => row.match_id).length)
 }

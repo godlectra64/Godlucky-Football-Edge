@@ -8,6 +8,7 @@ import { normalizeStoredAiFinalPick } from '../utils/aiFinalPickEngine.js'
 import { getBangkokDayRange } from '../utils/bangkokDateRange.js'
 import { getStatusCodeFromMatch } from '../utils/matchStatus.js'
 import { normalizePerformanceRows } from '../utils/performanceIntelligence'
+import { systemVersions } from '../../supabase/functions/_shared/versions.js'
 
 const isSupabaseConfigured = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY)
 
@@ -460,7 +461,7 @@ function createFallbackAnalysis(row) {
     analysis_summary: summary,
     thai_reason: summary,
     raw: {
-      framework: 'football-intelligence-v3',
+      framework: systemVersions.decision_model_version,
       base_confidence_score: 60,
       intelligence_modifier: -1,
       final_confidence_score: 59,

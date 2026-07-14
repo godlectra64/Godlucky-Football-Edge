@@ -4,7 +4,6 @@ import MobileHeader from './components/MobileHeader'
 import TodayPage from './pages/TodayPage'
 import { getAiPerformanceData, getConnectionState, getLatestSyncLog, getMatchDetail, getResultTrackerData, getTodayMatches, resetTodayData, triggerManualSync } from './services/supabaseFootball'
 import { getTodayTop10OrFallback } from './repositories/dailyTop10Repository'
-import { getTopMatches } from './utils/analysisEngine'
 import { getOneBestPickOfDay } from './utils/finalPick'
 import { formatUpdatedAt } from './utils/formatters'
 import { getMatchRoute } from './utils/matchDetail'
@@ -122,8 +121,8 @@ function App() {
     () => top10Locked ? matches : [...matches].sort((a, b) => new Date(a.kickoffAt) - new Date(b.kickoffAt)),
     [matches, top10Locked],
   )
-  const topMatches = useMemo(() => top10Locked ? visibleMatches : getTopMatches(visibleMatches, 10), [top10Locked, visibleMatches])
-  const oneBestPick = useMemo(() => getOneBestPickOfDay(topMatches), [topMatches])
+  const decisionBoardMatches = visibleMatches
+  const oneBestPick = useMemo(() => getOneBestPickOfDay(decisionBoardMatches), [decisionBoardMatches])
   const selectedMatch = detailMatch ?? matches.find((match) => match.id === selectedMatchId) ?? null
   const performanceContext = useMemo(() => {
     const version = selectedMatch?.analysis?.raw?.framework ?? selectedMatch?.analysis?.raw?.analysis_version ?? ''
@@ -253,7 +252,7 @@ function App() {
       <div>
         {activePage === 'today' ? (
           <TodayPage
-            matches={topMatches}
+            matches={decisionBoardMatches}
             oneBestPick={oneBestPick}
             totalMatchCount={totalAvailableMatches || visibleMatches.length}
             top10Status={top10Status}

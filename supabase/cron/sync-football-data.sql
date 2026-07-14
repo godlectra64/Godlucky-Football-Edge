@@ -1,17 +1,6 @@
--- Run this in the Supabase SQL Editor for project fzjbnxomflqopwhzxfog.
--- Times below are scheduled in UTC because pg_cron runs on UTC:
--- 00:30 Thailand = 17:30 UTC
--- 12:00 Thailand = 05:00 UTC
---
--- Required before scheduling:
---   select vault.create_secret('https://fzjbnxomflqopwhzxfog.functions.supabase.co', 'project_url');
---   select vault.create_secret('<your Supabase secret key>', 'sync_football_secret_key');
-
-create extension if not exists pg_cron;
-create extension if not exists pg_net;
-create extension if not exists supabase_vault with schema vault;
-
-select cron.unschedule(jobname)
+-- GitHub Actions (.github/workflows/daily-football-sync.yml) is the only canonical scheduler.
+-- This SQL intentionally creates no jobs. Apply only when retiring legacy pg_cron jobs.
+select cron.unschedule(jobid)
 from cron.job
 where jobname in (
   'sync-football-data-hourly',
@@ -20,34 +9,4 @@ where jobname in (
   'sync-football-data-0600-1200-1800-th',
   'sync-football-data-0030-th',
   'sync-football-data-1200-th'
-);
-
-select cron.schedule(
-  'sync-football-data-0030-th',
-  '30 17 * * *',
-  $$
-  select net.http_post(
-    url := (select decrypted_secret from vault.decrypted_secrets where name = 'project_url') || '/sync-football-data',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'sync_football_secret_key')
-    ),
-    body := jsonb_build_object('mode', 'cron-0030-th-today-tomorrow')
-  );
-  $$
-);
-
-select cron.schedule(
-  'sync-football-data-1200-th',
-  '0 5 * * *',
-  $$
-  select net.http_post(
-    url := (select decrypted_secret from vault.decrypted_secrets where name = 'project_url') || '/sync-football-data',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'sync_football_secret_key')
-    ),
-    body := jsonb_build_object('mode', 'cron-1200-th-today-tomorrow')
-  );
-  $$
 );

@@ -1,12 +1,9 @@
-export const marketFocusValues = ['AH', 'OU', 'MATCH_WINNER', 'BTTS', 'NONE']
+import { marketTypes, normalizeMarketRow as normalizeContractMarketRow, normalizeMarketType } from '../../supabase/functions/_shared/marketContract.js'
+
+export const marketFocusValues = Object.values(marketTypes)
 
 export function normalizeMarketFocus(value) {
-  const text = String(value ?? '').toUpperCase()
-  if (text.includes('ASIAN') || text === 'AH' || text.includes('HANDICAP')) return 'AH'
-  if (text.includes('OVER') || text.includes('UNDER') || text === 'OU' || text.includes('TOTAL')) return 'OU'
-  if (text.includes('MATCH WINNER') || text === '1X2' || text.includes('HOME/AWAY')) return 'MATCH_WINNER'
-  if (text.includes('BOTH TEAMS') || text.includes('BTTS')) return 'BTTS'
-  return marketFocusValues.includes(text) ? text : 'NONE'
+  return normalizeMarketType(value)
 }
 
 export function normalizeOddsRows(match = {}) {
@@ -20,19 +17,27 @@ export function normalizeOddsRows(match = {}) {
 }
 
 export function normalizeOddsRow(row = {}) {
-  const marketFocus = normalizeMarketFocus(row.market_focus ?? row.marketFocus ?? row.market ?? row.market_name ?? row.name)
+  const contract = normalizeContractMarketRow(row)
+  const marketFocus = contract.marketType
   return {
     id: row.id ?? null,
     marketFocus,
     marketName: row.market_name ?? row.marketName ?? row.market ?? row.name ?? marketFocus,
-    selection: row.selection ?? row.value ?? null,
+    selection: contract.selection,
     line: firstText(row.line, parseLineFromSelection(row.selection ?? row.value)),
-    price: numberOrNull(row.price ?? row.odd ?? row.odds),
+    price: contract.price,
     oddText: firstText(row.odd_text, row.odd, row.odds, row.price),
     bookmaker: row.bookmaker_name ?? row.bookmaker ?? row.bookmakerName ?? null,
     isOpening: Boolean(row.is_opening ?? row.isOpening),
     isLatest: row.is_latest ?? row.isLatest ?? true,
     snapshotAt: row.snapshot_at ?? row.snapshotAt ?? row.created_at ?? null,
+    providerSourceAt: contract.providerSourceAt,
+    fetchedAt: contract.fetchedAt,
+    normalizedAt: contract.normalizedAt,
+    insightOnly: contract.insightOnly,
+    actionable: contract.actionable,
+    valid: contract.valid,
+    validationReasonCodes: contract.reasonCodes,
     raw: row.raw ?? row,
   }
 }
@@ -101,9 +106,4 @@ function firstText(...values) {
     if (text) return text
   }
   return null
-}
-
-function numberOrNull(value) {
-  const numeric = Number(value)
-  return Number.isFinite(numeric) ? numeric : null
 }

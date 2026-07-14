@@ -1,6 +1,6 @@
 import { ArrowRight, Clock, Medal } from 'lucide-react'
 import { buildSimpleBettingDecision, getDecisionConfidence, getDecisionReason, getBestPickLabel } from '../utils/bettingDecision'
-import { formatKickoffTime } from '../utils/formatters'
+import { formatKickoffTime, formatUpdatedAt } from '../utils/formatters'
 import { getMatchStatusInfo, getScoreDisplay } from '../utils/matchStatus'
 
 export default function MatchCard({
@@ -17,7 +17,7 @@ export default function MatchCard({
   const finalRank = match.finalRank ?? match.final_rank ?? match.analysis?.final_rank ?? match.rank
   const decision = buildSimpleBettingDecision(match)
   const confidence = getDecisionConfidence(decision)
-  const bestPick = getBestPickLabel(decision)
+  const bestPick = decision.status === 'READY' ? getBestPickLabel(decision) : statusLabel(decision.status)
   const waitingMarket = providedIsWaitingMarketData ?? decision.status === 'WAITING_MARKET'
   const mode = displayMode || statusMode(decision.status)
   const cardClass = buildCardClass(finalRank ?? match.rank, mode, waitingMarket)
@@ -63,14 +63,17 @@ export default function MatchCard({
         <div className="grid grid-cols-2 gap-1.5">
           <DecisionRow label="AH" value={decision.ah_pick.label} />
           <DecisionRow label="O/U" value={decision.ou_pick.label} />
-          <DecisionRow label="Best Pick" value={bestPick} />
+          <DecisionRow label={decision.status === 'READY' ? 'Final Pick' : 'สถานะ'} value={bestPick} />
           <DecisionRow label="Confidence" value={`${confidence}%`} />
         </div>
       </div>
 
       <p className="text-clamp-2 mt-2 rounded-xl border border-white/10 bg-white/[0.035] px-2.5 py-2 text-xs font-semibold leading-5 text-slate-300">
-        {getDecisionReason(decision)}
+        {decision.decision_reason_th || getDecisionReason(decision)}
       </p>
+      {decision.last_market_refresh_at ? (
+        <p className="mt-1 text-[10px] font-semibold text-slate-500">อัปเดตตลาด {formatUpdatedAt(decision.last_market_refresh_at)}</p>
+      ) : null}
 
       <button
         type="button"
@@ -107,7 +110,14 @@ function DecisionRow({ label, value, strong = false }) {
 function statusMode(status) {
   if (status === 'READY') return 'strong'
   if (status === 'WATCH') return 'watch'
+  if (status === 'REJECTED') return 'rejected'
   return 'waiting'
+}
+
+function statusLabel(status) {
+  if (status === 'WATCH') return 'เฝ้าดู'
+  if (status === 'REJECTED') return 'ไม่ผ่านเกณฑ์'
+  return 'รอข้อมูล'
 }
 
 function getFinishedScoreDisplay(match = {}) {
@@ -129,5 +139,6 @@ function buildCardClass(rank, mode, waitingMarket) {
   if (mode === 'strong') {
     return `${base} ${first} border-emerald-300/35 bg-[linear-gradient(145deg,rgba(52,211,153,0.14),rgba(255,255,255,0.04))]`
   }
+  if (mode === 'rejected') return `${base} ${first} border-red-300/25 bg-red-300/10`
   return `${base} ${first} border-cyan-300/25 bg-[linear-gradient(145deg,rgba(34,211,238,0.1),rgba(255,255,255,0.04))]`
 }

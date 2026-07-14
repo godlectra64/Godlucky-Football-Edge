@@ -12,7 +12,6 @@ export function runAiSelectionEngine(matches = [], options = {}) {
   const ranked = rows
     .filter((row) => row.data_validation_status !== 'INVALID')
     .sort(sortSelectionRows)
-    .slice(0, 10)
 
   const topIds = new Set(ranked.map((row) => row.match_id))
   const finalId = ranked[0]?.match_id ?? null

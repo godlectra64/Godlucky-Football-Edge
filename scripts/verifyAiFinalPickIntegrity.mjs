@@ -1,252 +1,87 @@
-import { exec } from 'node:child_process'
-import { readdir, readFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
-import { promisify } from 'node:util'
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
+import { buildSimpleBettingDecision } from '../src/utils/bettingDecision.js'
+import { buildUsableDailySelection } from '../src/utils/selectionEngineV2.js'
+import { buildCanonicalSelectionWindow } from '../src/utils/selectionWindow.js'
+import { fetchPaginatedOddsRows } from '../src/repositories/oddsRepository.js'
 
-dotenv.config({ path: '.env.local' })
-dotenv.config({ path: '.env' })
+dotenv.config({ path: '.env.local', quiet: true })
+dotenv.config({ quiet: true })
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY
-const currentDatabase = process.env.SUPABASE_DB_NAME || process.env.PGDATABASE || 'postgres'
-const currentSchema = process.env.SUPABASE_DB_SCHEMA || process.env.SUPABASE_SCHEMA || 'public'
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error('Missing Supabase environment variables for AI Final Pick verification.')
-  process.exit(1)
-}
-
-logSupabaseConnectionDebug()
+const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
+if (!supabaseUrl || !supabaseKey) throw new Error('Missing Supabase environment variables for AI Final Pick verification.')
 
 const supabase = createClient(supabaseUrl, supabaseKey)
-const execAsync = promisify(exec)
+const window = buildCanonicalSelectionWindow()
 let failed = false
+console.log(`[verify:ai-final-pick] project_ref=${projectRef(supabaseUrl)}`)
+console.log(`[verify:ai-final-pick] window=${window.start.toISOString()}..${window.end.toISOString()}`)
+console.log('[verify:ai-final-pick] mode=read-only')
 
-await logVerificationTableCounts()
-await checkAiFinalPickTables()
-await checkTop10Coverage()
-await checkAiFinalPickIntegrity()
-await checkOddsIntegrity()
-await checkForbiddenUiWords()
+const matches = await fetchMatches()
+const odds = await fetchPaginatedOddsRows(supabase, matches.map((row) => row.id))
+if (odds.error) report('odds query', 1, odds.error.message)
+const oddsByMatch = groupBy(odds.data, (row) => row.match_id)
+const hydrated = matches.map((match) => ({ ...match, odds: oddsByMatch.get(match.id) ?? [] }))
+const selected = buildUsableDailySelection(hydrated, window.options).selected
+const decisions = selected.map((match) => ({ match, decision: buildSimpleBettingDecision(match) }))
+
+report('candidate missing persisted AI final-pick row', decisions.filter(({ match }) => !match.ai_final_pick?.id).length)
+report('READY missing actionable Final Pick', decisions.filter(({ decision }) => decision.selection_status === 'READY' && !isActionable(decision.final_pick)).length)
+report('READY missing supported market', decisions.filter(({ decision }) => decision.selection_status === 'READY' && !['AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'].includes(decision.market_focus)).length)
+report('WAIT persisted as strong signal', decisions.filter(({ match, decision }) => decision.selection_status === 'WAIT' && match.ai_final_pick?.signal === 'STRONG_SIGNAL').length)
+report('REJECTED persisted as strong signal', decisions.filter(({ match, decision }) => decision.selection_status === 'REJECTED' && match.ai_final_pick?.signal === 'STRONG_SIGNAL').length)
+report('invalid confidence', decisions.filter(({ match }) => match.ai_final_pick?.id && !inRange(match.ai_final_pick?.confidence_score, 0, 100)).length)
+report('invalid risk', decisions.filter(({ match }) => match.ai_final_pick?.risk_level && !['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(String(match.ai_final_pick.risk_level).toUpperCase())).length)
+console.log(`candidate_count=${decisions.length}`)
+console.log(`persisted_count=${decisions.filter(({ match }) => match.ai_final_pick?.id).length}`)
 
 if (failed) process.exit(1)
 console.log('AI Final Pick integrity checks passed')
 
-function logSupabaseConnectionDebug() {
-  const sanitizedUrl = sanitizeSupabaseUrl(supabaseUrl)
-  console.log(`[verify:connection] SUPABASE_URL=${sanitizedUrl}`)
-  console.log(`[verify:connection] project_ref=${getSupabaseProjectRef(supabaseUrl)}`)
-  console.log(`[verify:connection] current_database=${currentDatabase}`)
-  console.log(`[verify:connection] current_schema=${currentSchema}`)
+async function fetchMatches() {
+  const rows = []
+  for (let from = 0; ; from += 500) {
+    const { data, error } = await supabase
+      .from('football_matches')
+      .select('*, homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name), awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name), analysis:match_analysis(*), ai_final_pick:football_ai_final_picks(*)')
+      .gte('kickoff_at', window.start.toISOString())
+      .lt('kickoff_at', window.end.toISOString())
+      .order('kickoff_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, from + 499)
+    if (error) throw error
+    rows.push(...(data ?? []))
+    if (!data || data.length < 500) break
+  }
+  return rows.map((row) => ({
+    ...row,
+    analysis: Array.isArray(row.analysis) ? row.analysis[0] ?? {} : row.analysis ?? {},
+    ai_final_pick: Array.isArray(row.ai_final_pick) ? row.ai_final_pick[0] ?? {} : row.ai_final_pick ?? {},
+  }))
 }
 
-async function logVerificationTableCounts() {
-  const tables = ['football_matches', 'football_bookmakers', 'football_match_odds', 'football_ai_final_picks']
-  for (const table of tables) {
-    const { count, error } = await supabase
-      .from(table)
-      .select('id', { count: 'exact', head: true })
-
-    if (error) {
-      console.log(`[verify:row-count] ${table}: error (${formatSupabaseError(error)})`)
-      continue
-    }
-
-    console.log(`[verify:row-count] ${table}: success rows=${count ?? 0}`)
-  }
+function isActionable(pick = {}) {
+  return ['TEAM', 'AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE'].includes(String(pick.type ?? '').toUpperCase())
 }
 
-async function checkAiFinalPickTables() {
-  const tables = [
-    ['football_bookmakers', 'invalid football_bookmakers rows'],
-    ['football_match_odds', 'invalid football_match_odds rows'],
-    ['football_ai_final_picks', 'invalid football_ai_final_pick rows'],
-  ]
-  for (const [table, label] of tables) {
-    const { error } = await supabase.from(table).select('id', { count: 'exact', head: true })
-    report(label, error ? 1 : 0, error?.message)
-  }
+function inRange(value, minimum, maximum) {
+  const number = Number(value)
+  return Number.isFinite(number) && number >= minimum && number <= maximum
 }
 
-async function checkTop10Coverage() {
-  const { data, error } = await supabase
-    .from('match_analysis')
-    .select('match_id, final_rank, is_top_pick')
-    .eq('is_top_pick', true)
-    .not('final_rank', 'is', null)
-    .order('final_rank', { ascending: true })
-    .limit(10)
-  if (error) {
-    if (isRestSchemaMissing(error)) return checkTop10CoverageViaCli()
-    return report('top 10 query', 1, error.message)
-  }
-
-  const matchIds = (data ?? []).map((row) => row.match_id).filter(Boolean)
-  if (!matchIds.length) {
-    console.log('[verify:row-count] top10_ai_final_pick_coverage: success rows=0 top10=0')
-    return report('missing top10 aiFinalPick coverage', 0, 'no Top 10 rows yet')
-  }
-
-  const { data: picks, error: pickError } = await supabase
-    .from('football_ai_final_picks')
-    .select('match_id')
-    .in('match_id', matchIds)
-  if (pickError) return report('missing top10 aiFinalPick coverage', 1, pickError.message)
-
-  const found = new Set((picks ?? []).map((row) => row.match_id))
-  const missing = matchIds.filter((id) => !found.has(id))
-  console.log(`[verify:row-count] top10_ai_final_pick_coverage: success rows=${found.size} top10=${matchIds.length}`)
-  report('missing top10 aiFinalPick coverage', missing.length, missing.length ? `missing ${missing.length}` : '')
+function groupBy(rows, keyFn) {
+  const groups = new Map()
+  for (const row of rows) groups.set(keyFn(row), [...(groups.get(keyFn(row)) ?? []), row])
+  return groups
 }
 
-async function checkTop10CoverageViaCli() {
-  const sql = `
-    with top10 as (
-      select match_id
-      from public.match_analysis
-      where is_top_pick is true and final_rank is not null
-      order by final_rank asc
-      limit 10
-    )
-    select
-      count(*) filter (where fp.match_id is null) as missing_count,
-      count(*) as top_count
-    from top10 t
-    left join public.football_ai_final_picks fp on fp.match_id = t.match_id;
-  `
-  const sqlPath = path.join(tmpdir(), `verify-ai-final-pick-${randomUUID()}.sql`)
-  try {
-    await import('node:fs/promises').then((fs) => fs.writeFile(sqlPath, sql))
-    const { stdout } = await execAsync(`npx supabase db query --linked --output json --file "${sqlPath}"`, { maxBuffer: 1024 * 1024 * 2 })
-    const payload = parseSupabaseCliJson(stdout)
-    const row = payload.rows?.[0] ?? {}
-    const missing = Number(row.missing_count ?? 0)
-    const topCount = Number(row.top_count ?? 0)
-    console.log(`[verify:row-count] top10_ai_final_pick_coverage: success rows=${Math.max(0, topCount - missing)} top10=${topCount}`)
-    report('missing top10 aiFinalPick coverage', missing, topCount ? `top ${topCount}` : 'no Top 10 rows yet')
-  } catch (error) {
-    report('missing top10 aiFinalPick coverage', 1, error.message)
-  } finally {
-    await import('node:fs/promises').then((fs) => fs.unlink(sqlPath).catch(() => {}))
-  }
-}
-
-async function checkAiFinalPickIntegrity() {
-  const checks = [
-    ['invalid signal', () => supabase.from('football_ai_final_picks').select('id', { count: 'exact', head: true }).not('signal', 'in', '("STRONG_SIGNAL","WATCH","SKIP")')],
-    ['invalid marketFocus', () => supabase.from('football_ai_final_picks').select('id', { count: 'exact', head: true }).not('market_focus', 'in', '("AH","OU","MATCH_WINNER","BTTS","NONE")')],
-    ['invalid confidenceScore', () => supabase.from('football_ai_final_picks').select('id', { count: 'exact', head: true }).or('confidence_score.lt.0,confidence_score.gt.100')],
-    ['invalid riskLevel', () => supabase.from('football_ai_final_picks').select('id', { count: 'exact', head: true }).not('risk_level', 'in', '("LOW","MEDIUM","HIGH")')],
-    ['strong signal without odds', () => supabase.from('football_ai_final_picks').select('id', { count: 'exact', head: true }).eq('signal', 'STRONG_SIGNAL').is('latest_odds', null)],
-    ['strong signal with HIGH risk', () => supabase.from('football_ai_final_picks').select('id', { count: 'exact', head: true }).eq('signal', 'STRONG_SIGNAL').eq('risk_level', 'HIGH')],
-  ]
-
-  for (const [label, query] of checks) {
-    const { count, error } = await query()
-    report(label, error ? 1 : count ?? 0, error?.message)
-  }
-}
-
-async function checkOddsIntegrity() {
-  const checks = [
-    ['invalid odds marketFocus', () => supabase.from('football_match_odds').select('id', { count: 'exact', head: true }).not('market_focus', 'in', '("AH","OU","MATCH_WINNER","BTTS","NONE")')],
-    ['null odds price', () => supabase.from('football_match_odds').select('id', { count: 'exact', head: true }).is('price', null)],
-    ['invalid odds price', () => supabase.from('football_match_odds').select('id', { count: 'exact', head: true }).not('price', 'is', null).lte('price', 0)],
-  ]
-
-  for (const [label, query] of checks) {
-    const { count, error } = await query()
-    report(label, error ? 1 : count ?? 0, error?.message)
-  }
-
-  await checkDuplicateLatestOdds()
-}
-
-async function checkDuplicateLatestOdds() {
-  const { data, error } = await supabase
-    .from('football_match_odds')
-    .select('match_id, api_bookmaker_id, market_focus, market_name, selection, line, is_latest')
-    .eq('is_latest', true)
-    .limit(10000)
-  if (error) return report('duplicate latest odds', 1, error.message)
-
-  const seen = new Set()
-  let duplicates = 0
-  for (const row of data ?? []) {
-    const key = [row.match_id, row.api_bookmaker_id, row.market_focus, row.market_name, row.selection, row.line].join('|')
-    if (seen.has(key)) duplicates += 1
-    else seen.add(key)
-  }
-  report('duplicate latest odds', duplicates)
-}
-
-async function checkForbiddenUiWords() {
-  const banned = [/betting tips/i, /betting recommendations/i, /\bstake\b/i, /\bbankroll\b/i, /\bprofit\b/i, /\bROI\b/i, /เดิมพัน/i, /แทง/i]
-  const files = await listFiles('src')
-  const offenders = []
-  for (const file of files.filter((item) => /\.(jsx?|tsx?)$/.test(item))) {
-    const text = await readFile(file, 'utf8')
-    if (banned.some((pattern) => pattern.test(text))) offenders.push(file)
-  }
-  report('forbidden UI words', offenders.length, offenders.join(', '))
-}
-
-async function listFiles(dir) {
-  const entries = await readdir(dir, { withFileTypes: true })
-  const files = []
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name)
-    if (entry.isDirectory()) files.push(...await listFiles(fullPath))
-    else files.push(fullPath)
-  }
-  return files
-}
-
-function report(label, count, message = '') {
-  console.log(`${label}: ${count}${message ? ` (${message})` : ''}`)
+function report(label, count, detail = '') {
+  console.log(`${label}: ${count}${detail ? ` (${detail})` : ''}`)
   if (count > 0) failed = true
 }
 
-function sanitizeSupabaseUrl(value) {
-  try {
-    const url = new URL(value)
-    return `${url.protocol}//${url.host}`
-  } catch {
-    return 'invalid_supabase_url'
-  }
-}
-
-function getSupabaseProjectRef(value) {
-  try {
-    const host = new URL(value).host
-    return host.endsWith('.supabase.co') ? host.split('.')[0] : 'unknown'
-  } catch {
-    return 'unknown'
-  }
-}
-
-function formatSupabaseError(error) {
-  return [
-    error.code,
-    error.message,
-    error.details,
-    error.hint,
-  ].filter(Boolean).join(' | ')
-}
-
-function isRestSchemaMissing(error) {
-  if (!error) return false
-  const message = String(error.message ?? error.details ?? '')
-  return error.code === 'PGRST205' || /Could not find the table .* in the schema cache/i.test(message)
-}
-
-function parseSupabaseCliJson(output) {
-  const start = output.indexOf('{')
-  const end = output.lastIndexOf('}')
-  if (start === -1 || end === -1 || end <= start) throw new Error('Supabase CLI did not return JSON output')
-  return JSON.parse(output.slice(start, end + 1))
+function projectRef(value) {
+  try { return new URL(value).host.split('.')[0] } catch { return 'unknown' }
 }

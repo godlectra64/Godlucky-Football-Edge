@@ -1,6 +1,9 @@
 import { getLatestOddsByMarket, normalizeMarketFocus, normalizeOddsRows, parseLineNumber } from './oddsUtils.js'
+import { evaluateMarketFreshness, isActionableMarketType } from '../../supabase/functions/_shared/marketContract.js'
+import { getSystemVersions, systemVersions } from '../../supabase/functions/_shared/versions.js'
+import { classifyDecisionState } from '../../supabase/functions/_shared/decisionContract.js'
 
-export const decisionPipelineVersion = 'market-ready-hybrid-gate-v1'
+export const decisionPipelineVersion = systemVersions.pipeline_version
 
 export const decisionStatuses = {
   ready: 'READY',
@@ -61,56 +64,48 @@ export function classifyDecision(match = {}, input = {}) {
   })
 
   const reasonCodes = [...soft.reasonCodes]
-  let status
-  let reason
+  const gate = classifyDecisionState({
+    hardRejected: hardGate.rejected,
+    hardReasonCodes: hardGate.reasonCodes,
+    analysisComplete,
+    finalPickActionable: Boolean(finalPickType && finalPickType !== 'NO_DECISION'),
+    hasAnalysisDirection: hasAnalysisDirection(analysis),
+    hasAnyMarket: hasAnyOdds(match),
+    marketReady: market.ready,
+    marketReasonCodes: market.reasonCodes,
+    riskLevel,
+    readinessScore: decisionReadinessScore,
+    readyThreshold,
+    watchThreshold,
+  })
+  const status = gate.status
+  const reason = gate.reasonThai
+  reasonCodes.push(...gate.reasonCodes)
 
-  if (hardGate.rejected) {
-    status = decisionStatuses.rejected
-    reasonCodes.push(...hardGate.reasonCodes)
-    reason = hardGate.reason
-  } else if (!analysisComplete) {
-    status = decisionStatuses.wait
-    reasonCodes.push('ANALYSIS_PENDING', 'WAIT_ANALYSIS')
-    reason = 'รอวิเคราะห์: ข้อมูลพื้นฐานพร้อม แต่การวิเคราะห์เชิงลึกยังไม่เสร็จ'
-  } else if (!finalPickType || finalPickType === 'NO_DECISION') {
-    if (hasAnalysisDirection(analysis) && hasAnyOdds(match)) {
-      status = decisionStatuses.watch
-      reasonCodes.push('FINAL_PICK_MISSING', 'VALUE_BORDERLINE')
-      reason = 'เฝ้าดู: มีทิศทางวิเคราะห์ แต่ Value ยังอยู่ระดับ BORDERLINE'
-    } else {
-      status = decisionStatuses.wait
-      reasonCodes.push('FINAL_PICK_MISSING')
-      reason = 'รอข้อมูล: ยังไม่มีตัวเลือกสุดท้ายที่ชัดเจน'
-    }
-  } else if (!market.ready) {
-    status = decisionStatuses.wait
-    reasonCodes.push(...market.reasonCodes)
-    reason = market.reason
-  } else if (riskLevel === 'HIGH') {
-    status = decisionStatuses.watch
-    reasonCodes.push('RISK_HIGH')
-    reason = 'เฝ้าดู: คะแนนดีแต่ความเสี่ยงยังสูง'
-  } else if (decisionReadinessScore >= readyThreshold) {
-    status = decisionStatuses.ready
-    reasonCodes.push('READY_SCORE_PASSED', 'ANALYSIS_COMPLETE', 'FINAL_PICK_VALID', 'FINAL_MARKET_READY')
-    reason = 'พร้อมตัดสิน: การวิเคราะห์ครบ ตลาดพร้อม และคะแนนความพร้อมผ่านเกณฑ์'
-  } else if (decisionReadinessScore >= watchThreshold) {
-    status = decisionStatuses.watch
-    reasonCodes.push('SCORE_BELOW_READY')
-    reason = 'เฝ้าดู: คะแนนความพร้อมยังไม่ถึง READY'
-  } else {
-    status = decisionStatuses.rejected
-    reasonCodes.push('SCORE_BELOW_WATCH')
-    reason = 'ตัดออก: วิเคราะห์และตลาดครบแล้ว แต่คะแนนความพร้อมต่ำกว่าเกณฑ์เฝ้าดู'
-  }
-
+  const normalizedReasonCodes = uniqueItems(reasonCodes)
+  const normalizedFinalPick = ['WAIT', 'REJECTED'].includes(status)
+    ? { type: 'NO_DECISION', label: 'ยังไม่มี Final Pick ที่พร้อมใช้', reason }
+    : normalizeActionableFinalPick(finalPick, finalPickType)
+  const primaryReasonCode = selectPrimaryReasonCode(normalizedReasonCodes, status)
+  const versions = getDecisionVersions(match, analysis)
   return {
     status,
+    selection_status: status,
     decision_status: status,
     legacy_status: status === decisionStatuses.wait && market.reasonCodes.some((code) => code.includes('MARKET') || code.includes('_MISSING')) ? 'WAITING_MARKET' : status,
     decision_readiness_score: decisionReadinessScore,
     decision_reason: reason,
-    decision_reason_codes: uniqueItems(reasonCodes),
+    primary_reason_code: primaryReasonCode,
+    reason_codes: normalizedReasonCodes,
+    decision_reason_codes: normalizedReasonCodes,
+    decision_reason_th: reason,
+    final_pick: normalizedFinalPick,
+    market_ready: status === decisionStatuses.ready && market.ready,
+    market_focus: market.market,
+    confidence: soft.analysisConfidence,
+    risk_level: riskLevel,
+    last_market_refresh_at: getLastMarketRefreshAt(match),
+    last_analysis_at: analysis.recalculated_at ?? analysis.updated_at ?? analysis.created_at ?? null,
     market_readiness: market,
     scores: {
       dataQualityScore: soft.dataQualityScore,
@@ -119,18 +114,24 @@ export function classifyDecision(match = {}, input = {}) {
       riskQualityScore: riskToQuality(riskLevel),
       featureCompletenessScore: soft.featureCompletenessScore,
     },
-    pipeline_version: decisionPipelineVersion,
+    pipeline_version: versions.pipeline_version,
+    version_fields: versions,
+    ...versions,
   }
 }
 
 export function evaluateFinalMarketReadiness(match = {}, finalPickType = 'NO_DECISION', input = {}) {
   const marketFocus = normalizeFinalPickType(finalPickType)
   if (!marketFocus || marketFocus === 'NO_DECISION') {
-    return { ready: false, market: 'NONE', score: hasAnyOdds(match) ? 45 : 15, reason: 'รอข้อมูล: ยังไม่มีตลาดของตัวเลือกสุดท้าย', reasonCodes: ['FINAL_PICK_MISSING'] }
+    const hasMarket = hasAnyOdds(match)
+    return { ready: false, market: 'NONE', score: hasMarket ? 45 : 15, reason: 'รอข้อมูล: ยังไม่มีตลาดของตัวเลือกสุดท้าย', reasonCodes: hasMarket ? ['FINAL_PICK_MISSING'] : ['MARKET_MISSING', 'FINAL_PICK_MISSING'] }
   }
 
   const rows = Array.isArray(input.marketRows) ? input.marketRows : getLatestOddsByMarket(match, marketFocus)
   if (!rows.length) {
+    if (input.marketProviderError) return { ready: false, market: marketFocus, score: 15, reason: 'รอข้อมูล: ผู้ให้บริการตลาดตอบกลับผิดพลาด', reasonCodes: ['MARKET_PROVIDER_ERROR'] }
+    if (input.marketRefreshPending) return { ready: false, market: marketFocus, score: 20, reason: 'รอข้อมูล: การรีเฟรชตลาดยังไม่เสร็จ', reasonCodes: ['MARKET_REFRESH_PENDING'] }
+    if (input.marketPartial) return { ready: false, market: marketFocus, score: 25, reason: 'รอข้อมูล: ข้อมูลตลาดมาไม่ครบ', reasonCodes: ['MARKET_PARTIAL'] }
     const code = marketFocus === 'AH' ? 'AH_MISSING' : marketFocus === 'OU' ? 'OU_MISSING' : 'MARKET_MISSING'
     return { ready: false, market: marketFocus, score: 25, reason: marketFocus === 'AH' ? 'รอราคา: ยังไม่มี AH สำหรับตัวเลือกสุดท้าย' : 'รอราคา: ยังไม่มี O/U สำหรับตัวเลือกสุดท้าย', reasonCodes: ['MARKET_MISSING', code] }
   }
@@ -140,9 +141,13 @@ export function evaluateFinalMarketReadiness(match = {}, finalPickType = 'NO_DEC
     return { ready: false, market: marketFocus, score: 40, reason: 'รอราคา: ข้อมูลตลาดมีอยู่แต่ line หรือ price ยังไม่สมบูรณ์', reasonCodes: ['MARKET_INVALID'] }
   }
 
-  const staleRows = validRows.filter(isStaleMarketRow)
+  const freshnessRows = validRows.map((row) => evaluateMarketFreshness(row, { now: input.now, staleAfterMs: input.marketStaleAfterMs }))
+  if (freshnessRows.every((item) => item.status === 'UNKNOWN' || item.status === 'INVALID')) {
+    return { ready: false, market: marketFocus, score: 45, reason: 'รอข้อมูล: ตลาดไม่มี timestamp ที่ตรวจ freshness ได้', reasonCodes: ['MARKET_INVALID', 'MARKET_REFRESH_PENDING'] }
+  }
+  const staleRows = validRows.filter((row) => isStaleMarketRow(row, input))
   if (staleRows.length === validRows.length) {
-    return { ready: false, market: marketFocus, score: 55, reason: 'รอ refresh: ตลาดของตัวเลือกสุดท้ายเริ่มเก่า', reasonCodes: ['MARKET_STALE', 'WAIT_REFRESH'] }
+    return { ready: false, market: marketFocus, score: 55, reason: 'รอข้อมูล: ตลาดของตัวเลือกสุดท้ายเก่าเกินเกณฑ์', reasonCodes: ['MARKET_STALE'] }
   }
 
   return {
@@ -160,8 +165,8 @@ export function buildDecisionDiagnostics(matches = []) {
     fixtures_discovered: rows.length,
     fixtures_eligible: 0,
     fixtures_rejected_hard_gate: 0,
-    candidates_initial: Math.min(30, rows.length),
-    candidates_expanded: Math.max(0, Math.min(80, rows.length) - Math.min(30, rows.length)),
+    candidates_initial: rows.length,
+    candidates_expanded: 0,
     analysis_started: 0,
     analysis_completed: 0,
     market_ah_ready: 0,
@@ -200,7 +205,9 @@ export function buildDecisionDiagnostics(matches = []) {
 
 function evaluateHardGate(match, analysis, context) {
   if (!hasBasicFixture(match)) return { rejected: true, reason: 'ตัดออก: ข้อมูล fixture ไม่สมบูรณ์', reasonCodes: ['FIXTURE_INVALID'] }
-  if (isBadFixtureStatus(match)) return { rejected: true, reason: 'ตัดออก: fixture ถูกเลื่อน ยกเลิก หรือสถานะไม่พร้อมวิเคราะห์', reasonCodes: ['FIXTURE_INVALID'] }
+  const invalidStatusCode = getInvalidFixtureReasonCode(match)
+  if (invalidStatusCode) return { rejected: true, reason: 'ตัดออก: fixture ถูกเลื่อน ยกเลิก หรือสถานะไม่พร้อมวิเคราะห์', reasonCodes: [invalidStatusCode] }
+  if (isKickoffPassed(match, context.now)) return { rejected: true, reason: 'ตัดออก: เวลาเริ่มแข่งขันผ่านไปแล้ว', reasonCodes: ['KICKOFF_PASSED'] }
   if (context.riskLevel === 'CRITICAL') return { rejected: true, reason: 'ตัดออก: ความเสี่ยงอยู่ระดับ CRITICAL', reasonCodes: ['RISK_CRITICAL'] }
   if (context.analysisComplete && isInvalidAnalysisOutput(analysis)) return { rejected: true, reason: 'ตัดออก: analysis output ไม่ถูกต้อง', reasonCodes: ['ANALYSIS_INVALID'] }
   if (context.analysisComplete && context.finalPickType !== 'NO_DECISION' && context.market.reasonCodes.includes('MARKET_INVALID')) {
@@ -232,18 +239,49 @@ function isUsableMarketRow(row, marketFocus) {
   return marketFocus === 'AH' || marketFocus === 'OU' ? line !== null : true
 }
 
-function isStaleMarketRow(row) {
-  if (!row.snapshotAt && !row.snapshot_at && !row.created_at) return false
-  const time = new Date(row.snapshotAt ?? row.snapshot_at ?? row.created_at).getTime()
-  return Number.isFinite(time) && Date.now() - time > 12 * 60 * 60 * 1000
+function isStaleMarketRow(row, input = {}) {
+  return evaluateMarketFreshness(row, { now: input.now, staleAfterMs: input.marketStaleAfterMs }).stale
 }
 
 function normalizeFinalPickType(value) {
   const focus = normalizeMarketFocus(value)
-  if (focus === 'AH' || focus === 'OU') return focus
+  if (isActionableMarketType(focus)) return focus
   const text = String(value ?? '').toUpperCase()
   if (text === 'NO_DECISION' || text === 'NONE' || !text) return 'NO_DECISION'
-  return focus === 'MATCH_WINNER' || focus === 'BTTS' ? focus : 'NO_DECISION'
+  return 'NO_DECISION'
+}
+
+function normalizeActionableFinalPick(finalPick, finalPickType) {
+  if (!finalPickType || finalPickType === 'NO_DECISION') return { type: 'NO_DECISION', label: 'ยังไม่มี Final Pick', reason: 'ข้อมูลยังไม่ครบสำหรับตัวเลือกสุดท้าย' }
+  return {
+    ...finalPick,
+    type: finalPickType,
+    label: finalPick.label ?? finalPick.selection ?? finalPick.pick_selection ?? finalPickType,
+  }
+}
+
+function selectPrimaryReasonCode(codes, status) {
+  const priority = [
+    'FIXTURE_CANCELLED', 'FIXTURE_POSTPONED', 'FIXTURE_INVALID', 'KICKOFF_PASSED', 'RISK_CRITICAL',
+    'MARKET_PROVIDER_ERROR', 'MARKET_REFRESH_PENDING', 'MARKET_MISSING', 'MARKET_STALE', 'MARKET_INVALID', 'MARKET_PARTIAL',
+    'FINAL_PICK_MISSING', 'DATA_INCOMPLETE', 'ANALYSIS_PENDING', 'QUALITY_GATE_FAILED', 'RISK_HIGH', 'READY_SCORE_PASSED',
+  ]
+  return priority.find((code) => codes.includes(code)) ?? codes[0] ?? (status === 'READY' ? 'READY_SCORE_PASSED' : 'DATA_INCOMPLETE')
+}
+
+function getDecisionVersions(match, analysis) {
+  const defaults = getSystemVersions()
+  return Object.fromEntries(Object.entries(defaults).map(([key, value]) => [key, analysis?.[key] ?? analysis?.raw?.[key] ?? match?.[key] ?? value]))
+}
+
+function getLastMarketRefreshAt(match) {
+  const values = [match.odds_updated_at, match.last_market_refresh_at]
+  for (const row of normalizeOddsRows(match)) values.push(row.providerSourceAt, row.fetchedAt, row.snapshotAt)
+  return values
+    .filter(Boolean)
+    .map((value) => new Date(value))
+    .filter((value) => !Number.isNaN(value.getTime()))
+    .sort((a, b) => b.getTime() - a.getTime())[0]?.toISOString() ?? null
 }
 
 function isAnalysisComplete(match, analysis, input) {
@@ -261,9 +299,19 @@ function hasBasicFixture(match) {
   )
 }
 
-function isBadFixtureStatus(match) {
+function getInvalidFixtureReasonCode(match) {
   const status = String(match.statusShort ?? match.status_short ?? match.match_status ?? match.status ?? '').toUpperCase()
-  return ['CANC', 'CANCELLED', 'PST', 'POSTPONED', 'ABD', 'AWD', 'WO'].includes(status)
+  if (['CANC', 'CANCELLED', 'ABD', 'AWD', 'WO'].includes(status)) return 'FIXTURE_CANCELLED'
+  if (['PST', 'POSTPONED'].includes(status)) return 'FIXTURE_POSTPONED'
+  return null
+}
+
+function isKickoffPassed(match, nowValue) {
+  const status = String(match.statusShort ?? match.status_short ?? match.match_status ?? match.status ?? '').toUpperCase()
+  if (!['NS', 'TBD', 'SCHEDULED', 'NOT_STARTED'].includes(status)) return false
+  const kickoff = new Date(match.kickoffAt ?? match.kickoff_at ?? 0).getTime()
+  const now = new Date(nowValue ?? Date.now()).getTime()
+  return Number.isFinite(kickoff) && Number.isFinite(now) && kickoff <= now
 }
 
 function isInvalidAnalysisOutput(analysis) {

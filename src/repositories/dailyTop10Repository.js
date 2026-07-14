@@ -3,6 +3,9 @@ import { fetchMatchesByIds, fetchMatchesByKickoffRange } from './matchesReposito
 import { compareMarketReadyMatches, isMarketReadyForDisplay } from '../utils/analysisEngine.js'
 import { getStatusCodeFromMatch } from '../utils/matchStatus.js'
 import { buildUsableDailySelection } from '../utils/selectionEngineV2.js'
+import { buildCanonicalSelectionWindow } from '../utils/selectionWindow.js'
+
+// Legacy table/API names remain adapters only; the canonical board uses a dynamic rolling window.
 
 export async function getDailyTop10Status(date = getBangkokToday()) {
   const client = await getSupabaseClient()
@@ -137,23 +140,6 @@ function sortMarketReadyTop10(matches = []) {
 
 export async function getTodayTop10OrFallback(fallback = []) {
   const date = getBangkokToday()
-  const locked = await getLockedTop10(date)
-  if (!locked.error && (locked.status?.lockedCount || locked.data.length)) {
-    const selection = buildUsableDailySelection(locked.data)
-    return {
-      matches: selection.selected,
-      status: {
-        ...locked.status,
-        ...selection,
-        selectionDate: date,
-        locked: true,
-        lockedCount: locked.status?.lockedCount ?? locked.data.length,
-      },
-      locked: true,
-      selection,
-    }
-  }
-
   const usable = await getUsableRollingTop10(date)
   if (!usable.error && (usable.data.length || usable.status?.finishedExcludedCount)) {
     return { matches: usable.data, status: usable.status, locked: Boolean(usable.locked), selection: usable.selection }
@@ -175,15 +161,14 @@ export async function getTodayTop10OrFallback(fallback = []) {
 }
 
 async function getUsableRollingTop10(date) {
-  const now = new Date()
-  const windowEnd = new Date(now.getTime() + 48 * 60 * 60 * 1000)
+  const window = buildCanonicalSelectionWindow()
   const [matchesResult, statusResult] = await Promise.all([
-    fetchMatchesByKickoffRange(now.toISOString(), windowEnd.toISOString()),
+    fetchMatchesByKickoffRange(window.start.toISOString(), window.end.toISOString()),
     getDailyTop10Status(date),
   ])
   if (matchesResult.error) return { data: [], error: matchesResult.error, status: statusResult.data ?? emptyStatus(date).data }
 
-  const selection = buildUsableDailySelection(matchesResult.data ?? [], { now })
+  const selection = buildUsableDailySelection(matchesResult.data ?? [], window.options)
   return {
     data: selection.selected,
     error: null,

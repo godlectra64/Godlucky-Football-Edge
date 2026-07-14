@@ -110,16 +110,18 @@ export function getApiFootballMarketPriority(marketFocus) {
   if (normalized === 'AH') return 100
   if (normalized === 'OU') return 90
   if (normalized === 'MATCH_WINNER') return 80
+  if (normalized === 'DOUBLE_CHANCE') return 75
   if (normalized === 'BTTS') return 70
+  if (normalized === 'CORRECT_SCORE') return 10
   return normalized === 'NONE' ? (String(marketFocus ?? '').trim() && String(marketFocus).toUpperCase() !== 'NONE' ? 50 : 0) : 50
 }
 
-export function buildStrictApiFootballSelection(matches = [], options = {}) {
-  const limit = positiveNumber(options.limit, 10)
+// Legacy API adapter. Selection count is dynamic; quality classification happens downstream.
+export function buildStrictApiFootballSelection(matches = []) {
   const candidates = (Array.isArray(matches) ? matches : [])
     .map(buildStrictApiFootballCandidate)
     .sort(compareStrictApiFootballCandidates)
-  const selected = candidates.slice(0, limit).map((candidate, index) => ({
+  const selected = candidates.map((candidate, index) => ({
     ...candidate.match,
     strictApiFootball: candidate,
     rank: index + 1,
@@ -492,11 +494,6 @@ function summarizePickTeamCoverage(candidates = []) {
 
 function hasRows(value) {
   return Array.isArray(value) && value.length > 0
-}
-
-function positiveNumber(value, fallback) {
-  const numeric = Number(value ?? fallback)
-  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : fallback
 }
 
 function numberValue(value) {

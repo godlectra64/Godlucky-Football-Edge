@@ -16,7 +16,8 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
   const odds = normalizeOddsRows(match)
   const signal = signalFromStatus(decision.status)
   const confidence = getDecisionConfidence(decision)
-  const displayPick = getBestPickLabel(decision)
+  const isReady = decision.status === 'READY'
+  const displayPick = isReady ? getBestPickLabel(decision) : decision.decision_reason_th
 
   if (isCompact) {
     return (
@@ -25,7 +26,7 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 text-[10px] font-black uppercase text-slate-400">
               <Brain size={13} className="text-[var(--page-accent)]" />
-              Best Pick
+              {isReady ? 'Final Pick' : 'สถานะการตัดสิน'}
             </p>
             <p className="mt-1 text-clamp-1 text-sm font-black leading-5 text-white">{displayPick}</p>
           </div>
@@ -33,7 +34,7 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
         </div>
 
         <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-          <MiniChip label="ตลาด" value={formatDecisionMarket(decision.final_pick.type)} />
+          <MiniChip label="ตลาด" value={formatDecisionMarket(isReady ? decision.final_pick.type : decision.market_focus)} />
           <MiniChip label="มั่นใจ" value={`${confidence}%`} />
           <RiskBadge level={pick.riskLevel} compact />
         </div>
@@ -51,7 +52,7 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-[10px] font-black uppercase text-slate-400">
             <Brain size={14} className="text-[var(--page-accent)]" />
-            Best Pick
+            {isReady ? 'Final Pick' : 'สถานะการตัดสิน'}
           </p>
           <p className="mt-1 text-clamp-2 text-lg font-black leading-6 text-white">{displayPick}</p>
           <p className="mt-1 text-clamp-2 text-xs font-semibold leading-5 text-slate-300">{decision.final_pick.reason}</p>
@@ -62,8 +63,8 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
       <div className="mt-3 grid grid-cols-[minmax(0,1fr)_84px] items-end gap-2">
         <div className="min-w-0">
           <div className="flex flex-wrap gap-1.5">
-            <MiniChip label="ตลาด" value={formatDecisionMarket(decision.final_pick.type)} />
-            <MiniChip label="ทิศทาง" value={displayPick} wide />
+            <MiniChip label="ตลาด" value={formatDecisionMarket(isReady ? decision.final_pick.type : decision.market_focus)} />
+            <MiniChip label={isReady ? 'ทิศทาง' : 'สถานะ'} value={isReady ? displayPick : decision.status} wide />
           </div>
         </div>
         <div className="text-right">
@@ -90,7 +91,7 @@ export default function AiFinalPickCard({ match, compact = false, variant = 'exp
           <MarketOddsCard odds={odds} />
           <AnalysisBlock title="AH Analysis" pick={decision.ah_pick.label} confidence={decision.ah_pick.confidence} reason={decision.ah_pick.reason} />
           <AnalysisBlock title="O/U Analysis" pick={decision.ou_pick.label} confidence={decision.ou_pick.confidence} reason={decision.ou_pick.reason} />
-          <AnalysisBlock title="Final Decision" pick={displayPick} confidence={confidence} reason={decision.final_pick.reason} badge={decision.status} />
+          <AnalysisBlock title="Final Decision" pick={isReady ? displayPick : decision.status} confidence={confidence} reason={decision.decision_reason_th || decision.final_pick.reason} badge={decision.status} />
         </div>
       ) : null}
     </section>

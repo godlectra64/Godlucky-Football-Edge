@@ -94,13 +94,14 @@ const dailyTop10RepositorySource = readFileSync(new URL('../src/repositories/dai
 assert.ok(syncFootballDataSource.includes("Deno.env.get('FOOTBALL_PROVIDER') ?? 'api-football'"), 'sync-football-data should default to API-FOOTBALL')
 assert.ok(syncFootballDataSource.includes('const primaryProvider = getProviderAdapter(requestedProviderName)'), 'sync-football-data should choose the primary provider before fetching')
 assert.ok(syncFootballDataSource.includes("fetchFixtures: ({ dateKey }) => fetchApiFootballFixtures(dateKey)"), 'API-FOOTBALL adapter should fetch fixtures by Bangkok dateKey')
-assert.ok(syncFootballDataSource.includes("apiFootballGet('/fixtures', { date: dateKey })"), 'API-FOOTBALL adapter must use /fixtures?date=YYYY-MM-DD')
+assert.ok(syncFootballDataSource.includes("apiFootballGet('/fixtures', params"), 'API-FOOTBALL adapter must use paginated /fixtures requests')
+assert.ok(syncFootballDataSource.includes('collectProviderPages'), 'API-FOOTBALL fixture discovery must follow provider pagination')
 assert.ok(syncFootballDataSource.includes("const fallbackProvider = getProviderAdapter('football-data.org')"), 'football-data.org must remain as fallback provider')
 assert.ok(syncFootballDataSource.includes('fallbackProvider: providerResult.fallbackProvider'), 'sync response should expose fallbackProvider')
 assert.ok(syncFootballDataSource.includes('typeof body.selectionDate'), 'sync date range should honor selectionDate before defaulting to today')
 assert.ok(syncFootballDataSource.includes('assertDailySyncRunDateMatchesRequest'), 'daily sync runId requests should reject cross-date reuse')
 assert.ok(syncFootballDataSource.includes('recompute-ai-final-picks-date'), 'sync modes should include date-specific final pick recompute')
-assert.ok(syncFootballDataSource.includes('top10Coverage'), 'date-specific final pick recompute should report top10 coverage')
+assert.ok(syncFootballDataSource.includes("source: 'canonical_market_ready_window'"), 'date-specific final pick recompute should use the canonical window')
 assert.ok(syncFootballDataSource.includes('const defaultManualLimit = 50'), 'manual sync should default to a 50 fixture limit')
 assert.ok(syncFootballDataSource.includes('const maxManualLimit = 100'), 'manual sync should cap limit at 100')
 assert.ok(syncFootballDataSource.includes('const syncChunkSize = 10'), 'manual sync should process fixtures in chunks of 10')
@@ -155,8 +156,8 @@ assert.ok(syncFootballDataSource.includes('endpointCoverage,'), 'enrich response
 assert.ok(syncFootballDataSource.includes('enrichedMatches,'), 'enrich response should include per-match enrichment summaries')
 assert.ok(syncFootballDataSource.includes('rowsSaved'), 'endpoint coverage should include rowsSaved')
 assert.ok(syncFootballDataSource.includes('empty: !failed && dataCount === 0 ? 1 : 0'), 'endpoint coverage should count empty API responses')
-assert.ok(dailyTop10RepositorySource.includes('fetchMatchesByIds(matchIds)'), 'locked daily Top10 must fetch matches by locked match_id instead of only same-day kickoff range')
-assert.ok(dailyTop10RepositorySource.indexOf('const locked = await getLockedTop10(date)') < dailyTop10RepositorySource.indexOf('const usable = await getUsableRollingTop10(date)'), 'locked daily Top10 should be the primary Today source when present')
+assert.ok(dailyTop10RepositorySource.includes('buildCanonicalSelectionWindow'), 'Today must use the canonical rolling selection window')
+assert.ok(dailyTop10RepositorySource.indexOf('const usable = await getUsableRollingTop10(date)') >= 0, 'Today must use the rolling Market-Ready source')
 assert.ok(syncFootballDataSource.includes("return 'ENRICHED_ODDS_ONLY'"), 'enrichment status should distinguish odds-only enrichment')
 assert.ok(syncFootballDataSource.includes('statsResult.rows.length'), 'per-match enrichment summary should include statistics rows')
 assert.ok(syncFootballDataSource.includes('lineupsResult.rows.length'), 'per-match enrichment summary should include lineups rows')
@@ -626,15 +627,15 @@ const v2Mixed = [
   ...Array.from({ length: 10 }, (_, index) => v2Match(`v2-no-bet-${index}`, 35 - index, 90, 'NO BET')),
 ]
 const v2MixedRows = runAiSelectionEngine(v2Mixed)
-const v2Top10 = v2MixedRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
-assert.equal(v2Top10.length, 10, 'AI Selection Engine v2 should fill Top 10 from all usable recommendations')
-assert.equal(v2Top10.filter((row) => row.recommendation === 'BET').length, 2)
-assert.equal(v2Top10.filter((row) => row.recommendation === 'LEAN').length, 5)
-assert.equal(v2Top10.filter((row) => row.recommendation === 'NO BET').length, 3)
-assert.deepEqual(v2Top10.map((row) => row.final_rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+const v2Selected = v2MixedRows.filter((row) => row.is_top_pick).sort((a, b) => a.final_rank - b.final_rank)
+assert.equal(v2Selected.length, 17, 'AI Selection Engine v2 should preserve every usable recommendation')
+assert.equal(v2Selected.filter((row) => row.recommendation === 'BET').length, 2)
+assert.equal(v2Selected.filter((row) => row.recommendation === 'LEAN').length, 5)
+assert.equal(v2Selected.filter((row) => row.recommendation === 'NO BET').length, 10)
+assert.deepEqual(v2Selected.map((row) => row.final_rank), Array.from({ length: 17 }, (_, index) => index + 1))
 assert.equal(v2MixedRows.filter((row) => row.is_final_pick).length, 1, 'only one v2 row may be final pick')
-assert.equal(v2Top10[0].recommendation, 'BET')
-assert.equal(v2Top10[0].recommendation_tier, '*****')
+assert.equal(v2Selected[0].recommendation, 'BET')
+assert.equal(v2Selected[0].recommendation_tier, '*****')
 
 const v2LeanOnlyRows = runAiSelectionEngine([
   v2Match('v2-lean-only-1', 75, 50, 'LEAN'),
@@ -944,7 +945,7 @@ assert.ok(noBetRanking.rankReason.includes('ควรข้าม'), 'NO BET ran
 
 const marketReadyFinalPick = generateAiFinalPick({
   id: 'final-pick-match',
-  kickoffAt: '2026-07-03T18:00:00.000Z',
+  kickoffAt: new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
   league: { name: 'Test League' },
   homeTeam: { name: 'Home Test' },
   awayTeam: { name: 'Away Test' },
@@ -965,8 +966,8 @@ const marketReadyFinalPick = generateAiFinalPick({
     defensive_stability_score: 58,
   },
   odds: [
-    { id: 'final-pick-ah-odds', match_id: 'final-pick-match', market_focus: 'AH', market_name: 'Asian Handicap', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9 },
-    { id: 'final-pick-ou-odds', match_id: 'final-pick-match', market_focus: 'OU', market_name: 'Goals Over/Under', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Over 2.5', line: '2.5', price: 1.95 },
+    { id: 'final-pick-ah-odds', match_id: 'final-pick-match', market_focus: 'AH', market_name: 'Asian Handicap', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9, snapshot_at: new Date().toISOString() },
+    { id: 'final-pick-ou-odds', match_id: 'final-pick-match', market_focus: 'OU', market_name: 'Goals Over/Under', bookmaker: 'Book A', bookmaker_name: 'Book A', selection: 'Over 2.5', line: '2.5', price: 1.95, snapshot_at: new Date().toISOString() },
   ],
 })
 assert.equal(marketReadyFinalPick.signal, 'STRONG_SIGNAL', 'market-ready BET must not be downgraded to SKIP only because sub-market reasons are conservative')
@@ -998,7 +999,7 @@ assert.equal(missingMarketFinalPick.signal, 'SKIP', 'missing market data must st
 assert.equal(missingMarketFinalPick.ah_pick.label, 'รอเส้น AH', 'missing AH odds must wait for AH line')
 assert.equal(missingMarketFinalPick.ou_pick.label, 'รอราคา O/U', 'missing O/U odds must wait for O/U price')
 assert.equal(missingMarketFinalPick.final_pick.type, 'NO_DECISION', 'missing market data must not create a final market pick')
-assert.equal(missingMarketFinalPick.final_pick.label, 'ยังไม่มี Best Pick', 'missing market data must show no Best Pick')
+assert.equal(missingMarketFinalPick.final_pick.label, 'ยังไม่มี Final Pick ที่พร้อมใช้', 'missing market data must show no actionable Final Pick')
 assert.equal(missingMarketFinalPick.status, 'WAIT', 'missing odds with usable fixture data should be WAIT')
 assert.equal(missingMarketFinalPick.match_view.source, 'FIXTURE_MODEL', 'no-odds match view should use fixture model')
 assert.ok(missingMarketFinalPick.match_view.confidence <= 60, 'fixture-only match view confidence must be capped at 60')
@@ -1006,11 +1007,11 @@ assert.ok(missingMarketFinalPick.match_view.confidence <= 60, 'fixture-only matc
 const lowDataNoOddsPick = generateAiFinalPick({ analysis: { market_data_used: false, odds_rows_used: 0 }, odds: [] })
 assert.equal(lowDataNoOddsPick.status, 'REJECTED', 'invalid low-data fixture should be rejected by hard gate')
 assert.equal(lowDataNoOddsPick.match_view.label, 'ข้อมูลยังไม่พอประเมินฝั่งชนะ')
-assert.equal(lowDataNoOddsPick.final_pick.label, 'ยังไม่มี Best Pick')
+assert.equal(lowDataNoOddsPick.final_pick.label, 'ยังไม่มี Final Pick ที่พร้อมใช้')
 
 const hybridBaseMatch = {
   id: 'hybrid-base',
-  kickoffAt: '2026-07-03T18:00:00.000Z',
+  kickoffAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
   league: { name: 'Hybrid League' },
   homeTeam: { name: 'Hybrid Home' },
   awayTeam: { name: 'Hybrid Away' },
@@ -1023,7 +1024,7 @@ const hybridBaseMatch = {
     market_quality_score: 86,
     feature_completeness_score: 88,
   },
-  odds: [{ id: 'hybrid-ah', match_id: 'hybrid-base', market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.5', line: '-0.5', price: 1.9 }],
+  odds: [{ id: 'hybrid-ah', match_id: 'hybrid-base', market_focus: 'AH', market_name: 'Asian Handicap', selection: 'Home -0.5', line: '-0.5', price: 1.9, snapshot_at: new Date().toISOString() }],
 }
 assert.equal(calculateDecisionReadinessScore({ dataQualityScore: 88, marketQualityScore: 86, analysisConfidence: 84, riskLevel: 'MEDIUM', featureCompletenessScore: 88 }), 84.5)
 assert.equal(classifyDecision(hybridBaseMatch, { finalPick: { type: 'AH' } }).status, 'READY', 'Case 1: complete market-ready score 84 should be READY')
@@ -1041,15 +1042,15 @@ const fourReadyRows = Array.from({ length: 4 }, (_, index) => classifyDecision({
 assert.equal(fourReadyRows.filter((row) => row.status === 'READY').length, 4, 'Case 9: READY fewer than 10 should stay as real count')
 const fourteenReadyRows = Array.from({ length: 14 }, (_, index) => ({ id: `ready-rank-${index}`, decision: classifyDecision({ ...hybridBaseMatch, id: `ready-rank-${index}`, analysis: { ...hybridBaseMatch.analysis, confidence_score: 95 - index, calibrated_confidence_score: 95 - index } }, { finalPick: { type: 'AH' } }) }))
 assert.equal(fourteenReadyRows.filter((row) => row.decision.status === 'READY').length, 14, 'Case 10: READY over display max should keep decision data')
-assert.equal(fourteenReadyRows.filter((row) => row.decision.status === 'READY').slice(0, 10).length, 10, 'Case 10: display can cap at 10 without deleting READY rows')
+assert.equal(fourteenReadyRows.filter((row) => row.decision.status === 'READY').length, 14, 'Case 10: display preserves the dynamic READY count')
 
 const marketReadyMatches = Array.from({ length: 3 }, (_, index) => ({
   ...baseMatch,
   id: `market-ready-${index}`,
-  kickoffAt: `2026-07-03T0${index}:00:00.000Z`,
+  kickoffAt: new Date(Date.now() + (index + 4) * 60 * 60 * 1000).toISOString(),
   has_market_data: true,
   data_readiness_status: 'READY',
-  odds: [{ id: `market-ready-odds-${index}`, match_id: `market-ready-${index}`, market_focus: 'AH', market_name: 'Asian Handicap', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9 }],
+  odds: [{ id: `market-ready-odds-${index}`, match_id: `market-ready-${index}`, market_focus: 'AH', market_name: 'Asian Handicap', bookmaker_name: 'Book A', selection: 'Home -0.5', line: '-0.5', price: 1.9, snapshot_at: new Date().toISOString() }],
   aiFinalPick: { signal: index === 0 ? 'STRONG_SIGNAL' : 'WATCH', confidence_score: 82 - index, risk_level: 'LOW' },
   analysis: {
     ...baseMatch.analysis,
@@ -1074,7 +1075,7 @@ const marketReadyMatches = Array.from({ length: 3 }, (_, index) => ({
 const waitingMarketMatches = Array.from({ length: 7 }, (_, index) => ({
   ...baseMatch,
   id: `waiting-market-${index}`,
-  kickoffAt: `2026-07-03T1${index}:00:00.000Z`,
+  kickoffAt: new Date(Date.now() + (index + 8) * 60 * 60 * 1000).toISOString(),
   has_market_data: false,
   data_readiness_status: 'NO_MARKET_DATA',
   odds: [],
@@ -1141,7 +1142,7 @@ const oneStrongOneWatchOneWaiting = buildTodayMatchBuckets([
     waitingMarketData: false,
     odds: [{ id: 'bucket-watch-odds', match_id: 'bucket-watch-0', market_name: 'Asian Handicap', selection: 'Home -0.5', line: '-0.5', price: 1.8 }],
     aiFinalPick: { signal: 'WATCH', confidence_score: 62, risk_level: 'MEDIUM' },
-    analysis: { recommendation: 'LEAN', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 45, confidence_score: 62, calibrated_confidence_score: 62, risk_level: 'MEDIUM', data_validation_status: 'VALID' },
+    analysis: { recommendation: 'LEAN', market_data_used: true, odds_rows_used: 1, analysis_status: 'MARKET_DATA_READY_RECALCULATED', market_edge_score: 65, market_quality_score: 65, confidence_score: 62, calibrated_confidence_score: 62, risk_level: 'MEDIUM', data_validation_status: 'VALID' },
   })[0],
   createStatusMatches(1, 'NS', 'bucket-waiting', {
     waitingMarketData: true,
@@ -1438,7 +1439,8 @@ function createStatusMatches(count, statusShort, prefix, patch = {}) {
     statusShort,
     status_short: statusShort,
     status: statusShort,
-    kickoffAt: `2026-07-03T${String(index).padStart(2, '0')}:00:00.000Z`,
+    kickoffAt: new Date(Date.now() + (['FT', 'AET', 'PEN'].includes(statusShort) ? -(index + 1) : index + 2) * 60 * 60 * 1000).toISOString(),
+    odds: (patch.odds ?? baseMatch.odds ?? []).map((row) => ({ ...row, snapshot_at: row.snapshot_at ?? new Date().toISOString() })),
     homeScore: ['FT', 'AET', 'PEN'].includes(statusShort) ? 2 : null,
     awayScore: ['FT', 'AET', 'PEN'].includes(statusShort) ? 1 : null,
     homeGoals: ['FT', 'AET', 'PEN'].includes(statusShort) ? 2 : null,

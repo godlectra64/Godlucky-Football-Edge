@@ -23,6 +23,8 @@ export const marketLabelsTh = {
   AH: 'แฮนดิแคป',
   OU: 'สูง/ต่ำ',
   MATCH_WINNER: '1X2',
+  DOUBLE_CHANCE: 'Double Chance',
+  CORRECT_SCORE: 'สกอร์ที่คาด (Insight)',
   BTTS: 'ทั้งสองทีมยิงได้',
   NONE: 'ยังไม่มีข้อมูลราคา',
 }
@@ -34,6 +36,8 @@ export const riskLabelsTh = {
   LOW: 'เสี่ยงต่ำ',
   MEDIUM: 'เสี่ยงกลาง',
   HIGH: 'เสี่ยงสูง',
+  critical: 'เสี่ยงวิกฤต',
+  CRITICAL: 'เสี่ยงวิกฤต',
 }
 
 export function formatRecommendationLabel(value) {

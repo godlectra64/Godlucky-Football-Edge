@@ -2,6 +2,7 @@ import { getMarketReadinessGroup, marketReadinessGroups, recommendationLabels, r
 import { classifyDecision } from './decisionClassification.js'
 import { buildStrictApiFootballCandidate, buildStrictApiFootballSelection, compareStrictApiFootballCandidates } from './marketDisplay.js'
 import { getMatchStatusInfo, matchStatusGroups } from './matchStatus.js'
+import { canonicalSelectionWindow } from './selectionWindow.js'
 
 export const selectionV2Reasons = {
   marketReadyCandidatesAvailable: 'market_ready_candidates_available',
@@ -25,10 +26,9 @@ const hourMs = 60 * 60 * 1000
 
 export function buildUsableDailySelection(matches = [], options = {}) {
   const now = normalizeDate(options.now)
-  const windowHours = positiveNumber(options.windowHours, 36)
-  const maxWindowHours = Math.max(windowHours, positiveNumber(options.maxWindowHours, 48))
-  const minPlayable = positiveNumber(options.minPlayable, 5)
-  const limit = positiveNumber(options.limit, 10)
+  const windowHours = positiveNumber(options.windowHours, canonicalSelectionWindow.initialHours)
+  const maxWindowHours = Math.max(windowHours, positiveNumber(options.maxWindowHours, canonicalSelectionWindow.maximumHours))
+  const minPlayable = positiveNumber(options.minPlayable, canonicalSelectionWindow.minimumPlayable)
   const rows = (Array.isArray(matches) ? matches : []).map((match) => buildSelectionCandidate(match, now))
 
   const windowStart = now
@@ -44,7 +44,6 @@ export function buildUsableDailySelection(matches = [], options = {}) {
   const candidatePool = buildDynamicCandidatePool(playableRows, options)
   const selected = candidatePool
     .sort(compareSelectionCandidates)
-    .slice(0, limit)
     .map((row, index) => ({
       ...normalizeDisplayMatch(row.match),
       selectionV2: {
@@ -140,19 +139,8 @@ export function buildSelectionCandidate(match = {}, now = new Date()) {
   }
 }
 
-function buildDynamicCandidatePool(rows = [], options = {}) {
-  const initial = positiveNumber(options.initialCandidateCount, 30)
-  const step = positiveNumber(options.expansionStep, 10)
-  const maximum = positiveNumber(options.maximumCandidateCount, 80)
-  const target = positiveNumber(options.minimumMarketReadyTarget, 15)
-  const ranked = [...rows].sort(comparePreMarketCandidates)
-  let size = Math.min(initial, ranked.length)
-  while (size < ranked.length && size < maximum) {
-    const pool = ranked.slice(0, size)
-    if (pool.filter((row) => row.decisionClassification?.market_readiness?.ready || row.priorityTier === selectionPriorityTiers.ready).length >= target) break
-    size = Math.min(size + step, maximum, ranked.length)
-  }
-  return ranked.slice(0, size)
+function buildDynamicCandidatePool(rows = []) {
+  return [...rows].sort(comparePreMarketCandidates)
 }
 
 function comparePreMarketCandidates(a, b) {
@@ -203,6 +191,7 @@ export function compareSelectionCandidates(a, b) {
   return priorityDiff || coverageDiff || signalDiff || marketEdgeDiff || rankingDiff || confidenceDiff || riskDiff || kickoffDiff || stableDiff
 }
 
+// Legacy adapter name retained for the existing table contract; selection count is dynamic.
 export function planDailyTop10Persistence(existingRows = [], selectedRows = []) {
   const rankRows = new Map(existingRows.map((row) => [Number(row.rank), row]))
   const exactRows = new Map(existingRows.map((row) => [row.match_id ?? row.matchId, row]))

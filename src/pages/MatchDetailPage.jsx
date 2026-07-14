@@ -10,7 +10,7 @@ import {
   normalizeDetailPayload,
   splitSummary,
 } from '../utils/matchDetail'
-import { formatKickoffTime, formatScore } from '../utils/formatters'
+import { formatKickoffTime, formatScore, formatUpdatedAt } from '../utils/formatters'
 import { calculateDataCoverage, normalizeDataPlatform } from '../utils/dataPlatform'
 import { buildExplainableAi } from '../utils/explainableAi'
 import { normalizeMarketIntelligence } from '../utils/marketIntelligence'
@@ -194,20 +194,28 @@ function AiVerdictSection({ detail, verdict }) {
 
 function FinalDecisionSection({ detail }) {
   const decision = detail.bettingDecision
+  const ready = decision.status === 'READY'
+  const versions = decision.version_fields ?? {}
 
   return (
     <Section title="Final Decision" icon={Sparkles} accent>
       <div className={`rounded-2xl border p-3 ${decisionPanelTone(decision.status)}`}>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-[10px] font-black uppercase text-slate-400">Best Pick</p>
-            <p className="mt-1 text-clamp-2 text-2xl font-black leading-7 text-white">{decision.final_pick.label}</p>
-            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{decision.final_pick.reason}</p>
+            <p className="text-[10px] font-black uppercase text-slate-400">{ready ? 'Final Pick' : 'สถานะการตัดสิน'}</p>
+            <p className="mt-1 text-clamp-2 text-2xl font-black leading-7 text-white">{ready ? decision.final_pick.label : decision.status}</p>
+            <p className="mt-1 text-sm font-semibold leading-6 text-slate-300">{decision.decision_reason_th || decision.final_pick.reason}</p>
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1.5">
             <span className={`semantic-badge ${recommendationBadgeTone(decision.status)}`}>{decision.status}</span>
             <span className="semantic-badge border-white/10 bg-white/[0.05] text-white">{decision.confidence}%</span>
           </div>
+        </div>
+        <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+          <DecisionMetric label="ตลาดพร้อมใช้" value={decision.market_ready ? 'พร้อม' : 'ยังไม่พร้อม'} muted={!decision.market_ready} />
+          <DecisionMetric label="ตลาดล่าสุด" value={decision.last_market_refresh_at ? formatUpdatedAt(decision.last_market_refresh_at) : 'ไม่มี timestamp'} muted={!decision.last_market_refresh_at} />
+          <DecisionMetric label="Reason codes" value={(decision.reason_codes ?? []).join(', ') || '-'} muted />
+          <DecisionMetric label="Versions" value={[versions.pipeline_version, versions.decision_gate_version, versions.market_quality_version].filter(Boolean).join(' / ') || '-'} muted />
         </div>
       </div>
     </Section>

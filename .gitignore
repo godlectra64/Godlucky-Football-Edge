@@ -28,3 +28,6 @@ dist-ssr
 
 # Supabase temp
 supabase/.temp/
+
+# Local production rollout audit artifacts
+.tmp/

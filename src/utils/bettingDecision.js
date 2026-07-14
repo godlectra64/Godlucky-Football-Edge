@@ -3,8 +3,7 @@ import { classifyDecision } from './decisionClassification.js'
 import { analyzeOverUnder } from './ouAnalysisEngine.js'
 import { getLatestOddsByMarket, normalizeOddsRows } from './oddsUtils.js'
 
-const statuses = ['READY', 'WATCH', 'WAIT', 'WAITING_MARKET', 'NO_DATA', 'REJECTED']
-const finalTypes = ['TEAM', 'AH', 'OU', 'NO_DECISION']
+const finalTypes = ['TEAM', 'AH', 'OU', 'MATCH_WINNER', 'DOUBLE_CHANCE', 'NO_DECISION']
 
 export function buildSimpleBettingDecision(match = {}) {
   const stored = getStoredDecision(match)
@@ -20,13 +19,14 @@ export function buildSimpleBettingDecision(match = {}) {
   const finalPick = buildFinalPick({ ahPick, ouPick, matchView, hasAnyMarket, marketQuality: getMarketQualityScore(match) })
   const classification = classifyDecision(match, { finalPick, analysisComplete: hasAnalysisOutput(match) })
   const status = classification.status
-  const confidence = getDecisionConfidence({ match_view: matchView, ah_pick: ahPick, ou_pick: ouPick, final_pick: finalPick, status })
+  const canonicalFinalPick = classification.final_pick
+  const confidence = getDecisionConfidence({ match_view: matchView, ah_pick: ahPick, ou_pick: ouPick, final_pick: canonicalFinalPick, status })
 
   return {
     match_view: matchView,
     ah_pick: ahPick,
     ou_pick: ouPick,
-    final_pick: finalPick,
+    final_pick: canonicalFinalPick,
     confidence,
     status,
     decision_status: classification.decision_status,
@@ -34,6 +34,16 @@ export function buildSimpleBettingDecision(match = {}) {
     decision_readiness_score: classification.decision_readiness_score,
     decision_reason: classification.decision_reason,
     decision_reason_codes: classification.decision_reason_codes,
+    primary_reason_code: classification.primary_reason_code,
+    reason_codes: classification.reason_codes,
+    decision_reason_th: classification.decision_reason_th,
+    selection_status: classification.selection_status,
+    market_ready: classification.market_ready,
+    market_focus: classification.market_focus,
+    risk_level: classification.risk_level,
+    last_market_refresh_at: classification.last_market_refresh_at,
+    last_analysis_at: classification.last_analysis_at,
+    version_fields: classification.version_fields,
     market_readiness: classification.market_readiness,
     decision_scores: classification.scores,
     pipeline_version: classification.pipeline_version,
@@ -75,22 +85,33 @@ function normalizeDecision(value = {}, match = {}) {
   const ahPick = normalizeAhPick(value.ah_pick ?? value.ahPick, fresh.ah_pick)
   const ouPick = normalizeOuPick(value.ou_pick ?? value.ouPick, fresh.ou_pick)
   const finalPick = normalizeFinalPickObject(value.final_pick ?? value.finalPick, fresh.final_pick)
-  const status = statuses.includes(String(value.status ?? value.decision_status ?? '').toUpperCase()) ? String(value.status ?? value.decision_status).toUpperCase() : fresh.status
+  const classification = classifyDecision(match, { finalPick, analysisComplete: hasAnalysisOutput(match) })
+  const status = classification.status
   return {
     match_view: matchView,
     ah_pick: ahPick,
     ou_pick: ouPick,
-    final_pick: finalPick,
+    final_pick: classification.final_pick,
     confidence: scoreValue(value.confidence ?? fresh.confidence),
     status,
-    decision_status: value.decision_status ?? fresh.decision_status,
-    legacy_status: value.legacy_status ?? fresh.legacy_status,
-    decision_readiness_score: scoreValue(value.decision_readiness_score ?? fresh.decision_readiness_score),
-    decision_reason: firstText(value.decision_reason, fresh.decision_reason),
-    decision_reason_codes: Array.isArray(value.decision_reason_codes) ? value.decision_reason_codes : fresh.decision_reason_codes,
-    market_readiness: value.market_readiness ?? fresh.market_readiness,
-    decision_scores: value.decision_scores ?? fresh.decision_scores,
-    pipeline_version: value.pipeline_version ?? fresh.pipeline_version,
+    decision_status: classification.decision_status,
+    legacy_status: classification.legacy_status,
+    decision_readiness_score: classification.decision_readiness_score,
+    decision_reason: classification.decision_reason,
+    decision_reason_codes: classification.decision_reason_codes,
+    primary_reason_code: classification.primary_reason_code,
+    reason_codes: classification.reason_codes,
+    decision_reason_th: classification.decision_reason_th,
+    selection_status: classification.selection_status,
+    market_ready: classification.market_ready,
+    market_focus: classification.market_focus,
+    risk_level: classification.risk_level,
+    last_market_refresh_at: classification.last_market_refresh_at,
+    last_analysis_at: classification.last_analysis_at,
+    version_fields: classification.version_fields,
+    market_readiness: classification.market_readiness,
+    decision_scores: classification.scores,
+    pipeline_version: classification.pipeline_version,
   }
 }
 

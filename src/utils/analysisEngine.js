@@ -9,6 +9,7 @@ import {
   isProfessionalTopCandidate,
   normalizeProfessionalResultFromAnalysis,
 } from './professionalSelectionPipeline.js'
+import { systemVersions } from '../../supabase/functions/_shared/versions.js'
 
 export const recommendationLabels = {
   bet: 'BET',
@@ -90,7 +91,7 @@ export function calculateFootballMasterAnalysis(match) {
   }
 
   return {
-    framework: 'football-intelligence-v3',
+    framework: systemVersions.decision_model_version,
     modules,
     baseConfidence,
     confidence,
@@ -115,7 +116,7 @@ export function getRiskLevel(match) {
   const analysis = match.analysis ?? match.match_analysis ?? match
   const stored = analysis.risk_level ?? analysis.raw?.analysis_breakdown?.overall_risk?.level
 
-  if (['football-master-v2', 'football-intelligence-v3'].includes(analysis.raw?.framework)) return normalizeRiskLevel(stored)
+  if (['football-master-v2', systemVersions.decision_model_version].includes(analysis.raw?.framework)) return normalizeRiskLevel(stored)
   return calculateFootballMasterAnalysis(match).riskLevel
 }
 
@@ -141,7 +142,7 @@ export function getConfidence(match) {
 
   const storedConfidence = numberValue(analysis.confidence_score)
 
-  if (['football-master-v2', 'football-intelligence-v3'].includes(analysis.raw?.framework) && storedConfidence > 0) {
+  if (['football-master-v2', systemVersions.decision_model_version].includes(analysis.raw?.framework) && storedConfidence > 0) {
     return Math.round(clamp(storedConfidence, 0, 100))
   }
 

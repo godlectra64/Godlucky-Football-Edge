@@ -1,4 +1,4 @@
-import { CheckCircle2, Eye, Flame, Hourglass, RefreshCcw, Sparkles, Trophy, Zap } from 'lucide-react'
+import { CheckCircle2, CircleX, Eye, Flame, Hourglass, RefreshCcw, Sparkles, Zap } from 'lucide-react'
 import { useMemo } from 'react'
 import MatchCard from '../components/MatchCard'
 import { getDecisionConfidence } from '../utils/bettingDecision'
@@ -32,6 +32,7 @@ export default function TodayPage({
     strongMatches,
     watchMatches,
     waitingMatches,
+    rejectedMatches,
     finishedMatches,
     hiddenMatches,
     playableMatches,
@@ -43,7 +44,7 @@ export default function TodayPage({
   const lastUpdated = top10Status?.lastUpdated ?? top10Status?.lockedAt ?? null
   const showFinishedOnlyState = !loading && !error && playableMatches.length === 0 && finishedCount > 0
   const showEmptyState = !loading && !error && playableMatches.length === 0 && finishedCount === 0
-  const hasMainSections = !loading && !error && (strongMatches.length || watchMatches.length || waitingMatches.length)
+  const hasMainSections = !loading && !error && (strongMatches.length || watchMatches.length || waitingMatches.length || rejectedMatches.length)
   const noReadyDecision = !loading && !error && playableMatches.length > 0 && strongMatches.length === 0
 
   return (
@@ -69,7 +70,7 @@ export default function TodayPage({
             <HeroMetric icon={Flame} label="พร้อมตัดสิน" value={strongMatches.length} tone="strong" />
             <HeroMetric icon={Eye} label="เฝ้าดู" value={watchMatches.length} tone="watch" />
             <HeroMetric icon={Hourglass} label="รอ" value={waitingMatches.length} tone="waiting" />
-            <HeroMetric icon={Trophy} label="จบแล้ว" value={finishedCount} tone="finished" />
+            <HeroMetric icon={CircleX} label="ไม่ผ่านเกณฑ์" value={rejectedMatches.length} tone="rejected" />
           </div>
 
           <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
@@ -81,7 +82,7 @@ export default function TodayPage({
               </span>
             </div>
             <p className="text-clamp-2 mt-1 text-[11px] font-semibold leading-4 text-slate-400">
-              {top10Locked || lockedCount ? `ใช้ชุดคัดประจำวันที่บันทึกไว้ ${lockedCount || matches.length}/10` : `ใช้รายการที่พร้อมที่สุดในช่วง ${windowHoursUsed} ชั่วโมง`}
+              {top10Locked || lockedCount ? `ใช้ชุดคัดประจำวันที่บันทึกไว้ ${lockedCount || matches.length} คู่` : `ใช้รายการที่พร้อมที่สุดในช่วง ${windowHoursUsed} ชั่วโมง`}
               {totalMatchCount ? ` · จากรายการทั้งหมด ${totalMatchCount} คู่` : ''}
               {avgConfidence ? ` · AI Score เฉลี่ย ${avgConfidence}%` : ''}
               {lastUpdated ? ` · อัปเดต ${formatUpdatedAt(lastUpdated)}` : ''}
@@ -96,7 +97,7 @@ export default function TodayPage({
         </div>
       </section>
 
-      {!loading && !error && totalMatchCount > selectedCount && selectedCount < 10 ? (
+      {!loading && !error && totalMatchCount > selectedCount ? (
         <section className="mt-3 rounded-[18px] border border-cyan-300/20 bg-cyan-300/10 p-3">
           <p className="text-sm font-black text-cyan-50">วันนี้มีคู่ที่ผ่านเกณฑ์คุณภาพสูง {selectedCount} คู่ จากทั้งหมด {totalMatchCount} คู่</p>
         </section>
@@ -155,6 +156,14 @@ export default function TodayPage({
             </MatchSection>
           ) : null}
 
+          {rejectedMatches.length ? (
+            <MatchSection title="ไม่ผ่านเกณฑ์" count={rejectedMatches.length} tone="rejected">
+              {rejectedMatches.map((match) => (
+                <MatchCard key={match.id} match={match} onOpen={onOpenMatch} isPlayable displayMode="rejected" />
+              ))}
+            </MatchSection>
+          ) : null}
+
           {finishedCount ? <ResultsCta count={finishedCount} onGoResults={onGoResults} /> : null}
         </div>
       ) : null}
@@ -167,7 +176,7 @@ function HeroMetric({ icon: Icon, label, value, tone }) {
     strong: 'border-emerald-300/30 bg-emerald-300/10 text-emerald-50',
     watch: 'border-cyan-300/28 bg-cyan-300/10 text-cyan-50',
     waiting: 'border-amber-300/28 bg-amber-300/10 text-amber-50',
-    finished: 'border-slate-300/20 bg-slate-300/10 text-slate-100',
+    rejected: 'border-red-300/25 bg-red-300/10 text-red-50',
   }[tone]
   return (
     <div className={`rounded-xl border px-2.5 py-2 ${toneClass}`}>
@@ -185,6 +194,7 @@ function MatchSection({ title, count, tone = 'strong', emptyMessage = '', childr
     strong: 'text-emerald-100',
     watch: 'text-cyan-100',
     waiting: 'text-amber-100',
+    rejected: 'text-red-100',
   }[tone] ?? 'text-white'
   const childRows = Array.isArray(children) ? children.filter(Boolean) : children ? [children] : []
 

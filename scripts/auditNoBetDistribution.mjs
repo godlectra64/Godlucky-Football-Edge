@@ -42,25 +42,22 @@ console.log(`[diagnose:no-bet] selectionWindowEnd=${selectionWindowEnd.toISOStri
 
 const matches = await fetchMatches(firstRange.startUtc, fetchEndUtc)
 const matchIds = matches.map((row) => row.id).filter(Boolean)
-const [oddsRows, finalPicks, top10Rows, resultRows] = await Promise.all([
+const [oddsRows, finalPicks, resultRows] = await Promise.all([
   fetchByMatchIds('football_match_odds', matchIds, '*'),
   fetchByMatchIds('football_ai_final_picks', matchIds, '*'),
-  fetchTop10Rows(firstRange.dateKey, lastRange.dateKey),
   fetchByMatchIds('football_ai_pick_results', matchIds, '*'),
 ])
 
 const oddsByMatch = groupBy(oddsRows, (row) => row.match_id)
 const finalPickByMatch = new Map(finalPicks.map((row) => [row.match_id, row]))
-const top10ByDate = groupBy(top10Rows, (row) => row.selection_date)
 const resultByMatch = groupBy(resultRows, (row) => row.match_id)
 const matchesByDate = groupBy(matches, (row) => getBangkokDateKey(row.kickoff_at))
-const matchesById = new Map(matches.map((row) => [row.id, row]))
 
 let allTop10NoBet = true
 
 for (const dateKey of days) {
   const dayMatches = matchesByDate.get(dateKey) ?? []
-  const dayTop10 = getDailyTop10Rows(dateKey, dayMatches, top10ByDate, matchesById, oddsByMatch)
+  const dayTop10 = getDailyTop10Rows(dayMatches, oddsByMatch)
   const dayMatchIds = new Set(dayMatches.map((row) => row.id))
   const dayOdds = oddsRows.filter((row) => dayMatchIds.has(row.match_id))
   const dayOddsMatchIds = new Set(dayOdds.map((row) => row.match_id).filter(Boolean))
@@ -176,7 +173,7 @@ console.log(`totalMatches=${matches.length}`)
 console.log(`totalOddsRows=${oddsRows.length}`)
 console.log(`totalMatchesWithOddsRows=${new Set(oddsRows.map((row) => row.match_id)).size}`)
 console.log(`totalFinalPicks=${finalPicks.length}`)
-console.log(`totalTop10Rows=${top10Rows.length}`)
+console.log(`totalCandidateRows=${matches.length}`)
 
 function buildRecentBangkokDays(count) {
   const today = getBangkokDayRange().dateKey
@@ -274,39 +271,12 @@ async function fetchByMatchIds(table, matchIds, select) {
   return allRows
 }
 
-async function fetchTop10Rows(fromDate, toDate) {
-  const { data, error } = await supabase
-    .from('daily_top10_selections')
-    .select('*')
-    .gte('selection_date', fromDate)
-    .lte('selection_date', toDate)
-    .order('selection_date', { ascending: true })
-    .order('rank', { ascending: true })
-
-  if (error) {
-    console.warn(`[diagnose:no-bet] daily_top10_selections unavailable: ${formatSupabaseError(error)}`)
-    return []
-  }
-  return data ?? []
-}
-
-function getDailyTop10Rows(dateKey, dayMatches, top10ByDate, matchesById, oddsByMatch) {
-  const storedTop10 = top10ByDate.get(dateKey) ?? []
-  if (storedTop10.length) {
-    return storedTop10
-      .map((row) => {
-        const match = attachOdds(matchesById.get(row.match_id), oddsByMatch)
-        return { source: 'daily_top10_selections', rank: row.rank, match, analysis: getAnalysis(match), stored: row }
-      })
-      .filter((item) => item.match)
-  }
-
+function getDailyTop10Rows(dayMatches, oddsByMatch) {
   return dayMatches
     .map((match) => attachOdds(match, oddsByMatch))
     .map((match) => ({ source: 'match_analysis', rank: Number(getAnalysis(match)?.final_rank ?? 999), match, analysis: getAnalysis(match), stored: null }))
     .filter((item) => item.analysis?.is_top_pick || Number.isFinite(item.rank) && item.rank < 999)
     .sort((a, b) => a.rank - b.rank)
-    .slice(0, 10)
 }
 
 function printTop10Reasons(dateKey, top10Rows) {
