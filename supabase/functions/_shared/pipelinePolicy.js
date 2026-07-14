@@ -125,6 +125,49 @@ export function auditPipelineState(run = {}, steps = [], options = {}) {
   return { duplicateStepOrders, duplicatePhases, staleRunning, pendingRetryMissingNext, overdueRetry, attemptsExceeded, incompleteRequired, successWithIncomplete, invalidProgress, progress }
 }
 
+export function auditPipelineCompletion(run = {}, steps = [], options = {}) {
+  const now = new Date(options.now ?? Date.now()).getTime()
+  const state = auditPipelineState(run, steps, options)
+  const byPhase = new Map((steps ?? []).map((step) => [step.phase, step]))
+  const requiredPendingSteps = requiredDailyPhases
+    .map((phase) => byPhase.get(phase))
+    .filter((step) => step && step.status !== 'success')
+  const retrySteps = requiredPendingSteps.filter((step) => step.status === 'pending_retry')
+  const validRetrySteps = retrySteps.filter((step) => {
+    const retryAt = new Date(step.next_retry_at ?? 0).getTime()
+    return Number.isFinite(retryAt)
+      && retryAt > now
+      && Number(step.attempt_count ?? 0) < Number(step.max_attempts ?? 3)
+  })
+  const status = String(run.status ?? '').toLowerCase()
+  const phase = String(run.current_phase ?? '').toLowerCase()
+  const violations = []
+
+  if (status === 'partial' && requiredPendingSteps.length && !validRetrySteps.length) {
+    violations.push('PARTIAL_WITHOUT_VALID_CONTINUATION')
+  }
+  if (status === 'partial' && requiredPendingSteps.some((step) => ['pending', 'partial'].includes(step.status)) && !validRetrySteps.length) {
+    violations.push('REQUIRED_PENDING_WITHOUT_SCHEDULE')
+  }
+  if (status === 'failed') violations.push('FAILED_TERMINAL_RUN')
+  if (status === 'success' && requiredPendingSteps.length) violations.push('SUCCESS_WITH_INCOMPLETE_REQUIRED_STEPS')
+  if (phase === 'complete' && requiredPendingSteps.length) violations.push('COMPLETE_WITH_INCOMPLETE_REQUIRED_STEPS')
+  if ((status === 'success' || phase === 'complete') && state.progress < 100) violations.push('TERMINAL_PROGRESS_BELOW_100')
+
+  const retryStep = retrySteps[0] ?? null
+  const retryAt = retryStep?.next_retry_at ? new Date(retryStep.next_retry_at).getTime() : null
+  return {
+    ...state,
+    requiredPendingSteps,
+    retrySteps,
+    validRetrySteps,
+    violations: [...new Set(violations)],
+    nextRetryAt: retryStep?.next_retry_at ?? null,
+    overdueDurationMs: retryAt !== null && Number.isFinite(retryAt) && retryAt < now ? now - retryAt : 0,
+    cursor: retryStep?.continuation_state ?? requiredPendingSteps[0]?.continuation_state ?? null,
+  }
+}
+
 function duplicateValues(rows, getter) {
   const seen = new Set()
   const duplicates = new Set()

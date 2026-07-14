@@ -88,6 +88,19 @@ export function duplicateVersions(filenames) {
   return [...grouped.entries()].filter(([, files]) => files.length > 1)
 }
 
+export function assessTriggerContract(actual, expectedFunctionOid) {
+  if (!actual) return { valid: true, action: 'CREATE', reasons: [] }
+  const reasons = []
+  if (String(actual.functionOid ?? '') !== String(expectedFunctionOid ?? '')) reasons.push('FUNCTION_OID_MISMATCH')
+  if (actual.functionSchema !== 'public') reasons.push('FUNCTION_SCHEMA_MISMATCH')
+  if (actual.functionName !== 'set_updated_at') reasons.push('FUNCTION_NAME_MISMATCH')
+  if (String(actual.functionArguments ?? '') !== '') reasons.push('FUNCTION_ARGUMENT_MISMATCH')
+  if (actual.isBefore !== true) reasons.push('TRIGGER_TIMING_MISMATCH')
+  if (actual.includesUpdate !== true || actual.includesOtherEvents === true) reasons.push('TRIGGER_EVENT_MISMATCH')
+  if (actual.isRowLevel !== true) reasons.push('TRIGGER_LEVEL_MISMATCH')
+  return { valid: reasons.length === 0, action: reasons.length ? 'REJECT' : 'KEEP', reasons }
+}
+
 function sqlFiles(directory) {
   return readdirSync(directory, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.sql'))
@@ -129,6 +142,23 @@ function assertNoFixedCountPendingSql(filename, sql) {
     '',
   )
   assert(!new RegExp(`\\b${obsoleteRpc}\\s*\\(`, 'i').test(withoutDeprecationComment), `${filename} invokes the deprecated fixed-count RPC`)
+}
+
+function assertSemanticTriggerGuard() {
+  const reconcile = read('supabase/migrations/20260715000000_reconcile_unrecorded_schema.sql')
+  for (const required of [
+    "to_regprocedure('public.set_updated_at()')",
+    'trg.tgfoid',
+    'join pg_proc',
+    'join pg_namespace',
+    'pg_get_function_identity_arguments',
+    '(actual_trigger_type & 2)',
+    '(actual_trigger_type & 16)',
+    '(actual_trigger_type & 1)',
+  ]) {
+    assert(reconcile.includes(required), `Semantic trigger guard is missing ${required}`)
+  }
+  assert(!/trigger_definition\s*!~\*\s*'EXECUTE FUNCTION/i.test(reconcile), 'Trigger guard relies on textual function rendering')
 }
 
 function assertCanonicalSourceDoesNotInvokeObsoleteRpc() {
@@ -271,6 +301,7 @@ export function verifyMigrationHistory() {
   assertOrder(activeFiles)
   assertStatusContract()
   assertProvenanceAndCronSafety()
+  assertSemanticTriggerGuard()
   assertCanonicalSourceDoesNotInvokeObsoleteRpc()
 
   for (const filename of pendingFiles) {

@@ -52,36 +52,38 @@ console.log(`[repair:results] project_ref=${expectedProjectRef}`)
 console.log(`[repair:results] mode=${apply ? 'apply' : 'dry-run'}`)
 console.log(`plan_signature=${signature}`)
 console.log(`proposals=${proposals.length}`)
-if (!apply || !proposals.length) process.exit(0)
+if (apply && proposals.length) await applyProposals(proposals, signature)
 
-const auditInsert = await supabase
-  .from('production_repair_audits')
-  .insert({ repair_type: 'RESULT_SETTLEMENT', status: 'RUNNING', release_commit: getReleaseCommit(), plan_signature: signature, summary: { proposals: proposals.length } })
-  .select('id')
-  .single()
-if (auditInsert.error) throw auditInsert.error
-const auditId = auditInsert.data.id
-console.log(`audit_id=${auditId}`)
+async function applyProposals(rows, planSignature) {
+  const auditInsert = await supabase
+    .from('production_repair_audits')
+    .insert({ repair_type: 'RESULT_SETTLEMENT', status: 'RUNNING', release_commit: getReleaseCommit(), plan_signature: planSignature, summary: { proposals: rows.length } })
+    .select('id')
+    .single()
+  if (auditInsert.error) throw auditInsert.error
+  const auditId = auditInsert.data.id
+  console.log(`audit_id=${auditId}`)
 
-try {
-  for (const proposal of proposals) {
-    const { error: patchError } = await supabase.from('football_ai_pick_results').update({
-      home_score: proposal.homeScore,
-      away_score: proposal.awayScore,
-      settlement_status: proposal.outcome.settlement_status,
-      simulation_outcome: proposal.outcome.simulation_outcome,
-      settlement_reason: proposal.outcome.settlement_reason,
-      settled_at: new Date().toISOString(),
-      repair_audit_id: auditId,
-    }).eq('id', proposal.id).eq('settlement_status', 'PENDING')
-    if (patchError) throw patchError
+  try {
+    for (const proposal of rows) {
+      const { error: patchError } = await supabase.from('football_ai_pick_results').update({
+        home_score: proposal.homeScore,
+        away_score: proposal.awayScore,
+        settlement_status: proposal.outcome.settlement_status,
+        simulation_outcome: proposal.outcome.simulation_outcome,
+        settlement_reason: proposal.outcome.settlement_reason,
+        settled_at: new Date().toISOString(),
+        repair_audit_id: auditId,
+      }).eq('id', proposal.id).eq('settlement_status', 'PENDING')
+      if (patchError) throw patchError
+    }
+    const completed = await supabase.from('production_repair_audits').update({ status: 'SUCCESS', completed_at: new Date().toISOString(), summary: { applied: rows.length } }).eq('id', auditId)
+    if (completed.error) throw completed.error
+    console.log(`[repair:results] applied=${rows.length}`)
+  } catch (repairError) {
+    await supabase.from('production_repair_audits').update({ status: 'FAILED', completed_at: new Date().toISOString(), summary: { error: safeError(repairError) } }).eq('id', auditId)
+    throw repairError
   }
-  const completed = await supabase.from('production_repair_audits').update({ status: 'SUCCESS', completed_at: new Date().toISOString(), summary: { applied: proposals.length } }).eq('id', auditId)
-  if (completed.error) throw completed.error
-  console.log(`[repair:results] applied=${proposals.length}`)
-} catch (repairError) {
-  await supabase.from('production_repair_audits').update({ status: 'FAILED', completed_at: new Date().toISOString(), summary: { error: safeError(repairError) } }).eq('id', auditId)
-  throw repairError
 }
 
 function firstNumber(...values) {

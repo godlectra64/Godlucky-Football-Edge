@@ -52,6 +52,16 @@ function fixture(index, overrides = {}) {
   }
 }
 
+function dailySteps(overrides = {}) {
+  return [
+    { phase: 'core', step_order: 1, status: 'success', attempt_count: 1, max_attempts: 3 },
+    { phase: 'fixture-enrichment', step_order: 2, status: 'pending', attempt_count: 1, max_attempts: 3 },
+    { phase: 'team-enrichment', step_order: 3, status: 'pending', attempt_count: 0, max_attempts: 3 },
+    { phase: 'league-enrichment', step_order: 4, status: 'pending', attempt_count: 0, max_attempts: 3 },
+    { phase: 'ranking', step_order: 5, status: 'pending', attempt_count: 0, max_attempts: 3 },
+  ].map((step) => ({ ...step, ...(overrides[step.phase] ?? {}) }))
+}
+
 async function importPipelinePolicy() {
   return import('../supabase/functions/_shared/pipelinePolicy.js')
 }
@@ -214,6 +224,66 @@ check('exhausted required step makes the canonical run failed', async () => {
     { phase: 'ranking', status: 'pending', attempt_count: 0, max_attempts: 3 },
   ])
   assert.equal(status, 'failed')
+})
+
+check('partial run with a valid future retry is an accepted pending state', async () => {
+  const { auditPipelineCompletion } = await importPipelinePolicy()
+  const report = auditPipelineCompletion({ status: 'partial', progress_percent: 20 }, dailySteps({
+    'fixture-enrichment': { status: 'pending_retry', next_retry_at: '2026-07-14T02:00:00.000Z' },
+  }), { now: '2026-07-14T01:00:00.000Z' })
+  assert.deepEqual(report.violations, [])
+  assert.equal(report.validRetrySteps.length, 1)
+})
+
+check('partial run with an overdue retry fails completion', async () => {
+  const { auditPipelineCompletion } = await importPipelinePolicy()
+  const report = auditPipelineCompletion({ status: 'partial', progress_percent: 20 }, dailySteps({
+    'fixture-enrichment': { status: 'pending_retry', next_retry_at: '2026-07-14T00:30:00.000Z' },
+  }), { now: '2026-07-14T01:00:00.000Z' })
+  assert.ok(report.violations.includes('PARTIAL_WITHOUT_VALID_CONTINUATION'))
+  assert.ok(report.overdueDurationMs > 0)
+})
+
+check('partial run without retry metadata fails completion', async () => {
+  const { auditPipelineCompletion } = await importPipelinePolicy()
+  const report = auditPipelineCompletion({ status: 'partial', progress_percent: 20 }, dailySteps({
+    'fixture-enrichment': { status: 'partial', next_retry_at: null },
+  }), { now: '2026-07-14T01:00:00.000Z' })
+  assert.ok(report.violations.includes('PARTIAL_WITHOUT_VALID_CONTINUATION'))
+  assert.ok(report.violations.includes('REQUIRED_PENDING_WITHOUT_SCHEDULE'))
+})
+
+check('success run with pending required steps fails completion', async () => {
+  const { auditPipelineCompletion } = await importPipelinePolicy()
+  const report = auditPipelineCompletion({ status: 'success', progress_percent: 40 }, dailySteps(), { now: '2026-07-14T01:00:00.000Z' })
+  assert.ok(report.violations.includes('SUCCESS_WITH_INCOMPLETE_REQUIRED_STEPS'))
+  assert.ok(report.violations.includes('TERMINAL_PROGRESS_BELOW_100'))
+})
+
+check('success run with all required steps passes completion', async () => {
+  const { auditPipelineCompletion } = await importPipelinePolicy()
+  const steps = dailySteps(Object.fromEntries(['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking'].map((phase) => [phase, { status: 'success' }])))
+  const report = auditPipelineCompletion({ status: 'success', current_phase: 'complete', progress_percent: 100 }, steps, { now: '2026-07-14T01:00:00.000Z' })
+  assert.deepEqual(report.violations, [])
+})
+
+check('failed terminal run is an explicit completion failure', async () => {
+  const { auditPipelineCompletion } = await importPipelinePolicy()
+  const report = auditPipelineCompletion({ status: 'failed', progress_percent: 40 }, dailySteps(), { now: '2026-07-14T01:00:00.000Z' })
+  assert.ok(report.violations.includes('FAILED_TERMINAL_RUN'))
+})
+
+check('COMPLETE phase with incomplete steps fails completion', async () => {
+  const { auditPipelineCompletion } = await importPipelinePolicy()
+  const report = auditPipelineCompletion({ status: 'partial', current_phase: 'complete', progress_percent: 40 }, dailySteps(), { now: '2026-07-14T01:00:00.000Z' })
+  assert.ok(report.violations.includes('COMPLETE_WITH_INCOMPLETE_REQUIRED_STEPS'))
+  assert.ok(report.violations.includes('TERMINAL_PROGRESS_BELOW_100'))
+})
+
+check('result repair dry-run returns naturally without forcing process shutdown', async () => {
+  const source = await readFile(new URL('./repairResultSettlement.mjs', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /process\.exit\s*\(/)
+  assert.match(source, /if \(apply && proposals\.length\) await applyProposals/)
 })
 
 check('verification scripts do not contain database writes', async () => {

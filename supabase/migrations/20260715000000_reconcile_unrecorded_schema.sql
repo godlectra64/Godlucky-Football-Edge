@@ -588,8 +588,20 @@ create index if not exists football_ai_final_picks_analysis_status_idx on public
 do $$
 declare
   trigger_contract record;
+  expected_function_oid oid;
+  actual_function_oid oid;
+  actual_function_schema text;
+  actual_function_name text;
+  actual_function_arguments text;
+  actual_trigger_type smallint;
+  actual_enabled_state "char";
   trigger_definition text;
 begin
+  expected_function_oid := to_regprocedure('public.set_updated_at()');
+  if expected_function_oid is null then
+    raise exception 'Expected trigger function public.set_updated_at() is missing';
+  end if;
+
   for trigger_contract in
     select *
     from (values
@@ -608,30 +620,57 @@ begin
       ('football_ai_pick_results', 'football_ai_pick_results_set_updated_at')
     ) as contract(table_name, trigger_name)
   loop
-    if not exists (
-      select 1 from pg_trigger
-      where tgrelid = format('public.%I', trigger_contract.table_name)::regclass
-        and tgname = trigger_contract.trigger_name
-        and not tgisinternal
-    ) then
+    select
+      trg.tgfoid,
+      function_namespace.nspname,
+      function_proc.proname,
+      pg_get_function_identity_arguments(function_proc.oid),
+      trg.tgtype,
+      trg.tgenabled,
+      pg_get_triggerdef(trg.oid, true)
+      into
+        actual_function_oid,
+        actual_function_schema,
+        actual_function_name,
+        actual_function_arguments,
+        actual_trigger_type,
+        actual_enabled_state,
+        trigger_definition
+    from pg_trigger as trg
+    join pg_proc as function_proc on function_proc.oid = trg.tgfoid
+    join pg_namespace as function_namespace on function_namespace.oid = function_proc.pronamespace
+    where trg.tgrelid = format('public.%I', trigger_contract.table_name)::regclass
+      and trg.tgname = trigger_contract.trigger_name
+      and not trg.tgisinternal;
+
+    if not found then
       execute format(
         'create trigger %I before update on public.%I for each row execute function public.set_updated_at()',
         trigger_contract.trigger_name,
         trigger_contract.table_name
       );
     else
-      select pg_get_triggerdef(oid)
-        into trigger_definition
-      from pg_trigger
-      where tgrelid = format('public.%I', trigger_contract.table_name)::regclass
-        and tgname = trigger_contract.trigger_name
-        and not tgisinternal;
-
-      if trigger_definition !~* 'BEFORE UPDATE'
-        or trigger_definition !~* 'EXECUTE FUNCTION public\.set_updated_at\(\)'
+      if actual_function_oid <> expected_function_oid
+        or actual_function_schema <> 'public'
+        or actual_function_name <> 'set_updated_at'
+        or actual_function_arguments <> ''
+        or (actual_trigger_type & 2) = 0
+        or (actual_trigger_type & 16) = 0
+        or (actual_trigger_type & 1) = 0
+        or (actual_trigger_type & (4 | 8 | 32 | 64)) <> 0
       then
-        raise exception 'Trigger % on % has a non-canonical definition',
-          trigger_contract.trigger_name, trigger_contract.table_name;
+        raise exception
+          'Trigger % on public.% has a non-canonical semantic definition: expected function_oid=% public.set_updated_at(), BEFORE UPDATE FOR EACH ROW; actual function_oid=% %.%(%), tgtype=%, enabled=%, definition=%',
+          trigger_contract.trigger_name,
+          trigger_contract.table_name,
+          expected_function_oid,
+          actual_function_oid,
+          actual_function_schema,
+          actual_function_name,
+          actual_function_arguments,
+          actual_trigger_type,
+          actual_enabled_state,
+          trigger_definition;
       end if;
     end if;
   end loop;

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  assessTriggerContract,
   duplicateVersions,
   expectedRemoteFiles,
   forbiddenBackdatedFiles,
@@ -60,4 +61,29 @@ assert(!/perform\s+public\.repair_stale_market_first_top10/i.test(normalizeSql(a
 assert(target.includes("'sync-football-data-hourly'"))
 assert(!target.includes("'daily-football-sync'"))
 
-console.log('migration safety tests: 13 checks passed')
+const expectedFunctionOid = 'expected-function-oid'
+const canonicalTrigger = {
+  functionOid: expectedFunctionOid,
+  functionSchema: 'public',
+  functionName: 'set_updated_at',
+  functionArguments: '',
+  isBefore: true,
+  includesUpdate: true,
+  includesOtherEvents: false,
+  isRowLevel: true,
+}
+assert.equal(assessTriggerContract({ ...canonicalTrigger, triggerDefinition: 'EXECUTE FUNCTION set_updated_at()' }, expectedFunctionOid).action, 'KEEP')
+assert.equal(assessTriggerContract({ ...canonicalTrigger, triggerDefinition: 'EXECUTE FUNCTION public.set_updated_at()' }, expectedFunctionOid).action, 'KEEP')
+assert.equal(assessTriggerContract({ ...canonicalTrigger, functionSchema: 'shadow' }, expectedFunctionOid).action, 'REJECT')
+assert.equal(assessTriggerContract({ ...canonicalTrigger, isBefore: false }, expectedFunctionOid).action, 'REJECT')
+assert.equal(assessTriggerContract({ ...canonicalTrigger, isRowLevel: false }, expectedFunctionOid).action, 'REJECT')
+assert.equal(assessTriggerContract({ ...canonicalTrigger, includesUpdate: false }, expectedFunctionOid).action, 'REJECT')
+assert.equal(assessTriggerContract({ ...canonicalTrigger, functionArguments: 'integer' }, expectedFunctionOid).action, 'REJECT')
+assert.deepEqual(assessTriggerContract(null, expectedFunctionOid), { valid: true, action: 'CREATE', reasons: [] })
+
+const reconciliation = migration('20260715000000_reconcile_unrecorded_schema.sql')
+assert.match(reconciliation, /if not found then[\s\S]*create trigger/i)
+assert.match(reconciliation, /actual_function_oid\s*<>\s*expected_function_oid/i)
+assert.doesNotMatch(reconciliation, /trigger_definition\s*!~\*/i)
+
+console.log('migration safety tests: 24 checks passed')

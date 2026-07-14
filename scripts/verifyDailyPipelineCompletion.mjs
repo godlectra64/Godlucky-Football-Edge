@@ -1,7 +1,7 @@
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import { getBangkokDayRange } from '../src/utils/bangkokDateRange.js'
-import { auditPipelineState, requiredDailyPhases } from '../supabase/functions/_shared/pipelinePolicy.js'
+import { auditPipelineCompletion, requiredDailyPhases } from '../supabase/functions/_shared/pipelinePolicy.js'
 
 dotenv.config({ path: '.env.local', quiet: true })
 dotenv.config({ quiet: true })
@@ -34,7 +34,7 @@ if (run) {
     .eq('run_id', run.id)
     .order('step_order', { ascending: true })
   if (stepError) throw stepError
-  const audit = auditPipelineState(run, steps ?? [])
+  const audit = auditPipelineCompletion(run, steps ?? [])
   report('partial overdue', run.status === 'partial' && audit.overdueRetry.length ? audit.overdueRetry.length : 0)
   report('stale running', audit.staleRunning.length)
   report('pending_retry missing next_retry_at', audit.pendingRetryMissingNext.length)
@@ -46,11 +46,18 @@ if (run) {
   report('invalid progress', audit.invalidProgress ? 1 : 0)
   report('attempt greater than max', audit.attemptsExceeded.length)
   report('required phase missing', requiredDailyPhases.filter((phase) => !(steps ?? []).some((step) => step.phase === phase)).length)
+  report('completion invariant violation', audit.violations.length)
   const counts = Object.fromEntries(['success', 'pending', 'running', 'partial', 'pending_retry', 'failed'].map((status) => [status, (steps ?? []).filter((step) => step.status === status).length]))
   console.log(`run_id=${run.id}`)
   console.log(`status=${run.status} phase=${run.current_phase ?? 'none'}`)
   console.log(`steps=${JSON.stringify(counts)}`)
   console.log(`progress=${audit.progress}`)
+  console.log(`required_pending_steps=${JSON.stringify(audit.requiredPendingSteps.map((step) => ({ phase: step.phase, status: step.status, attempt: Number(step.attempt_count ?? 0), maxAttempts: Number(step.max_attempts ?? 3) })))}`)
+  console.log(`retry_step=${audit.retrySteps[0]?.phase ?? 'none'}`)
+  console.log(`next_retry_at=${audit.nextRetryAt ?? 'missing'}`)
+  console.log(`overdue_duration_ms=${audit.overdueDurationMs}`)
+  console.log(`cursor=${JSON.stringify(audit.cursor ?? {})}`)
+  console.log(`invariant_violations=${JSON.stringify(audit.violations)}`)
 }
 
 if (failed) process.exit(1)
