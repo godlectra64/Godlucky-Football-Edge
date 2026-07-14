@@ -37,6 +37,40 @@ export const unknownDataFiles = Object.freeze([
   '20260705_update_ai_final_pick_no_market_copy.sql',
 ])
 
+export const canonicalDecisionStatuses = Object.freeze(['READY', 'WATCH', 'WAIT', 'REJECTED'])
+export const temporaryLegacyDecisionStatuses = Object.freeze([
+  'WAITING_MARKET',
+  'READY_PRIMARY',
+  'READY_ALTERNATIVE',
+  'INSUFFICIENT_DATA',
+  'FINAL_LOCKED',
+  'FINISHED',
+])
+export const replacementDecisionStatuses = Object.freeze([
+  ...canonicalDecisionStatuses,
+  ...temporaryLegacyDecisionStatuses,
+])
+export const productionLegacyDecisionStatuses = Object.freeze([
+  'READY',
+  'READY_PRIMARY',
+  'READY_ALTERNATIVE',
+  'WAITING_MARKET',
+  'WAITING_DATA',
+  'INSUFFICIENT_DATA',
+  'REJECTED',
+  'NO_DECISION',
+  'FINAL_LOCKED',
+  'LOCKED',
+  'FINISHED',
+  'SETTLED',
+])
+
+const recognizedLegacyDecisionStatusSets = Object.freeze([
+  productionLegacyDecisionStatuses,
+  ['READY_PRIMARY', 'READY_ALTERNATIVE', 'WAITING_MARKET', 'INSUFFICIENT_DATA', 'REJECTED', 'FINAL_LOCKED', 'FINISHED'],
+  ['READY', 'WATCH', 'WAITING_MARKET', 'REJECTED', 'FINAL_LOCKED', 'FINISHED'],
+])
+
 const expectedArchivedFiles = Object.freeze([
   '20260630_add_api_football_enrichment_tables.sql',
   '20260702_allow_api_football_enrichment_step_statuses.sql',
@@ -99,6 +133,38 @@ export function assessTriggerContract(actual, expectedFunctionOid) {
   if (actual.includesUpdate !== true || actual.includesOtherEvents === true) reasons.push('TRIGGER_EVENT_MISMATCH')
   if (actual.isRowLevel !== true) reasons.push('TRIGGER_LEVEL_MISMATCH')
   return { valid: reasons.length === 0, action: reasons.length ? 'REJECT' : 'KEEP', reasons }
+}
+
+function sameStringSet(left = [], right = []) {
+  const leftSet = new Set(left)
+  const rightSet = new Set(right)
+  return leftSet.size === rightSet.size && [...leftSet].every((value) => rightSet.has(value))
+}
+
+export function assessDecisionStatusConstraint(actual) {
+  if (!actual) return { valid: false, action: 'REJECT', reasons: ['CONSTRAINT_MISSING'] }
+  const reasons = []
+  if (actual.tableSchema !== 'public' || actual.tableName !== 'daily_top10_selections') reasons.push('CONSTRAINT_TABLE_MISMATCH')
+  if (actual.constraintName !== 'daily_top10_selections_status_valid') reasons.push('CONSTRAINT_NAME_MISMATCH')
+  if (actual.constraintType !== 'c') reasons.push('CONSTRAINT_TYPE_MISMATCH')
+  if (!sameStringSet(actual.columns, ['selection_status'])) reasons.push('CONSTRAINT_COLUMN_MISMATCH')
+  if (actual.columnNullable !== true) reasons.push('COLUMN_NULLABILITY_MISMATCH')
+  if (actual.nullAllowed !== true) reasons.push('NULL_NOT_ALLOWED')
+  if (actual.expectedExpressionShape !== true) reasons.push('CONSTRAINT_EXPRESSION_MISMATCH')
+  if (actual.validated !== true) reasons.push('CONSTRAINT_NOT_VALIDATED')
+  if (actual.noInherit === true) reasons.push('CONSTRAINT_NOINHERIT_MISMATCH')
+
+  const unknownStored = [...new Set((actual.storedValues ?? []).filter((value) => value !== null && !replacementDecisionStatuses.includes(value)))]
+  if (unknownStored.length) reasons.push(`UNKNOWN_STORED_STATUS:${unknownStored.sort().join(',')}`)
+  if (reasons.length) return { valid: false, action: 'REJECT', reasons }
+
+  if (sameStringSet(actual.allowedValues, replacementDecisionStatuses)) {
+    return { valid: true, action: 'NOOP', reasons: [] }
+  }
+  if (recognizedLegacyDecisionStatusSets.some((statuses) => sameStringSet(actual.allowedValues, statuses))) {
+    return { valid: true, action: 'REPLACE', reasons: [] }
+  }
+  return { valid: false, action: 'REJECT', reasons: ['UNRECOGNIZED_ALLOWED_VALUE_SET'] }
 }
 
 function sqlFiles(directory) {
@@ -265,10 +331,16 @@ function assertOrder(activeFiles) {
 function assertStatusContract() {
   const bridge = read('supabase/migrations/20260715010000_reconcile_post_market_schema.sql')
   const target = read('supabase/migrations/20260715020000_market_ready_core_recovery.sql')
-  for (const status of ['READY', 'WATCH', 'WAIT', 'WAITING_MARKET', 'REJECTED']) {
+  for (const status of replacementDecisionStatuses) {
     assert(new RegExp(`'${status}'`).test(bridge), `Post-market bridge does not accept ${status}`)
   }
   assert(/unknown_statuses[\s\S]*raise exception/i.test(bridge), 'Post-market bridge does not abort on unknown statuses')
+  assert(!/existing_definition\s*!~\*?\s*'WATCH'/i.test(bridge), 'Post-market bridge requires the legacy constraint to contain WATCH')
+  assert(!/drop\s+constraint\s+if\s+exists\s+daily_top10_selections_status_valid/i.test(bridge), 'Post-market bridge uses a broad status-constraint drop')
+  assert(/drop\s+constraint\s+daily_top10_selections_status_valid/i.test(bridge), 'Post-market bridge does not drop the proven exact constraint')
+  assert(/replacement_is_current[\s\S]*return;/i.test(bridge), 'Post-market bridge is not idempotent for the canonical replacement')
+  assert(/comment\s+on\s+constraint[\s\S]*Deprecated rollout compatibility only:/i.test(bridge), 'Post-market bridge does not document deprecated compatibility statuses')
+  assert(!/(?:^|;)\s*update\s+public\.daily_top10_selections\b/i.test(normalizeSql(bridge)), 'Post-market bridge updates selection status data')
   assert(/selection_status\s+is\s+null[\s\S]*'READY'[\s\S]*'WATCH'[\s\S]*'WAIT'[\s\S]*'REJECTED'/i.test(target), 'Target final-pick constraint is not canonical')
 }
 
