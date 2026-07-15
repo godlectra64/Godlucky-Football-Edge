@@ -27,6 +27,22 @@ import {
   requiredDailyPhases,
   shouldProcessBatch,
 } from '../_shared/pipelinePolicy.js'
+import {
+  MAX_DAILY_SYNC_STEPS_PER_REQUEST,
+  MIN_PHASE_START_REMAINING_MS,
+  UpstreamResponseError,
+  buildDeadlinePendingSummary,
+  buildFinishLogFailureLog,
+  buildPhaseLog,
+  buildSyncFailureLog,
+  createExecutionBudget,
+  finishLogBestEffort,
+  getRemainingExecutionMs,
+  parseUpstreamJsonResponse,
+  sanitizeDiagnosticValue as sanitizeReliabilityDiagnosticValue,
+  sanitizeText as sanitizeReliabilityText,
+  shouldDeferExecution,
+} from '../_shared/syncReliability.js'
 import { systemVersions } from '../_shared/versions.js'
 
 const corsHeaders = {
@@ -90,7 +106,7 @@ const secretKeys = parseSupabaseSecretKeys([
   Deno.env.get('SUPABASE_SECRET_KEYS'),
 ])
 
-const supabase = createClient(supabaseUrl, serviceRoleKey)
+const supabase = createClient(supabaseUrl, serviceRoleKey, { global: { fetch: guardedSupabaseFetch } })
 const legacyAnalysisSelect = 'id, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, motivation_score, market_risk_score, confidence_score, recommendation, risk_level, analysis_summary, thai_reason, raw'
 const pickAnalysisSelect = `${legacyAnalysisSelect}, pick_side, pick_team, pick_reason`
 const finalPickAnalysisSelect = `${pickAnalysisSelect}, market_type, market_line, fair_line, model_probability, value_status, value_reason`
@@ -184,7 +200,7 @@ Deno.serve(async (request) => {
     const offset = getSyncOffset(body.offset)
 
     if (isFootballEnrichmentMode(mode)) {
-      const modeResult = await runFootballEnrichmentMode(mode, body, dayRange, limit)
+      const modeResult = await runFootballEnrichmentMode(mode, body, dayRange, limit, startedMs)
       return json({
         ok: true,
         requestedMode,
@@ -240,6 +256,7 @@ Deno.serve(async (request) => {
         processedFixtureIds: modeResult.processedFixtureIds,
         skippedFixtureIds: modeResult.skippedFixtureIds,
         failures: modeResult.failures ?? [],
+        continuation: modeResult.continuation ?? null,
         nextOffset: modeResult.nextOffset,
         hasMore: modeResult.hasMore,
         locked: modeResult.locked,
@@ -439,7 +456,12 @@ Deno.serve(async (request) => {
     })
   } catch (error) {
     const errorResponse = buildSyncErrorResponse(error, responseMode, responseProviderName)
-    await finishLog(logId, 'failed', errorResponse.errorMessage, { provider: errorResponse.provider, fallbackUsed: false, fallbackProvider: null, error: errorResponse.errorDetails })
+    const durationMs = Date.now() - startedMs
+    console.error('sync-football-data-failed', buildSyncFailureLog({ mode: responseMode, errorResponse, error, durationMs }, { secrets: getSensitiveValues() }))
+    await finishLogBestEffort(
+      () => finishLog(logId, 'failed', errorResponse.errorMessage, { provider: errorResponse.provider, fallbackUsed: false, fallbackProvider: null, error: errorResponse.errorDetails }),
+      (finishError) => console.error('sync-football-data-finish-log-failed', buildFinishLogFailureLog({ mode: responseMode, error: finishError, durationMs: Date.now() - startedMs }, { secrets: getSensitiveValues() })),
+    )
     return json(errorResponse, 500)
   }
 })
@@ -460,7 +482,11 @@ async function fetchProviderFixtures(provider: ProviderAdapter, range: ReturnTyp
   } catch (error) {
     if (provider.name === 'football-data.org') throw error
 
-    console.warn(`${provider.name} failed; falling back to football-data.org`, error)
+    console.warn('football-provider-fallback', {
+      provider: provider.name,
+      errorMessage: sanitizeText(error instanceof Error ? error.message : error),
+      stack: sanitizeText(error instanceof Error ? error.stack : null) || null,
+    })
     const fallbackProvider = getProviderAdapter('football-data.org')
     const competitions = fallbackProvider.syncCompetitions ? await fallbackProvider.syncCompetitions() : 0
     const matches = await fallbackProvider.fetchFixtures(range)
@@ -561,6 +587,8 @@ type FootballEnrichmentContext = {
   limit: number
   dateKey: string
   rateLimited: boolean
+  deadlineReached: boolean
+  executionBudget: ReturnType<typeof createExecutionBudget>
   endpoints: Record<string, FootballEnrichmentEndpointCounter>
   skippedEndpoints: Array<{ endpoint: string; reason: string; apiFixtureId?: number; apiLeagueId?: number; apiTeamId?: number; season?: number }>
   runId?: string
@@ -599,10 +627,10 @@ type DailyFullSyncStepSummary = {
   continuationState?: Record<string, any>
 }
 
-async function runFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number) {
+async function runFootballEnrichmentMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, limit: number, requestStartedMs = Date.now()) {
   const provider = getProviderAdapter('api-football')
   const providerResult = { provider, fallbackUsed: false, fallbackProvider: null, fallbackError: null, competitions: 0, matches: [] }
-  const context = createFootballEnrichmentContext(mode, limit, dayRange.dateKey)
+  const context = createFootballEnrichmentContext(mode, limit, dayRange.dateKey, requestStartedMs, body.executionBudgetMs)
   const started = Date.now()
 
   if (isDailySyncOrchestratorMode(mode)) {
@@ -636,6 +664,7 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
       rateLimited: summary.rateLimited,
       durationMs: Date.now() - started,
       steps: [summary],
+      continuation: summary.continuationState ?? null,
     }
   }
 
@@ -643,7 +672,7 @@ async function runFootballEnrichmentMode(mode: string, body: Record<string, unkn
   let totalCandidates = 0
   if (mode === 'enrich-all') {
     for (const childMode of ['coverage', 'rounds', 'squads', 'coaches', 'venues', 'injuries', 'top-players', 'fixture-enrich']) {
-      if (context.rateLimited) break
+      if (context.rateLimited || shouldStopForExecutionBudget(context)) break
       const child = await executeFootballEnrichmentMode(childMode, body, dayRange, context)
       processed += child.processed
       totalCandidates += child.totalCandidates
@@ -958,9 +987,15 @@ async function runDailySyncStepBatch(state: any, body: Record<string, unknown>, 
   let currentState = state
   let lastResult: any = null
   const summaries: Array<DailyFullSyncStepSummary> = []
-  const safeMaxSteps = Math.min(Math.max(1, Math.floor(maxSteps || 1)), 2)
+  const safeMaxSteps = Math.min(Math.max(1, Math.floor(maxSteps || 1)), MAX_DAILY_SYNC_STEPS_PER_REQUEST)
 
   for (let index = 0; index < safeMaxSteps; index += 1) {
+    const nextStep = findNextDailySyncStep(currentState.steps)
+    if (nextStep && shouldStopForExecutionBudget(context, MIN_PHASE_START_REMAINING_MS)) {
+      lastResult = await deferDailySyncStepForDeadline(currentState.run, nextStep, context)
+      summaries.push(lastResult.summary)
+      break
+    }
     lastResult = await runNextDailySyncStep(currentState, body, dayRange, context)
     if (lastResult?.summary) summaries.push(lastResult.summary)
     if (lastResult?.summary?.status === 'pending_retry') break
@@ -980,6 +1015,61 @@ async function runDailySyncStepBatch(state: any, body: Record<string, unknown>, 
   }
 
   return { ...lastResult, summaries }
+}
+
+async function deferDailySyncStepForDeadline(run: any, step: any, context: FootballEnrichmentContext) {
+  const now = new Date()
+  const nextRetryAt = new Date(now.getTime() + 15_000).toISOString()
+  const continuationState = getStepContinuation(step)
+  const summary = buildDeadlinePendingSummary({
+    stepOrder: step.step_order,
+    phase: step.phase,
+    durationMs: context.executionBudget.budgetMs - getRemainingExecutionMs(context.executionBudget),
+    continuation: continuationState,
+  }) as DailyFullSyncStepSummary
+  summary.details = {
+    ...(summary.details ?? {}),
+    remainingMs: getRemainingExecutionMs(context.executionBudget),
+  }
+
+  const stepUpdate = await supabase
+    .from('api_football_daily_sync_steps')
+    .update({
+      status: 'pending_retry',
+      finished_at: now.toISOString(),
+      next_retry_at: nextRetryAt,
+      error_message: summary.message,
+      summary,
+      continuation_state: continuationState,
+      provider_page: continuationState.providerPage,
+      fixture_offset: continuationState.fixtureOffset,
+      odds_offset: continuationState.oddsOffset,
+      processed_fixture_count: continuationState.processedFixtureCount,
+      last_processed_fixture_id: continuationState.lastProcessedFixtureId,
+      batch_signature: continuationState.batchSignature,
+      ...systemVersions,
+    })
+    .eq('id', step.id)
+  if (stepUpdate.error) throw new DailySyncPhaseError(step.phase, stepUpdate.error)
+
+  const freshState = await getDailySyncState(run.id)
+  const runUpdate = await supabase
+    .from('api_football_daily_sync_runs')
+    .update({
+      status: getDailyRunStatus(freshState.steps),
+      current_phase: step.phase,
+      current_step: step.step_order,
+      finished_at: null,
+      last_error: summary.message,
+      summary: buildDailyRunSummaryCachedWithTiming(freshState.steps, freshState.run.summary ?? run.summary, summary, run.id),
+    })
+    .eq('id', run.id)
+    .select('*')
+    .single()
+  if (runUpdate.error) throw new DailySyncPhaseError(step.phase, runUpdate.error)
+
+  const updatedStep = freshState.steps.find((item: any) => item.id === step.id) ?? { ...step, status: 'pending_retry', next_retry_at: nextRetryAt, summary }
+  return { run: runUpdate.data, step: updatedStep, nextStep: null, summary, steps: freshState.steps }
 }
 
 async function runRequestedDailySyncPhase(state: any, phase: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
@@ -1020,7 +1110,8 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
     const before = cloneEndpointCounters(context.endpoints)
     summary = await executeDailySyncPhase(step.step_order, step.phase, body, dayRange, context, before)
   } catch (error) {
-    const message = error instanceof Error ? error.message : `${step.phase} failed`
+    const phaseError = error instanceof ResultPipelineError ? error : new DailySyncPhaseError(step.phase, error)
+    const message = phaseError.message || `${step.phase} failed`
     summary = {
       step: step.step_order,
       mode: step.phase,
@@ -1033,6 +1124,13 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
       rateLimited: context.rateLimited,
       durationMs: Date.now() - startedAt,
       message,
+      details: {
+        errorCode: phaseError.errorCode,
+        errorStage: phaseError.errorStage,
+        provider: phaseError.provider,
+        errorDetails: phaseError.errorDetails,
+      },
+      continuationState: createContinuationState(context.continuationState),
     }
   }
 
@@ -1093,64 +1191,92 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
 }
 
 async function executeDailySyncPhase(stepOrder: number, phase: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, before: Record<string, FootballEnrichmentEndpointCounter>) {
-  await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'started', started_at: new Date().toISOString(), finished_at: new Date().toISOString() })
   const startedAt = Date.now()
-  const results: Array<any> = []
+  const phaseLogBase = { runId: context.runId ?? null, dateKey: dayRange.dateKey, stepOrder, phase }
+  console.info('daily-sync-phase-start', buildPhaseLog({ ...phaseLogBase, durationMs: 0, continuation: context.continuationState }, { secrets: getSensitiveValues() }))
 
-  if (phase === 'core') {
-    results.push(await syncApiFootballDailyFixtures(dayRange, context.limit, context))
-    if (!context.continuationState?.coreAuxiliaryComplete) {
-      const auxiliary = [
-        await executeFootballEnrichmentMode('coverage', body, dayRange, context),
-        await executeFootballEnrichmentMode('rounds', body, dayRange, context),
-      ]
-      results.push(...auxiliary)
-      if (sumResultField(auxiliary, 'failed') === 0) await persistStepContinuation(context, { coreAuxiliaryComplete: true })
+  try {
+    await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'started', started_at: new Date().toISOString(), finished_at: new Date().toISOString() })
+    const results: Array<any> = []
+    const runBatch = async (worker: () => Promise<any>) => {
+      if (shouldStopForExecutionBudget(context)) return false
+      results.push(await worker())
+      return true
     }
-  } else if (phase === 'fixture-enrichment') {
-    results.push(await executeFootballEnrichmentMode('fixture-enrich', body, dayRange, context))
-    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('sync-odds', body, dayRange, context))
-  } else if (phase === 'team-enrichment') {
-    results.push(await executeFootballEnrichmentMode('injuries', body, dayRange, context))
-    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('squads', body, dayRange, context))
-    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('coaches', body, dayRange, context))
-    if (!context.rateLimited) results.push(await executeFootballEnrichmentMode('venues', body, dayRange, context))
-  } else if (phase === 'league-enrichment') {
-    results.push(await executeFootballEnrichmentMode('top-players', body, dayRange, context))
-  } else if (phase === 'ranking') {
-    results.push(await runDailyRankingStep(dayRange, context))
-  } else {
-    throw new Error(`Unsupported daily sync phase: ${phase}`)
-  }
 
-  const endpointDelta = diffEndpointCounters(before, context.endpoints)
-  const endpointBreakdown = diffEndpointCounterMap(before, context.endpoints)
-  const processed = sumResultField(results, 'processed')
-  const totalCandidates = sumResultField(results, 'totalCandidates')
-  const rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
-  const failed = sumResultField(results, 'failed') + endpointDelta.failed
-  const skipped = sumResultField(results, 'skipped') + endpointDelta.skipped
-  const partial = results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
-  const status = failed > 0 || partial ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
-  await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: status === 'partial_success' ? 'success' : status, results_count: rowsSaved, finished_at: new Date().toISOString() })
-  await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'finished', results_count: rowsSaved, finished_at: new Date().toISOString() })
+    if (phase === 'core') {
+      await runBatch(() => syncApiFootballDailyFixtures(dayRange, context.limit, context))
+      if (!context.continuationState?.coreAuxiliaryComplete && !context.deadlineReached) {
+        const auxiliary: Array<any> = []
+        if (await runBatch(async () => {
+          const result = await executeFootballEnrichmentMode('coverage', body, dayRange, context)
+          auxiliary.push(result)
+          return result
+        }) && !context.deadlineReached) {
+          await runBatch(async () => {
+            const result = await executeFootballEnrichmentMode('rounds', body, dayRange, context)
+            auxiliary.push(result)
+            return result
+          })
+        }
+        if (!context.deadlineReached && auxiliary.length === 2 && sumResultField(auxiliary, 'failed') === 0) {
+          await persistStepContinuation(context, { coreAuxiliaryComplete: true })
+        }
+      }
+    } else if (phase === 'fixture-enrichment') {
+      await runBatch(() => executeFootballEnrichmentMode('fixture-enrich', body, dayRange, context))
+      if (!context.rateLimited && !context.deadlineReached) await runBatch(() => executeFootballEnrichmentMode('sync-odds', body, dayRange, context))
+    } else if (phase === 'team-enrichment') {
+      await runBatch(() => executeFootballEnrichmentMode('injuries', body, dayRange, context))
+      if (!context.rateLimited && !context.deadlineReached) await runBatch(() => executeFootballEnrichmentMode('squads', body, dayRange, context))
+      if (!context.rateLimited && !context.deadlineReached) await runBatch(() => executeFootballEnrichmentMode('coaches', body, dayRange, context))
+      if (!context.rateLimited && !context.deadlineReached) await runBatch(() => executeFootballEnrichmentMode('venues', body, dayRange, context))
+    } else if (phase === 'league-enrichment') {
+      await runBatch(() => executeFootballEnrichmentMode('top-players', body, dayRange, context))
+    } else if (phase === 'ranking') {
+      await runBatch(() => runDailyRankingStep(dayRange, context))
+    } else {
+      throw new Error(`Unsupported daily sync phase: ${phase}`)
+    }
 
-  return {
-    step: stepOrder,
-    mode: phase,
-    status,
-    processed,
-    totalCandidates,
-    rowsSaved,
-    failed,
-    skipped,
-    rateLimited: context.rateLimited,
-    durationMs: Date.now() - startedAt,
-    partial,
-    endpointBreakdown,
-    details: buildDailyPhaseDetails(phase, results),
-    rankingReadiness: phase === 'ranking' ? results[0]?.rankingReadiness : undefined,
-    continuationState: createContinuationState(context.continuationState),
+    const endpointDelta = diffEndpointCounters(before, context.endpoints)
+    const endpointBreakdown = diffEndpointCounterMap(before, context.endpoints)
+    const processed = sumResultField(results, 'processed')
+    const totalCandidates = sumResultField(results, 'totalCandidates')
+    const rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
+    const failed = sumResultField(results, 'failed') + endpointDelta.failed
+    const skipped = sumResultField(results, 'skipped') + endpointDelta.skipped
+    const partial = context.deadlineReached || results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
+    const status = failed > 0 || partial ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
+    await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: status === 'partial_success' ? 'success' : status, results_count: rowsSaved, finished_at: new Date().toISOString() })
+    await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'finished', results_count: rowsSaved, finished_at: new Date().toISOString() })
+
+    const summary = {
+      step: stepOrder,
+      mode: phase,
+      status,
+      processed,
+      totalCandidates,
+      rowsSaved,
+      failed,
+      skipped,
+      rateLimited: context.rateLimited,
+      durationMs: Date.now() - startedAt,
+      partial,
+      endpointBreakdown,
+      details: {
+        ...buildDailyPhaseDetails(phase, results),
+        ...(context.deadlineReached ? { reason: 'SOFT_DEADLINE_REACHED', remainingMs: getRemainingExecutionMs(context.executionBudget) } : {}),
+      },
+      rankingReadiness: phase === 'ranking' ? results[0]?.rankingReadiness : undefined,
+      continuationState: createContinuationState(context.continuationState),
+    } as DailyFullSyncStepSummary
+    console.info('daily-sync-phase-complete', buildPhaseLog({ ...phaseLogBase, durationMs: summary.durationMs, continuation: summary.continuationState }, { secrets: getSensitiveValues() }))
+    return summary
+  } catch (error) {
+    const phaseError = error instanceof DailySyncPhaseError ? error : new DailySyncPhaseError(phase, error)
+    console.error('daily-sync-phase-failed', buildPhaseLog({ ...phaseLogBase, durationMs: Date.now() - startedAt, continuation: context.continuationState, error: phaseError }, { secrets: getSensitiveValues() }))
+    throw phaseError
   }
 }
 
@@ -1213,6 +1339,8 @@ function buildDailySyncSafeResponse(payload: any) {
     runId: payload.runId,
     phase: payload.phase,
     status: payload.status,
+    partial: Boolean(payload.partial),
+    continuation: payload.continuation ?? null,
     totalCandidates: payload.totalCandidates ?? 0,
     totalFetched: payload.totalCandidates ?? 0,
     processed: payload.processed ?? 0,
@@ -1296,7 +1424,7 @@ async function buildFinalDailySummaryWithDb(steps: Array<any>, dayRange: ReturnT
     ...(storedSummary && typeof storedSummary === 'object' ? storedSummary : {}),
   }
   const dbSummary = await getDailySyncReadinessDebugSummary(dayRange).catch((error) => {
-    console.warn('daily sync DB readiness summary failed', { message: error instanceof Error ? error.message : 'summary failed' })
+    console.warn('daily sync DB readiness summary failed', { message: sanitizeText(error instanceof Error ? error.message : 'summary failed') })
     return null
   })
   return mergeDailySyncDbSummary(base, dbSummary)
@@ -1498,6 +1626,7 @@ async function runDailyFullSyncMode(mode: string, body: Record<string, unknown>,
   ]
 
   for (const item of dailySteps) {
+    if (shouldStopForExecutionBudget(context)) break
     if (context.rateLimited && item.mode !== 'market-ready-ranking') {
       const skipped = await logDailyStepSkipped(context, item.step, item.mode)
       steps.push(skipped)
@@ -1564,17 +1693,18 @@ async function logDailyStepSkipped(context: FootballEnrichmentContext, step: num
 
 async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangkokDayRange>, batchSize: number, context: FootballEnrichmentContext) {
   const providerPage = Number(context.continuationState?.providerPage ?? 1)
-  const discovery = await fetchApiFootballFixturesWithPaging(dayRange.dateKey, providerPage)
+  const discovery = await fetchApiFootballFixturesWithPaging(dayRange.dateKey, providerPage, context)
   const matches = [...discovery.matches].sort(compareFixtureSyncPriority)
   const offset = Number(context.continuationState?.fixtureOffset ?? 0)
   const batch = matches.slice(offset, offset + Math.max(1, batchSize))
   const batchSignature = buildBatchSignature(batch.map((match: any) => match?.raw_fixture_id ?? match?.id))
   if (!shouldProcessBatch(context.continuationState, batchSignature)) {
     const nextOffset = offset + batch.length
-    const providerComplete = nextOffset >= matches.length
+    const pageComplete = nextOffset >= matches.length
+    const providerComplete = pageComplete && providerPage >= discovery.totalPages
     await persistStepContinuation(context, {
-      providerPage: providerComplete ? discovery.totalPages + 1 : providerPage,
-      fixtureOffset: providerComplete ? 0 : nextOffset,
+      providerPage: pageComplete ? providerPage + 1 : providerPage,
+      fixtureOffset: pageComplete ? 0 : nextOffset,
     })
     return { processed: 0, totalCandidates: matches.length, rowsSaved: 0, failed: 0, skipped: batch.length, partial: !providerComplete, nextOffset, hasMore: !providerComplete, batchSignature, duplicateBatchSkipped: true }
   }
@@ -1583,7 +1713,7 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
   let processed = 0
   const failures: Array<{ matchId?: number; message: string }> = []
   for (const footballDataMatch of batch) {
-    if (Date.now() - startedAt > 18_000) break
+    if (Date.now() - startedAt > 18_000 || shouldStopForExecutionBudget(context)) break
     try {
       await syncMatch(footballDataMatch, { enrichFixtureData: false })
       processed += 1
@@ -1605,10 +1735,11 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
   }
   const nextOffset = offset + processed
   const batchComplete = processed === batch.length && failures.length === 0
-  const providerComplete = nextOffset >= matches.length && batchComplete
+  const pageComplete = nextOffset >= matches.length && batchComplete
+  const providerComplete = pageComplete && providerPage >= discovery.totalPages
   await persistStepContinuation(context, {
-    providerPage: providerComplete ? discovery.totalPages + 1 : providerPage,
-    fixtureOffset: providerComplete ? 0 : nextOffset,
+    providerPage: pageComplete ? providerPage + 1 : providerPage,
+    fixtureOffset: pageComplete ? 0 : nextOffset,
     lastProcessedFixtureId: processed > 0 ? nullableNumber(batch[processed - 1]?.raw_fixture_id) : context.continuationState?.lastProcessedFixtureId,
     batchSignature,
     batchComplete,
@@ -1629,9 +1760,14 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
 
 async function runDailyRankingStep(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
   const readinessBeforeRanking = await getRankingReadinessSummary(dayRange)
-  const rankedSelectionRows = await updateDailySelectionRanks(dayRange)
+  if (shouldStopForExecutionBudget(context)) {
+    return { processed: 0, totalCandidates: Number(readinessBeforeRanking.totalFixtures ?? 0), rowsSaved: 0, failed: 0, partial: true, rankingReadiness: readinessBeforeRanking, aiFinalPickRows: 0 }
+  }
+  const rankedSelectionRows = await updateDailySelectionRanks(dayRange, context)
   const rankingReadiness = await getRankingReadinessSummary(dayRange)
-  const finalPickRows = await recomputeAiFinalPicks(dayRange, { ...context, mode: 'recompute-ai-final-picks' })
+  const finalPickRows = shouldStopForExecutionBudget(context)
+    ? { rowsSaved: 0, failed: 0 }
+    : await recomputeAiFinalPicks(dayRange, { ...context, mode: 'recompute-ai-final-picks' })
   const totalFixtures = Number(rankingReadiness.totalFixtures ?? readinessBeforeRanking.totalFixtures ?? rankedSelectionRows)
   const readyFixtures = Number(rankingReadiness.ready ?? 0)
   const partial = totalFixtures > 0 && readyFixtures === 0
@@ -1723,7 +1859,7 @@ async function syncCompletedFixtures(body: Record<string, unknown>, dayRange: Re
   const failures: Array<Record<string, unknown>> = []
 
   for (const candidate of candidates.rows) {
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     const sourceMatchApiFixtureId = candidate.api_fixture_id ?? candidate.api_sports_fixture_id ?? null
     const fixtureId = normalizeResultFixtureId(sourceMatchApiFixtureId)
     if (!fixtureId) continue
@@ -2267,13 +2403,30 @@ class ResultPipelineError extends Error {
 
   constructor(errorCode: string, errorStage: string, error: unknown, provider = 'supabase') {
     const details = sanitizeErrorDetails(error)
-    super(details.message)
+    super(details.message, { cause: error })
     this.name = 'ResultPipelineError'
     this.errorCode = errorCode
     this.errorStage = errorStage
     this.provider = provider
-    this.errorDetails = details
+    const upstreamDetails = error && typeof error === 'object' && (error as any).errorDetails && typeof (error as any).errorDetails === 'object'
+      ? sanitizeDiagnosticValue((error as any).errorDetails) as Record<string, unknown>
+      : null
+    this.errorDetails = upstreamDetails ? { ...details, ...upstreamDetails } : details
     this.failures = Array.isArray((error as any)?.failures) ? (error as any).failures.map(sanitizeDiagnosticValue) : []
+  }
+}
+
+class DailySyncPhaseError extends ResultPipelineError {
+  constructor(phase: string, error: unknown) {
+    const raw = error as any
+    const inferred = inferStructuredError(error)
+    super(
+      sanitizeText(raw?.errorCode ?? inferred.errorCode ?? 'DAILY_SYNC_PHASE_FAILED'),
+      sanitizeText(phase || raw?.errorStage || 'daily-sync'),
+      error,
+      sanitizeProviderName(String(raw?.provider ?? inferred.provider ?? 'api-football')),
+    )
+    this.name = 'DailySyncPhaseError'
   }
 }
 
@@ -2284,14 +2437,28 @@ async function withResultStage<T>(errorStage: string, errorCode: string, worker:
     return result
   } catch (error) {
     if (error instanceof ResultPipelineError) throw error
-    throw new ResultPipelineError(errorCode, errorStage, error, provider)
+    const raw = error as any
+    const inferred = inferStructuredError(error)
+    throw new ResultPipelineError(
+      sanitizeText(raw?.errorCode ?? inferred.errorCode ?? errorCode),
+      errorStage,
+      error,
+      sanitizeProviderName(String(raw?.provider ?? inferred.provider ?? provider)),
+    )
   }
 }
 
 function buildSyncErrorResponse(error: unknown, mode: string, fallbackProvider: string) {
+  const raw = error as any
+  const inferred = inferStructuredError(error)
   const resultError = error instanceof ResultPipelineError
     ? error
-    : new ResultPipelineError(getDefaultErrorCode(mode), getDefaultErrorStage(mode), error, isResultPipelineMode(mode) ? 'supabase' : fallbackProvider)
+    : new ResultPipelineError(
+      sanitizeText(raw?.errorCode ?? inferred.errorCode ?? getDefaultErrorCode(mode)),
+      sanitizeText(raw?.errorStage ?? getDefaultErrorStage(mode)),
+      error,
+      sanitizeProviderName(String(raw?.provider ?? inferred.provider ?? (isResultPipelineMode(mode) ? 'supabase' : fallbackProvider))),
+    )
   const provider = sanitizeProviderName(resultError.provider || fallbackProvider)
   return {
     ok: false,
@@ -2306,6 +2473,20 @@ function buildSyncErrorResponse(error: unknown, mode: string, fallbackProvider: 
     errorDetails: resultError.errorDetails,
     failures: resultError.failures,
   }
+}
+
+function inferStructuredError(error: unknown) {
+  const raw = error as any
+  const text = `${raw?.message ?? ''} ${raw?.details ?? ''} ${raw?.bodyPreview ?? ''}`.toLowerCase()
+  const status = Number(raw?.status ?? raw?.statusCode ?? text.match(/(?:http\s*)?(\d{3})/)?.[1] ?? 0)
+  if (raw instanceof UpstreamResponseError) return { errorCode: raw.errorCode, provider: raw.provider }
+  if (text.includes('supabase_upstream_timeout') || text.includes('supabase upstream timed out') || ([408, 504, 522, 524].includes(status) && (text.includes('supabase') || text.includes('cloudflare')))) {
+    return { errorCode: 'SUPABASE_UPSTREAM_TIMEOUT', provider: 'supabase' }
+  }
+  if (text.includes('upstream_html_error') || text.includes('<!doctype html') || text.includes('<html')) {
+    return { errorCode: 'UPSTREAM_HTML_ERROR', provider: raw?.provider ?? 'supabase' }
+  }
+  return { errorCode: null, provider: null }
 }
 
 function getDefaultErrorCode(mode: string) {
@@ -2331,32 +2512,22 @@ function sanitizeErrorDetails(error: unknown): Record<string, unknown> {
     hint: raw?.hint ? sanitizeText(raw.hint) : null,
     code: raw?.code ? sanitizeText(raw.code) : null,
     status: raw?.status ?? raw?.statusCode ?? null,
+    contentType: raw?.contentType ? sanitizeText(raw.contentType) : null,
+    bodyPreview: raw?.bodyPreview ? sanitizeText(raw.bodyPreview) : null,
     name: raw?.name ? sanitizeText(raw.name) : null,
   }
 }
 
 function sanitizeDiagnosticValue(value: unknown): unknown {
-  if (typeof value === 'string') return sanitizeText(value)
-  if (Array.isArray(value)) return value.map(sanitizeDiagnosticValue)
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-      .filter(([key]) => !/authorization|apikey|sb_secret|secret|token|key/i.test(key))
-      .map(([key, item]) => [key, sanitizeDiagnosticValue(item)]))
-  }
-  return value
+  return sanitizeReliabilityDiagnosticValue(value, { secrets: getSensitiveValues() })
 }
 
 function sanitizeText(value: unknown) {
-  let text = String(value ?? '')
-  const secretValues = [serviceRoleKey, API_FOOTBALL_KEY, FOOTBALL_DATA_TOKEN, ...secretKeys].filter(Boolean)
-  for (const secret of secretValues) {
-    text = text.split(secret).join('[masked]')
-  }
-  return text
-    .replace(/sb_secret_[A-Za-z0-9._-]+/g, 'sb_secret_[masked]')
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [masked]')
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, 'jwt_[masked]')
-    .replace(/(api[_-]?key|apikey|secret|token)=([^&\s]+)/gi, '$1=[masked]')
+  return sanitizeReliabilityText(value, { secrets: getSensitiveValues() })
+}
+
+function getSensitiveValues() {
+  return [serviceRoleKey, API_FOOTBALL_KEY, FOOTBALL_DATA_TOKEN, ...secretKeys].filter(Boolean)
 }
 
 function sanitizeProviderName(value: string) {
@@ -2378,22 +2549,31 @@ function isSchemaCacheError(error: unknown) {
   return details.code === 'PGRST205' || text.includes('schema cache')
 }
 
-function createFootballEnrichmentContext(mode: string, limit: number, dateKey: string): FootballEnrichmentContext {
+function createFootballEnrichmentContext(mode: string, limit: number, dateKey: string, requestStartedMs = Date.now(), requestedBudgetMs?: unknown): FootballEnrichmentContext {
   return {
     mode,
     limit,
     dateKey,
     rateLimited: false,
+    deadlineReached: false,
+    executionBudget: createExecutionBudget(requestStartedMs, requestedBudgetMs),
     endpoints: {},
     skippedEndpoints: [],
   }
+}
+
+function shouldStopForExecutionBudget(context: FootballEnrichmentContext, minimumRemainingMs?: number) {
+  if (context.deadlineReached) return true
+  if (!shouldDeferExecution(context.executionBudget, Date.now(), minimumRemainingMs)) return false
+  context.deadlineReached = true
+  return true
 }
 
 async function syncApiFootballCoverage(context: FootballEnrichmentContext) {
   const leagues = (await fetchDistinctApiFootballLeagues()).slice(0, context.limit)
   let processed = 0
   for (const item of leagues) {
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     const response = await trackedApiFootballGet(context, '/leagues', { id: item.api_league_id, season: item.season }, { apiLeagueId: item.api_league_id, season: item.season })
     if (!response.ok) continue
     const rows = (response.data ?? []).map((row: any) => normalizeLeagueCoverage(row, item))
@@ -2408,7 +2588,7 @@ async function syncApiFootballRounds(context: FootballEnrichmentContext) {
   const leagues = (await fetchDistinctApiFootballLeagues()).slice(0, context.limit)
   let processed = 0
   for (const item of leagues) {
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     const allRounds = await trackedApiFootballGet(context, '/fixtures/rounds', { league: item.api_league_id, season: item.season }, { apiLeagueId: item.api_league_id, season: item.season })
     const current = context.rateLimited ? { data: [] } : await trackedApiFootballGet(context, '/fixtures/rounds', { league: item.api_league_id, season: item.season, current: 'true' }, { apiLeagueId: item.api_league_id, season: item.season })
     if (!allRounds.ok) continue
@@ -2433,29 +2613,57 @@ async function syncApiFootballFixtureEnrichment(dayRange: ReturnType<typeof getB
   const offset = Number(context.continuationState?.fixtureOffset ?? getSyncOffset(body.offset))
   const candidates = await fetchApiFootballFixtureCandidates(dayRange, context.limit, offset)
   const fixtures = candidates.rows
+  const batchSignature = buildBatchSignature(fixtures.map((match: any) => match.api_sports_fixture_id))
+  if (!shouldProcessBatch(context.continuationState, batchSignature)) {
+    const nextOffset = offset + fixtures.length
+    await persistStepContinuation(context, { fixtureOffset: nextOffset })
+    return {
+      processed: 0,
+      totalCandidates: candidates.totalCandidates,
+      rowsSaved: 0,
+      failed: 0,
+      skipped: fixtures.length,
+      partial: nextOffset < candidates.totalCandidates,
+      nextOffset,
+      hasMore: nextOffset < candidates.totalCandidates,
+      batchSignature,
+      duplicateBatchSkipped: true,
+    }
+  }
   let processed = 0
   let rowsSaved = 0
   let emptyFixtures = 0
   let failedFixtures = 0
+  const initialProcessedFixtureCount = Number(context.continuationState?.processedFixtureCount ?? 0)
   for (const group of chunk(fixtures, footballEnrichmentChunkSize)) {
     for (const match of group) {
-      if (context.rateLimited) break
+      if (context.rateLimited || shouldStopForExecutionBudget(context)) break
       const result = await enrichOneApiFootballFixture(match, context)
       processed += result.processed
       rowsSaved += result.rowsSaved
       emptyFixtures += result.empty
       failedFixtures += result.failed
+      const attempted = processed + emptyFixtures + failedFixtures
+      await persistStepContinuation(context, {
+        fixtureOffset: offset + attempted,
+        processedFixtureCount: initialProcessedFixtureCount + attempted,
+        lastProcessedFixtureId: nullableNumber(match.api_sports_fixture_id),
+        batchSignature,
+        batchComplete: false,
+      })
     }
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
   }
   const attempted = processed + emptyFixtures + failedFixtures
   const nextOffset = offset + attempted
   const attemptedRows = fixtures.slice(0, attempted)
+  const batchComplete = attempted === fixtures.length && failedFixtures === 0 && !context.deadlineReached
   await persistStepContinuation(context, {
     fixtureOffset: nextOffset,
-    processedFixtureCount: Number(context.continuationState?.processedFixtureCount ?? 0) + attempted,
+    processedFixtureCount: initialProcessedFixtureCount + attempted,
     lastProcessedFixtureId: nullableNumber(attemptedRows.at(-1)?.api_sports_fixture_id),
-    batchSignature: buildBatchSignature(attemptedRows.map((match: any) => match.api_sports_fixture_id)),
+    batchSignature,
+    batchComplete,
   })
   return {
     processed,
@@ -2463,9 +2671,10 @@ async function syncApiFootballFixtureEnrichment(dayRange: ReturnType<typeof getB
     rowsSaved,
     failed: failedFixtures,
     skipped: emptyFixtures,
-    partial: nextOffset < candidates.totalCandidates || failedFixtures > 0 || (fixtures.length > 0 && rowsSaved === 0),
+    partial: context.deadlineReached || nextOffset < candidates.totalCandidates || failedFixtures > 0 || (fixtures.length > 0 && rowsSaved === 0),
     nextOffset,
     hasMore: nextOffset < candidates.totalCandidates,
+    batchSignature,
     fixtureDetail: {
       attempted: processed + emptyFixtures + failedFixtures,
       success: processed,
@@ -2494,7 +2703,7 @@ async function enrichOneApiFootballFixture(match: any, context: FootballEnrichme
   ]
 
   for (const call of calls) {
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     if (!shouldFetchFixtureEnrichment(match, call.endpoint)) {
       await logEnrichmentSync({ mode: context.mode, api_fixture_id: fixtureId, api_league_id: getMatchLeagueId(match), season: getMatchSeason(match), endpoint: call.endpoint, status: 'skipped_not_due' })
       rememberSkippedEndpoint(context, call.endpoint, 'skipped_not_due', { apiFixtureId: fixtureId, apiLeagueId: getMatchLeagueId(match), season: getMatchSeason(match) })
@@ -2542,7 +2751,7 @@ async function syncApiFootballInjuries(dateKey: string, context: FootballEnrichm
   let processed = 0
 
   for (const match of fixtures) {
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     const fixtureId = getMatchFixtureId(match)
     if (!fixtureId) continue
     const coverage = await fetchCoverageForMatch(match)
@@ -2561,7 +2770,7 @@ async function syncApiFootballInjuries(dateKey: string, context: FootballEnrichm
   }
 
   for (const item of leagues) {
-    if (context.rateLimited || processed >= context.limit) break
+    if (context.rateLimited || processed >= context.limit || shouldStopForExecutionBudget(context)) break
     const coverage = await fetchCoverageForLeague(item.api_league_id, item.season)
     if (coverage && !hasCoverage(coverage, 'has_injuries')) {
       await logEnrichmentSync({ mode: context.mode, api_league_id: item.api_league_id, season: item.season, endpoint: '/injuries', status: 'skipped_no_coverage' })
@@ -2583,7 +2792,7 @@ async function syncApiFootballSquads(context: FootballEnrichmentContext) {
   const teams = (await fetchDistinctApiFootballTeams()).slice(0, context.limit)
   let processed = 0
   for (const team of teams) {
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     const response = await trackedApiFootballGet(context, '/players/squads', { team: team.api_team_id }, { apiTeamId: team.api_team_id })
     if (!response.ok) continue
     const rows = normalizeSquadRows(response.data ?? [], team)
@@ -2598,7 +2807,7 @@ async function syncApiFootballCoaches(context: FootballEnrichmentContext) {
   const teams = (await fetchDistinctApiFootballTeams()).slice(0, context.limit)
   let processed = 0
   for (const team of teams) {
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     const response = await trackedApiFootballGet(context, '/coachs', { team: team.api_team_id }, { apiTeamId: team.api_team_id })
     if (!response.ok) continue
     const rows = normalizeCoachRows(response.data ?? [], team)
@@ -2613,7 +2822,7 @@ async function syncApiFootballVenues(context: FootballEnrichmentContext) {
   const venues = (await fetchDistinctApiFootballVenues()).slice(0, context.limit)
   let processed = 0
   for (const venue of venues) {
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     if (!venue.api_venue_id) {
       const fallback = normalizeVenueFallbackRow(venue)
       await upsertApiFootballData('api_football_venues', 'api_venue_id', fallback ? [fallback] : [])
@@ -2640,10 +2849,10 @@ async function syncApiFootballTopPlayers(context: FootballEnrichmentContext) {
   ]
   let processed = 0
   for (const league of leagues) {
-    if (context.rateLimited) break
+    if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     const coverage = await fetchCoverageForLeague(league.api_league_id, league.season)
     for (const item of endpoints) {
-      if (context.rateLimited) break
+      if (context.rateLimited || shouldStopForExecutionBudget(context)) break
       if (coverage && !hasCoverage(coverage, item.coverageKey)) {
         await logEnrichmentSync({ mode: context.mode, api_league_id: league.api_league_id, season: league.season, endpoint: item.endpoint, status: 'skipped_no_coverage' })
         rememberSkippedEndpoint(context, item.endpoint, 'skipped_no_coverage', { apiLeagueId: league.api_league_id, season: league.season })
@@ -2778,7 +2987,7 @@ async function runOddsBatch(rows: Array<any>, totalCandidates: number, context: 
   let stoppedEarly = false
 
   for (const match of rows) {
-    if (context.rateLimited || Date.now() - startedAt > options.hardStopMs) {
+    if (context.rateLimited || Date.now() - startedAt > options.hardStopMs || shouldStopForExecutionBudget(context)) {
       stoppedEarly = true
       break
     }
@@ -2960,6 +3169,7 @@ async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRa
   let rowsSaved = 0
   let failed = 0
   for (const match of rows) {
+    if (shouldStopForExecutionBudget(context)) break
     try {
       await upsertAiFinalPickForMatch(match)
       processed += 1
@@ -4955,30 +5165,34 @@ async function apiFootballSafeGet(path: string, params: Record<string, string | 
     return {
       ok: false,
       data: [],
-      error: error instanceof Error ? error.message : 'api-football request failed',
+      error: sanitizeText(error instanceof Error ? error.message : 'api-football request failed'),
       raw: null,
     }
   }
 }
 
 async function trackedApiFootballGet(context: FootballEnrichmentContext, endpoint: string, params: Record<string, string | number | undefined> = {}, meta: any = {}) {
-  if (context.rateLimited) {
+  if (context.rateLimited || shouldStopForExecutionBudget(context)) {
     await logEnrichmentSync({ mode: context.mode, endpoint, status: 'skipped_not_due', ...toSyncMeta(meta) })
-    return { ok: false, data: [], raw: null, rateLimited: true }
+    return { ok: false, data: [], raw: null, rateLimited: context.rateLimited, pendingRetry: context.deadlineReached }
   }
 
   await sleep(700 + Math.floor(Math.random() * 501))
+  if (shouldStopForExecutionBudget(context)) {
+    await logEnrichmentSync({ mode: context.mode, endpoint, status: 'skipped_not_due', ...toSyncMeta(meta) })
+    return { ok: false, data: [], raw: null, rateLimited: false, pendingRetry: true }
+  }
   bumpEndpoint(context, endpoint, 'called')
   const startedAt = new Date().toISOString()
   try {
-    const raw = await apiFootballGet(endpoint, params)
+    const raw = await apiFootballGet(endpoint, params, context)
     const results = Number(raw?.results ?? (Array.isArray(raw?.response) ? raw.response.length : 0))
     const status = results === 0 ? 'empty' : 'success'
     bumpEndpoint(context, endpoint, results === 0 ? 'empty' : 'withData')
     await logEnrichmentSync({ mode: context.mode, endpoint, status, results_count: results, started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
     return { ok: true, data: raw?.response ?? [], raw, rateLimited: false }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'api-football request failed'
+    const message = sanitizeText(error instanceof Error ? error.message : 'api-football request failed')
     if (message.includes('api-football 429')) context.rateLimited = true
     bumpEndpoint(context, endpoint, 'failed')
     await logEnrichmentSync({ mode: context.mode, endpoint, status: 'error', error_message: message, started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
@@ -6699,22 +6913,22 @@ async function footballDataApiGet(path: string, params: Record<string, string | 
       'X-Auth-Token': FOOTBALL_DATA_TOKEN ?? '',
       Accept: 'application/json',
     },
+    signal: AbortSignal.timeout(12_000),
   })
 
-  const text = await response.text()
-  const data = text ? JSON.parse(text) : {}
+  const { data, text } = await parseUpstreamJsonResponse(response, { provider: 'football-data.org', errorStage: `football-data.org:${path}` })
   console.log('api-football response', {
     path,
     params,
     status: response.status,
-    errors: data?.errors ?? null,
+    errors: sanitizeDiagnosticValue(data?.errors ?? null),
     results: data?.results ?? null,
     paging: data?.paging ?? null,
   })
 
   if (!response.ok) {
     const message = data?.message ?? data?.error ?? text ?? `football-data.org ${response.status}`
-    throw new Error(`football-data.org ${response.status}: ${message}`)
+    throw new Error(`football-data.org ${response.status}: ${sanitizeText(message)}`)
   }
 
   return data
@@ -6730,7 +6944,7 @@ async function fetchFootballDataCompetitions() {
   return data.competitions ?? []
 }
 
-async function apiFootballGet(path: string, params: Record<string, string | number | undefined> = {}) {
+async function apiFootballGet(path: string, params: Record<string, string | number | undefined> = {}, context?: FootballEnrichmentContext) {
   const url = new URL(`${API_FOOTBALL_BASE_URL}${path}`)
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') {
@@ -6743,19 +6957,19 @@ async function apiFootballGet(path: string, params: Record<string, string | numb
       'x-apisports-key': API_FOOTBALL_KEY ?? '',
       Accept: 'application/json',
     },
+    signal: getProviderFetchSignal(context),
   })
 
-  const text = await response.text()
-  const data = text ? JSON.parse(text) : {}
+  const { data, text } = await parseUpstreamJsonResponse(response, { provider: 'api-football', errorStage: `api-football:${path}` })
 
   if (!response.ok) {
     const message = data?.message ?? data?.error ?? text ?? `api-football ${response.status}`
-    throw new Error(`api-football ${response.status}: ${message}`)
+    throw new Error(`api-football ${response.status}: ${sanitizeText(message)}`)
   }
 
   const apiErrors = data?.errors
   const hasApiErrors = Array.isArray(apiErrors) ? apiErrors.length > 0 : apiErrors && typeof apiErrors === 'object' ? Object.keys(apiErrors).length > 0 : Boolean(apiErrors)
-  if (hasApiErrors) throw new Error(`api-football error: ${JSON.stringify(apiErrors)}`)
+  if (hasApiErrors) throw new Error(`api-football error: ${sanitizeText(JSON.stringify(apiErrors))}`)
 
   return data
 }
@@ -6764,7 +6978,17 @@ async function fetchApiFootballFixtures(dateKey: string) {
   return (await fetchApiFootballFixturesWithPaging(dateKey)).matches
 }
 
-async function fetchApiFootballFixturesWithPaging(dateKey: string, startPage = 1) {
+async function fetchApiFootballFixturesWithPaging(dateKey: string, startPage = 1, context?: FootballEnrichmentContext) {
+  if (context) {
+    const payload = await apiFootballGet('/fixtures', { date: dateKey, page: startPage }, context)
+    const currentPage = Math.max(1, Number(payload?.paging?.current ?? startPage))
+    const totalPages = Math.max(currentPage, Number(payload?.paging?.total ?? currentPage))
+    return {
+      matches: (Array.isArray(payload?.response) ? payload.response : []).map(normalizeApiFootballFixture),
+      pageCount: 1,
+      totalPages,
+    }
+  }
   const result = await collectProviderPages(
     (params: Record<string, unknown>) => apiFootballGet('/fixtures', params as Record<string, string | number | undefined>),
     { date: dateKey },
@@ -6775,6 +6999,41 @@ async function fetchApiFootballFixturesWithPaging(dateKey: string, startPage = 1
     pageCount: result.pageCount,
     totalPages: result.totalPages,
   }
+}
+
+function getProviderFetchSignal(context?: FootballEnrichmentContext) {
+  const remainingMs = context ? getRemainingExecutionMs(context.executionBudget) - context.executionBudget.reserveMs : 12_000
+  return AbortSignal.timeout(Math.max(1, Math.min(12_000, remainingMs)))
+}
+
+async function guardedSupabaseFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const timeoutSignal = init.signal ?? AbortSignal.timeout(10_000)
+  let response: Response
+  try {
+    response = await fetch(input, { ...init, signal: timeoutSignal })
+  } catch (cause) {
+    const causeName = cause instanceof Error ? cause.name : ''
+    throw new UpstreamResponseError({
+      errorCode: /abort|timeout/i.test(causeName) ? 'SUPABASE_UPSTREAM_TIMEOUT' : 'SUPABASE_UPSTREAM_ERROR',
+      errorStage: 'supabase-request',
+      provider: 'supabase',
+      cause,
+    })
+  }
+
+  const contentType = response.headers.get('content-type') || ''
+  if ([408, 504, 522, 524].includes(response.status) || contentType.toLowerCase().includes('text/html')) {
+    const parsed = await parseUpstreamJsonResponse(response.clone(), { provider: 'supabase', errorStage: 'supabase-request' })
+    throw new UpstreamResponseError({
+      errorCode: 'SUPABASE_UPSTREAM_TIMEOUT',
+      errorStage: 'supabase-request',
+      provider: 'supabase',
+      status: response.status,
+      contentType,
+      bodyPreview: parsed.text,
+    })
+  }
+  return response
 }
 
 function normalizeApiFootballFixture(row: any) {
@@ -6856,7 +7115,7 @@ async function fetchStandings(competitionId: number) {
     const data = await footballDataApiGet(`/competitions/${competitionId}/standings`)
     return data.standings ?? []
   } catch (error) {
-    console.warn(`standings unavailable for competition ${competitionId}`, error)
+    console.warn('standings-unavailable', { competitionId, errorMessage: sanitizeText(error instanceof Error ? error.message : error) })
     return []
   }
 }
@@ -6868,7 +7127,7 @@ async function fetchTeamLastMatches(teamId: number, limit: number) {
     const data = await footballDataApiGet(`/teams/${teamId}/matches`, { limit, status: 'FINISHED' })
     return data.matches ?? []
   } catch (error) {
-    console.warn(`last matches unavailable for team ${teamId}`, error)
+    console.warn('last-matches-unavailable', { teamId, errorMessage: sanitizeText(error instanceof Error ? error.message : error) })
     return []
   }
 }
@@ -7789,8 +8048,10 @@ async function updateMatchAnalysisRow(id: string, payload: Record<string, unknow
     .eq('id', id)
 }
 
-async function updateDailySelectionRanks(range: { startUtc: string; endUtc: string }) {
-  await recalibrateDailySelectionScores(range)
+async function updateDailySelectionRanks(range: { startUtc: string; endUtc: string }, context?: FootballEnrichmentContext) {
+  if (context) await recalibrateDailySelectionScores(range, context)
+  else await recalibrateDailySelectionScores(range)
+  if (context && shouldStopForExecutionBudget(context)) return 0
 
   const result = await supabase
     .from('football_matches')
@@ -7838,7 +8099,7 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
   }
 
   if (!rows.length) return 0
-  await markInsufficientMarketDataRows(rows)
+  await markInsufficientMarketDataRows(rows, context)
 
   const ranked = rows
     .filter((row: any) => String(row.analysis.data_validation_status ?? 'VALID').toUpperCase() !== 'INVALID')
@@ -7855,6 +8116,7 @@ async function updateDailySelectionRanks(range: { startUtc: string; endUtc: stri
 
   let updated = 0
   for (const [index, row] of ranked.entries()) {
+    if (context && shouldStopForExecutionBudget(context)) break
     const recommendation = getCoverageAwareRecommendation(row)
     const updateResult = await supabase
       .from('match_analysis')
@@ -7915,8 +8177,9 @@ function isProfessionalRankingCandidate(row: any) {
   return professionalScore >= 55 && leagueQuality >= 55 && dataQuality >= 50
 }
 
-async function markInsufficientMarketDataRows(rows: Array<any>) {
+async function markInsufficientMarketDataRows(rows: Array<any>, context?: FootballEnrichmentContext) {
   for (const row of rows) {
+    if (context && shouldStopForExecutionBudget(context)) break
     if (['READY', 'PARTIAL'].includes(String(row.readiness ?? '').toUpperCase())) continue
     const raw = row.analysis.raw && typeof row.analysis.raw === 'object' ? row.analysis.raw : {}
     const updateResult = await supabase
@@ -7965,7 +8228,7 @@ function appendValidationNote(current: unknown, note: string) {
   return parts.join(', ')
 }
 
-async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc: string }) {
+async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc: string }, context?: FootballEnrichmentContext) {
   const result = await supabase
     .from('football_matches')
     .select(`
@@ -7997,11 +8260,13 @@ async function recalibrateDailySelectionScores(range: { startUtc: string; endUtc
     if (isMissingColumnError(result.error)) return 0
     throw result.error
   }
+  if (context && shouldStopForExecutionBudget(context)) return 0
 
   let updated = 0
   const matchIds = (result.data ?? []).map((row: any) => row.id).filter(Boolean)
   const oddsByMatchId = await fetchStoredOddsByMatchIds(matchIds)
   for (const row of result.data ?? []) {
+    if (context && shouldStopForExecutionBudget(context)) break
     const analysis = Array.isArray(row.analysis) ? row.analysis[0] : row.analysis
     if (!analysis) continue
     const rawAnalysis = analysis.raw ?? {}
@@ -9583,11 +9848,13 @@ function buildThaiReason(homeForm: Record<string, number>, awayForm: Record<stri
 async function finishLog(logId: string | null, status: string, message: string, raw: unknown) {
   if (!logId) {
     const rawProvider = raw && typeof raw === 'object' && 'provider' in raw ? String((raw as any).provider) : requestedProviderName
-    await supabase.from('sync_logs').insert({ sync_type: rawProvider, status, message, finished_at: new Date().toISOString(), raw })
+    const result = await supabase.from('sync_logs').insert({ sync_type: rawProvider, status, message, finished_at: new Date().toISOString(), raw })
+    if (result.error) throw result.error
     return
   }
 
-  await supabase.from('sync_logs').update({ status, message, finished_at: new Date().toISOString(), raw }).eq('id', logId)
+  const result = await supabase.from('sync_logs').update({ status, message, finished_at: new Date().toISOString(), raw }).eq('id', logId)
+  if (result.error) throw result.error
 }
 
 function assertRuntimeConfig(mode: string) {
@@ -9820,12 +10087,12 @@ function serializeError(error: unknown) {
 }
 
 function formatErrorMessage(error: unknown, fallback: string) {
-  if (error instanceof Error) return error.message
+  if (error instanceof Error) return sanitizeText(error.message)
   if (error && typeof error === 'object') {
     const item = error as any
-    return String(item.message ?? item.details ?? item.hint ?? fallback)
+    return sanitizeText(item.message ?? item.details ?? item.hint ?? fallback)
   }
-  return String(error ?? fallback)
+  return sanitizeText(error ?? fallback)
 }
 
 async function safeJson(request: Request) {
