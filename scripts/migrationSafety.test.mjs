@@ -23,6 +23,16 @@ import {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const migration = (filename) => readFileSync(path.join(root, 'supabase', 'migrations', filename), 'utf8')
 
+function hasLineEndingEquivalentHash(filename, expectedHash) {
+  const raw = readFileSync(path.join(root, 'supabase', 'migrations', filename))
+  const text = raw.toString('utf8')
+  return [
+    raw,
+    text.replace(/\r\n/g, '\n'),
+    text.replace(/\r?\n/g, '\r\n'),
+  ].some((value) => createHash('sha256').update(value).digest('hex') === expectedHash)
+}
+
 const summary = verifyMigrationHistory()
 assert.equal(summary.duplicateVersions, 0)
 assert.equal(summary.restoredRemoteFiles, Object.keys(expectedRemoteFiles).length)
@@ -120,14 +130,16 @@ assert.equal(assessTriggerContract({ ...canonicalTrigger, functionArguments: 'in
 assert.deepEqual(assessTriggerContract(null, expectedFunctionOid), { valid: true, action: 'CREATE', reasons: [] })
 
 const reconciliation = migration('20260715000000_reconcile_unrecorded_schema.sql')
-assert.equal(
-  createHash('sha256').update(readFileSync(path.join(root, 'supabase', 'migrations', '20260715000000_reconcile_unrecorded_schema.sql'))).digest('hex'),
+assert(
+  hasLineEndingEquivalentHash('20260715000000_reconcile_unrecorded_schema.sql',
   '73d89b8ab89b91af3236ddd1ea1ea4462a8674c8ea4eabf55cb5999cdd84625f',
+  ),
   'Applied 20260715000000 migration changed',
 )
-assert.equal(
-  createHash('sha256').update(readFileSync(path.join(root, 'supabase', 'migrations', '20260715020000_market_ready_core_recovery.sql'))).digest('hex'),
+assert(
+  hasLineEndingEquivalentHash('20260715020000_market_ready_core_recovery.sql',
   '3679fa759522cfccfa40883817f5483fce94df911ae5e776d78de905a119a4a7',
+  ),
   'Pending core recovery migration changed',
 )
 assert.match(reconciliation, /if not found then[\s\S]*create trigger/i)

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
@@ -181,6 +182,30 @@ function normalizedHash(relativePath) {
   return sha256(normalizeSql(read(relativePath)))
 }
 
+function readGitIndexedBlob(relativePath) {
+  const gitPath = String(relativePath).replaceAll(path.sep, '/')
+  try {
+    return execFileSync('git', ['show', `:${gitPath}`], { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return null
+  }
+}
+
+function rawHashCandidates(raw, relativePath) {
+  const buffers = [raw]
+  const indexed = readGitIndexedBlob(relativePath)
+  if (indexed) buffers.push(indexed)
+
+  const candidates = new Set()
+  for (const buffer of buffers) {
+    candidates.add(sha256(buffer))
+    const text = buffer.toString('utf8')
+    candidates.add(sha256(text.replace(/\r\n/g, '\n')))
+    candidates.add(sha256(text.replace(/\r?\n/g, '\r\n')))
+  }
+  return candidates
+}
+
 function assertNoDestructivePendingSql(filename, sql) {
   const normalized = normalizeSql(sql)
   assert(!/\btruncate\b/i.test(normalized), `${filename} contains TRUNCATE`)
@@ -296,7 +321,7 @@ function assertArchive(activeFiles) {
     const archivedPath = path.join(root, entry.archived_path)
     assert(existsSync(archivedPath), `${entry.archived_path} is missing`)
     const raw = readFileSync(archivedPath)
-    assert.equal(sha256(raw), entry.raw_sha256, `${entry.filename} raw hash mismatch`)
+    assert(rawHashCandidates(raw, entry.archived_path).has(entry.raw_sha256), `${entry.filename} raw hash mismatch`)
     assert.equal(sha256(normalizeSql(raw.toString('utf8'))), entry.normalized_sha256, `${entry.filename} normalized hash mismatch`)
     assert.equal(entry.remote_history_present, false, `${entry.filename} incorrectly claims remote history`)
   }

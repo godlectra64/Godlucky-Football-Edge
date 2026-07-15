@@ -143,13 +143,28 @@ check('UI and verifier use the same canonical classifier', async () => {
   const source = await readFile(new URL('./verifyDailyDecisionBoard.mjs', import.meta.url), 'utf8')
   assert.match(source, /classifyDecision/)
   assert.doesNotMatch(source, /inferFinalPick/)
-  const direct = classifyDecision(fixture(1), { finalPick: { type: 'AH', label: 'Home -0.5' }, now: '2026-07-14T09:00:00.000Z' })
-  const ui = buildSimpleBettingDecision(fixture(1))
+
+  const now = Date.now()
+  const baseMatch = fixture(1)
+  const match = {
+    ...baseMatch,
+    kickoffAt: new Date(now + 60 * 60 * 1000).toISOString(),
+    odds: baseMatch.odds.map((row) => ({
+      ...row,
+      snapshot_at: new Date(now - 5 * 60 * 1000).toISOString(),
+    })),
+  }
+
+  const direct = classifyDecision(match, {
+    finalPick: { type: 'AH', label: 'Home -0.5' },
+    now: new Date(now).toISOString(),
+  })
+  const ui = buildSimpleBettingDecision(match)
+
   assert.equal(ui.decision_status, direct.decision_status)
 })
-
 check('WAIT has no actionable final pick', () => {
-  const match = fixture(1, { odds: [], aiFinalPick: null, analysis: { recommendation: 'NO BET', confidence_score: 60, risk_level: 'MEDIUM' } })
+  const match = fixture(1, { kickoffAt: '2036-07-14T10:00:00.000Z', odds: [], aiFinalPick: null, analysis: { recommendation: 'NO BET', confidence_score: 60, risk_level: 'MEDIUM' } })
   const decision = buildSimpleBettingDecision(match)
   assert.equal(decision.status, 'WAIT')
   assert.equal(decision.final_pick.type, 'NO_DECISION')

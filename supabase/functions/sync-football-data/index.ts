@@ -3,6 +3,20 @@ import { getBangkokDayRange } from '../_shared/bangkokDateRange.ts'
 import { buildOddsNaturalKey, evaluateMarketFreshness, isActionableMarketType, normalizeMarketRow, normalizeMarketSelection, normalizeMarketType } from '../_shared/marketContract.js'
 import { classifyDecisionState } from '../_shared/decisionContract.js'
 import {
+  buildCachedFinalDailySummary,
+  buildDailyRunSummaryCached,
+  buildDailySyncStartPayload,
+  buildDailySyncStatusPayload,
+  buildDailySyncStepResponseCached,
+  buildFinalDailySummary,
+  calculateRunProgress,
+  emptyAnalysisDailySummary,
+  emptyFixtureEnrichmentSummary,
+  emptyRankingReadinessSummary,
+  findWaitingRetryStep,
+  getRetryAfterSeconds,
+} from '../_shared/dailySyncResponse.js'
+import {
   advanceContinuation,
   buildBatchSignature,
   canRunRequiredPhase,
@@ -934,7 +948,7 @@ async function runNextDailySyncStep(state: any, body: Record<string, unknown>, d
         steps: state.steps,
       }
     }
-    const run = await markDailySyncRunFinished(state.run.id, state.steps, state.run.run_date)
+    const run = await markDailySyncRunFinished(state.run.id, state.steps, state.run.summary)
     return { run, step: null, nextStep: null, summary: emptyDailyStepSummary('complete', 'success'), steps: state.steps }
   }
   return runDailySyncStep(state.run, step, body, dayRange, context)
@@ -1066,7 +1080,7 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
       current_step: step.step_order,
       finished_at: runStatus === 'success' || runStatus === 'failed' ? finishedAt : null,
       last_error: summary.message ?? null,
-      summary: await buildDailyRunSummaryWithDb(freshState.steps, getBangkokDayRange(run.run_date), summary),
+      summary: buildDailyRunSummaryCachedWithTiming(freshState.steps, freshState.run.summary ?? run.summary, summary, run.id),
     })
     .eq('id', run.id)
     .select('*')
@@ -1140,12 +1154,16 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
   }
 }
 
-async function markDailySyncRunFinished(runId: string, steps: Array<any>, runDate?: string) {
+async function markDailySyncRunFinished(runId: string, steps: Array<any>, storedRunSummary: any = null) {
   const status = getDailyRunStatus(steps)
-  const dayRange = runDate ? getBangkokDayRange(runDate) : getBangkokDayRange()
   const result = await supabase
     .from('api_football_daily_sync_runs')
-    .update({ status, finished_at: status === 'success' || status === 'failed' ? new Date().toISOString() : null, summary: await buildDailyRunSummaryWithDb(steps, dayRange), ...systemVersions })
+    .update({
+      status,
+      finished_at: status === 'success' || status === 'failed' ? new Date().toISOString() : null,
+      summary: buildDailyRunSummaryCachedWithTiming(steps, storedRunSummary, null, runId),
+      ...systemVersions,
+    })
     .eq('id', runId)
     .select('*')
     .single()
@@ -1153,96 +1171,37 @@ async function markDailySyncRunFinished(runId: string, steps: Array<any>, runDat
   return result.data
 }
 
-async function buildDailySyncStartResponse(mode: string, state: any, durationMs: number) {
-  const nextStep = findNextDailySyncStep(state.steps)
-  const waitingRetry = !nextStep ? findWaitingRetryStep(state.steps) : null
-  const dayRange = getBangkokDayRange(state.run.run_date)
-  const finalSummary = await buildFinalDailySummaryWithDb(state.steps, dayRange, state.run.summary?.finalSummary)
-  return buildDailySyncSafeResponse({
-    mode,
-    runId: state.run.id,
-    phase: nextStep?.phase ?? waitingRetry?.phase ?? null,
-    status: state.run.status,
-    processed: 0,
-    totalCandidates: state.steps.length,
-    rowsSaved: 0,
-    failed: countDailySteps(state.steps, 'failed'),
-    skipped: countDailySteps(state.steps, 'skipped'),
-    rateLimited: false,
-    durationMs,
-    steps: state.steps,
-    finalSummary,
-    rankingReadiness: finalSummary.rankingReadiness,
-    nextAction: nextStep ? 'call daily-sync-next' : waitingRetry ? 'Retry after next_retry_at' : 'daily sync already completed',
-    nextRequestExample: nextStep || waitingRetry ? { mode: 'daily-sync-next', runId: state.run.id } : { mode: 'daily-sync-status', runId: state.run.id },
-  })
+function buildDailySyncStartResponse(mode: string, state: any, durationMs: number) {
+  const finalSummary = buildCachedFinalDailySummaryWithTiming(state.steps, state.run.summary?.finalSummary, state.run.id)
+  return buildDailySyncSafeResponse(buildDailySyncStartPayload(mode, state, durationMs, { finalSummary }))
 }
 
-async function buildDailySyncStatusResponse(mode: string, state: any, durationMs: number, message = '') {
-  const nextStep = findNextDailySyncStep(state.steps)
-  const waitingRetry = !nextStep ? findWaitingRetryStep(state.steps) : null
-  const dayRange = getBangkokDayRange(state.run.run_date)
-  const finalSummary = await buildFinalDailySummaryWithDb(state.steps, dayRange, state.run.summary?.finalSummary)
-  return buildDailySyncSafeResponse({
-    mode,
-    runId: state.run.id,
-    phase: nextStep?.phase ?? waitingRetry?.phase ?? state.run.current_phase ?? null,
-    status: waitingRetry ? 'pending_retry' : state.run.status,
-    processed: sumStepField(state.steps, 'processed'),
-    totalCandidates: state.steps.length,
-    rowsSaved: sumStepField(state.steps, 'rows_saved'),
-    failed: countDailySteps(state.steps, 'failed'),
-    skipped: countDailySteps(state.steps, 'skipped'),
-    rateLimited: state.steps.some((step: any) => step.rate_limited),
-    durationMs,
-    steps: state.steps,
-    finalSummary,
-    rankingReadiness: finalSummary.rankingReadiness,
-    nextAction: nextStep ? 'call daily-sync-next again' : waitingRetry ? 'Retry after next_retry_at' : message || 'daily sync complete',
-    nextRequestExample: nextStep || waitingRetry ? { mode: 'daily-sync-next', runId: state.run.id } : { mode: 'daily-sync-status', runId: state.run.id },
-  })
+function buildDailySyncStatusResponse(mode: string, state: any, durationMs: number, message = '') {
+  const responseStarted = Date.now()
+  const finalSummary = buildCachedFinalDailySummaryWithTiming(state.steps, state.run.summary?.finalSummary, state.run.id)
+  const response = buildDailySyncSafeResponse(buildDailySyncStatusPayload(mode, state, durationMs, message, { finalSummary }))
+  console.info('daily-sync-status response build', { runId: state.run.id, durationMs: Date.now() - responseStarted })
+  return response
 }
 
-async function buildDailySyncStepResponse(mode: string, result: any, providerResult: any, durationMs: number) {
-  const summary = result?.summary ?? emptyDailyStepSummary(result?.step?.phase ?? null, 'success')
-  const nextStep = result?.nextStep
+function buildDailySyncStepResponse(mode: string, result: any, providerResult: any, durationMs: number) {
   const steps = result?.steps ?? []
-  const waitingRetry = !nextStep ? findWaitingRetryStep(steps) : null
-  const dayRange = result?.run?.run_date ? getBangkokDayRange(result.run.run_date) : getBangkokDayRange()
-  const dbFinalSummary = await buildFinalDailySummaryWithDb(steps, dayRange, result?.run?.summary?.finalSummary)
-  const finalSummary = result?.run?.summary?.finalSummary || result?.run?.status === 'success' ? dbFinalSummary : null
-  const rankingReadiness = summary.rankingReadiness ?? summary.details?.rankingReadiness ?? dbFinalSummary.rankingReadiness ?? null
-  return {
-    providerResult,
-    runId: result?.run?.id ?? null,
-    phase: summary.mode ?? result?.step?.phase ?? null,
-    status: summary.status === 'pending_retry' || waitingRetry ? 'pending_retry' : result?.run?.status ?? summary.status,
-    totalCandidates: summary.totalCandidates,
-    totalFetched: summary.totalCandidates,
-    processed: summary.processed,
-    rowsSaved: summary.rowsSaved,
-    failed: summary.failed,
-    skipped: summary.skipped,
-    skippedByLimit: 0,
-    failures: summary.failed ? [{ message: summary.message ?? `${summary.mode} failed` }] : [],
-    rankedSelectionRows: summary.mode === 'ranking' ? summary.processed : 0,
-    topSelections: [],
-    endpointCoverage: {},
-    enrichedMatches: [],
-    processedMatches: [],
-    skippedEndpoints: [],
-    rankingReadiness,
-    rateLimited: summary.rateLimited,
-    durationMs,
-    steps,
-    limits: result?.run?.summary?.phaseLimits ?? {},
-    ...calculateRunProgress(steps),
-    nextPhase: nextStep?.phase ?? waitingRetry?.phase ?? null,
-    retryAfterSeconds: getRetryAfterSeconds(waitingRetry),
-    finalSummary,
-    nextAction: nextStep ? (mode === 'daily-sync-auto' ? 'Call this same endpoint again later' : 'call daily-sync-next again') : waitingRetry ? 'Retry after next_retry_at' : 'No action required',
-    nextRequestExample: nextStep || waitingRetry ? { mode: mode === 'daily-sync-auto' ? 'daily-sync-auto' : 'daily-sync-next', runId: result?.run?.id, autoAdvance: true, maxStepsPerRequest: 2 } : { mode: 'daily-sync-status', runId: result?.run?.id },
-  }
+  const finalSummary = buildCachedFinalDailySummaryWithTiming(steps, result?.run?.summary?.finalSummary, result?.run?.id ?? null)
+  return buildDailySyncStepResponseCached(mode, result, providerResult, durationMs, { finalSummary })
+}
+
+function buildCachedFinalDailySummaryWithTiming(steps: Array<any>, storedSummary: any, runId: string | null) {
+  const started = Date.now()
+  const summary = buildCachedFinalDailySummary(steps, storedSummary)
+  console.info('daily-sync cached summary build', { runId, durationMs: Date.now() - started })
+  return summary
+}
+
+function buildDailyRunSummaryCachedWithTiming(steps: Array<any>, storedRunSummary: any, latest: any, runId: string) {
+  const started = Date.now()
+  const summary = buildDailyRunSummaryCached(steps, storedRunSummary, latest)
+  console.info('daily-sync cached summary build', { runId, durationMs: Date.now() - started })
+  return summary
 }
 
 function buildDailySyncSafeResponse(payload: any) {
@@ -1286,26 +1245,6 @@ function findNextDailySyncStep(steps: Array<any>) {
   return findNextRequiredStep(steps, Date.now())
 }
 
-function findWaitingRetryStep(steps: Array<any>) {
-  const nowMs = Date.now()
-  const firstIncomplete = [...(steps ?? [])]
-    .sort((a, b) => Number(a.step_order ?? 0) - Number(b.step_order ?? 0))
-    .find((step) => step.status !== 'success')
-  if (!firstIncomplete || !['pending_retry', 'failed', 'partial'].includes(String(firstIncomplete.status ?? ''))) return null
-  if (Number(firstIncomplete.attempt_count ?? 0) >= Number(firstIncomplete.max_attempts ?? 3)) return null
-  const nextRetryMs = firstIncomplete.next_retry_at ? new Date(firstIncomplete.next_retry_at).getTime() : 0
-  return nextRetryMs > nowMs ? firstIncomplete : null
-}
-
-function isDailyStepRunnable(step: any, nowMs = Date.now()) {
-  const status = String(step?.status ?? 'pending')
-  if (status === 'pending') return true
-  if (!['pending_retry', 'failed', 'partial'].includes(status)) return false
-  if (Number(step.attempt_count ?? 0) >= Number(step.max_attempts ?? 3)) return false
-  const nextRetryMs = step.next_retry_at ? new Date(step.next_retry_at).getTime() : 0
-  return !nextRetryMs || nextRetryMs <= nowMs
-}
-
 function mapDailyStepStatus(summary: DailyFullSyncStepSummary) {
   if (summary.status === 'error') return 'failed'
   if (summary.status === 'partial_success') return 'partial'
@@ -1335,36 +1274,6 @@ function getDailyRunStatus(steps: Array<any>) {
   return getRequiredRunStatus(steps)
 }
 
-function buildDailyRunSummary(steps: Array<any>, latest: any = null) {
-  const finalSummary = buildFinalDailySummary(steps)
-  return {
-    completed: (steps ?? []).filter((step) => ['success', 'skipped'].includes(step.status)).length,
-    failed: countDailySteps(steps, 'failed'),
-    partial: countDailySteps(steps, 'partial'),
-    processed: sumStepField(steps, 'processed'),
-    rowsSaved: sumStepField(steps, 'rows_saved'),
-    skipped: sumStepField(steps, 'skipped'),
-    rateLimited: (steps ?? []).some((step) => step.rate_limited),
-    finalSummary,
-    latest,
-  }
-}
-
-async function buildDailyRunSummaryWithDb(steps: Array<any>, dayRange: ReturnType<typeof getBangkokDayRange>, latest: any = null) {
-  const finalSummary = await buildFinalDailySummaryWithDb(steps, dayRange)
-  return {
-    completed: (steps ?? []).filter((step) => ['success', 'skipped'].includes(step.status)).length,
-    failed: countDailySteps(steps, 'failed'),
-    partial: countDailySteps(steps, 'partial'),
-    processed: sumStepField(steps, 'processed'),
-    rowsSaved: sumStepField(steps, 'rows_saved'),
-    skipped: sumStepField(steps, 'skipped'),
-    rateLimited: (steps ?? []).some((step) => step.rate_limited),
-    finalSummary,
-    latest,
-  }
-}
-
 function emptyDailyStepSummary(mode: string | null, status: DailyFullSyncStepSummary['status'], message = '') {
   return {
     step: 0,
@@ -1378,62 +1287,6 @@ function emptyDailyStepSummary(mode: string | null, status: DailyFullSyncStepSum
     rateLimited: false,
     durationMs: 0,
     message,
-  }
-}
-
-function calculateRunProgress(steps: Array<any>) {
-  const safeSteps = steps ?? []
-  const totalSteps = Math.max(safeSteps.length || dailySyncPhases.length, 1)
-  const completedSteps = safeSteps.filter((step) => ['success', 'skipped'].includes(step.status)).length
-  const failedSteps = safeSteps.filter((step) => step.status === 'failed').length
-  const pendingSteps = safeSteps.filter((step) => ['pending', 'pending_retry'].includes(step.status)).length
-  const runningSteps = safeSteps.filter((step) => ['running', 'partial'].includes(step.status)).length
-  const weighted = safeSteps.reduce((total, step) => {
-    if (['success', 'skipped'].includes(step.status)) return total + 1
-    if (['running', 'partial', 'pending_retry'].includes(step.status)) return total + 0.5
-    return total
-  }, 0)
-  const next = findNextDailySyncStep(safeSteps) ?? findWaitingRetryStep(safeSteps)
-  return {
-    progressPercent: Math.max(0, Math.min(100, Math.round((weighted / totalSteps) * 100))),
-    completedSteps,
-    totalSteps,
-    failedSteps,
-    pendingSteps,
-    runningSteps,
-    nextPhase: next?.phase ?? null,
-  }
-}
-
-function buildFinalDailySummary(steps: Array<any>) {
-  const endpointRows = aggregateEndpointRows(steps)
-  const core = findStepSummary(steps, 'core')
-  const fixtureEnrichment = findStepSummary(steps, 'fixture-enrichment')
-  const ranking = findStepSummary(steps, 'ranking')
-  return {
-    fixtures: Number(core?.details?.fixturesProcessed ?? 0),
-    coverage: endpointRows['/leagues'] ?? 0,
-    rounds: endpointRows['/fixtures/rounds'] ?? 0,
-    fixtureStatistics: endpointRows['/fixtures/statistics'] ?? 0,
-    events: endpointRows['/fixtures/events'] ?? 0,
-    lineups: endpointRows['/fixtures/lineups'] ?? 0,
-    fixturePlayers: endpointRows['/fixtures/players'] ?? 0,
-    injuries: endpointRows['/injuries'] ?? 0,
-    squads: endpointRows['/players/squads'] ?? 0,
-    coaches: endpointRows['/coachs'] ?? 0,
-    venues: endpointRows['/venues'] ?? 0,
-    topScorers: endpointRows['/players/topscorers'] ?? 0,
-    topAssists: endpointRows['/players/topassists'] ?? 0,
-    topYellowCards: endpointRows['/players/topyellowcards'] ?? 0,
-    topRedCards: endpointRows['/players/topredcards'] ?? 0,
-    topPlayers: (endpointRows['/players/topscorers'] ?? 0) + (endpointRows['/players/topassists'] ?? 0) + (endpointRows['/players/topyellowcards'] ?? 0) + (endpointRows['/players/topredcards'] ?? 0),
-    ranking: ranking?.status === 'success' || ranking?.status === 'empty' ? 'success' : ranking?.status ?? 'pending',
-    rankingReadiness: ranking?.rankingReadiness ?? ranking?.details?.rankingReadiness ?? null,
-    fixtureEnrichment: fixtureEnrichment?.details ?? null,
-    totalDurationMs: (steps ?? []).reduce((total, step) => total + Number(step.duration_ms ?? step.summary?.durationMs ?? 0), 0),
-    failedEndpoints: aggregateEndpointNames(steps, 'failed'),
-    skippedEndpoints: aggregateEndpointNames(steps, 'skipped'),
-    rateLimited: (steps ?? []).some((step) => step.rate_limited || step.summary?.rateLimited),
   }
 }
 
@@ -1571,73 +1424,6 @@ function summarizeDailySyncReadinessRowsWithOdds(matches: Array<any>, oddsRows: 
   return { rankingReadiness, fixtureEnrichment, analysisSummary }
 }
 
-function emptyRankingReadinessSummary() {
-  return {
-    totalFixtures: 0,
-    ready: 0,
-    partial: 0,
-    noMarketData: 0,
-    pending: 0,
-    failed: 0,
-    hasMarketDataCount: 0,
-    hasFixtureDetailCount: 0,
-  }
-}
-
-function emptyFixtureEnrichmentSummary() {
-  return {
-    oddsRowsCount: 0,
-    fixturesWithMarketData: 0,
-    fixturesWithoutMarketData: 0,
-    readyFixtures: 0,
-    partialFixtures: 0,
-    noMarketDataFixtures: 0,
-    pendingFixtures: 0,
-  }
-}
-
-function emptyAnalysisDailySummary() {
-  return {
-    bet: 0,
-    lean: 0,
-    noBet: 0,
-    marketDataUsed: 0,
-    insufficientMarketData: 0,
-    defaultAnalysisRemaining: 0,
-  }
-}
-
-function aggregateEndpointRows(steps: Array<any>) {
-  const rows: Record<string, number> = {}
-  for (const step of steps ?? []) {
-    const breakdown = step.summary?.endpointBreakdown ?? {}
-    for (const [endpoint, item] of Object.entries(breakdown)) {
-      rows[endpoint] = (rows[endpoint] ?? 0) + Number((item as any)?.rowsSaved ?? 0)
-    }
-  }
-  return rows
-}
-
-function aggregateEndpointNames(steps: Array<any>, field: 'failed' | 'skipped') {
-  const names = new Set<string>()
-  for (const step of steps ?? []) {
-    const breakdown = step.summary?.endpointBreakdown ?? {}
-    for (const [endpoint, item] of Object.entries(breakdown)) {
-      if (Number((item as any)?.[field] ?? 0) > 0) names.add(endpoint)
-    }
-  }
-  return [...names]
-}
-
-function findStepSummary(steps: Array<any>, phase: string) {
-  return (steps ?? []).find((step) => step.phase === phase)?.summary ?? null
-}
-
-function getRetryAfterSeconds(step: any) {
-  if (!step?.next_retry_at) return null
-  return Math.max(0, Math.ceil((new Date(step.next_retry_at).getTime() - Date.now()) / 1000))
-}
-
 function getDailyPhaseLimits(body: any) {
   const phaseLimits = body?.phaseLimits && typeof body.phaseLimits === 'object' ? body.phaseLimits : {}
   return {
@@ -1688,14 +1474,6 @@ function getMaxStepsPerRequest(body: Record<string, unknown>) {
 
 function sumResultField(results: Array<any>, field: string) {
   return results.reduce((total, item) => total + Number(item?.[field] ?? 0), 0)
-}
-
-function sumStepField(steps: Array<any>, field: string) {
-  return (steps ?? []).reduce((total, step) => total + Number(step?.[field] ?? 0), 0)
-}
-
-function countDailySteps(steps: Array<any>, status: string) {
-  return (steps ?? []).filter((step) => step.status === status).length
 }
 
 async function runDailyFullSyncMode(mode: string, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, providerResult: any, started: number) {
