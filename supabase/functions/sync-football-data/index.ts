@@ -20,9 +20,11 @@ import {
   advanceContinuation,
   buildBatchSignature,
   canRunRequiredPhase,
+  claimDailyStepOnce,
   collectProviderPages,
   createContinuationState,
   findNextRequiredStep,
+  getDailySyncCacheDecision,
   getRequiredRunStatus,
   requiredDailyPhases,
   shouldProcessBatch,
@@ -593,6 +595,7 @@ type FootballEnrichmentContext = {
   skippedEndpoints: Array<{ endpoint: string; reason: string; apiFixtureId?: number; apiLeagueId?: number; apiTeamId?: number; season?: number }>
   runId?: string
   stepId?: string
+  stepAttemptCount?: number
   phase?: string
   continuationState?: Record<string, any>
 }
@@ -776,7 +779,18 @@ async function runDailySyncOrchestratorMode(mode: string, body: Record<string, u
   }
 
   if (mode === 'daily-sync-auto') {
-    const state = await startDailySyncRun({ ...body, resume: body.resume ?? true }, dayRange)
+    let state = await startDailySyncRun({ ...body, resume: body.resume ?? true }, dayRange)
+    const cacheDecision = getDailySyncCacheDecision(state.run, state.steps)
+    logDailySyncCacheDecision(cacheDecision)
+    if (cacheDecision.canUseCachedSummary) {
+      return withDailySyncDateDiagnostics(await buildDailySyncStatusResponse(mode, state, Date.now() - started, 'daily sync already completed'), dateDiagnostics, state)
+    }
+    if (cacheDecision.shouldWait) {
+      return withDailySyncDateDiagnostics(await buildDailySyncStatusResponse(mode, state, Date.now() - started, cacheDecision.continuationAction), dateDiagnostics, state)
+    }
+    if (cacheDecision.needsSelfHeal) {
+      state = await selfHealDailySyncContinuation(state, cacheDecision)
+    }
     const result = await runDailySyncStepBatch(state, body, getBangkokDayRange(state.run.run_date), context, getMaxStepsPerRequest(body))
     result.reusedRunId = Boolean(state.reusedRunId)
     return withDailySyncDateDiagnostics(await buildDailySyncStepResponse(mode, result, providerResult, Date.now() - started), dateDiagnostics, result)
@@ -784,7 +798,8 @@ async function runDailySyncOrchestratorMode(mode: string, body: Record<string, u
 
   if (['daily-full-sync', 'daily-full-sync-safe', 'auto-daily-enrichment'].includes(mode)) {
     const state = await startDailySyncRun(body, dayRange)
-    if (state.run.status === 'success') return withDailySyncDateDiagnostics(await buildDailySyncStatusResponse(mode, state, Date.now() - started, 'daily sync already completed'), dateDiagnostics, state)
+    const cacheDecision = getDailySyncCacheDecision(state.run, state.steps)
+    if (cacheDecision.canUseCachedSummary) return withDailySyncDateDiagnostics(await buildDailySyncStatusResponse(mode, state, Date.now() - started, 'daily sync already completed'), dateDiagnostics, state)
 
     const autoAdvance = body.autoAdvance === true
     const result = await runDailySyncStepBatch(state, body, getBangkokDayRange(state.run.run_date), context, autoAdvance ? getMaxStepsPerRequest(body) : 1)
@@ -851,6 +866,18 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
       })
       .select('*')
       .single()
+    if (inserted.error?.code === '23505') {
+      const raced = await supabase
+        .from('api_football_daily_sync_runs')
+        .select('*')
+        .eq('run_date', runDate)
+        .eq('mode', dailySyncRunMode)
+        .single()
+      if (raced.error) throw raced.error
+      await createDailySyncSteps(raced.data.id, getDailyPhaseLimits(raced.data.summary ?? body))
+      await recoverStaleDailySyncSteps(raced.data.id)
+      return withDailySyncReuseMeta(await getDailySyncState(raced.data.id), true)
+    }
     if (inserted.error) throw inserted.error
     run = inserted.data
     await createDailySyncSteps(run.id, limits)
@@ -871,6 +898,59 @@ async function startDailySyncRun(body: Record<string, unknown>, dayRange: Return
 
 function withDailySyncReuseMeta(state: any, reusedRunId: boolean) {
   return { ...state, reusedRunId }
+}
+
+function logDailySyncCacheDecision(decision: ReturnType<typeof getDailySyncCacheDecision>) {
+  console.info('daily-sync-cache-decision', {
+    cacheDecision: decision.cacheDecision,
+    cacheBypassReason: decision.cacheBypassReason,
+    runId: decision.runId,
+    runStatus: decision.runStatus,
+    currentPhase: decision.currentPhase,
+    retryStep: decision.retryStep,
+    nextRetryAt: decision.nextRetryAt,
+    continuationAction: decision.continuationAction,
+  })
+}
+
+async function selfHealDailySyncContinuation(state: any, decision: ReturnType<typeof getDailySyncCacheDecision>) {
+  const step = state.steps.find((item: any) => item.phase === decision.retryStep)
+  if (!step || !decision.needsSelfHeal) return state
+  const nextRetryAt = new Date().toISOString()
+  let query = supabase
+    .from('api_football_daily_sync_steps')
+    .update({
+      status: 'pending_retry',
+      next_retry_at: nextRetryAt,
+      error_message: 'CONTINUATION_SCHEDULE_SELF_HEALED',
+    })
+  query = matchDailySyncStepVersion(query, step)
+  const result = await query.select('id').maybeSingle()
+  if (result.error) throw new DailySyncPhaseError(step.phase, result.error)
+
+  const freshState = withDailySyncReuseMeta(await getDailySyncState(state.run.id), true)
+  console.info('daily-sync-continuation-self-heal', {
+    cacheDecision: 'bypass',
+    cacheBypassReason: decision.cacheBypassReason,
+    runId: freshState.run.id,
+    runStatus: freshState.run.status,
+    currentPhase: freshState.run.current_phase,
+    retryStep: step.phase,
+    nextRetryAt: result.data ? nextRetryAt : freshState.steps.find((item: any) => item.id === step.id)?.next_retry_at ?? null,
+    continuationAction: result.data ? 'self_healed_resume_due' : 'self_heal_claim_contended',
+  })
+  return freshState
+}
+
+function matchDailySyncStepVersion(query: any, step: any) {
+  let matched = query
+    .eq('id', step.id)
+    .eq('status', step.status)
+    .eq('attempt_count', Number(step.attempt_count ?? 0))
+  matched = step.next_retry_at == null
+    ? matched.is('next_retry_at', null)
+    : matched.eq('next_retry_at', step.next_retry_at)
+  return matched
 }
 
 function buildDailySyncDateDiagnostics(body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>) {
@@ -915,7 +995,9 @@ async function createDailySyncSteps(runId: string, limits: Record<string, number
     continuation_state: createContinuationState(),
     ...systemVersions,
   }))
-  const result = await supabase.from('api_football_daily_sync_steps').insert(rows)
+  const result = await supabase
+    .from('api_football_daily_sync_steps')
+    .upsert(rows, { onConflict: 'run_id,step_order', ignoreDuplicates: true })
   if (result.error) throw result.error
 }
 
@@ -940,6 +1022,8 @@ async function recoverStaleDailySyncSteps(runId: string, staleAfterMs = 15 * 60 
       })
       .eq('id', step.id)
       .eq('status', 'running')
+      .eq('attempt_count', Number(step.attempt_count ?? 0))
+      .eq('updated_at', step.updated_at)
     if (update.error) throw update.error
   }
 }
@@ -977,6 +1061,8 @@ async function runNextDailySyncStep(state: any, body: Record<string, unknown>, d
         steps: state.steps,
       }
     }
+    const activeStep = findActiveDailySyncStep(state.steps)
+    if (activeStep) return buildDailySyncClaimWaitResult(state, activeStep)
     const run = await markDailySyncRunFinished(state.run.id, state.steps, state.run.summary)
     return { run, step: null, nextStep: null, summary: emptyDailyStepSummary('complete', 'success'), steps: state.steps }
   }
@@ -1032,7 +1118,7 @@ async function deferDailySyncStepForDeadline(run: any, step: any, context: Footb
     remainingMs: getRemainingExecutionMs(context.executionBudget),
   }
 
-  const stepUpdate = await supabase
+  let stepUpdateQuery = supabase
     .from('api_football_daily_sync_steps')
     .update({
       status: 'pending_retry',
@@ -1049,8 +1135,16 @@ async function deferDailySyncStepForDeadline(run: any, step: any, context: Footb
       batch_signature: continuationState.batchSignature,
       ...systemVersions,
     })
-    .eq('id', step.id)
+  stepUpdateQuery = matchDailySyncStepVersion(stepUpdateQuery, step)
+  const stepUpdate = await stepUpdateQuery.select('*').maybeSingle()
   if (stepUpdate.error) throw new DailySyncPhaseError(step.phase, stepUpdate.error)
+  if (!stepUpdate.data) {
+    const contendedState = await getDailySyncState(run.id)
+    const contendedStep = contendedState.steps.find((item: any) => item.id === step.id) ?? step
+    return contendedStep.status === 'running'
+      ? buildDailySyncClaimWaitResult(contendedState, contendedStep)
+      : buildDailySyncPendingResult(contendedState, contendedStep, 'CONTINUATION_DEFER_ALREADY_APPLIED')
+  }
 
   const freshState = await getDailySyncState(run.id)
   const runUpdate = await supabase
@@ -1082,39 +1176,86 @@ async function runRequestedDailySyncPhase(state: any, phase: string, body: Recor
   return runDailySyncStep(state.run, step, body, dayRange, context)
 }
 
+async function claimDailySyncStepAtomically(step: any) {
+  return claimDailyStepOnce(step, async (claim: any) => {
+    let query = supabase
+      .from('api_football_daily_sync_steps')
+      .update({ ...claim.update, ...systemVersions })
+    query = matchDailySyncStepVersion(query, step)
+    const result = await query.select('*').maybeSingle()
+    if (result.error) throw new DailySyncPhaseError(step.phase, result.error)
+    return result.data
+  })
+}
+
+function findActiveDailySyncStep(steps: Array<any>) {
+  return [...(steps ?? [])]
+    .sort((a, b) => Number(a.step_order ?? 0) - Number(b.step_order ?? 0))
+    .find((step) => step.status === 'running') ?? null
+}
+
+function buildDailySyncClaimWaitResult(state: any, step: any) {
+  return buildDailySyncPendingResult(state, step, 'CONTINUATION_ALREADY_CLAIMED', { claimContended: true })
+}
+
+function buildDailySyncPendingResult(state: any, step: any, message: string, extra: Record<string, unknown> = {}) {
+  return {
+    run: state.run,
+    step,
+    nextStep: step,
+    summary: emptyDailyStepSummary(step.phase, 'pending_retry', message),
+    steps: state.steps,
+    ...extra,
+  }
+}
+
 async function runDailySyncStep(run: any, step: any, body: Record<string, unknown>, dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext) {
+  const claim = await claimDailySyncStepAtomically(step)
+  if (!claim.claimed) {
+    const freshState = await getDailySyncState(run.id)
+    const activeStep = freshState.steps.find((item: any) => item.id === step.id) ?? findActiveDailySyncStep(freshState.steps) ?? step
+    console.info('daily-sync-continuation-claim', {
+      cacheDecision: 'bypass',
+      cacheBypassReason: 'CONTINUATION_ALREADY_CLAIMED',
+      runId: run.id,
+      runStatus: freshState.run.status,
+      currentPhase: freshState.run.current_phase,
+      retryStep: activeStep.phase,
+      nextRetryAt: activeStep.next_retry_at ?? null,
+      continuationAction: 'wait_for_active_claim',
+    })
+    return buildDailySyncClaimWaitResult(freshState, activeStep)
+  }
+
+  const claimedStep = claim.step
   const startedAt = Date.now()
   const limits = getDailyPhaseLimits({ ...run.summary, ...body, phaseLimits: body.phaseLimits ?? run.summary?.phaseLimits })
-  const phaseLimit = limits[step.phase] ?? 10
-  const attemptCount = Number(step.attempt_count ?? 0) + 1
-  const maxAttempts = Number(step.max_attempts ?? 3)
+  const phaseLimit = limits[claimedStep.phase] ?? 10
+  const attemptCount = Number(claimedStep.attempt_count ?? 0)
+  const maxAttempts = Number(claimedStep.max_attempts ?? step.max_attempts ?? 3)
   context.limit = phaseLimit
   context.runId = run.id
-  context.stepId = step.id
-  context.phase = step.phase
-  context.continuationState = getStepContinuation(step)
+  context.stepId = claimedStep.id
+  context.stepAttemptCount = attemptCount
+  context.phase = claimedStep.phase
+  context.continuationState = getStepContinuation(claimedStep)
 
   const runStarted = await supabase
     .from('api_football_daily_sync_runs')
-    .update({ status: 'running', current_phase: step.phase, current_step: step.step_order, last_error: null })
+    .update({ status: 'running', current_phase: claimedStep.phase, current_step: claimedStep.step_order, last_error: null })
     .eq('id', run.id)
   if (runStarted.error) throw runStarted.error
-  const stepStarted = await supabase
-    .from('api_football_daily_sync_steps')
-    .update({ status: 'running', started_at: new Date().toISOString(), finished_at: null, error_message: null, attempt_count: attemptCount, last_attempt_at: new Date().toISOString(), next_retry_at: null })
-    .eq('id', step.id)
-  if (stepStarted.error) throw stepStarted.error
 
   let summary: DailyFullSyncStepSummary
   try {
     const before = cloneEndpointCounters(context.endpoints)
-    summary = await executeDailySyncPhase(step.step_order, step.phase, body, dayRange, context, before)
+    summary = await executeDailySyncPhase(claimedStep.step_order, claimedStep.phase, body, dayRange, context, before)
   } catch (error) {
-    const phaseError = error instanceof ResultPipelineError ? error : new DailySyncPhaseError(step.phase, error)
-    const message = phaseError.message || `${step.phase} failed`
+    const phaseError = error instanceof ResultPipelineError ? error : new DailySyncPhaseError(claimedStep.phase, error)
+    const message = phaseError.message || `${claimedStep.phase} failed`
     summary = {
-      step: step.step_order,
-      mode: step.phase,
+      step: claimedStep.step_order,
+      mode: claimedStep.phase,
       status: 'error',
       processed: 0,
       totalCandidates: 0,
@@ -1165,8 +1306,13 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
       continuation_state: continuationState,
       ...systemVersions,
     })
-    .eq('id', step.id)
+    .eq('id', claimedStep.id)
+    .eq('status', 'running')
+    .eq('attempt_count', attemptCount)
+    .select('id')
+    .maybeSingle()
   if (stepUpdate.error) throw stepUpdate.error
+  if (!stepUpdate.data) throw new DailySyncPhaseError(claimedStep.phase, new Error('DAILY_SYNC_STEP_CLAIM_LOST'))
 
   const freshState = await getDailySyncState(run.id)
   const runStatus = getDailyRunStatus(freshState.steps)
@@ -1174,8 +1320,8 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
     .from('api_football_daily_sync_runs')
     .update({
       status: runStatus,
-      current_phase: step.phase,
-      current_step: step.step_order,
+      current_phase: claimedStep.phase,
+      current_step: claimedStep.step_order,
       finished_at: runStatus === 'success' || runStatus === 'failed' ? finishedAt : null,
       last_error: summary.message ?? null,
       summary: buildDailyRunSummaryCachedWithTiming(freshState.steps, freshState.run.summary ?? run.summary, summary, run.id),
@@ -1185,7 +1331,7 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
     .single()
   if (runUpdate.error) throw runUpdate.error
 
-  const updatedStep = freshState.steps.find((item: any) => item.id === step.id) ?? { ...step, status: stepStatus }
+  const updatedStep = freshState.steps.find((item: any) => item.id === claimedStep.id) ?? { ...claimedStep, status: stepStatus }
   const nextStep = findNextDailySyncStep(freshState.steps)
   return { run: runUpdate.data, step: updatedStep, nextStep, summary, steps: freshState.steps }
 }
@@ -1592,7 +1738,12 @@ async function persistStepContinuation(context: FootballEnrichmentContext, updat
       ...systemVersions,
     })
     .eq('id', context.stepId)
+    .eq('status', 'running')
+    .eq('attempt_count', Number(context.stepAttemptCount ?? 0))
+    .select('id')
+    .maybeSingle()
   if (result.error) throw result.error
+  if (!result.data) throw new Error('DAILY_SYNC_STEP_CLAIM_LOST')
   return next
 }
 

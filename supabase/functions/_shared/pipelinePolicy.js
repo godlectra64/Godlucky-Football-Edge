@@ -79,6 +79,140 @@ export function findNextRequiredStep(steps = [], now = Date.now()) {
   return null
 }
 
+export function getDailySyncCacheDecision(run = {}, steps = [], options = {}) {
+  const nowMs = validTimestamp(options.now, Date.now())
+  const sorted = requiredDailyPhases
+    .map((phase) => (steps ?? []).find((step) => step.phase === phase) ?? { phase, status: 'missing' })
+  const firstIncomplete = sorted.find((step) => step.status !== 'success') ?? null
+  const runStatus = String(run.status ?? '').toLowerCase()
+  const currentPhase = String(run.current_phase ?? firstIncomplete?.phase ?? '') || null
+  const terminalStatus = ['success', 'complete'].includes(runStatus) || currentPhase === 'complete'
+  const base = {
+    runId: run.id ?? null,
+    runStatus: run.status ?? null,
+    currentPhase,
+    retryStep: firstIncomplete?.phase ?? null,
+    nextRetryAt: firstIncomplete?.next_retry_at ?? null,
+    canUseCachedSummary: false,
+    shouldWait: false,
+    shouldResume: false,
+    needsSelfHeal: false,
+  }
+
+  if (terminalStatus && !firstIncomplete) {
+    return {
+      ...base,
+      cacheDecision: 'hit',
+      cacheBypassReason: null,
+      canUseCachedSummary: true,
+      continuationAction: 'return_terminal_cache',
+    }
+  }
+
+  if (!firstIncomplete) {
+    return {
+      ...base,
+      cacheDecision: 'bypass',
+      cacheBypassReason: 'RUN_NOT_TERMINAL',
+      shouldResume: true,
+      continuationAction: 'finalize_existing_run',
+    }
+  }
+
+  if (firstIncomplete.status === 'running') {
+    return {
+      ...base,
+      cacheDecision: 'wait',
+      cacheBypassReason: 'CONTINUATION_ALREADY_CLAIMED',
+      shouldWait: true,
+      continuationAction: 'wait_for_active_claim',
+    }
+  }
+
+  const attemptCount = Number(firstIncomplete.attempt_count ?? 0)
+  const maxAttempts = Number(firstIncomplete.max_attempts ?? 3)
+  if (attemptCount >= maxAttempts) {
+    return {
+      ...base,
+      cacheDecision: 'bypass',
+      cacheBypassReason: 'RETRY_ATTEMPTS_EXHAUSTED',
+      shouldResume: true,
+      continuationAction: 'finalize_existing_run',
+    }
+  }
+
+  const retryStatus = ['partial', 'pending_retry', 'failed'].includes(String(firstIncomplete.status ?? ''))
+  const nextRetryMs = firstIncomplete.next_retry_at ? new Date(firstIncomplete.next_retry_at).getTime() : Number.NaN
+  if (retryStatus && Number.isFinite(nextRetryMs) && nextRetryMs > nowMs) {
+    return {
+      ...base,
+      cacheDecision: 'wait',
+      cacheBypassReason: 'RETRY_NOT_DUE',
+      shouldWait: true,
+      continuationAction: 'wait_for_retry',
+    }
+  }
+
+  if (retryStatus && Number.isFinite(nextRetryMs) && nextRetryMs <= nowMs) {
+    return {
+      ...base,
+      cacheDecision: 'bypass',
+      cacheBypassReason: 'RETRY_DUE_OR_OVERDUE',
+      shouldResume: true,
+      continuationAction: 'resume_existing_run',
+    }
+  }
+
+  if (retryStatus || runStatus === 'partial' || runStatus === 'pending_retry') {
+    return {
+      ...base,
+      cacheDecision: 'bypass',
+      cacheBypassReason: 'MISSING_OR_INVALID_RETRY_SCHEDULE',
+      shouldResume: true,
+      needsSelfHeal: true,
+      continuationAction: 'self_heal_and_resume',
+    }
+  }
+
+  return {
+    ...base,
+    cacheDecision: 'bypass',
+    cacheBypassReason: terminalStatus ? 'TERMINAL_RUN_HAS_REQUIRED_PENDING' : 'REQUIRED_STEP_PENDING',
+    shouldResume: true,
+    continuationAction: 'resume_existing_run',
+  }
+}
+
+export function buildDailyStepClaim(step = {}, now = Date.now()) {
+  if (!isStepRunnable(step, now)) return null
+  const claimedAt = new Date(now).toISOString()
+  const attemptCount = Number(step.attempt_count ?? 0) + 1
+  return {
+    expected: {
+      id: step.id,
+      status: String(step.status ?? 'pending'),
+      attemptCount: Number(step.attempt_count ?? 0),
+      nextRetryAt: step.next_retry_at ?? null,
+    },
+    update: {
+      status: 'running',
+      started_at: claimedAt,
+      finished_at: null,
+      error_message: null,
+      attempt_count: attemptCount,
+      last_attempt_at: claimedAt,
+      next_retry_at: null,
+    },
+  }
+}
+
+export async function claimDailyStepOnce(step, compareAndSet, now = Date.now()) {
+  const claim = buildDailyStepClaim(step, now)
+  if (!claim) return { claimed: false, step: null, claim: null }
+  const claimedStep = await compareAndSet(claim)
+  return { claimed: Boolean(claimedStep), step: claimedStep ?? null, claim }
+}
+
 export function isStepRunnable(step = {}, now = Date.now()) {
   const status = String(step.status ?? 'pending')
   if (status === 'pending') return true
@@ -201,4 +335,9 @@ function nullableInteger(value) {
 function textOrNull(value) {
   const text = String(value ?? '').trim()
   return text || null
+}
+
+function validTimestamp(value, fallback) {
+  const timestamp = new Date(value ?? fallback).getTime()
+  return Number.isFinite(timestamp) ? timestamp : new Date(fallback).getTime()
 }
