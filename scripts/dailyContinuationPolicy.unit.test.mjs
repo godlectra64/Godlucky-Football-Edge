@@ -144,12 +144,46 @@ assert.equal(workflowPolicy.getRetryWindowDecision(missingRetry, Date.parse(now)
 const scheduledRun = runWorkflowScenario(inlineScript, workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString()))
 assert.equal(scheduledRun.status, 0, `planned continuation must exit workflow successfully: ${scheduledRun.stderr}`)
 assert.match(scheduledRun.stdout, /continuation scheduled runId=canonical-run/)
+const syntheticFailureResult = {
+  ...workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString()),
+  failed: 1,
+  failures: [{ message: 'FAILED_COUNT_REPORTED' }],
+}
+const syntheticFailureRun = runWorkflowScenario(inlineScript, syntheticFailureResult)
+assert.equal(syntheticFailureRun.status, 0, `planned continuation with FAILED_COUNT_REPORTED must exit 0: ${syntheticFailureRun.stderr}`)
+const legacyAggregateRun = runWorkflowScenario(inlineScript, {
+  ...workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString()),
+  failed: 3,
+})
+assert.equal(legacyAggregateRun.status, 0, `planned continuation with legacy failed aggregate and failureAttempts=0 must exit 0: ${legacyAggregateRun.stderr}`)
 const apiFailureRun = runWorkflowScenario(inlineScript, { ...workflowResult('real_failure', 'API_FOOTBALL_ERROR', new Date(Date.now() + 120_000).toISOString()), failed: 1, failures: [{ message: 'api-football failed' }] })
 assert.equal(apiFailureRun.status, 1, 'real API failure must exit workflow with code 1')
+const unsafePlannedApiRun = runWorkflowScenario(inlineScript, { ...workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString()), failed: 1, failures: [{ message: 'api-football error: upstream rejected request' }] })
+assert.equal(unsafePlannedApiRun.status, 1, 'real API diagnostics must not be hidden by a planned policy label')
 const databaseFailureRun = runWorkflowScenario(inlineScript, { ok: false, errorMessage: 'database unavailable' }, 500)
 assert.equal(databaseFailureRun.status, 1, 'database HTTP failure must exit workflow with code 1')
+const failedStepResult = workflowResult('real_failure', 'EXHAUSTED_REAL_FAILURES', new Date(Date.now() + 120_000).toISOString())
+failedStepResult.steps[0].status = 'failed'
+const failedStepRun = runWorkflowScenario(inlineScript, failedStepResult)
+assert.equal(failedStepRun.status, 1, 'failed required step must exit workflow with code 1')
+for (const reason of ['CURSOR_REGRESSION:fixtureOffset', 'STUCK_CONTINUATION']) {
+  const cursorFailureRun = runWorkflowScenario(inlineScript, workflowResult('real_failure', reason, new Date(Date.now() + 120_000).toISOString()))
+  assert.equal(cursorFailureRun.status, 1, `${reason} must exit workflow with code 1`)
+}
 const invalidCanonicalRun = runWorkflowScenario(inlineScript, { ok: true, runId: 'canonical-run', status: 'partial', failed: 0, failures: [], steps: [] })
 assert.equal(invalidCanonicalRun.status, 1, 'missing canonical required steps must exit workflow with code 1')
+const changedRunId = workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString())
+changedRunId.runId = 'different-run'
+const changedRunIdRun = runWorkflowSequence(inlineScript, [
+  { body: workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() - 1_000).toISOString()), status: 200 },
+  { body: changedRunId, status: 200 },
+])
+assert.equal(changedRunIdRun.status, 1, 'changed canonical runId must exit workflow with code 1')
+const otherModeFailureRun = runWorkflowSequence(inlineScript, [
+  { body: completedWorkflowResult(), status: 200 },
+  { body: { ok: true, failed: 1, failures: [] }, status: 200 },
+])
+assert.equal(otherModeFailureRun.status, 1, 'non-daily mode failed aggregate must still exit workflow with code 1')
 assert.match(inlineScript, /invocation <= 12/)
 assert.match(inlineScript, /STUCK_CONTINUATION/)
 assert.match(inlineScript, /continuation scheduled runId=/)
@@ -175,9 +209,22 @@ function workflowResult(kind, reason, nextRetryAt) {
       phase,
       step_order: index + 1,
       status: 'pending_retry',
+      max_attempts: 20,
       next_retry_at: nextRetryAt,
       continuation_state: advancedCursor,
-      summary: { status: 'partial_success', partial: true, failed: 0, details: { continuationPolicy: { kind, reason } } },
+      summary: {
+        status: 'partial_success',
+        partial: true,
+        failed: 0,
+        details: {
+          continuationPolicy: {
+            kind,
+            reason,
+            cursorProgress: kind === 'planned_continuation' && reason === 'CURSOR_ADVANCED',
+            failureAttemptCount: kind === 'planned_continuation' ? 0 : 1,
+          },
+        },
+      },
     } : { phase, step_order: index + 1, status: 'pending' }),
   }
 }
@@ -191,8 +238,24 @@ function extractWorkflowNodeScript(source) {
 }
 
 function runWorkflowScenario(inlineScript, responseBody, status = 200) {
-  const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/sync'; process.env.EDGE_ADMIN_SECRET = 'test-secret'; globalThis.fetch = async () => new Response(${JSON.stringify(JSON.stringify(responseBody))}, { status: ${status}, headers: { 'content-type': 'application/json' } });\n`
+  return runWorkflowSequence(inlineScript, [{ body: responseBody, status }])
+}
+
+function runWorkflowSequence(inlineScript, responses) {
+  const serialized = JSON.stringify(responses)
+  const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/sync'; process.env.EDGE_ADMIN_SECRET = 'test-secret'; const mockResponses = ${serialized}; let mockIndex = 0; globalThis.fetch = async () => { const item = mockResponses[Math.min(mockIndex, mockResponses.length - 1)]; mockIndex += 1; return new Response(JSON.stringify(item.body), { status: item.status, headers: { 'content-type': 'application/json' } }); };\n`
   return spawnSync(process.execPath, [], { input: `${prelude}${inlineScript}`, encoding: 'utf8', timeout: 5_000 })
+}
+
+function completedWorkflowResult() {
+  return {
+    ok: true,
+    runId: 'canonical-run',
+    status: 'success',
+    failed: 0,
+    failures: [],
+    steps: ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking'].map((phase, index) => ({ phase, step_order: index + 1, status: 'success' })),
+  }
 }
 
 function compileWorkflowPolicy(source) {

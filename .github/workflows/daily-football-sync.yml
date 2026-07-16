@@ -61,10 +61,7 @@ jobs:
             return hasItems(result.steps) && result.steps.some((step) => step?.status === 'failed')
           }
 
-          function assertNoRealFailure(mode, result) {
-            if (result.ok === false) {
-              throw new Error(`${mode} returned ok:false`)
-            }
+          function assertGenericModeSuccess(mode, result) {
             if (Number(result.failed ?? 0) > 0) {
               throw new Error(`${mode} reported failed=${result.failed}`)
             }
@@ -74,10 +71,13 @@ jobs:
             if (hasFailedStep(result)) {
               throw new Error(`${mode} has a failed step`)
             }
-            if (mode === 'daily-sync-auto') {
-              const disposition = classifyWorkflowContinuation(result)
-              if (disposition.kind === 'real_failure') throw new Error(`daily-sync-auto real failure: ${disposition.reason}`)
+          }
+
+          function validateModeResult(mode, result) {
+            if (result.ok === false) {
+              throw new Error(`${mode} returned ok:false`)
             }
+            if (mode !== 'daily-sync-auto') assertGenericModeSuccess(mode, result)
           }
 
           async function postSync(payload) {
@@ -100,7 +100,7 @@ jobs:
             if (!response.ok) {
               throw new Error(`${payload.mode} failed with HTTP ${response.status}`)
             }
-            assertNoRealFailure(payload.mode, body)
+            validateModeResult(payload.mode, body)
             return body
           }
 
@@ -166,6 +166,39 @@ jobs:
             return { kind: 'incomplete', reason: 'UNCLASSIFIED_INCOMPLETE_STATE', step, policy }
           }
 
+          function hasGenericFailureAggregates(result) {
+            return Number(result.failed ?? 0) > 0 || hasItems(result.failures) || hasFailedStep(result)
+          }
+
+          function isSafePlannedContinuation(result, disposition) {
+            const step = disposition.step
+            const policy = disposition.policy
+            if (policy?.kind !== 'planned_continuation') return false
+            const failureAttempts = Number(policy.failureAttemptCount ?? policy.failureAttempts ?? step?.summary?.details?.failureAttempts ?? result.failureAttempts)
+            const progressVerified = policy.cursorProgress === true
+              || ['CURSOR_ADVANCED', 'EXECUTION_BUDGET_DEFERRED'].includes(String(policy.reason ?? disposition.reason ?? ''))
+            const aggregateFailures = Array.isArray(result.failures) ? result.failures : result.failures == null ? [] : [result.failures]
+            const syntheticOnly = aggregateFailures.every((failure) => String(failure?.message ?? failure) === 'FAILED_COUNT_REPORTED')
+            const diagnostics = JSON.stringify({
+              resultErrorCode: result.errorCode ?? null,
+              resultErrorMessage: result.errorMessage ?? null,
+              stepError: step?.error_message ?? null,
+              summaryErrorCode: step?.summary?.details?.errorCode ?? null,
+              summaryErrorStage: step?.summary?.details?.errorStage ?? null,
+              failures: result.failures ?? [],
+            })
+            const hasRealErrorDiagnostic = /API[_ -]?FOOTBALL|DATABASE|UPSTREAM|RATE[_ -]?LIMIT|DAILY_SYNC_STEP_CLAIM_LOST|CURSOR_REGRESSION|STUCK_CONTINUATION/i.test(diagnostics)
+            const rateLimited = result.rateLimited === true || step?.rate_limited === true || step?.summary?.rateLimited === true
+            const exhausted = Number.isFinite(failureAttempts) && failureAttempts >= Number(step?.max_attempts ?? 3)
+            return failureAttempts === 0
+              && progressVerified
+              && syntheticOnly
+              && !hasRealErrorDiagnostic
+              && !rateLimited
+              && !hasFailedStep(result)
+              && !exhausted
+          }
+
           function getRetryWindowDecision(result, nowMs = Date.now(), maxInlineWaitSeconds = 60) {
             const disposition = classifyWorkflowContinuation(result)
             const step = disposition.step
@@ -187,12 +220,20 @@ jobs:
             for (const phase of requiredPhases) {
               if ((result.steps ?? []).filter((step) => (step.phase ?? step.mode) === phase).length !== 1) throw new Error(`Canonical run ${expectedRunId} has invalid step cardinality for ${phase}`)
             }
-            const blocking = getBlockingStep(result)
-            if (result.status === 'failed' || blocking?.status === 'failed') {
-              throw new Error(`Daily pipeline failed at ${blocking?.phase ?? result.phase ?? 'unknown'}: ${blocking?.error_message ?? result.failures?.[0]?.message ?? 'no reason supplied'}`)
-            }
             const disposition = classifyWorkflowContinuation(result)
+            const blocking = disposition.step ?? getBlockingStep(result)
             if (disposition.kind === 'real_failure') throw new Error(`Daily pipeline real failure at ${blocking?.phase ?? result.phase ?? 'unknown'}: ${disposition.reason}`)
+            if (disposition.kind === 'planned_continuation') {
+              if (disposition.policy?.kind === 'planned_continuation' && !isSafePlannedContinuation(result, disposition)) {
+                throw new Error(`Daily pipeline rejected unsafe planned continuation at ${blocking?.phase ?? result.phase ?? 'unknown'}`)
+              }
+              if (hasGenericFailureAggregates(result) && disposition.policy?.kind !== 'planned_continuation') {
+                assertGenericModeSuccess('daily-sync-auto', result)
+              }
+              return disposition
+            }
+            assertGenericModeSuccess('daily-sync-auto', result)
+            return disposition
           }
 
           function logContinuation(result, invocation) {
