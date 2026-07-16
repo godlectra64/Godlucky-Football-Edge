@@ -1,3 +1,5 @@
+import { getStepFailureAttemptCount } from './dailyContinuationPolicy.js'
+
 export const requiredDailyPhases = Object.freeze(['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking'])
 
 export function createContinuationState(value = {}) {
@@ -129,7 +131,7 @@ export function getDailySyncCacheDecision(run = {}, steps = [], options = {}) {
     }
   }
 
-  const attemptCount = Number(firstIncomplete.attempt_count ?? 0)
+  const attemptCount = getStepFailureAttemptCount(firstIncomplete)
   const maxAttempts = Number(firstIncomplete.max_attempts ?? 3)
   if (attemptCount >= maxAttempts) {
     return {
@@ -217,7 +219,7 @@ export function isStepRunnable(step = {}, now = Date.now()) {
   const status = String(step.status ?? 'pending')
   if (status === 'pending') return true
   if (!['pending_retry', 'partial', 'failed'].includes(status)) return false
-  if (Number(step.attempt_count ?? 0) >= Number(step.max_attempts ?? 3)) return false
+  if (getStepFailureAttemptCount(step) >= Number(step.max_attempts ?? 3)) return false
   const nextRetry = step.next_retry_at ? new Date(step.next_retry_at).getTime() : 0
   return !nextRetry || nextRetry <= new Date(now).getTime()
 }
@@ -228,7 +230,7 @@ export function getRequiredRunStatus(steps = []) {
   const byPhase = new Map(rows.map((step) => [step.phase, step]))
   if (requiredDailyPhases.every((phase) => byPhase.get(phase)?.status === 'success')) return 'success'
   if (rows.some((step) => step.status === 'running')) return 'running'
-  if (rows.some((step) => step.status === 'failed' && Number(step.attempt_count ?? 0) >= Number(step.max_attempts ?? 3))) return 'failed'
+  if (rows.some((step) => step.status === 'failed' && getStepFailureAttemptCount(step) >= Number(step.max_attempts ?? 3))) return 'failed'
   return rows.some((step) => ['partial', 'pending_retry', 'failed'].includes(step.status)) ? 'partial' : 'running'
 }
 
@@ -250,7 +252,7 @@ export function auditPipelineState(run = {}, steps = [], options = {}) {
   })
   const pendingRetryMissingNext = steps.filter((step) => step.status === 'pending_retry' && !step.next_retry_at)
   const overdueRetry = steps.filter((step) => step.status === 'pending_retry' && step.next_retry_at && new Date(step.next_retry_at).getTime() < now)
-  const attemptsExceeded = steps.filter((step) => Number(step.attempt_count ?? 0) > Number(step.max_attempts ?? 3))
+  const attemptsExceeded = steps.filter((step) => getStepFailureAttemptCount(step) > Number(step.max_attempts ?? 3))
   const incompleteRequired = requiredDailyPhases.filter((phase) => !steps.some((step) => step.phase === phase && step.status === 'success'))
   const successWithIncomplete = run.status === 'success' && incompleteRequired.length > 0
   const persistedProgress = run.progress_percent ?? run.summary?.progressPercent
@@ -271,7 +273,7 @@ export function auditPipelineCompletion(run = {}, steps = [], options = {}) {
     const retryAt = new Date(step.next_retry_at ?? 0).getTime()
     return Number.isFinite(retryAt)
       && retryAt > now
-      && Number(step.attempt_count ?? 0) < Number(step.max_attempts ?? 3)
+      && getStepFailureAttemptCount(step) < Number(step.max_attempts ?? 3)
   })
   const status = String(run.status ?? '').toLowerCase()
   const phase = String(run.current_phase ?? '').toLowerCase()

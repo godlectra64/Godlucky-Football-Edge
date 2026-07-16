@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import { auditPipelineState, getRequiredRunStatus } from '../supabase/functions/_shared/pipelinePolicy.js'
+import { getStepFailureAttemptCount } from '../supabase/functions/_shared/dailyContinuationPolicy.js'
 
 dotenv.config({ path: '.env.local', quiet: true })
 dotenv.config({ quiet: true })
@@ -30,7 +31,7 @@ for (const run of runs) {
   const steps = rawSteps ?? []
   const audit = auditPipelineState(run, steps)
   for (const step of audit.staleRunning) {
-    const exhausted = Number(step.attempt_count ?? 0) >= Number(step.max_attempts ?? 3)
+    const exhausted = getStepFailureAttemptCount(step) >= Number(step.max_attempts ?? 3)
     proposals.push(proposal(run, step, exhausted ? 'MARK_FAILED_MAX_ATTEMPTS' : 'RECOVER_STALE_TO_PENDING_RETRY', true))
   }
   for (const step of audit.pendingRetryMissingNext) proposals.push(proposal(run, step, 'SCHEDULE_MISSING_RETRY', true))

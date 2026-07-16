@@ -74,6 +74,10 @@ jobs:
             if (hasFailedStep(result)) {
               throw new Error(`${mode} has a failed step`)
             }
+            if (mode === 'daily-sync-auto') {
+              const disposition = classifyWorkflowContinuation(result)
+              if (disposition.kind === 'real_failure') throw new Error(`daily-sync-auto real failure: ${disposition.reason}`)
+            }
           }
 
           async function postSync(payload) {
@@ -119,12 +123,76 @@ jobs:
             return requiredPhases.map((phase) => byPhase.get(phase)).find((step) => !step || step.status !== 'success') ?? null
           }
 
+          function getStepContinuationPolicy(step) {
+            return step?.summary?.details?.continuationPolicy ?? step?.summary?.continuationPolicy ?? null
+          }
+
+          function getContinuationCursor(step) {
+            const cursor = step?.continuation_state ?? {}
+            return {
+              providerPage: Number(cursor.providerPage ?? step?.provider_page ?? 1),
+              fixtureOffset: Number(cursor.fixtureOffset ?? step?.fixture_offset ?? 0),
+              oddsOffset: Number(cursor.oddsOffset ?? step?.odds_offset ?? 0),
+              processedFixtureCount: Number(cursor.processedFixtureCount ?? step?.processed_fixture_count ?? 0),
+              lastProcessedFixtureId: cursor.lastProcessedFixtureId ?? step?.last_processed_fixture_id ?? null,
+              batchSignature: cursor.batchSignature ?? step?.batch_signature ?? null,
+            }
+          }
+
+          function continuationCursorKey(result) {
+            return JSON.stringify(getContinuationCursor(getBlockingStep(result)))
+          }
+
+          function classifyWorkflowContinuation(result) {
+            const step = getBlockingStep(result)
+            const policy = getStepContinuationPolicy(step)
+            if (result.status === 'failed' || step?.status === 'failed') return { kind: 'real_failure', reason: policy?.reason ?? 'FAILED_STEP', step, policy }
+            if (policy?.kind === 'real_failure') return { kind: 'real_failure', reason: policy.reason ?? 'REAL_FAILURE', step, policy }
+            if (Array.isArray(result.invariantViolations) && result.invariantViolations.length) return { kind: 'real_failure', reason: 'INVARIANT_VIOLATION', step, policy }
+            if (step?.status === 'running') return { kind: 'planned_continuation', reason: 'ACTIVE_ATOMIC_CLAIM', step, policy }
+            if (step?.status === 'pending_retry' && policy?.kind === 'planned_continuation') {
+              return { kind: 'planned_continuation', reason: policy.reason ?? 'PLANNED_CONTINUATION', step, policy }
+            }
+            if (step?.status === 'pending' && Number(result.failed ?? 0) === 0 && !hasItems(result.failures)) {
+              return { kind: 'planned_continuation', reason: 'NEXT_REQUIRED_PHASE_PENDING', step, policy }
+            }
+            const legacyPlanned = step?.status === 'pending_retry'
+              && Number(result.failed ?? 0) === 0
+              && !hasItems(result.failures)
+              && step?.rate_limited !== true
+              && (step?.summary?.partial === true || step?.summary?.status === 'partial_success' || /SOFT_DEADLINE|PLANNED_CONTINUATION/.test(String(step?.summary?.message ?? step?.error_message ?? '')))
+            if (legacyPlanned) return { kind: 'planned_continuation', reason: 'LEGACY_SAFE_CONTINUATION', step, policy }
+            if (!step && isComplete(result)) return { kind: 'complete', reason: 'PIPELINE_COMPLETE', step, policy }
+            return { kind: 'incomplete', reason: 'UNCLASSIFIED_INCOMPLETE_STATE', step, policy }
+          }
+
+          function getRetryWindowDecision(result, nowMs = Date.now(), maxInlineWaitSeconds = 60) {
+            const disposition = classifyWorkflowContinuation(result)
+            const step = disposition.step
+            if (step?.status === 'running' && disposition.kind === 'planned_continuation') return { action: 'schedule_next_workflow', retryAfterSeconds: 0, disposition }
+            if (step?.status !== 'pending_retry') return { action: 'continue', retryAfterSeconds: 0, disposition }
+            if (!step.next_retry_at) return { action: 'failure', reason: `pending_retry step ${step.phase} is missing next_retry_at`, disposition }
+            const retryAfterSeconds = Math.ceil((new Date(step.next_retry_at).getTime() - nowMs) / 1000)
+            if (!Number.isFinite(retryAfterSeconds)) return { action: 'failure', reason: `pending_retry step ${step.phase} has invalid next_retry_at`, disposition }
+            if (retryAfterSeconds <= 0) return { action: 'continue', retryAfterSeconds: 0, disposition }
+            if (disposition.kind !== 'planned_continuation') return { action: 'failure', reason: `Unclassified retry window for ${step.phase}`, disposition }
+            if (retryAfterSeconds > maxInlineWaitSeconds) return { action: 'schedule_next_workflow', retryAfterSeconds, disposition }
+            return { action: 'wait', retryAfterSeconds: Math.max(1, retryAfterSeconds), disposition }
+          }
+
           function assertPipelineState(result, expectedRunId) {
             if (result.runId !== expectedRunId) throw new Error(`Continuation changed run id from ${expectedRunId} to ${result.runId ?? 'missing'}`)
+            const required = getRequiredSteps(result)
+            if (required.length !== requiredPhases.length) throw new Error(`Canonical run ${expectedRunId} is missing required steps`)
+            for (const phase of requiredPhases) {
+              if ((result.steps ?? []).filter((step) => (step.phase ?? step.mode) === phase).length !== 1) throw new Error(`Canonical run ${expectedRunId} has invalid step cardinality for ${phase}`)
+            }
             const blocking = getBlockingStep(result)
             if (result.status === 'failed' || blocking?.status === 'failed') {
               throw new Error(`Daily pipeline failed at ${blocking?.phase ?? result.phase ?? 'unknown'}: ${blocking?.error_message ?? result.failures?.[0]?.message ?? 'no reason supplied'}`)
             }
+            const disposition = classifyWorkflowContinuation(result)
+            if (disposition.kind === 'real_failure') throw new Error(`Daily pipeline real failure at ${blocking?.phase ?? result.phase ?? 'unknown'}: ${disposition.reason}`)
           }
 
           function logContinuation(result, invocation) {
@@ -140,26 +208,33 @@ jobs:
                 providerPage: cursor.providerPage ?? step?.provider_page ?? null,
                 fixtureOffset: cursor.fixtureOffset ?? step?.fixture_offset ?? null,
                 oddsOffset: cursor.oddsOffset ?? step?.odds_offset ?? null,
+                processedFixtureCount: cursor.processedFixtureCount ?? step?.processed_fixture_count ?? null,
                 lastProcessedFixtureId: cursor.lastProcessedFixtureId ?? step?.last_processed_fixture_id ?? null,
                 batchSignature: cursor.batchSignature ?? step?.batch_signature ?? null,
               },
               nextRetryAt: step?.next_retry_at ?? null,
               status: result.status,
+              continuationKind: getStepContinuationPolicy(step)?.kind ?? null,
+              continuationReason: getStepContinuationPolicy(step)?.reason ?? null,
             })))
           }
 
           async function waitForRetryWindow(result) {
-            const step = getBlockingStep(result)
-            if (step?.status !== 'pending_retry') return
-            if (!step.next_retry_at) throw new Error(`pending_retry step ${step.phase} is missing next_retry_at`)
-            const retryAfterSeconds = Math.ceil((new Date(step.next_retry_at).getTime() - Date.now()) / 1000)
-            if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) return
-            if (retryAfterSeconds > 60) throw new Error(`Daily pipeline deferred until ${step.next_retry_at}; required phase ${step.phase} is incomplete`)
-            const waitSeconds = Math.max(1, retryAfterSeconds)
-            console.log(`daily-sync-auto pending_retry; waiting ${waitSeconds}s for the persisted retry window`)
-            await new Promise((resolve) => setTimeout(resolve, waitSeconds * 1000))
+            const decision = getRetryWindowDecision(result)
+            if (decision.action === 'failure') throw new Error(decision.reason)
+            if (decision.action === 'schedule_next_workflow') {
+              const cursor = getContinuationCursor(decision.disposition.step)
+              console.log(`continuation scheduled runId=${result.runId} phase=${decision.disposition.step?.phase ?? result.phase ?? 'unknown'} fixtureOffset=${cursor.fixtureOffset} processedFixtureCount=${cursor.processedFixtureCount} nextRetryAt=${decision.disposition.step?.next_retry_at}`)
+              return decision
+            }
+            if (decision.action === 'wait') {
+              console.log(`daily-sync-auto planned continuation; waiting ${decision.retryAfterSeconds}s for the persisted retry window`)
+              await new Promise((resolve) => setTimeout(resolve, decision.retryAfterSeconds * 1000))
+            }
+            return decision
           }
 
+          async function main() {
           let dailySync = await postSync({ mode: 'daily-sync-auto' })
           const runId = dailySync.runId
           if (!runId) {
@@ -167,9 +242,17 @@ jobs:
           }
           assertPipelineState(dailySync, runId)
           logContinuation(dailySync, 1)
+          let continuationScheduled = false
+          let invocationCount = 1
+          let previousCursorKey = continuationCursorKey(dailySync)
+          let repeatedNoProgress = 0
 
           for (let invocation = 2; invocation <= 12 && !isComplete(dailySync); invocation += 1) {
-            await waitForRetryWindow(dailySync)
+            const retryWindow = await waitForRetryWindow(dailySync)
+            if (retryWindow.action === 'schedule_next_workflow') {
+              continuationScheduled = true
+              break
+            }
             console.log(`Continuing daily-sync-auto run ${runId}; invocation ${invocation}/12`)
             dailySync = await postSync({
               mode: 'daily-sync-auto',
@@ -177,16 +260,40 @@ jobs:
               autoAdvance: true,
               maxStepsPerRequest: 2,
             })
+            invocationCount = invocation
             assertPipelineState(dailySync, runId)
             logContinuation(dailySync, invocation)
+            const disposition = classifyWorkflowContinuation(dailySync)
+            const currentCursorKey = continuationCursorKey(dailySync)
+            if (disposition.kind === 'planned_continuation' && currentCursorKey === previousCursorKey && disposition.reason !== 'EXECUTION_BUDGET_DEFERRED') {
+              repeatedNoProgress += 1
+            } else {
+              repeatedNoProgress = 0
+            }
+            if (repeatedNoProgress >= 3) throw new Error(`STUCK_CONTINUATION: cursor did not advance for ${repeatedNoProgress} consecutive invocations`)
+            previousCursorKey = currentCursorKey
           }
 
           if (!isComplete(dailySync)) {
             const step = getBlockingStep(dailySync)
-            throw new Error(`Daily pipeline incomplete after continuation budget: status=${dailySync.status ?? 'unknown'}, phase=${step?.phase ?? dailySync.phase ?? 'unknown'}, next_retry_at=${step?.next_retry_at ?? 'missing'}`)
+            const disposition = classifyWorkflowContinuation(dailySync)
+            const finalRetryWindow = getRetryWindowDecision(dailySync)
+            if (finalRetryWindow.action === 'failure') throw new Error(finalRetryWindow.reason)
+            if (disposition.kind !== 'planned_continuation') {
+              throw new Error(`Daily pipeline incomplete after continuation budget: status=${dailySync.status ?? 'unknown'}, phase=${step?.phase ?? dailySync.phase ?? 'unknown'}, next_retry_at=${step?.next_retry_at ?? 'missing'}`)
+            }
+            const cursor = getContinuationCursor(step)
+            console.log(`continuation scheduled runId=${runId} phase=${step?.phase ?? dailySync.phase ?? 'unknown'} fixtureOffset=${cursor.fixtureOffset} processedFixtureCount=${cursor.processedFixtureCount} nextRetryAt=${step?.next_retry_at ?? 'active-claim'} invocation=${invocationCount}/12 deferred=${continuationScheduled}`)
+            console.log('Daily pipeline planned continuation accepted; the next scheduled workflow will resume the canonical run.')
+          } else {
+            console.log(`Daily Market-Ready pipeline ${runId} completed all required phases.`)
+            await postSync({ mode: 'result-refresh', limit: 20 })
+            console.log('Daily football sync workflow completed successfully.')
+          }
           }
 
-          console.log(`Daily Market-Ready pipeline ${runId} completed all required phases.`)
-          await postSync({ mode: 'result-refresh', limit: 20 })
-          console.log('Daily football sync workflow completed successfully.')
+          main().catch((error) => {
+            console.error(maskText(error?.stack ?? error?.message ?? error))
+            process.exitCode = 1
+          })
           NODE

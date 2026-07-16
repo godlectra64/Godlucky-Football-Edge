@@ -36,6 +36,12 @@ import {
   selectDailyFixtureBatch,
 } from '../_shared/dailyFixturesPolicy.js'
 import {
+  buildDailyContinuationRetryPlan,
+  classifyDailyStepContinuation,
+  getStepFailureAttemptCount,
+  getStepStuckContinuationCount,
+} from '../_shared/dailyContinuationPolicy.js'
+import {
   MAX_DAILY_SYNC_STEPS_PER_REQUEST,
   MIN_PHASE_START_REMAINING_MS,
   UpstreamResponseError,
@@ -1017,14 +1023,35 @@ async function recoverStaleDailySyncSteps(runId: string, staleAfterMs = 15 * 60 
     .lt('updated_at', cutoff)
   if (result.error) throw result.error
   for (const step of result.data ?? []) {
-    const exhausted = Number(step.attempt_count ?? 0) >= Number(step.max_attempts ?? 3)
+    const continuationState = getStepContinuation(step)
+    const continuationPolicy = classifyDailyStepContinuation({ status: 'error', failed: 1, details: { errorCode: 'STALE_RUNNING_STEP' } }, {
+      previousContinuation: continuationState,
+      nextContinuation: continuationState,
+      previousFailureAttemptCount: getStepFailureAttemptCount(step),
+      previousStuckContinuationCount: getStepStuckContinuationCount(step),
+    })
+    const exhausted = continuationPolicy.failureAttemptCount >= Number(step.max_attempts ?? 3)
+    const errorMessage = exhausted ? 'STALE_RUNNING_MAX_FAILURE_ATTEMPTS' : 'STALE_RUNNING_RECOVERED'
+    const summary = {
+      ...(step.summary && typeof step.summary === 'object' ? step.summary : {}),
+      status: 'error',
+      failed: Math.max(1, Number(step.summary?.failed ?? 0)),
+      message: errorMessage,
+      continuationState,
+      details: {
+        ...(step.summary?.details && typeof step.summary.details === 'object' ? step.summary.details : {}),
+        errorCode: 'STALE_RUNNING_STEP',
+        continuationPolicy,
+      },
+    }
     const update = await supabase
       .from('api_football_daily_sync_steps')
       .update({
         status: exhausted ? 'failed' : 'pending_retry',
         next_retry_at: exhausted ? null : new Date().toISOString(),
         finished_at: new Date().toISOString(),
-        error_message: exhausted ? 'STALE_RUNNING_MAX_ATTEMPTS' : 'STALE_RUNNING_RECOVERED',
+        error_message: errorMessage,
+        summary,
       })
       .eq('id', step.id)
       .eq('status', 'running')
@@ -1119,9 +1146,18 @@ async function deferDailySyncStepForDeadline(run: any, step: any, context: Footb
     durationMs: context.executionBudget.budgetMs - getRemainingExecutionMs(context.executionBudget),
     continuation: continuationState,
   }) as DailyFullSyncStepSummary
+  const continuationPolicy = classifyDailyStepContinuation(summary, {
+    previousContinuation: continuationState,
+    nextContinuation: continuationState,
+    previousFailureAttemptCount: getStepFailureAttemptCount(step),
+    previousStuckContinuationCount: getStepStuckContinuationCount(step),
+    executionBudgetDeferred: true,
+  })
   summary.details = {
     ...(summary.details ?? {}),
     remainingMs: getRemainingExecutionMs(context.executionBudget),
+    continuationSignals: { executionBudgetDeferred: true, hasMore: true, resultFailureCount: 0 },
+    continuationPolicy,
   }
 
   let stepUpdateQuery = supabase
@@ -1130,7 +1166,7 @@ async function deferDailySyncStepForDeadline(run: any, step: any, context: Footb
       status: 'pending_retry',
       finished_at: now.toISOString(),
       next_retry_at: nextRetryAt,
-      error_message: summary.message,
+      error_message: null,
       summary,
       continuation_state: continuationState,
       provider_page: continuationState.providerPage,
@@ -1160,7 +1196,7 @@ async function deferDailySyncStepForDeadline(run: any, step: any, context: Footb
       current_phase: step.phase,
       current_step: step.step_order,
       finished_at: null,
-      last_error: summary.message,
+      last_error: null,
       summary: buildDailyRunSummaryCachedWithTiming(freshState.steps, freshState.run.summary ?? run.summary, summary, run.id),
     })
     .eq('id', run.id)
@@ -1177,7 +1213,7 @@ async function runRequestedDailySyncPhase(state: any, phase: string, body: Recor
   const step = state.steps.find((item: any) => item.phase === phase)
   if (!step) throw new Error(`Daily sync phase not found: ${phase}`)
   if (step.status === 'success') throw new Error(`Daily sync phase ${phase} already completed for run ${state.run.id}`)
-  if (Number(step.attempt_count ?? 0) >= Number(step.max_attempts ?? 3)) throw new Error(`Daily sync phase ${phase} exhausted its retry attempts`)
+  if (getStepFailureAttemptCount(step) >= Number(step.max_attempts ?? 3)) throw new Error(`Daily sync phase ${phase} exhausted its real-failure retry attempts`)
   if (!canRunRequiredPhase(state.steps, phase)) throw new Error(`Daily sync phase ${phase} is blocked by an incomplete required predecessor`)
   return runDailySyncStep(state.run, step, body, dayRange, context)
 }
@@ -1239,12 +1275,13 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
   const phaseLimit = limits[claimedStep.phase] ?? 10
   const attemptCount = Number(claimedStep.attempt_count ?? 0)
   const maxAttempts = Number(claimedStep.max_attempts ?? step.max_attempts ?? 3)
+  const previousContinuationState = getStepContinuation(claimedStep)
   context.limit = phaseLimit
   context.runId = run.id
   context.stepId = claimedStep.id
   context.stepAttemptCount = attemptCount
   context.phase = claimedStep.phase
-  context.continuationState = getStepContinuation(claimedStep)
+  context.continuationState = previousContinuationState
 
   const runStarted = await supabase
     .from('api_football_daily_sync_runs')
@@ -1281,7 +1318,17 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
     }
   }
 
-  const retry = getDailyStepRetryPlan(summary, attemptCount, maxAttempts)
+  const retry = getDailyStepRetryPlan(summary, claimedStep, previousContinuationState, attemptCount, maxAttempts)
+  summary.details = {
+    ...(summary.details ?? {}),
+    continuationPolicy: retry.continuationPolicy,
+  }
+  if (retry.continuationPolicy.kind === 'planned_continuation' && !summary.message) {
+    summary.message = `PLANNED_CONTINUATION:${retry.continuationPolicy.reason}`
+  }
+  if (retry.continuationPolicy.kind === 'real_failure' && !summary.message) {
+    summary.message = retry.continuationPolicy.reason
+  }
   const stepStatus = retry.status
   const finishedAt = new Date().toISOString()
   const continuationState = createContinuationState(summary.continuationState ?? context.continuationState)
@@ -1297,12 +1344,12 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
       failed: summary.failed,
       skipped: summary.skipped,
       rate_limited: summary.rateLimited,
-      attempt_count: attemptCount,
+      attempt_count: retry.persistedAttemptCount,
       max_attempts: maxAttempts,
       last_attempt_at: finishedAt,
       next_retry_at: retry.nextRetryAt,
       summary,
-      error_message: summary.message ?? null,
+      error_message: retry.continuationPolicy.kind === 'real_failure' ? summary.message ?? retry.continuationPolicy.reason : null,
       provider_page: continuationState.providerPage,
       fixture_offset: continuationState.fixtureOffset,
       odds_offset: continuationState.oddsOffset,
@@ -1329,7 +1376,7 @@ async function runDailySyncStep(run: any, step: any, body: Record<string, unknow
       current_phase: claimedStep.phase,
       current_step: claimedStep.step_order,
       finished_at: runStatus === 'success' || runStatus === 'failed' ? finishedAt : null,
-      last_error: summary.message ?? null,
+      last_error: retry.continuationPolicy.kind === 'real_failure' ? summary.message ?? retry.continuationPolicy.reason : null,
       summary: buildDailyRunSummaryCachedWithTiming(freshState.steps, freshState.run.summary ?? run.summary, summary, run.id),
     })
     .eq('id', run.id)
@@ -1397,6 +1444,7 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     const totalCandidates = sumResultField(results, 'totalCandidates')
     const rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
     const failed = sumResultField(results, 'failed') + endpointDelta.failed
+    const resultFailureCount = results.reduce((total, result) => total + (Array.isArray(result?.failures) ? result.failures.length : 0), 0)
     const skipped = sumResultField(results, 'skipped') + endpointDelta.skipped
     const partial = context.deadlineReached || results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
     const status = failed > 0 || partial ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
@@ -1419,6 +1467,11 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
       details: {
         ...buildDailyPhaseDetails(phase, results),
         ...(context.deadlineReached ? { reason: 'SOFT_DEADLINE_REACHED', remainingMs: getRemainingExecutionMs(context.executionBudget) } : {}),
+        continuationSignals: {
+          executionBudgetDeferred: context.deadlineReached,
+          hasMore: results.some((result) => result?.hasMore === true),
+          resultFailureCount,
+        },
       },
       rankingReadiness: phase === 'ranking' ? results[0]?.rankingReadiness : undefined,
       continuationState: createContinuationState(context.continuationState),
@@ -1532,22 +1585,22 @@ function mapDailyStepStatus(summary: DailyFullSyncStepSummary) {
   return 'success'
 }
 
-function getDailyStepRetryPlan(summary: DailyFullSyncStepSummary, attemptCount: number, maxAttempts: number) {
-  const failed = summary.status === 'error' || summary.status === 'partial_success' || summary.failed > 0
-  if (!failed) return { status: mapDailyStepStatus(summary), nextRetryAt: null }
-  if (attemptCount < maxAttempts) {
-    return {
-      status: 'pending_retry',
-      nextRetryAt: new Date(Date.now() + getRetryDelayMs(attemptCount)).toISOString(),
-    }
+function getDailyStepRetryPlan(summary: DailyFullSyncStepSummary, step: any, previousContinuation: Record<string, any>, claimedAttemptCount: number, maxAttempts: number) {
+  const persistedAttemptCount = Math.max(0, claimedAttemptCount - 1)
+  const previousFailureAttemptCount = getStepFailureAttemptCount({ ...step, attempt_count: persistedAttemptCount })
+  const continuationPolicy = classifyDailyStepContinuation(summary, {
+    previousContinuation,
+    nextContinuation: summary.continuationState ?? previousContinuation,
+    previousFailureAttemptCount,
+    previousStuckContinuationCount: getStepStuckContinuationCount(step),
+  })
+  const retryPlan = buildDailyContinuationRetryPlan(continuationPolicy, { claimedAttemptCount, maxAttempts })
+  return {
+    status: continuationPolicy.kind === 'success' ? mapDailyStepStatus(summary) : retryPlan.exhausted ? 'failed' : 'pending_retry',
+    nextRetryAt: retryPlan.nextRetryAt,
+    persistedAttemptCount: retryPlan.persistedAttemptCount,
+    continuationPolicy,
   }
-  return { status: 'failed', nextRetryAt: null }
-}
-
-function getRetryDelayMs(attemptCount: number) {
-  if (attemptCount <= 1) return 60 * 1000
-  if (attemptCount === 2) return 3 * 60 * 1000
-  return 5 * 60 * 1000
 }
 
 function getDailyRunStatus(steps: Array<any>) {

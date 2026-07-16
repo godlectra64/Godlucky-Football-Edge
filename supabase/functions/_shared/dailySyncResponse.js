@@ -1,4 +1,5 @@
 import { findNextRequiredStep, requiredDailyPhases } from './pipelinePolicy.js'
+import { getStepFailureAttemptCount } from './dailyContinuationPolicy.js'
 
 export function buildCachedFinalDailySummary(steps = [], storedSummary = null) {
   const summary = {
@@ -141,7 +142,7 @@ export function findWaitingRetryStep(steps = [], now = Date.now()) {
     .sort((a, b) => Number(a.step_order ?? 0) - Number(b.step_order ?? 0))
     .find((step) => step.status !== 'success')
   if (!firstIncomplete || !['pending_retry', 'failed', 'partial'].includes(String(firstIncomplete.status ?? ''))) return null
-  if (Number(firstIncomplete.attempt_count ?? 0) >= Number(firstIncomplete.max_attempts ?? 3)) return null
+  if (getStepFailureAttemptCount(firstIncomplete) >= Number(firstIncomplete.max_attempts ?? 3)) return null
   const nextRetryMs = firstIncomplete.next_retry_at ? new Date(firstIncomplete.next_retry_at).getTime() : 0
   return nextRetryMs > nowMs ? firstIncomplete : null
 }

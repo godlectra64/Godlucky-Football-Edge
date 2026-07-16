@@ -2,6 +2,7 @@ import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
 import { getBangkokDayRange } from '../src/utils/bangkokDateRange.js'
 import { auditPipelineCompletion, requiredDailyPhases } from '../supabase/functions/_shared/pipelinePolicy.js'
+import { getStepFailureAttemptCount } from '../supabase/functions/_shared/dailyContinuationPolicy.js'
 
 dotenv.config({ path: '.env.local', quiet: true })
 dotenv.config({ quiet: true })
@@ -58,7 +59,7 @@ if (run) {
   console.log(`status=${run.status} phase=${run.current_phase ?? 'none'}`)
   console.log(`steps=${JSON.stringify(counts)}`)
   console.log(`progress=${audit.progress}`)
-  console.log(`required_pending_steps=${JSON.stringify(audit.requiredPendingSteps.map((step) => ({ phase: step.phase, status: step.status, attempt: Number(step.attempt_count ?? 0), maxAttempts: Number(step.max_attempts ?? 3) })))}`)
+  console.log(`required_pending_steps=${JSON.stringify(audit.requiredPendingSteps.map((step) => ({ phase: step.phase, status: step.status, attempt: Number(step.attempt_count ?? 0), failureAttempts: getStepFailureAttemptCount(step), maxAttempts: Number(step.max_attempts ?? 3) })))}`)
   console.log(`retry_step=${audit.retrySteps[0]?.phase ?? 'none'}`)
   console.log(`next_retry_at=${audit.nextRetryAt ?? 'missing'}`)
   console.log(`overdue_duration_ms=${audit.overdueDurationMs}`)
