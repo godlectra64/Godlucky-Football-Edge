@@ -144,6 +144,47 @@ assert.equal(workflowPolicy.getRetryWindowDecision(missingRetry, Date.parse(now)
 const scheduledRun = runWorkflowScenario(inlineScript, workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString()))
 assert.equal(scheduledRun.status, 0, `planned continuation must exit workflow successfully: ${scheduledRun.stderr}`)
 assert.match(scheduledRun.stdout, /continuation scheduled runId=canonical-run/)
+const productionFutureRetry = new Date(Date.now() + 120_000).toISOString()
+const latestProductionPayload = productionWorkflowResult({ nextRetryAt: productionFutureRetry })
+assert.equal(latestProductionPayload.steps[0].summary.details.continuationPolicy, undefined, 'Production-shaped fixture must exercise the missing-metadata path')
+const latestProductionRun = runWorkflowScenario(inlineScript, latestProductionPayload)
+assert.equal(latestProductionRun.status, 0, `latest Production payload must pass assertPipelineState: ${latestProductionRun.stderr}`)
+assert.match(latestProductionRun.stdout, /continuation scheduled runId=9cf685ac-7b4a-4110-8a8e-eae61392cf72/)
+
+const cursorProgressRun = runWorkflowSequence(inlineScript, [
+  { body: productionWorkflowResult({ fixtureOffset: 22, processedFixtureCount: 22, lastProcessedFixtureId: 1554300, nextRetryAt: new Date(Date.now() - 1_000).toISOString() }), status: 200 },
+  { body: latestProductionPayload, status: 200 },
+])
+assert.equal(cursorProgressRun.status, 0, `missing-metadata cursor progress 22 -> 27 must exit 0: ${cursorProgressRun.stderr}`)
+
+const cursorRegressionRun = runWorkflowSequence(inlineScript, [
+  { body: productionWorkflowResult({ nextRetryAt: new Date(Date.now() - 1_000).toISOString() }), status: 200 },
+  { body: productionWorkflowResult({ fixtureOffset: 22, processedFixtureCount: 22, lastProcessedFixtureId: 1554300, nextRetryAt: productionFutureRetry }), status: 200 },
+])
+assert.equal(cursorRegressionRun.status, 1, 'missing-metadata cursor regression 27 -> 22 must exit workflow with code 1')
+assert.match(cursorRegressionRun.stderr, /unsafe planned continuation/)
+
+const repeatedNoProgressRun = runWorkflowScenario(inlineScript, productionWorkflowResult({ nextRetryAt: new Date(Date.now() - 1_000).toISOString() }))
+assert.equal(repeatedNoProgressRun.status, 1, 'repeated no-progress continuation must exit workflow with code 1 at the threshold')
+assert.match(repeatedNoProgressRun.stderr, /STUCK_CONTINUATION/)
+
+const exhaustedProductionPayload = productionWorkflowResult({ nextRetryAt: productionFutureRetry })
+exhaustedProductionPayload.steps[0].exhausted = true
+const exhaustedProductionRun = runWorkflowScenario(inlineScript, exhaustedProductionPayload)
+assert.equal(exhaustedProductionRun.status, 1, 'exhausted blocking step without continuationPolicy metadata must exit workflow with code 1')
+
+const missingProductionRetryRun = runWorkflowScenario(inlineScript, productionWorkflowResult({ nextRetryAt: null }))
+assert.equal(missingProductionRetryRun.status, 1, 'pending_retry without a valid next_retry_at must exit workflow with code 1')
+
+const productionApiFailure = productionWorkflowResult({ nextRetryAt: productionFutureRetry })
+productionApiFailure.failures = [{ message: 'api-football error: upstream HTTP 500' }]
+const productionApiFailureRun = runWorkflowScenario(inlineScript, productionApiFailure)
+assert.equal(productionApiFailureRun.status, 1, 'Production-shaped API failure must exit workflow with code 1')
+
+const productionDatabaseFailure = productionWorkflowResult({ nextRetryAt: productionFutureRetry })
+productionDatabaseFailure.errorMessage = 'database query failed'
+const productionDatabaseFailureRun = runWorkflowScenario(inlineScript, productionDatabaseFailure)
+assert.equal(productionDatabaseFailureRun.status, 1, 'Production-shaped database failure must exit workflow with code 1')
 const syntheticFailureResult = {
   ...workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString()),
   failed: 1,
@@ -229,6 +270,62 @@ function workflowResult(kind, reason, nextRetryAt) {
   }
 }
 
+function productionWorkflowResult({
+  runId = '9cf685ac-7b4a-4110-8a8e-eae61392cf72',
+  fixtureOffset = 27,
+  processedFixtureCount = 27,
+  lastProcessedFixtureId = 1554415,
+  nextRetryAt,
+} = {}) {
+  const continuationState = {
+    providerPage: 1,
+    fixtureOffset,
+    oddsOffset: 0,
+    processedFixtureCount,
+    lastProcessedFixtureId,
+    batchSignature: null,
+    completedBatchSignatures: [],
+    coreAuxiliaryComplete: false,
+  }
+  return {
+    ok: true,
+    mode: 'daily-sync-auto',
+    runId,
+    status: 'pending_retry',
+    phase: 'core',
+    failed: 0,
+    failures: [],
+    providerPage: 1,
+    fixtureOffset,
+    processedFixtureCount,
+    lastProcessedFixtureId,
+    coreAuxiliaryComplete: false,
+    steps: ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking'].map((phase, index) => phase === 'core' ? {
+      phase,
+      step_order: index + 1,
+      status: 'pending_retry',
+      max_attempts: 20,
+      next_retry_at: nextRetryAt,
+      continuation_state: continuationState,
+      summary: {
+        status: 'partial_success',
+        partial: true,
+        failed: 0,
+        failures: [],
+        rateLimited: false,
+        details: {
+          hasMore: true,
+          coreAuxiliaryComplete: false,
+        },
+      },
+    } : {
+      phase,
+      step_order: index + 1,
+      status: 'pending',
+    }),
+  }
+}
+
 function extractWorkflowNodeScript(source) {
   const startMarker = "node <<'NODE'"
   const start = source.indexOf(startMarker)
@@ -266,6 +363,8 @@ function compileWorkflowPolicy(source) {
     'getBlockingStep',
     'getStepContinuationPolicy',
     'getContinuationCursor',
+    'validateContinuationCursor',
+    'hasRealFailureDiagnostics',
     'classifyWorkflowContinuation',
     'getRetryWindowDecision',
   ]
