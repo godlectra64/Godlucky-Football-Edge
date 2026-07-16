@@ -10,7 +10,13 @@ const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL
 const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY
 if (!supabaseUrl || !supabaseKey) throw new Error('Missing Supabase environment variables for pipeline verification.')
 
-const supabase = createClient(supabaseUrl, supabaseKey)
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+    persistSession: false,
+  },
+})
 const date = process.env.SELECTION_DATE || process.argv[2] || getBangkokDayRange().dateKey
 let failed = false
 console.log(`[verify:daily-pipeline-completion] project_ref=${projectRef(supabaseUrl)}`)
@@ -60,8 +66,8 @@ if (run) {
   console.log(`invariant_violations=${JSON.stringify(audit.violations)}`)
 }
 
-if (failed) process.exit(1)
-console.log('Daily pipeline completion checks passed')
+if (failed) process.exitCode = 1
+else console.log('Daily pipeline completion checks passed')
 
 function report(label, count) {
   console.log(`${label}: ${count}`)
