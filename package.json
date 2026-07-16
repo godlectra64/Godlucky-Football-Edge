@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/dailySyncAuth.unit.test.mjs && node scripts/dailySyncResponse.unit.test.mjs && node scripts/dailySyncContinuation.unit.test.mjs && node scripts/syncReliability.unit.test.mjs && node scripts/resultSettlement.smoke.test.mjs && node scripts/verifyDailyPipelineCompletion.unit.test.mjs && node scripts/coreRegression.test.mjs && node scripts/migrationSafety.test.mjs",
+    "test": "node scripts/analysisEngine.smoke.test.mjs && node scripts/dailySyncAuth.unit.test.mjs && node scripts/dailySyncResponse.unit.test.mjs && node scripts/dailySyncContinuation.unit.test.mjs && node scripts/dailyFixturesPagination.unit.test.mjs && node scripts/syncReliability.unit.test.mjs && node scripts/resultSettlement.smoke.test.mjs && node scripts/verifyDailyPipelineCompletion.unit.test.mjs && node scripts/coreRegression.test.mjs && node scripts/migrationSafety.test.mjs",
     "verify:analysis": "node scripts/verifyAnalysisIntegrity.mjs",
     "verify:professional-pipeline": "node scripts/verifyAnalysisIntegrity.mjs",
     "backfill:professional-pipeline": "node scripts/backfillProfessionalPipeline.mjs",
@@ -53,6 +53,7 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
     "postcss": "^8.5.15",
+    "supabase": "^2.109.1",
     "tailwindcss": "^3.4.17",
     "vite": "^8.0.12",
     "vite-plugin-pwa": "^1.3.0"

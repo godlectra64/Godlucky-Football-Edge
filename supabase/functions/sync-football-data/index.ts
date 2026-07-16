@@ -21,7 +21,6 @@ import {
   buildBatchSignature,
   canRunRequiredPhase,
   claimDailyStepOnce,
-  collectProviderPages,
   createContinuationState,
   findNextRequiredStep,
   getDailySyncCacheDecision,
@@ -29,6 +28,13 @@ import {
   requiredDailyPhases,
   shouldProcessBatch,
 } from '../_shared/pipelinePolicy.js'
+import {
+  API_FOOTBALL_DAILY_FIXTURES_PROVIDER_PAGE,
+  advanceDailyFixtureCursor,
+  buildApiFootballDailyFixturesParams,
+  buildSinglePageFixtureDiscovery,
+  selectDailyFixtureBatch,
+} from '../_shared/dailyFixturesPolicy.js'
 import {
   MAX_DAILY_SYNC_STEPS_PER_REQUEST,
   MIN_PHASE_START_REMAINING_MS,
@@ -1843,21 +1849,17 @@ async function logDailyStepSkipped(context: FootballEnrichmentContext, step: num
 }
 
 async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangkokDayRange>, batchSize: number, context: FootballEnrichmentContext) {
-  const providerPage = Number(context.continuationState?.providerPage ?? 1)
-  const discovery = await fetchApiFootballFixturesWithPaging(dayRange.dateKey, providerPage, context)
+  const providerPage = API_FOOTBALL_DAILY_FIXTURES_PROVIDER_PAGE
+  const discovery = await fetchApiFootballFixturesWithPaging(dayRange.dateKey, context)
   const matches = [...discovery.matches].sort(compareFixtureSyncPriority)
-  const offset = Number(context.continuationState?.fixtureOffset ?? 0)
-  const batch = matches.slice(offset, offset + Math.max(1, batchSize))
+  const selected = selectDailyFixtureBatch(matches, context.continuationState?.fixtureOffset, batchSize)
+  const offset = selected.fixtureOffset
+  const batch = selected.batch
   const batchSignature = buildBatchSignature(batch.map((match: any) => match?.raw_fixture_id ?? match?.id))
   if (!shouldProcessBatch(context.continuationState, batchSignature)) {
-    const nextOffset = offset + batch.length
-    const pageComplete = nextOffset >= matches.length
-    const providerComplete = pageComplete && providerPage >= discovery.totalPages
-    await persistStepContinuation(context, {
-      providerPage: pageComplete ? providerPage + 1 : providerPage,
-      fixtureOffset: pageComplete ? 0 : nextOffset,
-    })
-    return { processed: 0, totalCandidates: matches.length, rowsSaved: 0, failed: 0, skipped: batch.length, partial: !providerComplete, nextOffset, hasMore: !providerComplete, batchSignature, duplicateBatchSkipped: true }
+    const cursor = advanceDailyFixtureCursor({ totalFixtures: selected.totalFixtures, fixtureOffset: offset, advancedBy: batch.length, batchComplete: true })
+    await persistStepContinuation(context, { providerPage: cursor.providerPage, fixtureOffset: cursor.fixtureOffset })
+    return { processed: 0, totalCandidates: matches.length, rowsSaved: 0, failed: 0, skipped: batch.length, partial: !cursor.providerComplete, nextOffset: cursor.fixtureOffset, hasMore: !cursor.providerComplete, providerComplete: cursor.providerComplete, batchSignature, duplicateBatchSkipped: true }
   }
 
   const startedAt = Date.now()
@@ -1884,13 +1886,11 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
       break
     }
   }
-  const nextOffset = offset + processed
   const batchComplete = processed === batch.length && failures.length === 0
-  const pageComplete = nextOffset >= matches.length && batchComplete
-  const providerComplete = pageComplete && providerPage >= discovery.totalPages
+  const cursor = advanceDailyFixtureCursor({ totalFixtures: selected.totalFixtures, fixtureOffset: offset, advancedBy: processed, batchComplete })
   await persistStepContinuation(context, {
-    providerPage: pageComplete ? providerPage + 1 : providerPage,
-    fixtureOffset: pageComplete ? 0 : nextOffset,
+    providerPage: cursor.providerPage,
+    fixtureOffset: cursor.fixtureOffset,
     lastProcessedFixtureId: processed > 0 ? nullableNumber(batch[processed - 1]?.raw_fixture_id) : context.continuationState?.lastProcessedFixtureId,
     batchSignature,
     batchComplete,
@@ -1900,9 +1900,10 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
     totalCandidates: matches.length,
     rowsSaved: processed,
     failed: failures.length,
-    partial: !providerComplete,
-    nextOffset,
-    hasMore: !providerComplete,
+    partial: !cursor.providerComplete,
+    nextOffset: cursor.fixtureOffset,
+    hasMore: !cursor.providerComplete,
+    providerComplete: cursor.providerComplete,
     batchSignature,
     providerPageCount: discovery.pageCount,
     failures,
@@ -7129,27 +7130,9 @@ async function fetchApiFootballFixtures(dateKey: string) {
   return (await fetchApiFootballFixturesWithPaging(dateKey)).matches
 }
 
-async function fetchApiFootballFixturesWithPaging(dateKey: string, startPage = 1, context?: FootballEnrichmentContext) {
-  if (context) {
-    const payload = await apiFootballGet('/fixtures', { date: dateKey, page: startPage }, context)
-    const currentPage = Math.max(1, Number(payload?.paging?.current ?? startPage))
-    const totalPages = Math.max(currentPage, Number(payload?.paging?.total ?? currentPage))
-    return {
-      matches: (Array.isArray(payload?.response) ? payload.response : []).map(normalizeApiFootballFixture),
-      pageCount: 1,
-      totalPages,
-    }
-  }
-  const result = await collectProviderPages(
-    (params: Record<string, unknown>) => apiFootballGet('/fixtures', params as Record<string, string | number | undefined>),
-    { date: dateKey },
-    { startPage },
-  )
-  return {
-    matches: result.rows.map(normalizeApiFootballFixture),
-    pageCount: result.pageCount,
-    totalPages: result.totalPages,
-  }
+async function fetchApiFootballFixturesWithPaging(dateKey: string, context?: FootballEnrichmentContext) {
+  const payload = await apiFootballGet('/fixtures', buildApiFootballDailyFixturesParams(dateKey), context)
+  return buildSinglePageFixtureDiscovery(payload, normalizeApiFootballFixture)
 }
 
 function getProviderFetchSignal(context?: FootballEnrichmentContext) {
