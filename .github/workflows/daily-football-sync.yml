@@ -57,15 +57,88 @@ jobs:
             return Array.isArray(value) && value.length > 0
           }
 
+          function asArray(value) {
+            return Array.isArray(value) ? value : value == null ? [] : [value]
+          }
+
+          function failureDiagnosticMessage(failure) {
+            return String(failure?.message ?? failure).trim()
+          }
+
+          function isSyntheticFailureDiagnostic(failure) {
+            return failureDiagnosticMessage(failure) === 'FAILED_COUNT_REPORTED'
+          }
+
+          function getFailureDiagnostics(result, step) {
+            return [
+              ...asArray(result.failures),
+              ...asArray(step?.failures),
+              ...asArray(step?.summary?.failures),
+              ...asArray(step?.summary?.details?.failures),
+            ]
+          }
+
+          function getNonSyntheticFailureDiagnostics(result, step) {
+            return getFailureDiagnostics(result, step).filter((failure) => !isSyntheticFailureDiagnostic(failure))
+          }
+
+          function hasSyntheticFailureDiagnostic(result, step, policy) {
+            return isSyntheticFailureDiagnostic(policy?.reason)
+              || getFailureDiagnostics(result, step).some(isSyntheticFailureDiagnostic)
+          }
+
+          function hasExplicitRealError(value) {
+            if (value == null || value === false || value === '') return false
+            if (isSyntheticFailureDiagnostic(value)) return false
+            if (Array.isArray(value)) return value.some(hasExplicitRealError)
+            if (typeof value === 'object') return Object.keys(value).length > 0
+            return true
+          }
+
+          function hasPositiveCounter(...values) {
+            return values.some((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+          }
+
+          function hasCurrentStepFailedCount(step) {
+            return hasPositiveCounter(step?.failed, step?.summary?.failed, step?.summary?.details?.failed)
+          }
+
+          function getCurrentFailureAttemptCount(result, step, policy) {
+            const values = [
+              policy?.failureAttemptCount,
+              policy?.failureAttempts,
+              step?.failureAttemptCount,
+              step?.failureAttempts,
+              step?.failure_attempts,
+              step?.summary?.failureAttemptCount,
+              step?.summary?.failureAttempts,
+              step?.summary?.details?.failureAttemptCount,
+              step?.summary?.details?.failureAttempts,
+              result.failureAttemptCount,
+              result.failureAttempts,
+            ].map(Number).filter(Number.isFinite)
+            return values.length > 0 ? Math.max(...values) : 0
+          }
+
+          function hasExhaustedCurrentStep(step, policy) {
+            return step?.exhausted === true
+              || policy?.exhausted === true
+              || step?.summary?.exhausted === true
+              || step?.summary?.details?.exhausted === true
+          }
+
           function hasFailedStep(result) {
             return hasItems(result.steps) && result.steps.some((step) => step?.status === 'failed')
           }
 
-          function assertGenericModeSuccess(mode, result) {
+          function assertGenericModeSuccess(mode, result, { ignoreSyntheticFailureDiagnostics = false } = {}) {
             if (Number(result.failed ?? 0) > 0) {
               throw new Error(`${mode} reported failed=${result.failed}`)
             }
-            if (hasItems(result.failures)) {
+            const failures = ignoreSyntheticFailureDiagnostics
+              ? asArray(result.failures).filter((failure) => !isSyntheticFailureDiagnostic(failure))
+              : result.failures
+            if (hasItems(failures)) {
               throw new Error(`${mode} returned failures`)
             }
             if (hasFailedStep(result)) {
@@ -147,11 +220,18 @@ jobs:
           function classifyWorkflowContinuation(result) {
             const step = getBlockingStep(result)
             const policy = getStepContinuationPolicy(step)
-            if (result.status === 'failed' || step?.status === 'failed') return { kind: 'real_failure', reason: policy?.reason ?? 'FAILED_STEP', step, policy }
-            if (policy?.kind === 'real_failure') return { kind: 'real_failure', reason: policy.reason ?? 'REAL_FAILURE', step, policy }
+            const policyFailureIsSynthetic = policy?.kind === 'real_failure' && isSyntheticFailureDiagnostic(policy?.reason)
+            const syntheticFailureReported = hasSyntheticFailureDiagnostic(result, step, policy)
+            if (result.ok !== true) return { kind: 'real_failure', reason: 'OK_NOT_TRUE', step, policy }
+            if (result.status === 'failed') return { kind: 'real_failure', reason: policyFailureIsSynthetic ? 'FAILED_STATUS' : policy?.reason ?? 'FAILED_STATUS', step, policy }
+            if (policy?.kind === 'real_failure' && !policyFailureIsSynthetic) return { kind: 'real_failure', reason: policy.reason ?? 'REAL_FAILURE', step, policy }
             if (Array.isArray(result.invariantViolations) && result.invariantViolations.length) return { kind: 'real_failure', reason: 'INVARIANT_VIOLATION', step, policy }
-            if (step?.exhausted === true || policy?.exhausted === true || step?.summary?.details?.exhausted === true) return { kind: 'real_failure', reason: 'EXHAUSTED_REAL_FAILURES', step, policy }
+            if (Number(result.failed ?? 0) > 0) return { kind: 'real_failure', reason: syntheticFailureReported ? 'FAILED_COUNT_REPORTED' : 'RESULT_FAILED_COUNT', step, policy }
             if (hasRealFailureDiagnostics(result, step)) return { kind: 'real_failure', reason: 'REAL_FAILURE_DIAGNOSTIC', step, policy }
+            if (step?.status === 'failed') return { kind: 'real_failure', reason: policyFailureIsSynthetic ? 'FAILED_STEP' : policy?.reason ?? 'FAILED_STEP', step, policy }
+            if (hasCurrentStepFailedCount(step)) return { kind: 'real_failure', reason: syntheticFailureReported ? 'FAILED_COUNT_REPORTED' : 'STEP_FAILED_COUNT', step, policy }
+            if (hasExhaustedCurrentStep(step, policy)) return { kind: 'real_failure', reason: 'EXHAUSTED_REAL_FAILURES', step, policy }
+            if (getCurrentFailureAttemptCount(result, step, policy) > 0) return { kind: 'real_failure', reason: 'FAILURE_ATTEMPTS_REPORTED', step, policy }
             if (step?.status === 'running') return { kind: 'planned_continuation', reason: 'ACTIVE_ATOMIC_CLAIM', step, policy }
             if (step?.status === 'pending_retry' && policy?.kind === 'planned_continuation') {
               return { kind: 'planned_continuation', reason: policy.reason ?? 'PLANNED_CONTINUATION', step, policy }
@@ -159,26 +239,21 @@ jobs:
             const cursor = getContinuationCursor(step)
             const derivedPlanned = step?.status === 'pending_retry'
               && Number(result.failed ?? 0) === 0
-              && !hasItems(result.failures)
               && validateContinuationCursor(cursor).valid
               && (cursor.fixtureOffset > 0 || cursor.processedFixtureCount > 0 || cursor.oddsOffset > 0)
               && !hasRealFailureDiagnostics(result, step)
             if (derivedPlanned) return { kind: 'planned_continuation', reason: 'DERIVED_PERSISTED_PROGRESS', step, policy: null }
-            if (step?.status === 'pending' && Number(result.failed ?? 0) === 0 && !hasItems(result.failures)) {
+            if (step?.status === 'pending' && Number(result.failed ?? 0) === 0 && !hasRealFailureDiagnostics(result, step)) {
               return { kind: 'planned_continuation', reason: 'NEXT_REQUIRED_PHASE_PENDING', step, policy }
             }
             const legacyPlanned = step?.status === 'pending_retry'
               && Number(result.failed ?? 0) === 0
-              && !hasItems(result.failures)
               && step?.rate_limited !== true
+              && !hasRealFailureDiagnostics(result, step)
               && (step?.summary?.partial === true || step?.summary?.status === 'partial_success' || /SOFT_DEADLINE|PLANNED_CONTINUATION/.test(String(step?.summary?.message ?? step?.error_message ?? '')))
             if (legacyPlanned) return { kind: 'planned_continuation', reason: 'LEGACY_SAFE_CONTINUATION', step, policy }
             if (!step && isComplete(result)) return { kind: 'complete', reason: 'PIPELINE_COMPLETE', step, policy }
             return { kind: 'incomplete', reason: 'UNCLASSIFIED_INCOMPLETE_STATE', step, policy }
-          }
-
-          function hasGenericFailureAggregates(result) {
-            return Number(result.failed ?? 0) > 0 || hasItems(result.failures) || hasFailedStep(result)
           }
 
           function validateContinuationCursor(cursor) {
@@ -207,20 +282,24 @@ jobs:
           }
 
           function hasRealFailureDiagnostics(result, step) {
-            const aggregateFailures = Array.isArray(result.failures) ? result.failures : result.failures == null ? [] : [result.failures]
-            const nonSyntheticFailures = aggregateFailures.filter((failure) => String(failure?.message ?? failure) !== 'FAILED_COUNT_REPORTED')
-            const diagnostics = JSON.stringify({
-              resultErrorCode: result.errorCode ?? null,
-              resultError: result.error ?? null,
-              resultErrorMessage: result.errorMessage ?? null,
-              stepError: step?.error_message ?? null,
-              summaryErrorCode: step?.summary?.details?.errorCode ?? null,
-              summaryErrorStage: step?.summary?.details?.errorStage ?? null,
-              failures: nonSyntheticFailures,
-            })
-            const diagnosticFailure = /API[_ -]?FOOTBALL|DATABASE|UPSTREAM|HTTP|RATE[_ -]?LIMIT|CLAIM[_ -]?LOST|CURSOR_REGRESSION|STUCK_CONTINUATION|INVARIANT[_ -]?VIOLATION/i.test(diagnostics)
+            const nonSyntheticFailures = getNonSyntheticFailureDiagnostics(result, step)
+            const explicitErrors = [
+              result.errorCode,
+              result.error,
+              result.errorMessage,
+              step?.error_code,
+              step?.error_message,
+              step?.summary?.error,
+              step?.summary?.errorMessage,
+              step?.summary?.details?.errorCode,
+              step?.summary?.details?.errorStage,
+              step?.summary?.details?.error,
+              step?.summary?.details?.errorMessage,
+            ]
             const rateLimited = result.rateLimited === true || step?.rate_limited === true || step?.summary?.rateLimited === true
-            return diagnosticFailure || rateLimited || nonSyntheticFailures.length > 0
+            const failedEndpoints = [result.failedEndpoints, step?.failedEndpoints, step?.summary?.failedEndpoints, step?.summary?.details?.failedEndpoints]
+              .some(hasItems)
+            return explicitErrors.some(hasExplicitRealError) || rateLimited || failedEndpoints || nonSyntheticFailures.length > 0
           }
 
           function isSafePlannedContinuation(result, disposition, previousCursor = null) {
@@ -229,28 +308,21 @@ jobs:
             const currentCursor = getContinuationCursor(step)
             const transition = inspectContinuationTransition(previousCursor, currentCursor)
             if (transition.regression) return false
-            const rawFailureAttempts = policy?.failureAttemptCount ?? policy?.failureAttempts ?? step?.summary?.details?.failureAttempts ?? result.failureAttempts
-            const failureAttempts = rawFailureAttempts == null && Number(result.failed ?? 0) === 0 && !hasItems(result.failures) ? 0 : Number(rawFailureAttempts)
+            const failureAttempts = getCurrentFailureAttemptCount(result, step, policy)
             const executionBudgetDeferred = ['EXECUTION_BUDGET_DEFERRED', 'SOFT_DEADLINE_REACHED'].includes(String(policy?.reason ?? disposition.reason ?? step?.summary?.details?.reason ?? ''))
             if (!transition.valid && !executionBudgetDeferred) return false
             const progressVerified = transition.progress
               || policy?.cursorProgress === true
               || executionBudgetDeferred
               || (previousCursor && transition.reason === 'CURSOR_UNCHANGED')
-            const aggregateFailures = Array.isArray(result.failures) ? result.failures : result.failures == null ? [] : [result.failures]
-            const syntheticOnly = aggregateFailures.every((failure) => String(failure?.message ?? failure) === 'FAILED_COUNT_REPORTED')
-            const exhausted = (Number.isFinite(failureAttempts) && failureAttempts >= Number(step?.max_attempts ?? 3))
-              || step?.exhausted === true
-              || policy?.exhausted === true
-              || step?.summary?.details?.exhausted === true
-            const legacyAggregateAccepted = !hasGenericFailureAggregates(result)
-              || (policy?.kind === 'planned_continuation' && failureAttempts === 0 && syntheticOnly)
+            const exhausted = hasExhaustedCurrentStep(step, policy)
             return result.ok === true
+              && Number(result.failed ?? 0) === 0
+              && !hasCurrentStepFailedCount(step)
               && failureAttempts === 0
               && progressVerified
-              && legacyAggregateAccepted
               && !hasRealFailureDiagnostics(result, step)
-              && !hasFailedStep(result)
+              && step?.status !== 'failed'
               && !exhausted
               && Boolean(step?.next_retry_at)
               && Number.isFinite(new Date(step?.next_retry_at).getTime())
@@ -286,12 +358,9 @@ jobs:
               if (blocking?.status === 'pending_retry' && !isSafePlannedContinuation(result, disposition, previousCursor)) {
                 throw new Error(`Daily pipeline rejected unsafe planned continuation at ${blocking?.phase ?? result.phase ?? 'unknown'}`)
               }
-              if (blocking?.status !== 'pending_retry' && hasGenericFailureAggregates(result)) {
-                assertGenericModeSuccess('daily-sync-auto', result)
-              }
               return { ...disposition, phase: blockingPhase, cursor: blocking ? getContinuationCursor(blocking) : null }
             }
-            assertGenericModeSuccess('daily-sync-auto', result)
+            assertGenericModeSuccess('daily-sync-auto', result, { ignoreSyntheticFailureDiagnostics: true })
             return { ...disposition, phase: blockingPhase, cursor: blocking ? getContinuationCursor(blocking) : null }
           }
 
