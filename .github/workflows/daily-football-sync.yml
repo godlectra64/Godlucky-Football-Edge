@@ -65,8 +65,9 @@ jobs:
             return String(failure?.message ?? failure).trim()
           }
 
-          function isSyntheticFailureDiagnostic(failure) {
-            return failureDiagnosticMessage(failure) === 'FAILED_COUNT_REPORTED'
+          function isDerivedCounterAdvisoryDiagnostic(failure) {
+            const message = failureDiagnosticMessage(failure)
+            return /^(?:[A-Z0-9]+_)*(?:FAILED_COUNT|FAILURE_ATTEMPTS|FAILURES)_REPORTED$/.test(message)
           }
 
           function getFailureDiagnostics(result, step) {
@@ -78,53 +79,77 @@ jobs:
             ]
           }
 
-          function getNonSyntheticFailureDiagnostics(result, step) {
-            return getFailureDiagnostics(result, step).filter((failure) => !isSyntheticFailureDiagnostic(failure))
-          }
-
-          function hasSyntheticFailureDiagnostic(result, step, policy) {
-            return isSyntheticFailureDiagnostic(policy?.reason)
-              || getFailureDiagnostics(result, step).some(isSyntheticFailureDiagnostic)
+          function getCanonicalNonAdvisoryFailureDiagnostics(result, step) {
+            return getFailureDiagnostics(result, step).filter((failure) => !isDerivedCounterAdvisoryDiagnostic(failure))
           }
 
           function hasExplicitRealError(value) {
             if (value == null || value === false || value === '') return false
-            if (isSyntheticFailureDiagnostic(value)) return false
+            if (isDerivedCounterAdvisoryDiagnostic(value)) return false
             if (Array.isArray(value)) return value.some(hasExplicitRealError)
             if (typeof value === 'object') return Object.keys(value).length > 0
             return true
           }
 
-          function hasPositiveCounter(...values) {
-            return values.some((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+          function maximumCanonicalCounter(...values) {
+            const counters = values.map(Number).filter((value) => Number.isFinite(value) && value >= 0)
+            return counters.length > 0 ? Math.max(...counters) : 0
           }
 
-          function hasCurrentStepFailedCount(step) {
-            return hasPositiveCounter(step?.failed, step?.summary?.failed, step?.summary?.details?.failed)
-          }
-
-          function getCurrentFailureAttemptCount(result, step, policy) {
-            const values = [
-              policy?.failureAttemptCount,
-              policy?.failureAttempts,
-              step?.failureAttemptCount,
-              step?.failureAttempts,
-              step?.failure_attempts,
-              step?.summary?.failureAttemptCount,
-              step?.summary?.failureAttempts,
-              step?.summary?.details?.failureAttemptCount,
-              step?.summary?.details?.failureAttempts,
-              result.failureAttemptCount,
-              result.failureAttempts,
-            ].map(Number).filter(Number.isFinite)
-            return values.length > 0 ? Math.max(...values) : 0
-          }
-
-          function hasExhaustedCurrentStep(step, policy) {
-            return step?.exhausted === true
-              || policy?.exhausted === true
-              || step?.summary?.exhausted === true
-              || step?.summary?.details?.exhausted === true
+          function getCanonicalCurrentFailureEvidence(result, currentStep) {
+            const policy = getStepContinuationPolicy(currentStep)
+            const policyReason = failureDiagnosticMessage(policy?.reason ?? '')
+            const failedCount = maximumCanonicalCounter(result.failed)
+            const stepFailedCount = maximumCanonicalCounter(currentStep?.failed, currentStep?.summary?.failed)
+            const failureAttempts = maximumCanonicalCounter(currentStep?.failureAttempts, currentStep?.failure_attempts)
+            const exhausted = currentStep?.exhausted === true || currentStep?.summary?.exhausted === true
+            const failedEndpoints = [result.failedEndpoints, currentStep?.failedEndpoints, currentStep?.summary?.failedEndpoints]
+              .flatMap(asArray)
+            const rateLimited = result.rateLimited === true
+              || currentStep?.rateLimited === true
+              || currentStep?.rate_limited === true
+              || currentStep?.summary?.rateLimited === true
+            const mirroredPolicyError = policyReason && failureDiagnosticMessage(currentStep?.error_message ?? '') === policyReason
+            const explicitErrors = [
+              result.errorCode,
+              result.error,
+              result.errorMessage,
+              currentStep?.error_code,
+              mirroredPolicyError ? null : currentStep?.error_message,
+              currentStep?.summary?.error,
+              currentStep?.summary?.errorMessage,
+              currentStep?.summary?.details?.errorCode,
+              currentStep?.summary?.details?.errorStage,
+              currentStep?.summary?.details?.error,
+              currentStep?.summary?.details?.errorMessage,
+            ].filter(hasExplicitRealError)
+            const invariantViolations = asArray(result.invariantViolations).filter(hasExplicitRealError)
+            const nonSyntheticFailures = getCanonicalNonAdvisoryFailureDiagnostics(result, currentStep)
+            const reasons = []
+            if (result.ok !== true) reasons.push('OK_NOT_TRUE')
+            if (failedCount > 0) reasons.push('RESULT_FAILED_COUNT')
+            if (currentStep?.status === 'failed') reasons.push('FAILED_STEP')
+            if (stepFailedCount > 0) reasons.push('STEP_FAILED_COUNT')
+            if (failureAttempts > 0) reasons.push('FAILURE_ATTEMPTS_REPORTED')
+            if (exhausted) reasons.push('EXHAUSTED_REAL_FAILURES')
+            if (failedEndpoints.length > 0) reasons.push('FAILED_ENDPOINTS_REPORTED')
+            if (rateLimited) reasons.push('RATE_LIMITED')
+            if (explicitErrors.length > 0) reasons.push('EXPLICIT_CURRENT_ERROR')
+            if (invariantViolations.length > 0) reasons.push('INVARIANT_VIOLATION')
+            if (nonSyntheticFailures.length > 0) reasons.push('NON_SYNTHETIC_FAILURE_DIAGNOSTIC')
+            return {
+              hasRealFailure: reasons.length > 0,
+              reasons,
+              failedCount,
+              stepFailedCount,
+              failureAttempts,
+              exhausted,
+              failedEndpoints,
+              explicitErrors: [...explicitErrors, ...invariantViolations],
+              rateLimited,
+              nonSyntheticFailures,
+              policyReason,
+            }
           }
 
           function hasFailedStep(result) {
@@ -136,7 +161,7 @@ jobs:
               throw new Error(`${mode} reported failed=${result.failed}`)
             }
             const failures = ignoreSyntheticFailureDiagnostics
-              ? asArray(result.failures).filter((failure) => !isSyntheticFailureDiagnostic(failure))
+              ? asArray(result.failures).filter((failure) => !isDerivedCounterAdvisoryDiagnostic(failure))
               : result.failures
             if (hasItems(failures)) {
               throw new Error(`${mode} returned failures`)
@@ -217,43 +242,29 @@ jobs:
             return JSON.stringify({ phase: step?.phase ?? step?.mode ?? null, ...getContinuationCursor(step) })
           }
 
-          function classifyWorkflowContinuation(result) {
+          function classifyWorkflowContinuation(result, evidenceOverride = null) {
             const step = getBlockingStep(result)
             const policy = getStepContinuationPolicy(step)
-            const policyFailureIsSynthetic = policy?.kind === 'real_failure' && isSyntheticFailureDiagnostic(policy?.reason)
-            const syntheticFailureReported = hasSyntheticFailureDiagnostic(result, step, policy)
-            if (result.ok !== true) return { kind: 'real_failure', reason: 'OK_NOT_TRUE', step, policy }
-            if (result.status === 'failed') return { kind: 'real_failure', reason: policyFailureIsSynthetic ? 'FAILED_STATUS' : policy?.reason ?? 'FAILED_STATUS', step, policy }
-            if (policy?.kind === 'real_failure' && !policyFailureIsSynthetic) return { kind: 'real_failure', reason: policy.reason ?? 'REAL_FAILURE', step, policy }
-            if (Array.isArray(result.invariantViolations) && result.invariantViolations.length) return { kind: 'real_failure', reason: 'INVARIANT_VIOLATION', step, policy }
-            if (Number(result.failed ?? 0) > 0) return { kind: 'real_failure', reason: syntheticFailureReported ? 'FAILED_COUNT_REPORTED' : 'RESULT_FAILED_COUNT', step, policy }
-            if (hasRealFailureDiagnostics(result, step)) return { kind: 'real_failure', reason: 'REAL_FAILURE_DIAGNOSTIC', step, policy }
-            if (step?.status === 'failed') return { kind: 'real_failure', reason: policyFailureIsSynthetic ? 'FAILED_STEP' : policy?.reason ?? 'FAILED_STEP', step, policy }
-            if (hasCurrentStepFailedCount(step)) return { kind: 'real_failure', reason: syntheticFailureReported ? 'FAILED_COUNT_REPORTED' : 'STEP_FAILED_COUNT', step, policy }
-            if (hasExhaustedCurrentStep(step, policy)) return { kind: 'real_failure', reason: 'EXHAUSTED_REAL_FAILURES', step, policy }
-            if (getCurrentFailureAttemptCount(result, step, policy) > 0) return { kind: 'real_failure', reason: 'FAILURE_ATTEMPTS_REPORTED', step, policy }
-            if (step?.status === 'running') return { kind: 'planned_continuation', reason: 'ACTIVE_ATOMIC_CLAIM', step, policy }
+            const evidence = evidenceOverride ?? getCanonicalCurrentFailureEvidence(result, step)
+            if (evidence.hasRealFailure) return { kind: 'real_failure', reason: evidence.reasons[0], step, policy, evidence }
+            if (step?.status === 'running') return { kind: 'planned_continuation', reason: 'ACTIVE_ATOMIC_CLAIM', step, policy, evidence }
             if (step?.status === 'pending_retry' && policy?.kind === 'planned_continuation') {
-              return { kind: 'planned_continuation', reason: policy.reason ?? 'PLANNED_CONTINUATION', step, policy }
+              return { kind: 'planned_continuation', reason: policy.reason ?? 'PLANNED_CONTINUATION', step, policy, evidence }
             }
             const cursor = getContinuationCursor(step)
             const derivedPlanned = step?.status === 'pending_retry'
-              && Number(result.failed ?? 0) === 0
               && validateContinuationCursor(cursor).valid
               && (cursor.fixtureOffset > 0 || cursor.processedFixtureCount > 0 || cursor.oddsOffset > 0)
-              && !hasRealFailureDiagnostics(result, step)
-            if (derivedPlanned) return { kind: 'planned_continuation', reason: 'DERIVED_PERSISTED_PROGRESS', step, policy: null }
-            if (step?.status === 'pending' && Number(result.failed ?? 0) === 0 && !hasRealFailureDiagnostics(result, step)) {
-              return { kind: 'planned_continuation', reason: 'NEXT_REQUIRED_PHASE_PENDING', step, policy }
+            if (derivedPlanned) return { kind: 'planned_continuation', reason: 'DERIVED_PERSISTED_PROGRESS', step, policy, evidence }
+            if (step?.status === 'pending') {
+              return { kind: 'planned_continuation', reason: 'NEXT_REQUIRED_PHASE_PENDING', step, policy, evidence }
             }
             const legacyPlanned = step?.status === 'pending_retry'
-              && Number(result.failed ?? 0) === 0
               && step?.rate_limited !== true
-              && !hasRealFailureDiagnostics(result, step)
               && (step?.summary?.partial === true || step?.summary?.status === 'partial_success' || /SOFT_DEADLINE|PLANNED_CONTINUATION/.test(String(step?.summary?.message ?? step?.error_message ?? '')))
-            if (legacyPlanned) return { kind: 'planned_continuation', reason: 'LEGACY_SAFE_CONTINUATION', step, policy }
-            if (!step && isComplete(result)) return { kind: 'complete', reason: 'PIPELINE_COMPLETE', step, policy }
-            return { kind: 'incomplete', reason: 'UNCLASSIFIED_INCOMPLETE_STATE', step, policy }
+            if (legacyPlanned) return { kind: 'planned_continuation', reason: 'LEGACY_SAFE_CONTINUATION', step, policy, evidence }
+            if (!step && isComplete(result)) return { kind: 'complete', reason: 'PIPELINE_COMPLETE', step, policy, evidence }
+            return { kind: 'incomplete', reason: 'UNCLASSIFIED_INCOMPLETE_STATE', step, policy, evidence }
           }
 
           function validateContinuationCursor(cursor) {
@@ -281,49 +292,27 @@ jobs:
             return { valid: true, regression: false, progress, reason: progress ? 'CURSOR_ADVANCED' : 'CURSOR_UNCHANGED' }
           }
 
-          function hasRealFailureDiagnostics(result, step) {
-            const nonSyntheticFailures = getNonSyntheticFailureDiagnostics(result, step)
-            const explicitErrors = [
-              result.errorCode,
-              result.error,
-              result.errorMessage,
-              step?.error_code,
-              step?.error_message,
-              step?.summary?.error,
-              step?.summary?.errorMessage,
-              step?.summary?.details?.errorCode,
-              step?.summary?.details?.errorStage,
-              step?.summary?.details?.error,
-              step?.summary?.details?.errorMessage,
-            ]
-            const rateLimited = result.rateLimited === true || step?.rate_limited === true || step?.summary?.rateLimited === true
-            const failedEndpoints = [result.failedEndpoints, step?.failedEndpoints, step?.summary?.failedEndpoints, step?.summary?.details?.failedEndpoints]
-              .some(hasItems)
-            return explicitErrors.some(hasExplicitRealError) || rateLimited || failedEndpoints || nonSyntheticFailures.length > 0
-          }
-
-          function isSafePlannedContinuation(result, disposition, previousCursor = null) {
+          function isSafePlannedContinuation(result, disposition, previousCursor = null, evidenceOverride = null, transitionOverride = null) {
             const step = disposition.step
             const policy = disposition.policy
             const currentCursor = getContinuationCursor(step)
-            const transition = inspectContinuationTransition(previousCursor, currentCursor)
+            const transition = transitionOverride ?? inspectContinuationTransition(previousCursor, currentCursor)
             if (transition.regression) return false
-            const failureAttempts = getCurrentFailureAttemptCount(result, step, policy)
-            const executionBudgetDeferred = ['EXECUTION_BUDGET_DEFERRED', 'SOFT_DEADLINE_REACHED'].includes(String(policy?.reason ?? disposition.reason ?? step?.summary?.details?.reason ?? ''))
+            const evidence = evidenceOverride ?? getCanonicalCurrentFailureEvidence(result, step)
+            const executionBudgetDeferred = [policy?.reason, disposition.reason, step?.summary?.details?.reason]
+              .some((reason) => ['EXECUTION_BUDGET_DEFERRED', 'SOFT_DEADLINE_REACHED'].includes(String(reason ?? '')))
             if (!transition.valid && !executionBudgetDeferred) return false
             const progressVerified = transition.progress
-              || policy?.cursorProgress === true
               || executionBudgetDeferred
               || (previousCursor && transition.reason === 'CURSOR_UNCHANGED')
-            const exhausted = hasExhaustedCurrentStep(step, policy)
+            const partialContinuation = result.partial === true
+              || result.status === 'pending_retry'
+              || step?.summary?.partial === true
+              || step?.summary?.status === 'partial_success'
             return result.ok === true
-              && Number(result.failed ?? 0) === 0
-              && !hasCurrentStepFailedCount(step)
-              && failureAttempts === 0
+              && !evidence.hasRealFailure
+              && partialContinuation
               && progressVerified
-              && !hasRealFailureDiagnostics(result, step)
-              && step?.status !== 'failed'
-              && !exhausted
               && Boolean(step?.next_retry_at)
               && Number.isFinite(new Date(step?.next_retry_at).getTime())
           }
@@ -349,13 +338,26 @@ jobs:
             for (const phase of requiredPhases) {
               if ((result.steps ?? []).filter((step) => (step.phase ?? step.mode) === phase).length !== 1) throw new Error(`Canonical run ${expectedRunId} has invalid step cardinality for ${phase}`)
             }
-            const disposition = classifyWorkflowContinuation(result)
-            const blocking = disposition.step ?? getBlockingStep(result)
+            const blocking = getBlockingStep(result)
             const blockingPhase = blocking?.phase ?? blocking?.mode ?? null
+            const evidence = getCanonicalCurrentFailureEvidence(result, blocking)
+            if (evidence.hasRealFailure) throw new Error(`Daily pipeline real failure at ${blocking?.phase ?? result.phase ?? 'unknown'}: ${evidence.reasons.join(',')}`)
             const previousCursor = previousState?.phase === blockingPhase ? previousState.cursor : null
-            if (disposition.kind === 'real_failure') throw new Error(`Daily pipeline real failure at ${blocking?.phase ?? result.phase ?? 'unknown'}: ${disposition.reason}`)
+            let transition = null
+            if (blocking?.status === 'pending_retry') {
+              transition = inspectContinuationTransition(previousCursor, getContinuationCursor(blocking))
+              if (transition.regression) throw new Error(`Daily pipeline rejected unsafe planned continuation at ${blocking?.phase ?? result.phase ?? 'unknown'}: ${transition.reason}`)
+              if (!blocking.next_retry_at || !Number.isFinite(new Date(blocking.next_retry_at).getTime())) {
+                throw new Error(`Daily pipeline rejected unsafe planned continuation at ${blocking?.phase ?? result.phase ?? 'unknown'}: INVALID_NEXT_RETRY_AT`)
+              }
+            }
+            const policy = getStepContinuationPolicy(blocking)
+            if (policy?.kind === 'real_failure' && policy?.reason) {
+              console.log(`Ignoring unconfirmed advisory policy reason ${maskText(policy.reason)}; canonical current failure evidence is empty.`)
+            }
+            const disposition = classifyWorkflowContinuation(result, evidence)
             if (disposition.kind === 'planned_continuation') {
-              if (blocking?.status === 'pending_retry' && !isSafePlannedContinuation(result, disposition, previousCursor)) {
+              if (blocking?.status === 'pending_retry' && !isSafePlannedContinuation(result, disposition, previousCursor, evidence, transition)) {
                 throw new Error(`Daily pipeline rejected unsafe planned continuation at ${blocking?.phase ?? result.phase ?? 'unknown'}`)
               }
               return { ...disposition, phase: blockingPhase, cursor: blocking ? getContinuationCursor(blocking) : null }

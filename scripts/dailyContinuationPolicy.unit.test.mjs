@@ -136,7 +136,10 @@ assert.equal(longWindow.action, 'schedule_next_workflow', 'planned retry windows
 assert.equal(workflowPolicy.classifyWorkflowContinuation(plannedResult).kind, 'planned_continuation')
 
 for (const reason of ['API_FOOTBALL_ERROR', 'DATABASE_ERROR']) {
+  const advisoryPolicyOnlyResult = workflowResult('real_failure', reason, '2026-07-16T08:02:00.000Z')
+  assert.equal(workflowPolicy.getRetryWindowDecision(advisoryPolicyOnlyResult, Date.parse(now), 60).action, 'schedule_next_workflow', `${reason} policy text alone must remain advisory`)
   const failureResult = workflowResult('real_failure', reason, '2026-07-16T08:02:00.000Z')
+  failureResult.steps[0].summary.details.errorCode = reason
   assert.equal(workflowPolicy.getRetryWindowDecision(failureResult, Date.parse(now), 60).action, 'failure')
 }
 const missingRetry = workflowResult('planned_continuation', 'CURSOR_ADVANCED', null)
@@ -178,6 +181,99 @@ const incidentProgressRun = runWorkflowSequence(inlineScript, [
 assert.equal(incidentProgressRun.status, 0, `Production cursor progress 256 -> 260 with a synthetic diagnostic must exit 0: ${incidentProgressRun.stderr}`)
 assert.doesNotMatch(incidentProgressRun.stderr, /Daily pipeline real failure/)
 assert.match(incidentProgressRun.stdout, new RegExp(`continuation scheduled runId=${incidentRunId}`))
+
+const failureAttemptsPreviousPayload = productionWorkflowResult({
+  runId: incidentRunId,
+  fixtureOffset: 260,
+  processedFixtureCount: 260,
+  nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+})
+const failureAttemptsCurrentPayload = failureAttemptsProductionWorkflowResult({
+  runId: incidentRunId,
+  fixtureOffset: 262,
+  processedFixtureCount: 262,
+  nextRetryAt: productionFutureRetry,
+})
+const failureAttemptsEvidence = workflowPolicy.getCanonicalCurrentFailureEvidence(failureAttemptsCurrentPayload, failureAttemptsCurrentPayload.steps[0])
+assert.equal(failureAttemptsCurrentPayload.processed, 10)
+assert.equal(failureAttemptsCurrentPayload.rowsSaved, 2)
+assert.equal(failureAttemptsCurrentPayload.steps[0].status, 'pending_retry')
+assert.equal(failureAttemptsCurrentPayload.steps[0].summary.status, 'partial_success')
+assert.equal(failureAttemptsCurrentPayload.steps[0].summary.failed, 0)
+assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.reason, 'SOFT_DEADLINE_REACHED')
+assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.remainingMs, 4208)
+assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.continuationPolicy.reason, 'FAILURE_ATTEMPTS_REPORTED')
+assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.continuationPolicy.failureAttempts, 4, 'fixture must reproduce the misleading nested policy counter')
+assert.equal(failureAttemptsEvidence.failureAttempts, 0, 'nested continuationPolicy counters are not canonical current-step evidence')
+assert.equal(failureAttemptsEvidence.failedCount, 0)
+assert.equal(failureAttemptsEvidence.stepFailedCount, 0)
+assert.equal(failureAttemptsEvidence.exhausted, false)
+assert.deepEqual(failureAttemptsEvidence.failedEndpoints, [])
+assert.deepEqual(failureAttemptsEvidence.explicitErrors, [])
+assert.deepEqual(failureAttemptsEvidence.reasons, [])
+assert.equal(failureAttemptsEvidence.hasRealFailure, false)
+assert.equal(workflowPolicy.classifyWorkflowContinuation(failureAttemptsCurrentPayload).kind, 'planned_continuation')
+const failureAttemptsProgressRun = runWorkflowSequence(inlineScript, [
+  { body: failureAttemptsPreviousPayload, status: 200 },
+  { body: failureAttemptsCurrentPayload, status: 200 },
+])
+assert.equal(failureAttemptsProgressRun.status, 0, `Production cursor progress 260 -> 262 with an unconfirmed FAILURE_ATTEMPTS_REPORTED policy must exit 0: ${failureAttemptsProgressRun.stderr}`)
+assert.doesNotMatch(failureAttemptsProgressRun.stderr, /Daily pipeline real failure/)
+assert.match(failureAttemptsProgressRun.stdout, /Ignoring unconfirmed advisory policy reason FAILURE_ATTEMPTS_REPORTED/)
+
+const currentFailureAttemptsPayload = failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: productionFutureRetry })
+currentFailureAttemptsPayload.steps[0].failureAttempts = 1
+const currentFailureAttemptsRun = runWorkflowScenario(inlineScript, currentFailureAttemptsPayload)
+assert.equal(currentFailureAttemptsRun.status, 1, 'FAILURE_ATTEMPTS_REPORTED plus current canonical step.failureAttempts=1 must exit 1')
+
+const currentStepFailedPayload = failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: productionFutureRetry })
+currentStepFailedPayload.steps[0].failed = 1
+const currentStepFailedRun = runWorkflowScenario(inlineScript, currentStepFailedPayload)
+assert.equal(currentStepFailedRun.status, 1, 'FAILURE_ATTEMPTS_REPORTED plus current step.failed=1 must exit 1')
+
+const currentStepFailedStatusPayload = failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: productionFutureRetry })
+currentStepFailedStatusPayload.steps[0].status = 'failed'
+const currentStepFailedStatusRun = runWorkflowScenario(inlineScript, currentStepFailedStatusPayload)
+assert.equal(currentStepFailedStatusRun.status, 1, 'FAILURE_ATTEMPTS_REPORTED plus current step status=failed must exit 1')
+
+const currentStepExhaustedPayload = failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: productionFutureRetry })
+currentStepExhaustedPayload.steps[0].exhausted = true
+const currentStepExhaustedRun = runWorkflowScenario(inlineScript, currentStepExhaustedPayload)
+assert.equal(currentStepExhaustedRun.status, 1, 'FAILURE_ATTEMPTS_REPORTED plus exhausted current step must exit 1')
+
+const failureAttemptsDatabasePayload = failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: productionFutureRetry })
+failureAttemptsDatabasePayload.errorMessage = 'database write failed for the current core invocation'
+const failureAttemptsDatabaseRun = runWorkflowScenario(inlineScript, failureAttemptsDatabasePayload)
+assert.equal(failureAttemptsDatabaseRun.status, 1, 'FAILURE_ATTEMPTS_REPORTED plus a current database error must exit 1')
+
+const softDeadlineFailedPayload = failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: productionFutureRetry })
+softDeadlineFailedPayload.failed = 1
+const softDeadlineFailedRun = runWorkflowScenario(inlineScript, softDeadlineFailedPayload)
+assert.equal(softDeadlineFailedRun.status, 1, 'SOFT_DEADLINE_REACHED with current failed=1 must exit 1')
+
+const failureAttemptsCursorRegressionRun = runWorkflowSequence(inlineScript, [
+  { body: failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: new Date(Date.now() - 1_000).toISOString() }), status: 200 },
+  { body: failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 260, processedFixtureCount: 260, nextRetryAt: productionFutureRetry }), status: 200 },
+])
+assert.equal(failureAttemptsCursorRegressionRun.status, 1, 'FAILURE_ATTEMPTS_REPORTED cursor regression 262 -> 260 must exit 1')
+assert.match(failureAttemptsCursorRegressionRun.stderr, /CURSOR_REGRESSION/)
+
+const failureAttemptsNoProgressRun = runWorkflowScenario(inlineScript, failureAttemptsProductionWorkflowResult({
+  runId: incidentRunId,
+  fixtureOffset: 262,
+  processedFixtureCount: 262,
+  nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+}))
+assert.equal(failureAttemptsNoProgressRun.status, 1, 'FAILURE_ATTEMPTS_REPORTED repeated no-progress must exit 1 at the third repeat')
+assert.match(failureAttemptsNoProgressRun.stderr, /STUCK_CONTINUATION/)
+
+const staleFailureAttemptsPayload = failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: productionFutureRetry })
+staleFailureAttemptsPayload.failureAttempts = 6
+staleFailureAttemptsPayload.finalSummary = { failureAttempts: 9, failed: 3 }
+staleFailureAttemptsPayload.priorRunSummary = { failureAttempts: 8 }
+staleFailureAttemptsPayload.priorInvocationAggregate = { failureAttempts: 7 }
+const staleFailureAttemptsRun = runWorkflowScenario(inlineScript, staleFailureAttemptsPayload)
+assert.equal(staleFailureAttemptsRun.status, 0, `stale failureAttempts aggregates and nested policy counters must not reject current step.failureAttempts=0: ${staleFailureAttemptsRun.stderr}`)
 
 const staleHistoricalAggregatePayload = withSyntheticFailedCountPolicy(productionWorkflowResult({
   runId: incidentRunId,
@@ -288,7 +384,7 @@ const incidentFailureAttempt = withSyntheticFailedCountPolicy(productionWorkflow
   nextRetryAt: productionFutureRetry,
   failures: [{ message: 'FAILED_COUNT_REPORTED' }],
 }))
-incidentFailureAttempt.failureAttempts = 1
+incidentFailureAttempt.steps[0].failureAttempts = 1
 const incidentFailureAttemptRun = runWorkflowScenario(inlineScript, incidentFailureAttempt)
 assert.equal(incidentFailureAttemptRun.status, 1, 'current phase failureAttempts plus FAILED_COUNT_REPORTED must exit workflow with code 1')
 
@@ -309,8 +405,8 @@ failedStepResult.steps[0].status = 'failed'
 const failedStepRun = runWorkflowScenario(inlineScript, failedStepResult)
 assert.equal(failedStepRun.status, 1, 'failed required step must exit workflow with code 1')
 for (const reason of ['CURSOR_REGRESSION:fixtureOffset', 'STUCK_CONTINUATION']) {
-  const cursorFailureRun = runWorkflowScenario(inlineScript, workflowResult('real_failure', reason, new Date(Date.now() + 120_000).toISOString()))
-  assert.equal(cursorFailureRun.status, 1, `${reason} must exit workflow with code 1`)
+  const advisoryReasonOnlyRun = runWorkflowScenario(inlineScript, workflowResult('real_failure', reason, new Date(Date.now() + 120_000).toISOString()))
+  assert.equal(advisoryReasonOnlyRun.status, 0, `${reason} policy text alone must not bypass canonical cursor validation`)
 }
 const invalidCanonicalRun = runWorkflowScenario(inlineScript, { ok: true, runId: 'canonical-run', status: 'partial', failed: 0, failures: [], steps: [] })
 assert.equal(invalidCanonicalRun.status, 1, 'missing canonical required steps must exit workflow with code 1')
@@ -439,14 +535,36 @@ function productionWorkflowResult({
   }
 }
 
-function withSyntheticFailedCountPolicy(payload) {
+function failureAttemptsProductionWorkflowResult(options = {}) {
+  const payload = productionWorkflowResult(options)
+  payload.processed = 10
+  payload.rowsSaved = 2
   const currentStep = payload.steps[0]
-  currentStep.error_message = 'FAILED_COUNT_REPORTED'
-  currentStep.summary.details.continuationPolicy = {
-    kind: 'real_failure',
-    reason: 'FAILED_COUNT_REPORTED',
+  currentStep.failed = 0
+  currentStep.failureAttempts = 0
+  currentStep.summary.details.reason = 'SOFT_DEADLINE_REACHED'
+  currentStep.summary.details.remainingMs = 4208
+  return withAdvisoryRealFailurePolicy(payload, 'FAILURE_ATTEMPTS_REPORTED', {
+    failureAttemptCount: 4,
+    failureAttempts: 4,
+    exhausted: false,
+  })
+}
+
+function withSyntheticFailedCountPolicy(payload) {
+  return withAdvisoryRealFailurePolicy(payload, 'FAILED_COUNT_REPORTED', {
     failureAttemptCount: 0,
     exhausted: false,
+  })
+}
+
+function withAdvisoryRealFailurePolicy(payload, reason, metadata = {}) {
+  const currentStep = payload.steps[0]
+  currentStep.error_message = reason
+  currentStep.summary.details.continuationPolicy = {
+    ...metadata,
+    kind: 'real_failure',
+    reason,
   }
   return payload
 }
@@ -485,27 +603,23 @@ function compileWorkflowPolicy(source) {
     'hasItems',
     'asArray',
     'failureDiagnosticMessage',
-    'isSyntheticFailureDiagnostic',
+    'isDerivedCounterAdvisoryDiagnostic',
     'getFailureDiagnostics',
-    'getNonSyntheticFailureDiagnostics',
-    'hasSyntheticFailureDiagnostic',
+    'getCanonicalNonAdvisoryFailureDiagnostics',
     'hasExplicitRealError',
-    'hasPositiveCounter',
-    'hasCurrentStepFailedCount',
-    'getCurrentFailureAttemptCount',
-    'hasExhaustedCurrentStep',
+    'maximumCanonicalCounter',
     'getRequiredSteps',
     'isComplete',
     'getBlockingStep',
     'getStepContinuationPolicy',
+    'getCanonicalCurrentFailureEvidence',
     'getContinuationCursor',
     'validateContinuationCursor',
-    'hasRealFailureDiagnostics',
     'classifyWorkflowContinuation',
     'getRetryWindowDecision',
   ]
   const declarations = names.map((name) => functionSource(source, name)).join('\n')
-  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { classifyWorkflowContinuation, getRetryWindowDecision }`)()
+  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { getCanonicalCurrentFailureEvidence, classifyWorkflowContinuation, getRetryWindowDecision }`)()
 }
 
 function functionSource(source, name) {
