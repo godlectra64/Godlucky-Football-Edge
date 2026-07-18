@@ -212,6 +212,9 @@ for (const oldCron of ['10 0 * * *', '10 11 * * *', '40 16 * * *']) {
 }
 assert.match(workflow, /workflow_dispatch:/, 'manual workflow dispatch must remain available')
 assert.match(workflow, /concurrency:\s*[\s\S]*?group:\s*daily-football-sync[\s\S]*?cancel-in-progress:\s*false/, 'overlapping workflows must serialize without cancelling the active canonical run')
+assert.match(workflow, /SUPABASE_URL:\s*\$\{\{\s*secrets\.SUPABASE_URL\s*\}\}/, 'REST preflight must use the SUPABASE_URL GitHub secret')
+assert.match(workflow, /SUPABASE_SERVICE_ROLE_KEY:\s*\$\{\{\s*secrets\.SUPABASE_SERVICE_ROLE_KEY\s*\}\}/, 'REST preflight must use the SUPABASE_SERVICE_ROLE_KEY GitHub secret')
+assert.doesNotMatch(workflow, /SUPABASE_READ_KEY|SUPABASE_ANON_KEY|VITE_SUPABASE_ANON_KEY/, 'REST preflight must not fall back to an anon or mixed-purpose read key')
 const inlineScript = extractWorkflowNodeScript(workflow)
 const syntaxCheck = spawnSync(process.execPath, ['--check', '-'], { input: inlineScript, encoding: 'utf8' })
 assert.equal(syntaxCheck.status, 0, `workflow inline script must parse on Node 22+: ${syntaxCheck.stderr}`)
@@ -231,6 +234,31 @@ for (const reason of ['API_FOOTBALL_ERROR', 'DATABASE_ERROR']) {
 const missingRetry = workflowResult('planned_continuation', 'CURSOR_ADVANCED', null)
 assert.equal(workflowPolicy.getRetryWindowDecision(missingRetry, Date.parse(now), 60).action, 'failure')
 
+const restPreflightSource = functionSource(inlineScript, 'getRestRows')
+assert.match(restPreflightSource, /apikey:\s*restServiceRoleKey/, 'REST apikey must use the service-role key')
+assert.match(restPreflightSource, /Authorization:\s*`Bearer \$\{restServiceRoleKey\}`/, 'REST Authorization must use the service-role key')
+assert.match(restPreflightSource, /['"]Content-Type['"]:\s*['"]application\/json['"]/, 'REST requests must identify JSON content')
+assert.doesNotMatch(restPreflightSource, /adminSecret|RESULT_ADMIN_SECRET|sb_secret/, 'REST preflight must not use an Edge or result admin secret')
+const edgeInvocationSource = functionSource(inlineScript, 'postSync')
+assert.match(edgeInvocationSource, /sb_secret:\s*adminSecret/, 'Edge invocation must keep its existing admin secret')
+assert.doesNotMatch(edgeInvocationSource, /serviceRoleKey/, 'Edge invocation must not use the REST service-role key')
+
+const missingServiceRole = runScheduledWorkflowSequence(inlineScript, [], {
+  serviceRoleKey: null,
+  resultAdminSecret: 'result-admin-must-not-be-used',
+})
+assert.equal(missingServiceRole.status, 1, 'missing SUPABASE_SERVICE_ROLE_KEY must fail')
+assert.match(missingServiceRole.stderr, /SUPABASE_SERVICE_ROLE_KEY/)
+assert.equal(workflowFetches(missingServiceRole).length, 0, 'missing service-role key must fail before fetch')
+assert.doesNotMatch(`${missingServiceRole.stdout}\n${missingServiceRole.stderr}`, /result-admin-must-not-be-used/, 'RESULT_ADMIN_SECRET must not be read or logged by the preflight')
+
+const wrongProjectUrl = runScheduledWorkflowSequence(inlineScript, [], {
+  supabaseUrl: 'https://wrong-project.supabase.co',
+})
+assert.equal(wrongProjectUrl.status, 1, 'preflight must reject a SUPABASE_URL for the wrong project')
+assert.match(wrongProjectUrl.stderr, /fzjbnxomflqopwhzxfog/)
+assert.equal(workflowFetches(wrongProjectUrl).length, 0, 'wrong-project URL must fail before fetch')
+
 const canonicalRunRow = {
   id: 'canonical-run',
   run_date: now.slice(0, 10),
@@ -243,6 +271,24 @@ const scheduledMissingRun = runScheduledWorkflowSequence(inlineScript, [{ body: 
 assert.equal(scheduledMissingRun.status, 0, `scheduled preflight without a canonical run must exit 0: ${scheduledMissingRun.stderr}`)
 assert.match(scheduledMissingRun.stdout, /no continuation due reason=canonical_run_missing/)
 assert.equal(workflowFetches(scheduledMissingRun).filter((request) => request.url.includes('/functions/v1/')).length, 0, 'missing canonical run must not invoke the Edge Function')
+const scheduledMissingRunRestRequest = workflowFetches(scheduledMissingRun).find((request) => request.url.includes('/rest/v1/'))
+assert.ok(scheduledMissingRunRestRequest, 'scheduled preflight must query Supabase REST')
+assert.match(scheduledMissingRunRestRequest.url, /^https:\/\/fzjbnxomflqopwhzxfog\.supabase\.co\/rest\/v1\//)
+assert.equal(scheduledMissingRunRestRequest.auth.apikeyUsesServiceRole, true)
+assert.equal(scheduledMissingRunRestRequest.auth.bearerUsesServiceRole, true)
+assert.equal(scheduledMissingRunRestRequest.auth.contentType, 'application/json')
+assert.equal(scheduledMissingRunRestRequest.auth.apikeyUsesResultAdmin, false)
+assert.equal(scheduledMissingRunRestRequest.auth.apikeyUsesEdgeAdmin, false)
+
+const redactionServiceRole = 'service-role-redaction-sentinel'
+const failedPreflight = runScheduledWorkflowSequence(inlineScript, [{
+  body: { message: `Invalid API key ${redactionServiceRole}` },
+  status: 401,
+}], { serviceRoleKey: redactionServiceRole })
+assert.equal(failedPreflight.status, 1, 'REST authentication failure must fail the workflow')
+assert.match(failedPreflight.stderr, /canonical run preflight failed with HTTP 401/)
+assert.doesNotMatch(`${failedPreflight.stdout}\n${failedPreflight.stderr}`, new RegExp(redactionServiceRole), 'service-role secret value must never be printed')
+assert.match(failedPreflight.stderr, /\[masked\]/, 'reflected service-role secret must be redacted')
 
 const scheduledFutureResult = workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString())
 const scheduledNotDue = runScheduledWorkflowSequence(inlineScript, [
@@ -278,6 +324,7 @@ assert.equal(scheduledDueEdgeRequests.length, 1, 'due continuation must invoke t
 assert.equal(scheduledDueEdgeRequests[0].body.mode, 'daily-sync-auto')
 assert.equal(scheduledDueEdgeRequests[0].body.runId, canonicalRunRow.id, 'due continuation must resume the canonical run id')
 assert.equal(scheduledDueEdgeRequests[0].body.autoAdvance, true)
+assert.equal(scheduledDueEdgeRequests[0].edgeSecretUsesAdmin, true, 'Edge invocation must continue using EDGE_ADMIN_SECRET')
 assert.match(scheduledDue.stdout, /continuation due runId=canonical-run/)
 assert.match(scheduledDue.stdout, /continuation scheduled runId=canonical-run/)
 
@@ -844,9 +891,16 @@ function runWorkflowSequence(inlineScript, responses) {
   return spawnSync(process.execPath, [], { input: `${prelude}${inlineScript}`, encoding: 'utf8', timeout: 5_000 })
 }
 
-function runScheduledWorkflowSequence(inlineScript, responses) {
+function runScheduledWorkflowSequence(inlineScript, responses, options = {}) {
   const serialized = JSON.stringify(responses)
-  const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/functions/v1/sync-football-data'; process.env.SUPABASE_REST_ENDPOINT = 'https://example.invalid/rest/v1'; process.env.SUPABASE_READ_KEY = 'test-read-key'; process.env.EDGE_ADMIN_SECRET = 'test-secret'; process.env.GITHUB_EVENT_NAME = 'schedule'; const mockResponses = ${serialized}; let mockIndex = 0; globalThis.fetch = async (input, init = {}) => { const item = mockResponses[Math.min(mockIndex, mockResponses.length - 1)]; mockIndex += 1; const body = init.body ? JSON.parse(init.body) : null; if (body?.sb_secret) body.sb_secret = '[masked]'; console.log('TEST_FETCH ' + JSON.stringify({ url: String(input), method: init.method ?? 'GET', body })); return new Response(JSON.stringify(item.body), { status: item.status, headers: { 'content-type': 'application/json' } }); };\n`
+  const config = JSON.stringify({
+    supabaseUrl: 'https://fzjbnxomflqopwhzxfog.supabase.co',
+    serviceRoleKey: 'test-service-role-key',
+    edgeAdminSecret: 'test-edge-admin-secret',
+    resultAdminSecret: 'test-result-admin-secret',
+    ...options,
+  })
+  const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/functions/v1/sync-football-data'; const mockConfig = ${config}; if (mockConfig.supabaseUrl == null) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = mockConfig.supabaseUrl; if (mockConfig.serviceRoleKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = mockConfig.serviceRoleKey; process.env.EDGE_ADMIN_SECRET = mockConfig.edgeAdminSecret; process.env.RESULT_ADMIN_SECRET = mockConfig.resultAdminSecret; process.env.GITHUB_EVENT_NAME = 'schedule'; const mockResponses = ${serialized}; let mockIndex = 0; globalThis.fetch = async (input, init = {}) => { const item = mockResponses[Math.min(mockIndex, mockResponses.length - 1)]; mockIndex += 1; const headers = new Headers(init.headers); const body = init.body ? JSON.parse(init.body) : null; const edgeSecretUsesAdmin = body?.sb_secret === process.env.EDGE_ADMIN_SECRET; if (body?.sb_secret) body.sb_secret = '[masked]'; const auth = { apikeyUsesServiceRole: headers.get('apikey') === process.env.SUPABASE_SERVICE_ROLE_KEY, bearerUsesServiceRole: headers.get('authorization') === 'Bearer ' + process.env.SUPABASE_SERVICE_ROLE_KEY, contentType: headers.get('content-type'), apikeyUsesResultAdmin: headers.get('apikey') === process.env.RESULT_ADMIN_SECRET, apikeyUsesEdgeAdmin: headers.get('apikey') === process.env.EDGE_ADMIN_SECRET }; console.log('TEST_FETCH ' + JSON.stringify({ url: String(input), method: init.method ?? 'GET', body, auth, edgeSecretUsesAdmin })); return new Response(JSON.stringify(item.body), { status: item.status, headers: { 'content-type': 'application/json' } }); };\n`
   return spawnSync(process.execPath, [], { input: `${prelude}${inlineScript}`, encoding: 'utf8', timeout: 5_000 })
 }
 

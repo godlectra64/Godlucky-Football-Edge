@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 const workflow = readFileSync('.github/workflows/daily-football-sync.yml', 'utf8')
 
 requireText('secrets.EDGE_ADMIN_SECRET')
+requirePattern(/SUPABASE_URL:\s*\$\{\{\s*secrets\.SUPABASE_URL\s*\}\}/, 'Supabase URL secret')
+requirePattern(/SUPABASE_SERVICE_ROLE_KEY:\s*\$\{\{\s*secrets\.SUPABASE_SERVICE_ROLE_KEY\s*\}\}/, 'Supabase service-role secret')
 requireText('daily-sync-auto')
 requireText('result-refresh')
 requireText('requiredPhases')
@@ -30,6 +32,21 @@ requireText("eventName === 'schedule'")
 requirePattern(/initialPayload\s*=\s*\{[\s\S]*?mode:\s*['"]daily-sync-auto['"][\s\S]*?runId:\s*continuation\.runId/, 'scheduled same-run continuation')
 requirePattern(/runId,\s*\n\s*autoAdvance:\s*true/, 'same-run continuation')
 requirePattern(/invocation <= 12/, 'bounded workflow invocations')
+const restPreflightSource = functionSource(workflow, 'getRestRows')
+requireSourcePattern(restPreflightSource, /apikey:\s*restServiceRoleKey/, 'REST apikey service-role header')
+requireSourcePattern(restPreflightSource, /Authorization:\s*`Bearer \$\{restServiceRoleKey\}`/, 'REST Bearer service-role header')
+requireSourcePattern(restPreflightSource, /['"]Content-Type['"]:\s*['"]application\/json['"]/, 'REST JSON content type')
+for (const forbidden of ['adminSecret', 'RESULT_ADMIN_SECRET', 'SUPABASE_READ_KEY', 'SUPABASE_ANON_KEY', 'VITE_SUPABASE_ANON_KEY', 'sb_secret']) {
+  if (restPreflightSource.includes(forbidden)) throw new Error(`REST preflight must not use ${forbidden}`)
+}
+const edgeInvocationSource = functionSource(workflow, 'postSync')
+requireSourcePattern(edgeInvocationSource, /sb_secret:\s*adminSecret/, 'Edge Function admin-secret body')
+if (edgeInvocationSource.includes('serviceRoleKey')) throw new Error('Edge Function invocation must not use the REST service-role key')
+for (const obsoleteRestCredential of ['SUPABASE_REST_ENDPOINT', 'SUPABASE_READ_KEY', 'SUPABASE_ANON_KEY', 'VITE_SUPABASE_ANON_KEY', 'RESULT_ADMIN_SECRET']) {
+  if (workflow.includes(obsoleteRestCredential)) throw new Error(`workflow must not use obsolete REST credential ${obsoleteRestCredential}`)
+}
+requirePattern(/hostname\s*!==\s*['"]fzjbnxomflqopwhzxfog\.supabase\.co['"]/, 'canonical Supabase project validation')
+requirePattern(/`\$\{parsedUrl\.origin\}\/rest\/v1`/, 'REST endpoint derived from SUPABASE_URL')
 if (/retryAfterSeconds > 60\) throw new Error/.test(workflow)) throw new Error('planned continuation over 60 seconds must not fail the workflow')
 for (const obsolete of ['strict-api-football-daily-picks', 'select-usable-daily-picks', 'lock-daily-top10']) {
   if (workflow.includes(obsolete)) throw new Error(`workflow must not call obsolete selection mode ${obsolete}`)
@@ -43,4 +60,21 @@ function requireText(value) {
 
 function requirePattern(pattern, label) {
   if (!pattern.test(workflow)) throw new Error(`workflow missing ${label}`)
+}
+
+function requireSourcePattern(source, pattern, label) {
+  if (!pattern.test(source)) throw new Error(`workflow missing ${label}`)
+}
+
+function functionSource(source, name) {
+  const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source)
+  if (!match) throw new Error(`workflow function ${name} not found`)
+  const open = source.indexOf('{', match.index)
+  let depth = 0
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1
+    if (source[index] === '}') depth -= 1
+    if (depth === 0) return source.slice(match.index, index + 1)
+  }
+  throw new Error(`workflow function ${name} is not balanced`)
 }
