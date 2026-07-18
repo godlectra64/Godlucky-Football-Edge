@@ -2,9 +2,7 @@ name: Daily Football Sync
 
 on:
   schedule:
-    - cron: '10 0 * * *'
-    - cron: '10 11 * * *'
-    - cron: '40 16 * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -21,6 +19,8 @@ jobs:
     timeout-minutes: 20
     env:
       SYNC_ENDPOINT: https://fzjbnxomflqopwhzxfog.supabase.co/functions/v1/sync-football-data
+      SUPABASE_REST_ENDPOINT: https://fzjbnxomflqopwhzxfog.supabase.co/rest/v1
+      SUPABASE_READ_KEY: ${{ secrets.SUPABASE_ANON_KEY || secrets.VITE_SUPABASE_ANON_KEY || secrets.EDGE_ADMIN_SECRET }}
       EDGE_ADMIN_SECRET: ${{ secrets.EDGE_ADMIN_SECRET }}
 
     steps:
@@ -29,15 +29,17 @@ jobs:
         run: |
           node <<'NODE'
           const endpoint = process.env.SYNC_ENDPOINT
+          const restEndpoint = process.env.SUPABASE_REST_ENDPOINT
+          const readKey = process.env.SUPABASE_READ_KEY
           const adminSecret = process.env.EDGE_ADMIN_SECRET
+          const eventName = process.env.GITHUB_EVENT_NAME || 'workflow_dispatch'
 
           if (!adminSecret) {
             throw new Error('Missing required GitHub secret: EDGE_ADMIN_SECRET')
           }
 
           function maskText(value) {
-            return String(value)
-              .split(adminSecret).join('[masked]')
+            return [adminSecret, readKey].filter(Boolean).reduce((text, secret) => text.split(secret).join('[masked]'), String(value))
               .replace(/sb_secret_[A-Za-z0-9._-]+/g, 'sb_secret_[masked]')
               .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [masked]')
           }
@@ -203,6 +205,71 @@ jobs:
           }
 
           const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']
+
+          function bangkokDateKey(now = new Date()) {
+            const parts = new Intl.DateTimeFormat('en-CA', {
+              timeZone: 'Asia/Bangkok',
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            }).formatToParts(now)
+            const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+            return `${values.year}-${values.month}-${values.day}`
+          }
+
+          async function getRestRows(table, query, label) {
+            if (!restEndpoint || !readKey) throw new Error('Missing Supabase read configuration for scheduled continuation preflight')
+            const url = new URL(`${restEndpoint}/${table}`)
+            for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value)
+            const response = await fetch(url, {
+              method: 'GET',
+              headers: { apikey: readKey, accept: 'application/json' },
+            })
+            const rawBody = await response.text()
+            let body
+            try {
+              body = rawBody ? JSON.parse(rawBody) : []
+            } catch {
+              throw new Error(`${label} returned invalid JSON`)
+            }
+            if (!response.ok) throw new Error(`${label} failed with HTTP ${response.status}: ${maskText(JSON.stringify(sanitize(body)))}`)
+            if (!Array.isArray(body)) throw new Error(`${label} did not return an array`)
+            return body
+          }
+
+          async function getScheduledContinuation(now = new Date()) {
+            const runDate = bangkokDateKey(now)
+            const runs = await getRestRows('api_football_daily_sync_runs', {
+              select: 'id,run_date,mode,status,current_phase,started_at',
+              run_date: `eq.${runDate}`,
+              mode: 'eq.daily-full-sync-safe',
+              order: 'started_at.desc',
+              limit: '2',
+            }, 'canonical run preflight')
+            if (runs.length > 1) throw new Error(`Canonical daily pipeline has duplicate runs for ${runDate}`)
+            const run = runs[0]
+            if (!run) return { due: false, reason: 'canonical_run_missing', runDate }
+
+            const steps = await getRestRows('api_football_daily_sync_steps', {
+              select: 'id,run_id,phase,step_order,status,next_retry_at,attempt_count,max_attempts',
+              run_id: `eq.${run.id}`,
+              order: 'step_order.asc',
+            }, 'canonical step preflight')
+            const byPhase = new Map(steps.map((step) => [step.phase, step]))
+            const missingPhase = requiredPhases.find((phase) => !byPhase.has(phase))
+            if (missingPhase) return { due: false, reason: `canonical_step_missing_${missingPhase}`, runDate, runId: run.id, phase: missingPhase }
+            const blocking = requiredPhases.map((phase) => byPhase.get(phase)).find((step) => step.status !== 'success') ?? null
+            if (!blocking) return { due: false, reason: 'canonical_run_complete', runDate, runId: run.id }
+            if (blocking.status !== 'pending_retry') {
+              return { due: false, reason: `step_status_${blocking.status ?? 'missing'}`, runDate, runId: run.id, phase: blocking.phase ?? null }
+            }
+            const nextRetryMs = new Date(blocking.next_retry_at ?? '').getTime()
+            if (!Number.isFinite(nextRetryMs)) throw new Error(`pending_retry step ${blocking.phase ?? 'unknown'} has invalid next_retry_at`)
+            if (nextRetryMs > now.getTime()) {
+              return { due: false, reason: 'retry_not_due', runDate, runId: run.id, phase: blocking.phase ?? null, nextRetryAt: blocking.next_retry_at }
+            }
+            return { due: true, reason: 'retry_due', runDate, runId: run.id, phase: blocking.phase ?? null, nextRetryAt: blocking.next_retry_at }
+          }
 
           function getRequiredSteps(result) {
             const byPhase = new Map((result.steps ?? []).map((step) => [step.phase ?? step.mode, step]))
@@ -470,7 +537,23 @@ jobs:
           }
 
           async function main() {
-          let dailySync = await postSync({ mode: 'daily-sync-auto' })
+          let initialPayload = { mode: 'daily-sync-auto' }
+          if (eventName === 'schedule') {
+            const continuation = await getScheduledContinuation()
+            if (!continuation.due) {
+              console.log(`no continuation due reason=${continuation.reason} runDate=${continuation.runDate} runId=${continuation.runId ?? 'none'} phase=${continuation.phase ?? 'none'} nextRetryAt=${continuation.nextRetryAt ?? 'none'}`)
+              return
+            }
+            console.log(`continuation due runId=${continuation.runId} phase=${continuation.phase} nextRetryAt=${continuation.nextRetryAt}`)
+            initialPayload = {
+              mode: 'daily-sync-auto',
+              runId: continuation.runId,
+              autoAdvance: true,
+              maxStepsPerRequest: 2,
+            }
+          }
+
+          let dailySync = await postSync(initialPayload)
           const runId = dailySync.runId
           if (!runId) {
             throw new Error('daily-sync-auto response did not include runId')

@@ -205,6 +205,13 @@ assert.equal(cacheDecision.shouldResume, true)
 assert.equal(cacheDecision.runId, 'canonical-run')
 
 const workflow = await readFile(new URL('../.github/workflows/daily-football-sync.yml', import.meta.url), 'utf8')
+const workflowCrons = [...workflow.matchAll(/cron:\s*['"]([^'"]+)['"]/g)].map((match) => match[1])
+assert.deepEqual(workflowCrons, ['*/15 * * * *'], 'workflow must have exactly one 15-minute cron')
+for (const oldCron of ['10 0 * * *', '10 11 * * *', '40 16 * * *']) {
+  assert.equal(workflowCrons.includes(oldCron), false, `workflow must remove obsolete cron ${oldCron}`)
+}
+assert.match(workflow, /workflow_dispatch:/, 'manual workflow dispatch must remain available')
+assert.match(workflow, /concurrency:\s*[\s\S]*?group:\s*daily-football-sync[\s\S]*?cancel-in-progress:\s*false/, 'overlapping workflows must serialize without cancelling the active canonical run')
 const inlineScript = extractWorkflowNodeScript(workflow)
 const syntaxCheck = spawnSync(process.execPath, ['--check', '-'], { input: inlineScript, encoding: 'utf8' })
 assert.equal(syntaxCheck.status, 0, `workflow inline script must parse on Node 22+: ${syntaxCheck.stderr}`)
@@ -223,6 +230,57 @@ for (const reason of ['API_FOOTBALL_ERROR', 'DATABASE_ERROR']) {
 }
 const missingRetry = workflowResult('planned_continuation', 'CURSOR_ADVANCED', null)
 assert.equal(workflowPolicy.getRetryWindowDecision(missingRetry, Date.parse(now), 60).action, 'failure')
+
+const canonicalRunRow = {
+  id: 'canonical-run',
+  run_date: now.slice(0, 10),
+  mode: 'daily-full-sync-safe',
+  status: 'partial',
+  current_phase: 'core',
+  started_at: now,
+}
+const scheduledMissingRun = runScheduledWorkflowSequence(inlineScript, [{ body: [], status: 200 }])
+assert.equal(scheduledMissingRun.status, 0, `scheduled preflight without a canonical run must exit 0: ${scheduledMissingRun.stderr}`)
+assert.match(scheduledMissingRun.stdout, /no continuation due reason=canonical_run_missing/)
+assert.equal(workflowFetches(scheduledMissingRun).filter((request) => request.url.includes('/functions/v1/')).length, 0, 'missing canonical run must not invoke the Edge Function')
+
+const scheduledFutureResult = workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString())
+const scheduledNotDue = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledFutureResult.steps, status: 200 },
+])
+assert.equal(scheduledNotDue.status, 0, `not-due scheduled continuation must exit 0: ${scheduledNotDue.stderr}`)
+assert.match(scheduledNotDue.stdout, /no continuation due reason=retry_not_due/)
+assert.equal(workflowFetches(scheduledNotDue).filter((request) => request.url.includes('/functions/v1/')).length, 0, 'not-due continuation must not invoke the Edge Function')
+
+const activeClaimSteps = structuredClone(scheduledFutureResult.steps)
+activeClaimSteps[0].status = 'running'
+activeClaimSteps[0].next_retry_at = null
+const overlappingScheduledRun = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: activeClaimSteps, status: 200 },
+])
+assert.equal(overlappingScheduledRun.status, 0, `queued overlap observing an active claim must exit 0: ${overlappingScheduledRun.stderr}`)
+assert.match(overlappingScheduledRun.stdout, /no continuation due reason=step_status_running/)
+assert.equal(workflowFetches(overlappingScheduledRun).filter((request) => request.url.includes('/functions/v1/')).length, 0, 'overlapping workflow must not duplicate an active Edge invocation')
+
+const dueRetryAt = new Date(Date.now() - 1_000).toISOString()
+const scheduledDueSteps = workflowResult('planned_continuation', 'CURSOR_ADVANCED', dueRetryAt).steps
+const scheduledDueResult = workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString())
+const scheduledDue = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+])
+assert.equal(scheduledDue.status, 0, `due scheduled continuation must exit 0 after deferring planned work: ${scheduledDue.stderr}`)
+const scheduledDueEdgeRequests = workflowFetches(scheduledDue).filter((request) => request.url.includes('/functions/v1/'))
+assert.equal(scheduledDueEdgeRequests.length, 1, 'due continuation must invoke the Edge Function exactly once before the next retry window')
+assert.equal(scheduledDueEdgeRequests[0].body.mode, 'daily-sync-auto')
+assert.equal(scheduledDueEdgeRequests[0].body.runId, canonicalRunRow.id, 'due continuation must resume the canonical run id')
+assert.equal(scheduledDueEdgeRequests[0].body.autoAdvance, true)
+assert.match(scheduledDue.stdout, /continuation due runId=canonical-run/)
+assert.match(scheduledDue.stdout, /continuation scheduled runId=canonical-run/)
+
 const scheduledRun = runWorkflowScenario(inlineScript, workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString()))
 assert.equal(scheduledRun.status, 0, `planned continuation must exit workflow successfully: ${scheduledRun.stderr}`)
 assert.match(scheduledRun.stdout, /continuation scheduled runId=canonical-run/)
@@ -784,6 +842,18 @@ function runWorkflowSequence(inlineScript, responses) {
   const serialized = JSON.stringify(responses)
   const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/sync'; process.env.EDGE_ADMIN_SECRET = 'test-secret'; const mockResponses = ${serialized}; let mockIndex = 0; globalThis.fetch = async () => { const item = mockResponses[Math.min(mockIndex, mockResponses.length - 1)]; mockIndex += 1; return new Response(JSON.stringify(item.body), { status: item.status, headers: { 'content-type': 'application/json' } }); };\n`
   return spawnSync(process.execPath, [], { input: `${prelude}${inlineScript}`, encoding: 'utf8', timeout: 5_000 })
+}
+
+function runScheduledWorkflowSequence(inlineScript, responses) {
+  const serialized = JSON.stringify(responses)
+  const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/functions/v1/sync-football-data'; process.env.SUPABASE_REST_ENDPOINT = 'https://example.invalid/rest/v1'; process.env.SUPABASE_READ_KEY = 'test-read-key'; process.env.EDGE_ADMIN_SECRET = 'test-secret'; process.env.GITHUB_EVENT_NAME = 'schedule'; const mockResponses = ${serialized}; let mockIndex = 0; globalThis.fetch = async (input, init = {}) => { const item = mockResponses[Math.min(mockIndex, mockResponses.length - 1)]; mockIndex += 1; const body = init.body ? JSON.parse(init.body) : null; if (body?.sb_secret) body.sb_secret = '[masked]'; console.log('TEST_FETCH ' + JSON.stringify({ url: String(input), method: init.method ?? 'GET', body })); return new Response(JSON.stringify(item.body), { status: item.status, headers: { 'content-type': 'application/json' } }); };\n`
+  return spawnSync(process.execPath, [], { input: `${prelude}${inlineScript}`, encoding: 'utf8', timeout: 5_000 })
+}
+
+function workflowFetches(result) {
+  return result.stdout.split(/\r?\n/)
+    .filter((line) => line.startsWith('TEST_FETCH '))
+    .map((line) => JSON.parse(line.slice('TEST_FETCH '.length)))
 }
 
 function completedWorkflowResult() {
