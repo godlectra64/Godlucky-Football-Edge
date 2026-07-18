@@ -227,6 +227,11 @@ jobs:
 
           function getContinuationCursor(step) {
             const cursor = step?.continuation_state ?? {}
+            const stages = ['fixtures', 'coverage', 'rounds', 'complete']
+            const coreAuxiliaryComplete = Boolean(cursor.coreAuxiliaryComplete)
+            const requestedStage = coreAuxiliaryComplete ? 'complete' : String(cursor.coreStage ?? 'fixtures')
+            const coreStage = requestedStage
+            const stageIndex = stages.indexOf(coreStage)
             return {
               providerPage: Number(cursor.providerPage ?? step?.provider_page ?? 1),
               fixtureOffset: Number(cursor.fixtureOffset ?? step?.fixture_offset ?? 0),
@@ -234,12 +239,35 @@ jobs:
               processedFixtureCount: Number(cursor.processedFixtureCount ?? step?.processed_fixture_count ?? 0),
               lastProcessedFixtureId: cursor.lastProcessedFixtureId ?? step?.last_processed_fixture_id ?? null,
               batchSignature: cursor.batchSignature ?? step?.batch_signature ?? null,
+              completedBatchSignatures: [...new Set(Array.isArray(cursor.completedBatchSignatures) ? cursor.completedBatchSignatures.map(String) : [])],
+              coreStage,
+              coverageOffset: Number(cursor.coverageOffset ?? 0),
+              coverageTotalCandidates: Number(cursor.coverageTotalCandidates ?? 0),
+              coverageComplete: Boolean(cursor.coverageComplete) || stageIndex > stages.indexOf('coverage'),
+              roundsOffset: Number(cursor.roundsOffset ?? 0),
+              roundsTotalCandidates: Number(cursor.roundsTotalCandidates ?? 0),
+              roundsComplete: Boolean(cursor.roundsComplete) || stageIndex > stages.indexOf('rounds'),
+              coreAuxiliaryComplete: coreAuxiliaryComplete || coreStage === 'complete',
             }
           }
 
           function continuationCursorKey(result) {
             const step = getBlockingStep(result)
-            return JSON.stringify({ phase: step?.phase ?? step?.mode ?? null, ...getContinuationCursor(step) })
+            const cursor = getContinuationCursor(step)
+            return JSON.stringify({
+              phase: step?.phase ?? step?.mode ?? null,
+              providerPage: cursor.providerPage,
+              fixtureOffset: cursor.fixtureOffset,
+              oddsOffset: cursor.oddsOffset,
+              processedFixtureCount: cursor.processedFixtureCount,
+              completedBatchSignatures: cursor.completedBatchSignatures,
+              coreStage: cursor.coreStage,
+              coverageOffset: cursor.coverageOffset,
+              coverageComplete: cursor.coverageComplete,
+              roundsOffset: cursor.roundsOffset,
+              roundsComplete: cursor.roundsComplete,
+              coreAuxiliaryComplete: cursor.coreAuxiliaryComplete,
+            })
           }
 
           function classifyWorkflowContinuation(result, evidenceOverride = null) {
@@ -254,7 +282,14 @@ jobs:
             const cursor = getContinuationCursor(step)
             const derivedPlanned = step?.status === 'pending_retry'
               && validateContinuationCursor(cursor).valid
-              && (cursor.fixtureOffset > 0 || cursor.processedFixtureCount > 0 || cursor.oddsOffset > 0)
+              && (cursor.fixtureOffset > 0
+                || cursor.processedFixtureCount > 0
+                || cursor.oddsOffset > 0
+                || cursor.coverageOffset > 0
+                || cursor.roundsOffset > 0
+                || cursor.coreStage !== 'fixtures'
+                || cursor.coreAuxiliaryComplete
+                || cursor.completedBatchSignatures.length > 0)
             if (derivedPlanned) return { kind: 'planned_continuation', reason: 'DERIVED_PERSISTED_PROGRESS', step, policy, evidence }
             if (step?.status === 'pending') {
               return { kind: 'planned_continuation', reason: 'NEXT_REQUIRED_PHASE_PENDING', step, policy, evidence }
@@ -268,10 +303,11 @@ jobs:
           }
 
           function validateContinuationCursor(cursor) {
-            const numericFields = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount']
+            const numericFields = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount', 'coverageOffset', 'coverageTotalCandidates', 'roundsOffset', 'roundsTotalCandidates']
             const malformedField = numericFields.find((field) => !Number.isFinite(cursor?.[field]) || cursor[field] < 0 || !Number.isInteger(cursor[field]))
             if (malformedField) return { valid: false, reason: `MALFORMED_CURSOR:${malformedField}` }
             if (cursor.providerPage !== 1) return { valid: false, reason: 'INVALID_PROVIDER_PAGE' }
+            if (!['fixtures', 'coverage', 'rounds', 'complete'].includes(cursor.coreStage)) return { valid: false, reason: 'INVALID_CORE_STAGE' }
             return { valid: true, reason: null }
           }
 
@@ -279,16 +315,35 @@ jobs:
             const currentValidation = validateContinuationCursor(currentCursor)
             if (!currentValidation.valid) return { valid: false, regression: true, progress: false, reason: currentValidation.reason }
             if (!previousCursor) {
-              const persistedProgress = currentCursor.fixtureOffset > 0 || currentCursor.processedFixtureCount > 0 || currentCursor.oddsOffset > 0
+              const persistedProgress = currentCursor.fixtureOffset > 0
+                || currentCursor.processedFixtureCount > 0
+                || currentCursor.oddsOffset > 0
+                || currentCursor.coverageOffset > 0
+                || currentCursor.roundsOffset > 0
+                || currentCursor.coreStage !== 'fixtures'
+                || currentCursor.coreAuxiliaryComplete
+                || currentCursor.completedBatchSignatures.length > 0
               return { valid: persistedProgress, regression: false, progress: persistedProgress, reason: persistedProgress ? 'PERSISTED_PROGRESS' : 'NO_INITIAL_PROGRESS' }
             }
             const previousValidation = validateContinuationCursor(previousCursor)
             if (!previousValidation.valid) return { valid: false, regression: true, progress: false, reason: previousValidation.reason }
-            const regressionField = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount']
+            const regressionField = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount', 'coverageOffset', 'roundsOffset']
               .find((field) => currentCursor[field] < previousCursor[field])
             if (regressionField) return { valid: false, regression: true, progress: false, reason: `CURSOR_REGRESSION:${regressionField}` }
-            const progress = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount']
+            const stages = ['fixtures', 'coverage', 'rounds', 'complete']
+            if (stages.indexOf(currentCursor.coreStage) < stages.indexOf(previousCursor.coreStage)) return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:coreStage' }
+            if (previousCursor.coverageComplete && !currentCursor.coverageComplete) return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:coverageComplete' }
+            if (previousCursor.roundsComplete && !currentCursor.roundsComplete) return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:roundsComplete' }
+            if (previousCursor.coreAuxiliaryComplete && !currentCursor.coreAuxiliaryComplete) return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:coreAuxiliaryComplete' }
+            const addedBatchSignature = currentCursor.completedBatchSignatures.some((signature) => !previousCursor.completedBatchSignatures.includes(signature))
+            if (!addedBatchSignature && previousCursor.completedBatchSignatures.some((signature) => !currentCursor.completedBatchSignatures.includes(signature))) return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:completedBatchSignatures' }
+            const progress = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount', 'coverageOffset', 'roundsOffset']
               .some((field) => currentCursor[field] > previousCursor[field])
+              || stages.indexOf(currentCursor.coreStage) > stages.indexOf(previousCursor.coreStage)
+              || (!previousCursor.coverageComplete && currentCursor.coverageComplete)
+              || (!previousCursor.roundsComplete && currentCursor.roundsComplete)
+              || (!previousCursor.coreAuxiliaryComplete && currentCursor.coreAuxiliaryComplete)
+              || addedBatchSignature
             return { valid: true, regression: false, progress, reason: progress ? 'CURSOR_ADVANCED' : 'CURSOR_UNCHANGED' }
           }
 
@@ -368,7 +423,7 @@ jobs:
 
           function logContinuation(result, invocation) {
             const step = getBlockingStep(result)
-            const cursor = step?.continuation_state ?? {}
+            const cursor = getContinuationCursor(step)
             console.log(JSON.stringify(sanitize({
               runId: result.runId,
               phase: step?.phase ?? result.phase ?? null,
@@ -382,6 +437,15 @@ jobs:
                 processedFixtureCount: cursor.processedFixtureCount ?? step?.processed_fixture_count ?? null,
                 lastProcessedFixtureId: cursor.lastProcessedFixtureId ?? step?.last_processed_fixture_id ?? null,
                 batchSignature: cursor.batchSignature ?? step?.batch_signature ?? null,
+                completedBatchSignatures: cursor.completedBatchSignatures ?? [],
+                coreStage: cursor.coreStage ?? null,
+                coverageOffset: cursor.coverageOffset ?? null,
+                coverageTotalCandidates: cursor.coverageTotalCandidates ?? null,
+                coverageComplete: cursor.coverageComplete ?? false,
+                roundsOffset: cursor.roundsOffset ?? null,
+                roundsTotalCandidates: cursor.roundsTotalCandidates ?? null,
+                roundsComplete: cursor.roundsComplete ?? false,
+                coreAuxiliaryComplete: cursor.coreAuxiliaryComplete ?? false,
               },
               nextRetryAt: step?.next_retry_at ?? null,
               status: result.status,
@@ -395,7 +459,7 @@ jobs:
             if (decision.action === 'failure') throw new Error(decision.reason)
             if (decision.action === 'schedule_next_workflow') {
               const cursor = getContinuationCursor(decision.disposition.step)
-              console.log(`continuation scheduled runId=${result.runId} phase=${decision.disposition.step?.phase ?? result.phase ?? 'unknown'} fixtureOffset=${cursor.fixtureOffset} processedFixtureCount=${cursor.processedFixtureCount} nextRetryAt=${decision.disposition.step?.next_retry_at}`)
+              console.log(`continuation scheduled runId=${result.runId} phase=${decision.disposition.step?.phase ?? result.phase ?? 'unknown'} fixtureOffset=${cursor.fixtureOffset} processedFixtureCount=${cursor.processedFixtureCount} coreStage=${cursor.coreStage} coverageOffset=${cursor.coverageOffset} roundsOffset=${cursor.roundsOffset} nextRetryAt=${decision.disposition.step?.next_retry_at}`)
               return decision
             }
             if (decision.action === 'wait') {
@@ -436,7 +500,7 @@ jobs:
             logContinuation(dailySync, invocation)
             const disposition = classifyWorkflowContinuation(dailySync)
             const currentCursorKey = continuationCursorKey(dailySync)
-            if (disposition.kind === 'planned_continuation' && currentCursorKey === previousCursorKey && disposition.reason !== 'EXECUTION_BUDGET_DEFERRED') {
+            if (disposition.kind === 'planned_continuation' && currentCursorKey === previousCursorKey) {
               repeatedNoProgress += 1
             } else {
               repeatedNoProgress = 0
@@ -454,7 +518,7 @@ jobs:
               throw new Error(`Daily pipeline incomplete after continuation budget: status=${dailySync.status ?? 'unknown'}, phase=${step?.phase ?? dailySync.phase ?? 'unknown'}, next_retry_at=${step?.next_retry_at ?? 'missing'}`)
             }
             const cursor = getContinuationCursor(step)
-            console.log(`continuation scheduled runId=${runId} phase=${step?.phase ?? dailySync.phase ?? 'unknown'} fixtureOffset=${cursor.fixtureOffset} processedFixtureCount=${cursor.processedFixtureCount} nextRetryAt=${step?.next_retry_at ?? 'active-claim'} invocation=${invocationCount}/12 deferred=${continuationScheduled}`)
+            console.log(`continuation scheduled runId=${runId} phase=${step?.phase ?? dailySync.phase ?? 'unknown'} fixtureOffset=${cursor.fixtureOffset} processedFixtureCount=${cursor.processedFixtureCount} coreStage=${cursor.coreStage} coverageOffset=${cursor.coverageOffset} roundsOffset=${cursor.roundsOffset} nextRetryAt=${step?.next_retry_at ?? 'active-claim'} invocation=${invocationCount}/12 deferred=${continuationScheduled}`)
             console.log('Daily pipeline planned continuation accepted; the next scheduled workflow will resume the canonical run.')
           } else {
             console.log(`Daily Market-Ready pipeline ${runId} completed all required phases.`)
@@ -464,7 +528,8 @@ jobs:
           }
 
           main().catch((error) => {
-            console.error(maskText(error?.stack ?? error?.message ?? error))
+            const failure = maskText(error?.stack ?? error?.message ?? error) || 'UNKNOWN_WORKFLOW_FAILURE'
+            console.error(`Daily football sync workflow failed: ${failure}`)
             process.exitCode = 1
           })
           NODE

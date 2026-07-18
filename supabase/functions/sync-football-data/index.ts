@@ -17,11 +17,11 @@ import {
   getRetryAfterSeconds,
 } from '../_shared/dailySyncResponse.js'
 import {
-  advanceContinuation,
+  advanceContinuation as advancePipelineContinuation,
   buildBatchSignature,
   canRunRequiredPhase,
   claimDailyStepOnce,
-  createContinuationState,
+  createContinuationState as createPipelineContinuationState,
   findNextRequiredStep,
   getDailySyncCacheDecision,
   getRequiredRunStatus,
@@ -36,10 +36,13 @@ import {
   selectDailyFixtureBatch,
 } from '../_shared/dailyFixturesPolicy.js'
 import {
+  advanceCoreAuxiliaryContinuation,
   buildDailyContinuationRetryPlan,
   classifyDailyStepContinuation,
+  getCoreAuxiliaryContinuation,
   getStepFailureAttemptCount,
   getStepStuckContinuationCount,
+  selectCoreAuxiliaryBatch,
 } from '../_shared/dailyContinuationPolicy.js'
 import {
   MAX_DAILY_SYNC_STEPS_PER_REQUEST,
@@ -58,6 +61,19 @@ import {
   shouldDeferExecution,
 } from '../_shared/syncReliability.js'
 import { systemVersions } from '../_shared/versions.js'
+
+function createContinuationState(value: Record<string, any> = {}) {
+  return {
+    ...createPipelineContinuationState(value),
+    ...getCoreAuxiliaryContinuation(value),
+  }
+}
+
+function advanceContinuation(current: Record<string, any> = {}, update: Record<string, any> = {}) {
+  const previous = createContinuationState(current)
+  const pipeline = advancePipelineContinuation(previous, update)
+  return createContinuationState({ ...previous, ...pipeline, ...update })
+}
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -1398,29 +1414,33 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     await logEnrichmentSync({ mode: context.mode, endpoint: `phase:${phase}`, status: 'started', started_at: new Date().toISOString(), finished_at: new Date().toISOString() })
     const results: Array<any> = []
     const runBatch = async (worker: () => Promise<any>) => {
-      if (shouldStopForExecutionBudget(context)) return false
-      results.push(await worker())
-      return true
+      if (shouldStopForExecutionBudget(context)) return null
+      const result = await worker()
+      results.push(result)
+      return result
     }
 
     if (phase === 'core') {
-      await runBatch(() => syncApiFootballDailyFixtures(dayRange, context.limit, context))
-      if (!context.continuationState?.coreAuxiliaryComplete && !context.deadlineReached) {
-        const auxiliary: Array<any> = []
-        if (await runBatch(async () => {
-          const result = await executeFootballEnrichmentMode('coverage', body, dayRange, context)
-          auxiliary.push(result)
-          return result
-        }) && !context.deadlineReached) {
-          await runBatch(async () => {
-            const result = await executeFootballEnrichmentMode('rounds', body, dayRange, context)
-            auxiliary.push(result)
-            return result
-          })
+      if (context.continuationState?.coreStage === 'fixtures') {
+        const fixtureResult = await runBatch(async () => ({
+          ...await syncApiFootballDailyFixtures(dayRange, context.limit, context),
+          coreOperation: 'fixtures',
+        }))
+        if (fixtureResult?.providerComplete === true && Number(fixtureResult?.failed ?? 0) === 0 && !context.deadlineReached) {
+          await persistStepContinuation(context, { coreStage: 'coverage' })
         }
-        if (!context.deadlineReached && auxiliary.length === 2 && sumResultField(auxiliary, 'failed') === 0) {
-          await persistStepContinuation(context, { coreAuxiliaryComplete: true })
-        }
+      }
+      if (context.continuationState?.coreStage === 'coverage' && !context.deadlineReached) {
+        await runBatch(async () => ({
+          ...await executeFootballEnrichmentMode('coverage', body, dayRange, context),
+          coreOperation: 'coverage',
+        }))
+      }
+      if (context.continuationState?.coreStage === 'rounds' && !context.deadlineReached) {
+        await runBatch(async () => ({
+          ...await executeFootballEnrichmentMode('rounds', body, dayRange, context),
+          coreOperation: 'rounds',
+        }))
       }
     } else if (phase === 'fixture-enrichment') {
       await runBatch(() => executeFootballEnrichmentMode('fixture-enrich', body, dayRange, context))
@@ -1465,7 +1485,7 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
       partial,
       endpointBreakdown,
       details: {
-        ...buildDailyPhaseDetails(phase, results),
+        ...buildDailyPhaseDetails(phase, results, context.continuationState),
         ...(context.deadlineReached ? { reason: 'SOFT_DEADLINE_REACHED', remainingMs: getRemainingExecutionMs(context.executionBudget) } : {}),
         continuationSignals: {
           executionBudgetDeferred: context.deadlineReached,
@@ -2775,28 +2795,68 @@ function shouldStopForExecutionBudget(context: FootballEnrichmentContext, minimu
 }
 
 async function syncApiFootballCoverage(context: FootballEnrichmentContext) {
-  const leagues = (await fetchDistinctApiFootballLeagues()).slice(0, context.limit)
+  const candidates = await fetchDistinctApiFootballLeagues()
+  const selected = selectCoreAuxiliaryBatch(candidates, context.continuationState?.coverageOffset, context.limit)
+  const leagues = selected.batch
   let processed = 0
+  let processedCandidates = 0
+  if (selected.complete) {
+    const completed = advanceCoreAuxiliaryContinuation(context.continuationState, 'coverage', {
+      advancedBy: 0,
+      totalCandidates: selected.totalCandidates,
+      complete: true,
+    })
+    await persistStepContinuation(context, completed)
+  }
   for (const item of leagues) {
     if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     const response = await trackedApiFootballGet(context, '/leagues', { id: item.api_league_id, season: item.season }, { apiLeagueId: item.api_league_id, season: item.season })
-    if (!response.ok) continue
+    if (!response.ok) break
     const rows = (response.data ?? []).map((row: any) => normalizeLeagueCoverage(row, item))
     await upsertApiFootballData('api_football_league_coverage', 'api_league_id,season', rows)
     addEndpointRowsSaved(context, '/leagues', rows.length)
     processed += rows.length
+    processedCandidates += 1
+    const completed = selected.offset + processedCandidates >= selected.totalCandidates
+    const next = advanceCoreAuxiliaryContinuation(context.continuationState, 'coverage', {
+      advancedBy: 1,
+      totalCandidates: selected.totalCandidates,
+      complete: completed,
+    })
+    await persistStepContinuation(context, next)
   }
-  return { processed, totalCandidates: leagues.length }
+  const continuation = getCoreAuxiliaryContinuation(context.continuationState)
+  return {
+    processed,
+    processedCandidates,
+    totalCandidates: selected.totalCandidates,
+    partial: !continuation.coverageComplete,
+    hasMore: !continuation.coverageComplete,
+    nextOffset: continuation.coverageOffset,
+    coverageComplete: continuation.coverageComplete,
+  }
 }
 
 async function syncApiFootballRounds(context: FootballEnrichmentContext) {
-  const leagues = (await fetchDistinctApiFootballLeagues()).slice(0, context.limit)
+  const candidates = await fetchDistinctApiFootballLeagues()
+  const selected = selectCoreAuxiliaryBatch(candidates, context.continuationState?.roundsOffset, context.limit)
+  const leagues = selected.batch
   let processed = 0
+  let processedCandidates = 0
+  if (selected.complete) {
+    const completed = advanceCoreAuxiliaryContinuation(context.continuationState, 'rounds', {
+      advancedBy: 0,
+      totalCandidates: selected.totalCandidates,
+      complete: true,
+    })
+    await persistStepContinuation(context, completed)
+  }
   for (const item of leagues) {
     if (context.rateLimited || shouldStopForExecutionBudget(context)) break
     const allRounds = await trackedApiFootballGet(context, '/fixtures/rounds', { league: item.api_league_id, season: item.season }, { apiLeagueId: item.api_league_id, season: item.season })
-    const current = context.rateLimited ? { data: [] } : await trackedApiFootballGet(context, '/fixtures/rounds', { league: item.api_league_id, season: item.season, current: 'true' }, { apiLeagueId: item.api_league_id, season: item.season })
-    if (!allRounds.ok) continue
+    if (!allRounds.ok || context.rateLimited) break
+    const current = await trackedApiFootballGet(context, '/fixtures/rounds', { league: item.api_league_id, season: item.season, current: 'true' }, { apiLeagueId: item.api_league_id, season: item.season })
+    if (!current.ok) break
     const currentRound = Array.isArray(current.data) ? current.data[0] : null
     const rows = (allRounds.data ?? []).map((roundName: string, index: number) => ({
       api_league_id: item.api_league_id,
@@ -2810,8 +2870,25 @@ async function syncApiFootballRounds(context: FootballEnrichmentContext) {
     await upsertApiFootballData('api_football_rounds', 'api_league_id,season,round_name', rows)
     addEndpointRowsSaved(context, '/fixtures/rounds', rows.length)
     processed += rows.length
+    processedCandidates += 1
+    const completed = selected.offset + processedCandidates >= selected.totalCandidates
+    const next = advanceCoreAuxiliaryContinuation(context.continuationState, 'rounds', {
+      advancedBy: 1,
+      totalCandidates: selected.totalCandidates,
+      complete: completed,
+    })
+    await persistStepContinuation(context, next)
   }
-  return { processed, totalCandidates: leagues.length }
+  const continuation = getCoreAuxiliaryContinuation(context.continuationState)
+  return {
+    processed,
+    processedCandidates,
+    totalCandidates: selected.totalCandidates,
+    partial: !continuation.roundsComplete,
+    hasMore: !continuation.roundsComplete,
+    nextOffset: continuation.roundsOffset,
+    roundsComplete: continuation.roundsComplete,
+  }
 }
 
 async function syncApiFootballFixtureEnrichment(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, body: Record<string, unknown> = {}) {
@@ -5709,7 +5786,10 @@ async function fetchDistinctApiFootballLeagues() {
       })
     }
   }
-  return [...map.values()]
+  return [...map.values()].sort((left, right) => {
+    const leagueOrder = Number(left.api_league_id ?? 0) - Number(right.api_league_id ?? 0)
+    return leagueOrder || Number(left.season ?? 0) - Number(right.season ?? 0)
+  })
 }
 
 async function fetchDistinctApiFootballTeams() {
@@ -5941,12 +6021,24 @@ function diffEndpointCounterMap(before: Record<string, FootballEnrichmentEndpoin
   return delta
 }
 
-function buildDailyPhaseDetails(phase: string, results: Array<any>) {
+function buildDailyPhaseDetails(phase: string, results: Array<any>, continuationState: Record<string, any> = {}) {
   if (phase === 'core') {
+    const fixtures = results.find((result) => result?.coreOperation === 'fixtures')
+    const coverage = results.find((result) => result?.coreOperation === 'coverage')
+    const rounds = results.find((result) => result?.coreOperation === 'rounds')
+    const continuation = getCoreAuxiliaryContinuation(continuationState)
     return {
-      fixturesProcessed: Number(results[0]?.processed ?? 0),
-      coverageProcessed: Number(results[1]?.processed ?? 0),
-      roundsProcessed: Number(results[2]?.processed ?? 0),
+      coreStage: continuation.coreStage,
+      fixturesProcessed: Number(fixtures?.processed ?? 0),
+      coverageProcessed: Number(coverage?.processed ?? 0),
+      coverageCandidatesProcessed: Number(coverage?.processedCandidates ?? 0),
+      coverageTotalCandidates: Number(coverage?.totalCandidates ?? continuation.coverageTotalCandidates),
+      coverageComplete: continuation.coverageComplete,
+      roundsProcessed: Number(rounds?.processed ?? 0),
+      roundsCandidatesProcessed: Number(rounds?.processedCandidates ?? 0),
+      roundsTotalCandidates: Number(rounds?.totalCandidates ?? continuation.roundsTotalCandidates),
+      roundsComplete: continuation.roundsComplete,
+      coreAuxiliaryComplete: continuation.coreAuxiliaryComplete,
     }
   }
   if (phase === 'fixture-enrichment') {

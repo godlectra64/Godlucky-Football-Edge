@@ -3,13 +3,16 @@ import { spawnSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import {
   STUCK_CONTINUATION_THRESHOLD,
+  advanceCoreAuxiliaryContinuation,
   buildDailyContinuationRetryPlan,
   classifyDailyStepContinuation,
+  getCoreAuxiliaryContinuation,
   getStepFailureAttemptCount,
   hasContinuationProgress,
+  selectCoreAuxiliaryBatch,
   validateContinuationTransition,
 } from '../supabase/functions/_shared/dailyContinuationPolicy.js'
-import { advanceContinuation, buildBatchSignature, getDailySyncCacheDecision, shouldProcessBatch } from '../supabase/functions/_shared/pipelinePolicy.js'
+import { advanceContinuation, buildBatchSignature, findNextRequiredStep, getDailySyncCacheDecision, shouldProcessBatch } from '../supabase/functions/_shared/pipelinePolicy.js'
 import { advanceDailyFixtureCursor } from '../supabase/functions/_shared/dailyFixturesPolicy.js'
 
 const now = '2026-07-16T08:00:00.000Z'
@@ -64,11 +67,79 @@ const deadline = classifyDailyStepContinuation({
 assert.equal(deadline.kind, 'planned_continuation')
 assert.equal(deadline.reason, 'EXECUTION_BUDGET_DEFERRED')
 assert.equal(deadline.failureAttemptCount, 2)
+assert.equal(deadline.stuckContinuationCount, 1)
+
+let repeatedDeadline = deadline
+for (let count = 1; count < STUCK_CONTINUATION_THRESHOLD; count += 1) {
+  repeatedDeadline = classifyDailyStepContinuation({
+    status: 'partial_success',
+    partial: true,
+    failed: 0,
+    continuationState: previousCursor,
+    details: { reason: 'SOFT_DEADLINE_REACHED' },
+  }, {
+    previousContinuation: previousCursor,
+    nextContinuation: previousCursor,
+    previousFailureAttemptCount: repeatedDeadline.failureAttemptCount,
+    previousStuckContinuationCount: repeatedDeadline.stuckContinuationCount,
+  })
+}
+assert.equal(repeatedDeadline.kind, 'real_failure', 'three identical soft-deadline continuations without cursor progress must fail as stuck')
+assert.equal(repeatedDeadline.reason, 'STUCK_CONTINUATION')
 
 assert.equal(hasContinuationProgress(previousCursor, advancedCursor), true)
 assert.equal(validateContinuationTransition(advancedCursor, previousCursor).valid, false)
 assert.equal(advanceDailyFixtureCursor({ totalFixtures: 162, fixtureOffset: 11, advancedBy: 7, batchComplete: true }).providerPage, 1)
 assert.equal(advanceDailyFixtureCursor({ totalFixtures: 162, fixtureOffset: 11, advancedBy: 7, batchComplete: true }).fixtureOffset, 18)
+
+const auxiliaryCandidates = Array.from({ length: 25 }, (_, index) => ({ id: index }))
+let coverageCursor = getCoreAuxiliaryContinuation({ coreStage: 'coverage' })
+let coverageBatch = selectCoreAuxiliaryBatch(auxiliaryCandidates, coverageCursor.coverageOffset, 10)
+assert.deepEqual(coverageBatch.batch.map((row) => row.id), Array.from({ length: 10 }, (_, index) => index))
+coverageCursor = advanceCoreAuxiliaryContinuation(coverageCursor, 'coverage', { advancedBy: coverageBatch.batch.length, totalCandidates: coverageBatch.totalCandidates })
+assert.equal(coverageCursor.coverageOffset, 10)
+const auxiliaryDeadline = classifyDailyStepContinuation({
+  status: 'partial_success',
+  partial: true,
+  failed: 0,
+  rateLimited: false,
+  continuationState: coverageCursor,
+  details: { reason: 'SOFT_DEADLINE_REACHED' },
+}, {
+  previousContinuation: { ...coverageCursor, coverageOffset: 0 },
+  nextContinuation: coverageCursor,
+})
+assert.equal(auxiliaryDeadline.kind, 'planned_continuation')
+assert.equal(auxiliaryDeadline.reason, 'CURSOR_ADVANCED', 'soft deadline with persisted auxiliary progress must remain a planned continuation')
+coverageBatch = selectCoreAuxiliaryBatch(auxiliaryCandidates, coverageCursor.coverageOffset, 10)
+assert.deepEqual(coverageBatch.batch.map((row) => row.id), Array.from({ length: 10 }, (_, index) => index + 10), 'coverage continuation must not repeat its first batch')
+coverageCursor = advanceCoreAuxiliaryContinuation(coverageCursor, 'coverage', { advancedBy: coverageBatch.batch.length, totalCandidates: coverageBatch.totalCandidates })
+assert.equal(coverageCursor.coverageOffset, 20)
+coverageBatch = selectCoreAuxiliaryBatch(auxiliaryCandidates, coverageCursor.coverageOffset, 10)
+coverageCursor = advanceCoreAuxiliaryContinuation(coverageCursor, 'coverage', { advancedBy: coverageBatch.batch.length, totalCandidates: coverageBatch.totalCandidates })
+assert.equal(coverageCursor.coverageOffset, 25)
+assert.equal(coverageCursor.coverageComplete, true)
+assert.equal(coverageCursor.coreStage, 'rounds')
+assert.equal(validateContinuationTransition(coverageCursor, { ...coverageCursor, coverageOffset: 20 }).reason, 'CURSOR_REGRESSION:coverageOffset')
+
+const roundsCandidates = Array.from({ length: 12 }, (_, index) => ({ id: index }))
+let roundsCursor = coverageCursor
+let roundsBatch = selectCoreAuxiliaryBatch(roundsCandidates, roundsCursor.roundsOffset, 10)
+roundsCursor = advanceCoreAuxiliaryContinuation(roundsCursor, 'rounds', { advancedBy: roundsBatch.batch.length, totalCandidates: roundsBatch.totalCandidates })
+assert.equal(roundsCursor.roundsOffset, 10)
+roundsBatch = selectCoreAuxiliaryBatch(roundsCandidates, roundsCursor.roundsOffset, 10)
+assert.deepEqual(roundsBatch.batch.map((row) => row.id), [10, 11], 'rounds continuation must resume after its persisted offset')
+roundsCursor = advanceCoreAuxiliaryContinuation(roundsCursor, 'rounds', { advancedBy: roundsBatch.batch.length, totalCandidates: roundsBatch.totalCandidates })
+assert.equal(roundsCursor.roundsComplete, true)
+assert.equal(roundsCursor.coreStage, 'complete')
+assert.equal(roundsCursor.coreAuxiliaryComplete, true)
+assert.equal(findNextRequiredStep([
+  { phase: 'core', step_order: 1, status: 'success' },
+  { phase: 'fixture-enrichment', step_order: 2, status: 'pending' },
+  { phase: 'team-enrichment', step_order: 3, status: 'pending' },
+  { phase: 'league-enrichment', step_order: 4, status: 'pending' },
+  { phase: 'ranking', step_order: 5, status: 'pending' },
+])?.phase, 'fixture-enrichment', 'completed core auxiliary state must allow the pipeline to advance')
 
 let stuck = classifyDailyStepContinuation({ status: 'partial_success', partial: true, failed: 0, continuationState: previousCursor }, {
   previousContinuation: previousCursor,
@@ -118,6 +189,14 @@ assert.equal(getStepFailureAttemptCount({
 const signature = buildBatchSignature([101, 102, 103])
 const completedCursor = advanceContinuation(previousCursor, { batchSignature: signature, batchComplete: true })
 assert.equal(shouldProcessBatch(completedCursor, signature), false, 'completed fixture batches must remain idempotent')
+assert.equal(validateContinuationTransition(
+  { ...previousCursor, completedBatchSignatures: ['batch-old', 'batch-current'] },
+  { ...previousCursor, completedBatchSignatures: ['batch-current', 'batch-new'] },
+).valid, true, 'bounded completed batch history may roll over when a new signature is appended')
+assert.equal(validateContinuationTransition(
+  { ...previousCursor, completedBatchSignatures: ['batch-old', 'batch-current'] },
+  { ...previousCursor, completedBatchSignatures: ['batch-current'] },
+).reason, 'CURSOR_REGRESSION:completedBatchSignatures')
 const cacheDecision = getDailySyncCacheDecision({ id: 'canonical-run', status: 'partial', current_phase: 'core' }, [
   { id: 'core', phase: 'core', step_order: 1, status: 'pending_retry', attempt_count: 5, max_attempts: 20, next_retry_at: '2026-07-16T07:59:00.000Z', summary: { details: { continuationPolicy: planned } } },
   ...['fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking'].map((phase, index) => ({ id: phase, phase, step_order: index + 2, status: 'pending', attempt_count: 0, max_attempts: 20 })),
@@ -181,6 +260,73 @@ const incidentProgressRun = runWorkflowSequence(inlineScript, [
 assert.equal(incidentProgressRun.status, 0, `Production cursor progress 256 -> 260 with a synthetic diagnostic must exit 0: ${incidentProgressRun.stderr}`)
 assert.doesNotMatch(incidentProgressRun.stderr, /Daily pipeline real failure/)
 assert.match(incidentProgressRun.stdout, new RegExp(`continuation scheduled runId=${incidentRunId}`))
+
+const productionAuxiliaryPrevious = withCoreContinuation(productionWorkflowResult({
+  runId: incidentRunId,
+  fixtureOffset: 260,
+  processedFixtureCount: 262,
+  nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+}), {
+  batchSignature: 'fnv1a-f394c4f4-15',
+  completedBatchSignatures: ['fnv1a-prior-batch-12'],
+  coreStage: 'coverage',
+  coverageOffset: 0,
+  coverageTotalCandidates: 25,
+})
+const productionAuxiliaryCurrent = withCoreContinuation(productionWorkflowResult({
+  runId: incidentRunId,
+  fixtureOffset: 266,
+  processedFixtureCount: 262,
+  nextRetryAt: productionFutureRetry,
+}), {
+  batchSignature: 'fnv1a-f394c4f4-15',
+  completedBatchSignatures: ['fnv1a-prior-batch-12'],
+  coreStage: 'coverage',
+  coverageOffset: 11,
+  coverageTotalCandidates: 25,
+})
+productionAuxiliaryCurrent.processed = 11
+productionAuxiliaryCurrent.rowsSaved = 11
+productionAuxiliaryCurrent.steps[0].processed = 11
+productionAuxiliaryCurrent.steps[0].rows_saved = 11
+productionAuxiliaryCurrent.steps[0].summary.processed = 11
+productionAuxiliaryCurrent.steps[0].summary.rowsSaved = 11
+productionAuxiliaryCurrent.steps[0].summary.details.reason = 'SOFT_DEADLINE_REACHED'
+productionAuxiliaryCurrent.steps[0].summary.details.coverageProcessed = 11
+const productionAuxiliaryTransition = workflowPolicy.inspectContinuationTransition(
+  workflowPolicy.getContinuationCursor(productionAuxiliaryPrevious.steps[0]),
+  workflowPolicy.getContinuationCursor(productionAuxiliaryCurrent.steps[0]),
+)
+assert.equal(productionAuxiliaryTransition.progress, true, 'persisted auxiliary offset must be canonical workflow progress')
+const productionAuxiliaryRun = runWorkflowSequence(inlineScript, [
+  { body: productionAuxiliaryPrevious, status: 200 },
+  { body: productionAuxiliaryCurrent, status: 200 },
+])
+assert.equal(productionAuxiliaryRun.status, 0, `exact Production fixtureOffset 260 -> 266 / processedFixtureCount 262 -> 262 payload with coverage progress must exit 0: ${productionAuxiliaryRun.stderr}`)
+assert.doesNotMatch(productionAuxiliaryRun.stderr, /STUCK_CONTINUATION/)
+assert.match(productionAuxiliaryRun.stdout, /coreStage=coverage coverageOffset=11/)
+
+const duplicateFixturePrevious = withCoreContinuation(productionWorkflowResult({
+  runId: incidentRunId,
+  fixtureOffset: 260,
+  processedFixtureCount: 262,
+  nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+}), { batchSignature: 'fnv1a-f394c4f4-15', completedBatchSignatures: ['fnv1a-f394c4f4-15'] })
+const duplicateFixtureCurrent = withCoreContinuation(productionWorkflowResult({
+  runId: incidentRunId,
+  fixtureOffset: 266,
+  processedFixtureCount: 262,
+  nextRetryAt: productionFutureRetry,
+}), { batchSignature: 'fnv1a-f394c4f4-15', completedBatchSignatures: ['fnv1a-f394c4f4-15'] })
+assert.equal(workflowPolicy.inspectContinuationTransition(
+  workflowPolicy.getContinuationCursor(duplicateFixturePrevious.steps[0]),
+  workflowPolicy.getContinuationCursor(duplicateFixtureCurrent.steps[0]),
+).progress, true, 'duplicate fixture skip may advance fixtureOffset without incrementing processedFixtureCount')
+const duplicateFixtureRun = runWorkflowSequence(inlineScript, [
+  { body: duplicateFixturePrevious, status: 200 },
+  { body: duplicateFixtureCurrent, status: 200 },
+])
+assert.equal(duplicateFixtureRun.status, 0, `duplicate fixture skip must be accepted as progress: ${duplicateFixtureRun.stderr}`)
 
 const failureAttemptsPreviousPayload = productionWorkflowResult({
   runId: incidentRunId,
@@ -311,6 +457,44 @@ const repeatedNoProgressRun = runWorkflowScenario(inlineScript, withSyntheticFai
 assert.equal(repeatedNoProgressRun.status, 1, 'repeated no-progress continuation must exit workflow with code 1 at the threshold')
 assert.match(repeatedNoProgressRun.stderr, /STUCK_CONTINUATION/)
 
+const legacyIncidentPrevious = productionWorkflowResult({
+  runId: incidentRunId,
+  fixtureOffset: 260,
+  processedFixtureCount: 262,
+  nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+})
+const legacyIncidentCurrent = productionWorkflowResult({
+  runId: incidentRunId,
+  fixtureOffset: 266,
+  processedFixtureCount: 262,
+  nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+})
+legacyIncidentCurrent.processed = 11
+legacyIncidentCurrent.rowsSaved = 11
+legacyIncidentCurrent.steps[0].summary.processed = 11
+legacyIncidentCurrent.steps[0].summary.rowsSaved = 11
+legacyIncidentCurrent.steps[0].summary.details.reason = 'SOFT_DEADLINE_REACHED'
+legacyIncidentCurrent.steps[0].summary.details.coverageProcessed = 11
+const legacyIncidentRun = runWorkflowSequence(inlineScript, [
+  { body: legacyIncidentPrevious, status: 200 },
+  ...Array.from({ length: 4 }, () => ({ body: legacyIncidentCurrent, status: 200 })),
+])
+assert.equal(legacyIncidentRun.status, 1, 'legacy Production payload without an auxiliary cursor must reach the exact repeated no-progress exit branch')
+assert.match(legacyIncidentRun.stderr, /Daily football sync workflow failed:.*STUCK_CONTINUATION/s, 'STUCK_CONTINUATION exit 1 must never be silent')
+
+const invocationBudgetResponses = Array.from({ length: 12 }, (_, index) => ({
+  body: productionWorkflowResult({
+    runId: incidentRunId,
+    fixtureOffset: 260 + index,
+    processedFixtureCount: 262,
+    nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+  }),
+  status: 200,
+}))
+const invocationBudgetRun = runWorkflowSequence(inlineScript, invocationBudgetResponses)
+assert.equal(invocationBudgetRun.status, 0, `workflow invocation budget exhaustion with valid continuation must exit 0: ${invocationBudgetRun.stderr}`)
+assert.match(invocationBudgetRun.stdout, /invocation=12\/12/, 'workflow must log the scheduled continuation at its invocation limit')
+
 const exhaustedProductionPayload = productionWorkflowResult({ nextRetryAt: productionFutureRetry })
 exhaustedProductionPayload.steps[0].exhausted = true
 const exhaustedProductionRun = runWorkflowScenario(inlineScript, exhaustedProductionPayload)
@@ -439,6 +623,11 @@ const edgeSource = await readFile(new URL('../supabase/functions/sync-football-d
 assert.match(edgeSource, /attempt_count: retry\.persistedAttemptCount/)
 assert.match(edgeSource, /continuationPolicy: retry\.continuationPolicy/)
 assert.match(edgeSource, /getStepFailureAttemptCount\(step\)/)
+assert.match(edgeSource, /selectCoreAuxiliaryBatch\(candidates, context\.continuationState\?\.coverageOffset, context\.limit\)/)
+assert.match(edgeSource, /selectCoreAuxiliaryBatch\(candidates, context\.continuationState\?\.roundsOffset, context\.limit\)/)
+assert.match(edgeSource, /advanceCoreAuxiliaryContinuation\(context\.continuationState, 'coverage'/)
+assert.match(edgeSource, /advanceCoreAuxiliaryContinuation\(context\.continuationState, 'rounds'/)
+assert.match(edgeSource, /await persistStepContinuation\(context, next\)/)
 
 console.log('daily continuation policy unit tests passed')
 
@@ -569,6 +758,16 @@ function withAdvisoryRealFailurePolicy(payload, reason, metadata = {}) {
   return payload
 }
 
+function withCoreContinuation(payload, continuation) {
+  const currentStep = payload.steps[0]
+  currentStep.continuation_state = {
+    ...currentStep.continuation_state,
+    ...continuation,
+  }
+  Object.assign(payload, continuation)
+  return payload
+}
+
 function extractWorkflowNodeScript(source) {
   const startMarker = "node <<'NODE'"
   const start = source.indexOf(startMarker)
@@ -615,11 +814,12 @@ function compileWorkflowPolicy(source) {
     'getCanonicalCurrentFailureEvidence',
     'getContinuationCursor',
     'validateContinuationCursor',
+    'inspectContinuationTransition',
     'classifyWorkflowContinuation',
     'getRetryWindowDecision',
   ]
   const declarations = names.map((name) => functionSource(source, name)).join('\n')
-  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { getCanonicalCurrentFailureEvidence, classifyWorkflowContinuation, getRetryWindowDecision }`)()
+  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { getCanonicalCurrentFailureEvidence, getContinuationCursor, inspectContinuationTransition, classifyWorkflowContinuation, getRetryWindowDecision }`)()
 }
 
 function functionSource(source, name) {

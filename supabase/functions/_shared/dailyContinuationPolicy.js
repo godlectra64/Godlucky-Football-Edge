@@ -1,5 +1,57 @@
 export const PLANNED_CONTINUATION_RETRY_DELAY_MS = 15_000
 export const STUCK_CONTINUATION_THRESHOLD = 3
+export const CORE_CONTINUATION_STAGES = Object.freeze(['fixtures', 'coverage', 'rounds', 'complete'])
+
+export function getCoreAuxiliaryContinuation(value = {}) {
+  const row = objectValue(value)
+  const explicitStage = CORE_CONTINUATION_STAGES.includes(row.coreStage) ? row.coreStage : null
+  const coreStage = row.coreAuxiliaryComplete === true ? 'complete' : explicitStage ?? 'fixtures'
+  const stageIndex = CORE_CONTINUATION_STAGES.indexOf(coreStage)
+  const coverageComplete = Boolean(row.coverageComplete) || stageIndex > CORE_CONTINUATION_STAGES.indexOf('coverage')
+  const roundsComplete = Boolean(row.roundsComplete) || stageIndex > CORE_CONTINUATION_STAGES.indexOf('rounds')
+  return {
+    coreStage,
+    coverageOffset: nonNegativeInteger(row.coverageOffset),
+    coverageTotalCandidates: nonNegativeInteger(row.coverageTotalCandidates),
+    coverageComplete,
+    roundsOffset: nonNegativeInteger(row.roundsOffset),
+    roundsTotalCandidates: nonNegativeInteger(row.roundsTotalCandidates),
+    roundsComplete,
+    coreAuxiliaryComplete: coreStage === 'complete' && coverageComplete && roundsComplete,
+  }
+}
+
+export function selectCoreAuxiliaryBatch(candidates = [], offset = 0, limit = 1) {
+  const rows = Array.isArray(candidates) ? candidates : []
+  const safeOffset = nonNegativeInteger(offset)
+  const safeLimit = positiveInteger(limit, 1)
+  return {
+    batch: rows.slice(safeOffset, safeOffset + safeLimit),
+    offset: safeOffset,
+    totalCandidates: rows.length,
+    complete: safeOffset >= rows.length,
+  }
+}
+
+export function advanceCoreAuxiliaryContinuation(current = {}, stage, options = {}) {
+  const previous = getCoreAuxiliaryContinuation(current)
+  if (!['coverage', 'rounds'].includes(stage)) throw new Error(`Unsupported core auxiliary stage: ${stage}`)
+  const offsetField = stage === 'coverage' ? 'coverageOffset' : 'roundsOffset'
+  const totalField = stage === 'coverage' ? 'coverageTotalCandidates' : 'roundsTotalCandidates'
+  const completeField = stage === 'coverage' ? 'coverageComplete' : 'roundsComplete'
+  const totalCandidates = nonNegativeInteger(options.totalCandidates)
+  const nextOffset = previous[offsetField] + nonNegativeInteger(options.advancedBy)
+  const complete = previous[completeField] || options.complete === true || nextOffset >= totalCandidates
+  const nextStage = complete ? (stage === 'coverage' ? 'rounds' : 'complete') : stage
+  return getCoreAuxiliaryContinuation({
+    ...previous,
+    [offsetField]: nextOffset,
+    [totalField]: totalCandidates,
+    [completeField]: complete,
+    coreStage: nextStage,
+    coreAuxiliaryComplete: nextStage === 'complete',
+  })
+}
 
 export function getContinuationPolicyMetadata(step = {}) {
   const summary = objectValue(step?.summary)
@@ -26,6 +78,11 @@ export function hasContinuationProgress(previous = {}, next = {}) {
     || after.fixtureOffset > before.fixtureOffset
     || after.oddsOffset > before.oddsOffset
     || after.processedFixtureCount > before.processedFixtureCount
+    || after.coverageOffset > before.coverageOffset
+    || after.roundsOffset > before.roundsOffset
+    || (!before.coverageComplete && after.coverageComplete)
+    || (!before.roundsComplete && after.roundsComplete)
+    || CORE_CONTINUATION_STAGES.indexOf(after.coreStage) > CORE_CONTINUATION_STAGES.indexOf(before.coreStage)
     || (!before.coreAuxiliaryComplete && after.coreAuxiliaryComplete)
     || after.completedBatchSignatures.some((signature) => !before.completedBatchSignatures.includes(signature))
 }
@@ -33,11 +90,17 @@ export function hasContinuationProgress(previous = {}, next = {}) {
 export function validateContinuationTransition(previous = {}, next = {}) {
   const before = continuationSnapshot(previous)
   const after = continuationSnapshot(next)
-  const regressedField = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount']
+  const regressedField = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount', 'coverageOffset', 'roundsOffset']
     .find((field) => after[field] < before[field])
   if (regressedField) return { valid: false, reason: `CURSOR_REGRESSION:${regressedField}` }
+  if (CORE_CONTINUATION_STAGES.indexOf(after.coreStage) < CORE_CONTINUATION_STAGES.indexOf(before.coreStage)) {
+    return { valid: false, reason: 'CURSOR_REGRESSION:coreStage' }
+  }
+  if (before.coverageComplete && !after.coverageComplete) return { valid: false, reason: 'CURSOR_REGRESSION:coverageComplete' }
+  if (before.roundsComplete && !after.roundsComplete) return { valid: false, reason: 'CURSOR_REGRESSION:roundsComplete' }
   if (before.coreAuxiliaryComplete && !after.coreAuxiliaryComplete) return { valid: false, reason: 'CURSOR_REGRESSION:coreAuxiliaryComplete' }
-  if (before.completedBatchSignatures.some((signature) => !after.completedBatchSignatures.includes(signature))) {
+  const addedBatchSignature = after.completedBatchSignatures.some((signature) => !before.completedBatchSignatures.includes(signature))
+  if (!addedBatchSignature && before.completedBatchSignatures.some((signature) => !after.completedBatchSignatures.includes(signature))) {
     return { valid: false, reason: 'CURSOR_REGRESSION:completedBatchSignatures' }
   }
   return { valid: true, reason: null }
@@ -74,10 +137,10 @@ export function classifyDailyStepContinuation(summary = {}, options = {}) {
       cursorProgress,
     }
   }
-  if (cursorProgress || executionBudgetDeferred) {
+  if (cursorProgress) {
     return {
       kind: 'planned_continuation',
-      reason: cursorProgress ? 'CURSOR_ADVANCED' : 'EXECUTION_BUDGET_DEFERRED',
+      reason: 'CURSOR_ADVANCED',
       planned: true,
       consumesFailureBudget: false,
       failureAttemptCount: previousFailureAttemptCount,
@@ -92,7 +155,7 @@ export function classifyDailyStepContinuation(summary = {}, options = {}) {
   }
   return {
     kind: 'planned_continuation',
-    reason: 'PROGRESS_THRESHOLD_PENDING',
+    reason: executionBudgetDeferred ? 'EXECUTION_BUDGET_DEFERRED' : 'PROGRESS_THRESHOLD_PENDING',
     planned: true,
     consumesFailureBudget: false,
     failureAttemptCount: previousFailureAttemptCount,
@@ -174,13 +237,14 @@ function realFailureRetryDelayMs(failureAttemptCount) {
 
 function continuationSnapshot(value = {}) {
   const row = objectValue(value)
+  const core = getCoreAuxiliaryContinuation(row)
   return {
     providerPage: positiveInteger(row.providerPage, 1),
     fixtureOffset: nonNegativeInteger(row.fixtureOffset),
     oddsOffset: nonNegativeInteger(row.oddsOffset),
     processedFixtureCount: nonNegativeInteger(row.processedFixtureCount),
     completedBatchSignatures: uniqueStrings(row.completedBatchSignatures),
-    coreAuxiliaryComplete: Boolean(row.coreAuxiliaryComplete),
+    ...core,
   }
 }
 
