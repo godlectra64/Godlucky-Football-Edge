@@ -11,6 +11,7 @@ const verifierSource = await readFile(verifierPath, 'utf8')
 
 assert.doesNotMatch(verifierSource, /\bprocess\.exit\s*\(/)
 assert.match(verifierSource, /process\.exitCode\s*=\s*1/)
+assert.doesNotMatch(verifierSource, /getStepFailureAttemptCount/, 'verifier must not inherit attempt_count fallback semantics from the runtime continuation policy')
 
 const missing = await runVerifier({ runs: [], steps: [] })
 assert.equal(missing.timedOut, false, 'missing-run verifier must not leave active handles')
@@ -48,7 +49,109 @@ assert.match(completed.stdout, /missing run: 0/)
 assert.match(completed.stdout, /Daily pipeline completion checks passed/)
 assert.doesNotMatch(`${completed.stdout}\n${completed.stderr}`, /Assertion failed|UV_HANDLE_CLOSING/)
 
+const plannedAttemptOne = await runVerifier(plannedContinuationFixture({ attemptCount: 1, policyFailureAttemptCount: 1 }))
+assert.equal(plannedAttemptOne.code, 0, `planned continuation with attempt_count=1 must remain valid\n${plannedAttemptOne.stdout}\n${plannedAttemptOne.stderr}`)
+assert.match(plannedAttemptOne.stdout, /"phase":"core","status":"pending_retry","attempt":1,"failureAttempts":0,"maxAttempts":20/)
+assert.match(plannedAttemptOne.stdout, /completion invariant violation: 0/)
+assert.doesNotMatch(plannedAttemptOne.stdout, /PARTIAL_WITHOUT_VALID_CONTINUATION|REQUIRED_PENDING_WITHOUT_SCHEDULE/)
+
+const plannedAttemptTen = await runVerifier(plannedContinuationFixture({ attemptCount: 10, policyFailureAttemptCount: 10 }))
+assert.equal(plannedAttemptTen.code, 0, `planned continuation with attempt_count=10 must not report real failures\n${plannedAttemptTen.stdout}\n${plannedAttemptTen.stderr}`)
+assert.match(plannedAttemptTen.stdout, /"phase":"core","status":"pending_retry","attempt":10,"failureAttempts":0,"maxAttempts":20/)
+
+const explicitFailureAttempts = await runVerifier(plannedContinuationFixture({ attemptCount: 10, explicitFailureAttempts: 1 }))
+assert.equal(explicitFailureAttempts.code, 0, `explicit failureAttempts below max must preserve a valid scheduled continuation\n${explicitFailureAttempts.stdout}\n${explicitFailureAttempts.stderr}`)
+assert.match(explicitFailureAttempts.stdout, /"phase":"core","status":"pending_retry","attempt":10,"failureAttempts":1,"maxAttempts":20/)
+
+const realFailure = await runVerifier(realFailureFixture())
+assert.equal(realFailure.code, 1, `real failed step must still fail verification\n${realFailure.stdout}\n${realFailure.stderr}`)
+assert.match(realFailure.stdout, /PARTIAL_WITHOUT_VALID_CONTINUATION/)
+assert.match(realFailure.stdout, /"phase":"core","status":"failed","attempt":1,"failureAttempts":1,"maxAttempts":20/)
+
 console.log('Daily pipeline completion verifier unit tests passed.')
+
+function plannedContinuationFixture({ attemptCount, policyFailureAttemptCount, explicitFailureAttempts } = {}) {
+  const run = {
+    id: `run-planned-${attemptCount}`,
+    run_date: date,
+    mode: 'daily-sync-auto',
+    status: 'partial',
+    current_phase: 'core',
+    progress_percent: 0,
+    started_at: '2099-01-02T00:00:00.000Z',
+  }
+  const policy = {
+    kind: 'planned_continuation',
+    ...(policyFailureAttemptCount === undefined ? {} : { failureAttemptCount: policyFailureAttemptCount }),
+    ...(explicitFailureAttempts === undefined ? {} : { failureAttempts: explicitFailureAttempts }),
+  }
+  const steps = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking'].map((phase, index) => phase === 'core' ? {
+    id: 'step-core',
+    run_id: run.id,
+    phase,
+    step_order: 1,
+    status: 'pending_retry',
+    attempt_count: attemptCount,
+    max_attempts: 20,
+    next_retry_at: '2099-01-02T12:00:00.000Z',
+    error_message: null,
+    failed: 0,
+    summary: {
+      status: 'partial_success',
+      partial: true,
+      failed: 0,
+      details: { continuationPolicy: policy },
+    },
+  } : {
+    id: `step-${index + 1}`,
+    run_id: run.id,
+    phase,
+    step_order: index + 1,
+    status: 'pending',
+    attempt_count: 0,
+    max_attempts: 3,
+  })
+  return { runs: [run], steps }
+}
+
+function realFailureFixture() {
+  const run = {
+    id: 'run-failed',
+    run_date: date,
+    mode: 'daily-sync-auto',
+    status: 'partial',
+    current_phase: 'core',
+    progress_percent: 0,
+    started_at: '2099-01-02T00:00:00.000Z',
+  }
+  const steps = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking'].map((phase, index) => phase === 'core' ? {
+    id: 'step-core-failed',
+    run_id: run.id,
+    phase,
+    step_order: 1,
+    status: 'failed',
+    attempt_count: 1,
+    max_attempts: 20,
+    next_retry_at: null,
+    error_message: 'database write failed',
+    failed: 1,
+    summary: {
+      status: 'error',
+      failed: 1,
+      failureAttempts: 1,
+      details: { errorCode: 'DATABASE_ERROR', continuationPolicy: { kind: 'real_failure' } },
+    },
+  } : {
+    id: `step-failed-${index + 1}`,
+    run_id: run.id,
+    phase,
+    step_order: index + 1,
+    status: 'pending',
+    attempt_count: 0,
+    max_attempts: 3,
+  })
+  return { runs: [run], steps }
+}
 
 async function runVerifier({ runs, steps }) {
   const requests = []
