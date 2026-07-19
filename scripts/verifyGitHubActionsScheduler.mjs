@@ -70,15 +70,40 @@ requireSourcePattern(countNormalizerSource, /normalized = value\.trim\(\)[\s\S]*
 const failureEvidenceSource = functionSource(workflow, 'getCanonicalCurrentFailureEvidence')
 requireSourcePattern(failureEvidenceSource, /failedCount\s*=\s*normalizeExplicitNonNegativeInteger\(result\.failed\)/, 'canonical result.failed normalization')
 requireSourcePattern(failureEvidenceSource, /stepFailedCount\s*=\s*normalizeExplicitNonNegativeInteger\(currentStep\?\.failed\)/, 'canonical step.failed normalization')
+requireSourcePattern(failureEvidenceSource, /failureAttempts\s*=\s*getCanonicalFailureAttempts\(result,\s*currentStep\)/, 'shared canonical failure-attempt normalization')
 requireSourcePattern(failureEvidenceSource, /failedCount !== null && failedCount > 0\) reasons\.push\(['"]RESULT_FAILED_COUNT['"]\)/, 'positive explicit result.failed gate')
 requireSourcePattern(failureEvidenceSource, /stepFailedCount !== null && stepFailedCount > 0\) reasons\.push\(['"]STEP_FAILED_COUNT['"]\)/, 'positive explicit step.failed gate')
 for (const [forbiddenFallback, pattern] of [
   ['currentStep?.summary?.failed', /currentStep\?\.summary\?\.failed(?![A-Za-z0-9_$])/],
   ['attempt_count', /attempt_count/],
-  ['result.failureAttempts', /result\.failureAttempts/],
   ['result.failures.length', /result\.failures\.length/],
 ]) {
   if (pattern.test(failureEvidenceSource)) throw new Error(`canonical failed-count evidence must not use ${forbiddenFallback}`)
+}
+const canonicalFailureAttemptsSource = functionSource(workflow, 'getCanonicalFailureAttempts')
+for (const canonicalField of [
+  'result?.failureAttempts',
+  'result?.failure_attempts',
+  'currentStep?.failureAttempts',
+  'currentStep?.failure_attempts',
+  'summary?.failureAttempts',
+  'summary?.failure_attempts',
+  'summary?.details?.failureAttempts',
+  'summary?.details?.failure_attempts',
+  'policy?.failureAttempts',
+  'policy?.failure_attempts',
+]) {
+  if (!canonicalFailureAttemptsSource.includes(canonicalField)) throw new Error(`canonical failure-attempt evidence missing ${canonicalField}`)
+}
+for (const [advisoryField, pattern] of [
+  ['failureAttemptCount', /failureAttemptCount/],
+  ['attempt_count', /\battempt_count\b/],
+  ['attempt', /\battempt\b/],
+  ['max_attempts', /\bmax_attempts\b/],
+  ['invocation count', /\binvocation\b/],
+  ['Boolean(property)', /Boolean\s*\(/],
+]) {
+  if (pattern.test(canonicalFailureAttemptsSource)) throw new Error(`canonical failure-attempt evidence must not use advisory ${advisoryField}`)
 }
 const restPreflightSource = functionSource(workflow, 'getRestRows')
 requireSourcePattern(restPreflightSource, /apikey:\s*restServiceRoleKey/, 'REST apikey service-role header')
@@ -96,7 +121,11 @@ for (const requiredGate of ['run_id_mismatch', 'active_claim', 'failed_step_', '
   if (!selfContinuationDecisionSource.includes(requiredGate)) throw new Error(`self-continuation decision missing ${requiredGate} gate`)
 }
 requireSourcePattern(selfContinuationDecisionSource, /normalizeExplicitNonNegativeInteger\(step\.failed\)/, 'explicit self-continuation step.failed normalization')
+requireSourcePattern(selfContinuationDecisionSource, /failureAttempts\s*=\s*getCanonicalStepFailureAttempts\(blocking\)/, 'blocking-step canonical failure attempts')
 if (/Number\(step\.failed/.test(selfContinuationDecisionSource)) throw new Error('self-continuation must not coerce step.failed with Number()')
+const canonicalStepFailureAttemptsSource = functionSource(workflow, 'getCanonicalStepFailureAttempts')
+requireSourcePattern(canonicalStepFailureAttemptsSource, /getCanonicalFailureAttempts\(null,\s*step\)\s*\?\?\s*0/, 'self-continuation canonical failure-attempt source')
+if (/failureAttemptCount|attempt_count|\battempt\b/.test(canonicalStepFailureAttemptsSource)) throw new Error('self-continuation failure attempts must not use advisory or execution-attempt fields')
 const selfContinuationWaitSource = functionSource(workflow, 'getSelfContinuationWaitMs')
 requireSourcePattern(selfContinuationWaitSource, /Math\.min\(900_000,\s*Math\.max\(5_000,\s*nextRetryMs\s*-\s*nowMs\s*\+\s*5_000\)\)/, 'bounded next-retry wait calculation')
 const waitSource = functionSource(workflow, 'waitForSelfContinuation')

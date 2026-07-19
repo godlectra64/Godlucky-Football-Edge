@@ -123,12 +123,29 @@ jobs:
             return counters.length > 0 ? Math.max(...counters) : null
           }
 
+          function getCanonicalFailureAttempts(result, currentStep) {
+            const summary = currentStep?.summary
+            const policy = getStepContinuationPolicy(currentStep) ?? result?.continuationPolicy ?? null
+            return maximumExplicitNonNegativeInteger(
+              result?.failureAttempts,
+              result?.failure_attempts,
+              currentStep?.failureAttempts,
+              currentStep?.failure_attempts,
+              summary?.failureAttempts,
+              summary?.failure_attempts,
+              summary?.details?.failureAttempts,
+              summary?.details?.failure_attempts,
+              policy?.failureAttempts,
+              policy?.failure_attempts,
+            )
+          }
+
           function getCanonicalCurrentFailureEvidence(result, currentStep) {
             const policy = getStepContinuationPolicy(currentStep)
             const policyReason = failureDiagnosticMessage(policy?.reason ?? '')
             const failedCount = normalizeExplicitNonNegativeInteger(result.failed)
             const stepFailedCount = normalizeExplicitNonNegativeInteger(currentStep?.failed)
-            const failureAttempts = maximumExplicitNonNegativeInteger(currentStep?.failureAttempts, currentStep?.failure_attempts)
+            const failureAttempts = getCanonicalFailureAttempts(result, currentStep)
             const maxAttempts = normalizeExplicitNonNegativeInteger(currentStep?.max_attempts)
             const exhausted = currentStep?.exhausted === true
               || currentStep?.summary?.exhausted === true
@@ -360,15 +377,7 @@ jobs:
           }
 
           function getCanonicalStepFailureAttempts(step) {
-            const policy = getStepContinuationPolicy(step)
-            const policyFailureAttempts = ['planned_continuation', 'real_failure'].includes(policy?.kind)
-              ? maximumExplicitNonNegativeInteger(policy?.failureAttemptCount, policy?.failureAttempts)
-              : null
-            return maximumExplicitNonNegativeInteger(
-              step?.failureAttempts,
-              step?.failure_attempts,
-              policyFailureAttempts,
-            ) ?? 0
+            return getCanonicalFailureAttempts(null, step) ?? 0
           }
 
           function isCanonicalRetryExhausted(step) {
@@ -409,7 +418,7 @@ jobs:
             if (policy?.kind !== 'planned_continuation') {
               return { required: false, reason: `continuation_policy_${policy?.kind ?? 'missing'}`, phase: blocking.phase }
             }
-            const failureAttempts = Math.max(...requiredSteps.map(getCanonicalStepFailureAttempts))
+            const failureAttempts = getCanonicalStepFailureAttempts(blocking)
             if (failureAttempts > 0) return { required: false, fatal: true, reason: 'failure_attempts_reported', phase: blocking.phase, failureAttempts }
             if (isCanonicalRetryExhausted(blocking)) return { required: false, fatal: true, reason: 'retry_exhausted', phase: blocking.phase }
             const nextRetryMs = new Date(blocking.next_retry_at ?? '').getTime()

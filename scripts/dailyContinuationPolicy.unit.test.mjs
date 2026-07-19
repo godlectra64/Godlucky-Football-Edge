@@ -291,6 +291,41 @@ const longWindow = workflowPolicy.getRetryWindowDecision(plannedResult, Date.par
 assert.equal(longWindow.action, 'schedule_next_workflow', 'planned retry windows longer than 60 seconds must exit successfully')
 assert.equal(workflowPolicy.classifyWorkflowContinuation(plannedResult).kind, 'planned_continuation')
 
+for (const advisoryCount of [1, '1', 10]) {
+  const advisoryAttemptResult = structuredClone(plannedResult)
+  const advisoryPolicy = advisoryAttemptResult.steps[0].summary.details.continuationPolicy
+  advisoryPolicy.failureAttemptCount = advisoryCount
+  advisoryPolicy.consumesFailureBudget = false
+  advisoryPolicy.cursorProgress = true
+  const decision = workflowPolicy.getSelfContinuationDecision({
+    run: { id: advisoryAttemptResult.runId, status: 'partial', current_phase: 'core' },
+    steps: advisoryAttemptResult.steps,
+  }, advisoryAttemptResult.runId)
+  assert.equal(decision.required, true, `advisory failureAttemptCount=${JSON.stringify(advisoryCount)} must remain self-dispatch eligible`)
+  assert.equal(decision.reason, 'planned_continuation')
+}
+
+const nonBlockingHistoricalFailureAttempt = structuredClone(plannedResult)
+nonBlockingHistoricalFailureAttempt.steps[1].failureAttempts = 9
+const nonBlockingDecision = workflowPolicy.getSelfContinuationDecision({
+  run: { id: nonBlockingHistoricalFailureAttempt.runId, status: 'partial', current_phase: 'core' },
+  steps: nonBlockingHistoricalFailureAttempt.steps,
+}, nonBlockingHistoricalFailureAttempt.runId)
+assert.equal(nonBlockingDecision.required, true, 'self-continuation eligibility must read explicit failure attempts from the current blocking step only')
+
+const explicitPolicyFailureAttemptResult = structuredClone(plannedResult)
+const explicitPolicyFailureAttempt = explicitPolicyFailureAttemptResult.steps[0].summary.details.continuationPolicy
+explicitPolicyFailureAttempt.failureAttemptCount = 10
+explicitPolicyFailureAttempt.failureAttempts = 1
+explicitPolicyFailureAttempt.consumesFailureBudget = true
+const explicitPolicyFailureDecision = workflowPolicy.getSelfContinuationDecision({
+  run: { id: explicitPolicyFailureAttemptResult.runId, status: 'partial', current_phase: 'core' },
+  steps: explicitPolicyFailureAttemptResult.steps,
+}, explicitPolicyFailureAttemptResult.runId)
+assert.equal(explicitPolicyFailureDecision.required, false)
+assert.equal(explicitPolicyFailureDecision.fatal, true)
+assert.equal(explicitPolicyFailureDecision.reason, 'failure_attempts_reported', 'explicit continuationPolicy.failureAttempts=1 must reject self-dispatch')
+
 for (const zero of [0, '0']) {
   const zeroResultFailed = structuredClone(plannedResult)
   zeroResultFailed.failed = zero
@@ -340,6 +375,25 @@ const explicitFailureAttempt = structuredClone(plannedResult)
 explicitFailureAttempt.steps[0].failureAttempts = 1
 const failureAttemptEvidence = workflowPolicy.getCanonicalCurrentFailureEvidence(explicitFailureAttempt, explicitFailureAttempt.steps[0])
 assert.equal(failureAttemptEvidence.reasons.includes('FAILURE_ATTEMPTS_REPORTED'), true, 'explicit current-step failureAttempts=1 must remain a real failure')
+
+for (const [field, setFailureAttempts] of [
+  ['result.failureAttempts', (result) => { result.failureAttempts = 1 }],
+  ['result.failure_attempts', (result) => { result.failure_attempts = '1' }],
+  ['step.failureAttempts', (result) => { result.steps[0].failureAttempts = 1 }],
+  ['step.failure_attempts', (result) => { result.steps[0].failure_attempts = '1' }],
+  ['summary.failureAttempts', (result) => { result.steps[0].summary.failureAttempts = 1 }],
+  ['summary.failure_attempts', (result) => { result.steps[0].summary.failure_attempts = '1' }],
+  ['summary.details.failureAttempts', (result) => { result.steps[0].summary.details.failureAttempts = 1 }],
+  ['summary.details.failure_attempts', (result) => { result.steps[0].summary.details.failure_attempts = '1' }],
+  ['continuationPolicy.failureAttempts', (result) => { result.steps[0].summary.details.continuationPolicy.failureAttempts = 1 }],
+  ['continuationPolicy.failure_attempts', (result) => { result.steps[0].summary.details.continuationPolicy.failure_attempts = '1' }],
+]) {
+  const result = structuredClone(plannedResult)
+  const step = result.steps[0]
+  setFailureAttempts(result)
+  const evidence = workflowPolicy.getCanonicalCurrentFailureEvidence(result, step)
+  assert.equal(evidence.reasons.includes('FAILURE_ATTEMPTS_REPORTED'), true, `${field} must be canonical explicit failure evidence`)
+}
 
 const retryExhaustedEvidence = structuredClone(plannedResult)
 retryExhaustedEvidence.steps[0].summary.details.exhausted = true
@@ -561,6 +615,36 @@ const productionCoverageDispatches = workflowFetches(productionCoverageSelfDispa
 assert.equal(productionCoverageDispatches.length, 1, 'Production continuation must self-dispatch exactly once inside the inline wait limit')
 assert.deepEqual(productionCoverageDispatches[0].body, { ref: 'main', inputs: { continuation_chain_depth: '1' } })
 
+const productionRoundsRunId = '71f2e40a-7c5e-4b85-8034-902edc8cf2bb'
+const productionRoundsCanonicalRun = { ...canonicalRunRow, id: productionRoundsRunId }
+const productionRoundsRetryAt = new Date(Date.now() + 120_000).toISOString()
+const productionRoundsResult = productionRoundsWorkflowResult({
+  runId: productionRoundsRunId,
+  nextRetryAt: productionRoundsRetryAt,
+  roundsOffset: 52,
+  failureAttemptCount: 1,
+})
+const productionRoundsDueSteps = structuredClone(productionRoundsResult.steps)
+productionRoundsDueSteps[0].next_retry_at = new Date(Date.now() - 1_000).toISOString()
+const productionRoundsSelfDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [productionRoundsCanonicalRun], status: 200 },
+  { body: productionRoundsDueSteps, status: 200 },
+  { body: productionRoundsResult, status: 200 },
+  { body: [productionRoundsCanonicalRun], status: 200 },
+  { body: productionRoundsResult.steps, status: 200 },
+  { body: null, status: 204 },
+])
+assert.equal(productionRoundsSelfDispatch.status, 0, `Production rounds 52/122 with advisory failureAttemptCount=1 must self-dispatch: ${productionRoundsSelfDispatch.stderr}`)
+assert.doesNotMatch(`${productionRoundsSelfDispatch.stdout}\n${productionRoundsSelfDispatch.stderr}`, /failure_attempts_reported/)
+const productionRoundsEdgeRequests = workflowFetches(productionRoundsSelfDispatch).filter((request) => request.url.includes('/functions/v1/'))
+assert.equal(productionRoundsEdgeRequests.length, 1)
+assert.equal(productionRoundsEdgeRequests[0].body.runId, productionRoundsRunId, 'Production rounds continuation must preserve the canonical runId')
+assert.doesNotMatch(productionRoundsSelfDispatch.stdout, /daily bootstrap required|daily bootstrap invoked/)
+assert.match(productionRoundsSelfDispatch.stdout, /waiting for next_retry_at/)
+const productionRoundsDispatches = workflowFetches(productionRoundsSelfDispatch).filter((request) => request.url.startsWith('https://api.github.com/'))
+assert.equal(productionRoundsDispatches.length, 1, 'Production rounds continuation must dispatch exactly once')
+assert.deepEqual(productionRoundsDispatches[0].body, { ref: 'main', inputs: { continuation_chain_depth: '1' } })
+
 const chainedContinuation = runScheduledWorkflowSequence(inlineScript, [
   { body: [canonicalRunRow], status: 200 },
   { body: scheduledDueSteps, status: 200 },
@@ -590,18 +674,33 @@ const completedNoDispatch = runScheduledWorkflowSequence(inlineScript, [
 assert.equal(completedNoDispatch.status, 0, `completed canonical run must finish without self-dispatch: ${completedNoDispatch.stderr}`)
 assert.equal(workflowFetches(completedNoDispatch).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
 
-const failureAttemptSteps = structuredClone(scheduledDueResult.steps)
-failureAttemptSteps[0].summary.details.continuationPolicy.failureAttemptCount = 1
-const failureAttemptNoDispatch = runScheduledWorkflowSequence(inlineScript, [
+const advisoryFailureAttemptSteps = structuredClone(scheduledDueResult.steps)
+advisoryFailureAttemptSteps[0].summary.details.continuationPolicy.failureAttemptCount = 1
+advisoryFailureAttemptSteps[0].summary.details.continuationPolicy.consumesFailureBudget = false
+const advisoryFailureAttemptDispatch = runScheduledWorkflowSequence(inlineScript, [
   { body: [canonicalRunRow], status: 200 },
   { body: scheduledDueSteps, status: 200 },
   { body: scheduledDueResult, status: 200 },
   { body: [canonicalRunRow], status: 200 },
-  { body: failureAttemptSteps, status: 200 },
+  { body: advisoryFailureAttemptSteps, status: 200 },
+  { body: null, status: 204 },
 ])
-assert.equal(failureAttemptNoDispatch.status, 1, 'canonical failureAttempts > 0 must reject self-dispatch')
-assert.match(failureAttemptNoDispatch.stderr, /failure_attempts_reported/)
-assert.equal(workflowFetches(failureAttemptNoDispatch).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
+assert.equal(advisoryFailureAttemptDispatch.status, 0, `failureAttemptCount=1 with consumesFailureBudget=false must self-dispatch: ${advisoryFailureAttemptDispatch.stderr}`)
+assert.doesNotMatch(`${advisoryFailureAttemptDispatch.stdout}\n${advisoryFailureAttemptDispatch.stderr}`, /failure_attempts_reported/)
+assert.equal(workflowFetches(advisoryFailureAttemptDispatch).filter((request) => request.url.startsWith('https://api.github.com/')).length, 1)
+
+const explicitFailureAttemptSteps = structuredClone(scheduledDueResult.steps)
+explicitFailureAttemptSteps[0].summary.details.continuationPolicy.failureAttempts = 1
+const explicitFailureAttemptNoDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: explicitFailureAttemptSteps, status: 200 },
+])
+assert.equal(explicitFailureAttemptNoDispatch.status, 1, 'canonical continuationPolicy.failureAttempts > 0 must reject self-dispatch')
+assert.match(explicitFailureAttemptNoDispatch.stderr, /failure_attempts_reported/)
+assert.equal(workflowFetches(explicitFailureAttemptNoDispatch).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
 
 const failedCanonicalSteps = structuredClone(scheduledDueResult.steps)
 failedCanonicalSteps[0].status = 'failed'
@@ -832,8 +931,9 @@ assert.equal(failureAttemptsCurrentPayload.steps[0].summary.failed, 0)
 assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.reason, 'SOFT_DEADLINE_REACHED')
 assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.remainingMs, 4208)
 assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.continuationPolicy.reason, 'FAILURE_ATTEMPTS_REPORTED')
-assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.continuationPolicy.failureAttempts, 4, 'fixture must reproduce the misleading nested policy counter')
-assert.equal(failureAttemptsEvidence.failureAttempts, 0, 'nested continuationPolicy counters are not canonical current-step evidence')
+assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.continuationPolicy.failureAttemptCount, 4, 'fixture must reproduce the misleading legacy advisory counter')
+assert.equal(failureAttemptsCurrentPayload.steps[0].summary.details.continuationPolicy.failureAttempts, undefined)
+assert.equal(failureAttemptsEvidence.failureAttempts, 0, 'continuationPolicy.failureAttemptCount must not replace explicit canonical failureAttempts=0')
 assert.equal(failureAttemptsEvidence.failedCount, 0)
 assert.equal(failureAttemptsEvidence.stepFailedCount, 0)
 assert.equal(failureAttemptsEvidence.exhausted, false)
@@ -896,13 +996,17 @@ const failureAttemptsNoProgressRun = runWorkflowScenario(inlineScript, failureAt
 assert.equal(failureAttemptsNoProgressRun.status, 1, 'FAILURE_ATTEMPTS_REPORTED repeated no-progress must exit 1 at the third repeat')
 assert.match(failureAttemptsNoProgressRun.stderr, /STUCK_CONTINUATION/)
 
+const explicitResultFailureAttemptsPayload = failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: productionFutureRetry })
+explicitResultFailureAttemptsPayload.failureAttempts = 6
+const explicitResultFailureAttemptsRun = runWorkflowScenario(inlineScript, explicitResultFailureAttemptsPayload)
+assert.equal(explicitResultFailureAttemptsRun.status, 1, 'explicit result.failureAttempts > 0 must remain canonical real-failure evidence')
+
 const staleFailureAttemptsPayload = failureAttemptsProductionWorkflowResult({ runId: incidentRunId, fixtureOffset: 262, processedFixtureCount: 262, nextRetryAt: productionFutureRetry })
-staleFailureAttemptsPayload.failureAttempts = 6
 staleFailureAttemptsPayload.finalSummary = { failureAttempts: 9, failed: 3 }
 staleFailureAttemptsPayload.priorRunSummary = { failureAttempts: 8 }
 staleFailureAttemptsPayload.priorInvocationAggregate = { failureAttempts: 7 }
 const staleFailureAttemptsRun = runWorkflowScenario(inlineScript, staleFailureAttemptsPayload)
-assert.equal(staleFailureAttemptsRun.status, 0, `stale failureAttempts aggregates and nested policy counters must not reject current step.failureAttempts=0: ${staleFailureAttemptsRun.stderr}`)
+assert.equal(staleFailureAttemptsRun.status, 0, `noncanonical historical failureAttempts aggregates must not reject current explicit failureAttempts=0: ${staleFailureAttemptsRun.stderr}`)
 
 const staleHistoricalAggregatePayload = withSyntheticFailedCountPolicy(productionWorkflowResult({
   runId: incidentRunId,
@@ -966,17 +1070,20 @@ assert.equal(legacyIncidentRun.status, 1, 'legacy Production payload without an 
 assert.match(legacyIncidentRun.stderr, /Daily football sync workflow failed:.*STUCK_CONTINUATION/s, 'STUCK_CONTINUATION exit 1 must never be silent')
 
 const invocationBudgetResponses = Array.from({ length: 12 }, (_, index) => ({
-  body: productionWorkflowResult({
+  body: productionRoundsWorkflowResult({
     runId: incidentRunId,
-    fixtureOffset: 260 + index,
-    processedFixtureCount: 262,
     nextRetryAt: new Date(Date.now() - 1_000).toISOString(),
+    roundsOffset: 41 + index,
+    failureAttemptCount: 1,
   }),
   status: 200,
 }))
 const invocationBudgetRun = runWorkflowSequence(inlineScript, invocationBudgetResponses)
 assert.equal(invocationBudgetRun.status, 0, `workflow invocation budget exhaustion with valid continuation must exit 0: ${invocationBudgetRun.stderr}`)
 assert.match(invocationBudgetRun.stdout, /invocation=12\/12/, 'workflow must log the scheduled continuation at its invocation limit')
+assert.match(invocationBudgetRun.stdout, /self continuation required/, 'invocation budget exhaustion must hand valid planned work to self-continuation')
+assert.match(invocationBudgetRun.stdout, /self continuation dispatched depth=1/, 'invocation budget exhaustion must dispatch the next workflow instead of waiting for cron')
+assert.doesNotMatch(invocationBudgetRun.stdout, /no continuation required reason=failure_attempts_reported/)
 
 const exhaustedProductionPayload = productionWorkflowResult({ nextRetryAt: productionFutureRetry })
 exhaustedProductionPayload.steps[0].exhausted = true
@@ -1258,6 +1365,43 @@ function productionCoverageWorkflowResult({ nextRetryAt } = {}) {
   return payload
 }
 
+function productionRoundsWorkflowResult({
+  runId = 'canonical-run',
+  nextRetryAt,
+  roundsOffset = 52,
+  failureAttemptCount = 1,
+} = {}) {
+  const payload = productionCoverageWorkflowResult({ nextRetryAt })
+  payload.runId = runId
+  const continuationState = {
+    ...payload.continuationState,
+    coreStage: 'rounds',
+    coverageOffset: 122,
+    coverageTotalCandidates: 122,
+    coverageComplete: true,
+    roundsOffset,
+    roundsTotalCandidates: 122,
+    roundsComplete: false,
+  }
+  const continuationPolicy = {
+    kind: 'planned_continuation',
+    reason: 'CURSOR_ADVANCED',
+    planned: true,
+    cursorProgress: true,
+    failureAttemptCount,
+    consumesFailureBudget: false,
+    stuckContinuationCount: 0,
+  }
+  Object.assign(payload, continuationState)
+  payload.continuationState = continuationState
+  payload.continuationPolicy = continuationPolicy
+  const currentStep = payload.steps[0]
+  currentStep.failureAttempts = 0
+  currentStep.continuation_state = continuationState
+  currentStep.summary.details.continuationPolicy = continuationPolicy
+  return payload
+}
+
 function failureAttemptsProductionWorkflowResult(options = {}) {
   const payload = productionWorkflowResult(options)
   payload.processed = 10
@@ -1269,7 +1413,7 @@ function failureAttemptsProductionWorkflowResult(options = {}) {
   currentStep.summary.details.remainingMs = 4208
   return withAdvisoryRealFailurePolicy(payload, 'FAILURE_ATTEMPTS_REPORTED', {
     failureAttemptCount: 4,
-    failureAttempts: 4,
+    consumesFailureBudget: false,
     exhausted: false,
   })
 }
@@ -1373,6 +1517,7 @@ function compileWorkflowPolicy(source) {
     'hasExplicitRealError',
     'normalizeExplicitNonNegativeInteger',
     'maximumExplicitNonNegativeInteger',
+    'getCanonicalFailureAttempts',
     'getRequiredSteps',
     'isComplete',
     'getBlockingStep',
