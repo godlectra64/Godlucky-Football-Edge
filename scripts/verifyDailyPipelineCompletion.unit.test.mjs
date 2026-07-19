@@ -54,6 +54,13 @@ assert.equal(plannedAttemptOne.code, 0, `planned continuation with attempt_count
 assert.match(plannedAttemptOne.stdout, /"phase":"core","status":"pending_retry","attempt":1,"failureAttempts":0,"maxAttempts":20/)
 assert.match(plannedAttemptOne.stdout, /completion invariant violation: 0/)
 assert.doesNotMatch(plannedAttemptOne.stdout, /PARTIAL_WITHOUT_VALID_CONTINUATION|REQUIRED_PENDING_WITHOUT_SCHEDULE/)
+assert.match(plannedAttemptOne.stdout, /fixture_cursor_mode=processed-fixture-ids-v1/)
+assert.match(plannedAttemptOne.stdout, /unique_processed_fixture_count=2/)
+assert.match(plannedAttemptOne.stdout, /fixture_candidate_count=5/)
+assert.match(plannedAttemptOne.stdout, /fixture_remaining_count=3/)
+assert.match(plannedAttemptOne.stdout, /fixture_stable_empty_passes=1/)
+assert.match(plannedAttemptOne.stdout, /legacy_fixture_offset_ignored=true/)
+assert.match(plannedAttemptOne.stdout, /legacy_fixture_offset_value=722/)
 
 const plannedAttemptTen = await runVerifier(plannedContinuationFixture({ attemptCount: 10, policyFailureAttemptCount: 10 }))
 assert.equal(plannedAttemptTen.code, 0, `planned continuation with attempt_count=10 must not report real failures\n${plannedAttemptTen.stdout}\n${plannedAttemptTen.stderr}`)
@@ -62,6 +69,12 @@ assert.match(plannedAttemptTen.stdout, /"phase":"core","status":"pending_retry",
 const explicitFailureAttempts = await runVerifier(plannedContinuationFixture({ attemptCount: 10, explicitFailureAttempts: 1 }))
 assert.equal(explicitFailureAttempts.code, 0, `explicit failureAttempts below max must preserve a valid scheduled continuation\n${explicitFailureAttempts.stdout}\n${explicitFailureAttempts.stderr}`)
 assert.match(explicitFailureAttempts.stdout, /"phase":"core","status":"pending_retry","attempt":10,"failureAttempts":1,"maxAttempts":20/)
+
+const invalidCursorFixture = plannedContinuationFixture({ attemptCount: 1 })
+invalidCursorFixture.steps[0].continuation_state.fixtureCursorMode = 'positional-offset-v0'
+const invalidCursor = await runVerifier(invalidCursorFixture)
+assert.equal(invalidCursor.code, 1, `unknown fixture cursor mode must fail verification\n${invalidCursor.stdout}\n${invalidCursor.stderr}`)
+assert.match(invalidCursor.stdout, /INVALID_FIXTURE_CURSOR_MODE/)
 
 const realFailure = await runVerifier(realFailureFixture())
 assert.equal(realFailure.code, 1, `real failed step must still fail verification\n${realFailure.stdout}\n${realFailure.stderr}`)
@@ -96,6 +109,16 @@ function plannedContinuationFixture({ attemptCount, policyFailureAttemptCount, e
     next_retry_at: '2099-01-02T12:00:00.000Z',
     error_message: null,
     failed: 0,
+    continuation_state: {
+      fixtureCursorMode: 'processed-fixture-ids-v1',
+      processedFixtureIds: [101, 102],
+      uniqueProcessedFixtureCount: 2,
+      fixtureCandidateCount: 5,
+      fixtureRemainingCount: 3,
+      fixtureStableEmptyPasses: 1,
+      legacyFixtureOffsetIgnored: true,
+      legacyFixtureOffsetValue: 722,
+    },
     summary: {
       status: 'partial_success',
       partial: true,

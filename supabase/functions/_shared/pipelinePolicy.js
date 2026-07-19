@@ -1,8 +1,10 @@
 import { getStepFailureAttemptCount } from './dailyContinuationPolicy.js'
+import { PROCESSED_FIXTURE_IDS_CURSOR_MODE, normalizeProcessedFixtureIds } from './dailyFixturesPolicy.js'
 
 export const requiredDailyPhases = Object.freeze(['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking'])
 
 export function createContinuationState(value = {}) {
+  const processedFixtureIds = normalizeProcessedFixtureIds(value.processedFixtureIds)
   return {
     providerPage: positiveInteger(value.providerPage, 1),
     fixtureOffset: nonNegativeInteger(value.fixtureOffset),
@@ -11,6 +13,15 @@ export function createContinuationState(value = {}) {
     lastProcessedFixtureId: nullableInteger(value.lastProcessedFixtureId),
     batchSignature: textOrNull(value.batchSignature),
     completedBatchSignatures: uniqueStrings(value.completedBatchSignatures).slice(-100),
+    fixtureCursorMode: value.fixtureCursorMode === PROCESSED_FIXTURE_IDS_CURSOR_MODE ? PROCESSED_FIXTURE_IDS_CURSOR_MODE : null,
+    processedFixtureIds,
+    uniqueProcessedFixtureCount: processedFixtureIds.length,
+    fixtureCandidateCount: nonNegativeInteger(value.fixtureCandidateCount),
+    fixtureRemainingCount: nonNegativeInteger(value.fixtureRemainingCount),
+    fixtureSnapshotSignature: textOrNull(value.fixtureSnapshotSignature),
+    fixtureStableEmptyPasses: Math.min(2, nonNegativeInteger(value.fixtureStableEmptyPasses)),
+    legacyFixtureOffsetIgnored: Boolean(value.legacyFixtureOffsetIgnored),
+    legacyFixtureOffsetValue: nonNegativeInteger(value.legacyFixtureOffsetValue),
     coreAuxiliaryComplete: Boolean(value.coreAuxiliaryComplete),
   }
 }

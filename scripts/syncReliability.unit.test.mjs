@@ -102,19 +102,41 @@ const deadlineSummary = buildDeadlinePendingSummary({ stepOrder: 2, phase: 'fixt
 assert.equal(deadlineSummary.status, 'pending_retry')
 assert.equal(deadlineSummary.partial, true)
 assert.equal(deadlineSummary.failed, 0)
-assert.deepEqual(deadlineSummary.continuationState, continuation)
+assert.equal(deadlineSummary.continuationState.providerPage, continuation.providerPage)
+assert.equal(deadlineSummary.continuationState.fixtureOffset, continuation.fixtureOffset)
+assert.equal(deadlineSummary.continuationState.processedFixtureCount, continuation.processedFixtureCount)
+assert.deepEqual(deadlineSummary.continuationState.completedBatchSignatures, continuation.completedBatchSignatures)
 
 const signature = buildBatchSignature([101, 102])
 const completed = advanceContinuation(continuation, { batchSignature: signature, batchComplete: true })
 assert.equal(shouldProcessBatch(completed, signature), false, 'completed batch signature must not be processed twice')
 assert.equal(shouldProcessBatch(completed, buildBatchSignature([103])), true)
 
+const processedFixtureCursor = createContinuationState({
+  fixtureCursorMode: 'processed-fixture-ids-v1',
+  processedFixtureIds: [103, 101, 103, '', null, -1, 102],
+  uniqueProcessedFixtureCount: 999,
+  fixtureCandidateCount: 5,
+  fixtureRemainingCount: 2,
+  fixtureSnapshotSignature: 'snapshot-v1',
+  fixtureStableEmptyPasses: 1,
+  legacyFixtureOffsetIgnored: true,
+  legacyFixtureOffsetValue: 722,
+})
+assert.deepEqual(processedFixtureCursor.processedFixtureIds, [103, 101, 102])
+assert.equal(processedFixtureCursor.uniqueProcessedFixtureCount, 3, 'unique processed count must be derived from the normalized ID set')
+assert.equal(processedFixtureCursor.fixtureCandidateCount, 5)
+assert.equal(processedFixtureCursor.fixtureRemainingCount, 2)
+assert.equal(processedFixtureCursor.fixtureStableEmptyPasses, 1)
+assert.equal(processedFixtureCursor.legacyFixtureOffsetIgnored, true)
+assert.equal(processedFixtureCursor.legacyFixtureOffsetValue, 722)
+
 const stepResponse = buildDailySyncStepResponseCached('daily-sync-auto', {
   run: { id: 'run-1', status: 'partial', summary: {} },
   step: { phase: 'fixture-enrichment', continuation_state: continuation },
   nextStep: null,
   steps: [{ phase: 'fixture-enrichment', status: 'pending_retry', attempt_count: 1, max_attempts: 20, next_retry_at: '2099-01-01T00:00:00.000Z', continuation_state: continuation }],
-  summary: deadlineSummary,
+  summary: { ...deadlineSummary, continuationState: continuation },
 }, { provider: 'api-football' }, 35_000, { now: Date.parse('2026-07-15T00:00:00.000Z') })
 assert.equal(stepResponse.status, 'pending_retry')
 assert.equal(stepResponse.partial, true)
@@ -133,6 +155,7 @@ assert.match(source, /console\.info\('daily-sync-phase-complete'/)
 assert.match(source, /console\.error\('daily-sync-phase-failed'/)
 assert.match(source, /new DailySyncPhaseError\(phase, error\)/)
 assert.match(source, /MAX_DAILY_SYNC_STEPS_PER_REQUEST/)
+assert.match(source, /summary\.continuationState = continuationState/, 'deadline responses must retain the full processed-fixture cursor')
 assert.equal(MAX_DAILY_SYNC_STEPS_PER_REQUEST, 2)
 const autoSource = functionSource(source, 'runDailySyncOrchestratorMode')
 assert.doesNotMatch(autoSource, /fetch\s*\(|sync-football-data/, 'daily-sync-auto must not invoke the Edge Function endpoint')

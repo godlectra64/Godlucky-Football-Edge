@@ -64,6 +64,14 @@ if (run) {
   console.log(`next_retry_at=${audit.nextRetryAt ?? 'missing'}`)
   console.log(`overdue_duration_ms=${audit.overdueDurationMs}`)
   console.log(`cursor=${JSON.stringify(audit.cursor ?? {})}`)
+  const fixtureCursor = getFixtureCursorDiagnostics(audit.cursor)
+  console.log(`fixture_cursor_mode=${fixtureCursor.fixtureCursorMode ?? 'legacy'}`)
+  console.log(`unique_processed_fixture_count=${fixtureCursor.uniqueProcessedFixtureCount}`)
+  console.log(`fixture_candidate_count=${fixtureCursor.fixtureCandidateCount}`)
+  console.log(`fixture_remaining_count=${fixtureCursor.fixtureRemainingCount}`)
+  console.log(`fixture_stable_empty_passes=${fixtureCursor.fixtureStableEmptyPasses}`)
+  console.log(`legacy_fixture_offset_ignored=${fixtureCursor.legacyFixtureOffsetIgnored}`)
+  console.log(`legacy_fixture_offset_value=${fixtureCursor.legacyFixtureOffsetValue}`)
   console.log(`invariant_violations=${JSON.stringify(audit.violations)}`)
 }
 
@@ -128,12 +136,51 @@ function auditVerifierPipelineCompletion(run, steps) {
   if (status === 'partial' && audit.requiredPendingSteps.some((step) => ['pending', 'partial'].includes(step.status)) && !validRetrySteps.length) {
     violations.push('REQUIRED_PENDING_WITHOUT_SCHEDULE')
   }
+  violations.push(...validateFixtureCursor(audit.cursor))
   return {
     ...audit,
     attemptsExceeded,
     validRetrySteps,
     violations: [...new Set(violations)],
   }
+}
+
+function getFixtureCursorDiagnostics(value) {
+  const cursor = objectValue(value)
+  const processedFixtureIds = Array.isArray(cursor.processedFixtureIds) ? cursor.processedFixtureIds : []
+  return {
+    fixtureCursorMode: cursor.fixtureCursorMode ?? null,
+    processedFixtureIds,
+    uniqueProcessedFixtureCount: Number(cursor.uniqueProcessedFixtureCount ?? processedFixtureIds.length),
+    fixtureCandidateCount: Number(cursor.fixtureCandidateCount ?? 0),
+    fixtureRemainingCount: Number(cursor.fixtureRemainingCount ?? 0),
+    fixtureStableEmptyPasses: Number(cursor.fixtureStableEmptyPasses ?? 0),
+    legacyFixtureOffsetIgnored: Boolean(cursor.legacyFixtureOffsetIgnored),
+    legacyFixtureOffsetValue: Number(cursor.legacyFixtureOffsetValue ?? cursor.fixtureOffset ?? 0),
+  }
+}
+
+function validateFixtureCursor(value) {
+  const cursor = getFixtureCursorDiagnostics(value)
+  if (cursor.fixtureCursorMode && cursor.fixtureCursorMode !== 'processed-fixture-ids-v1') return ['INVALID_FIXTURE_CURSOR_MODE']
+  if (cursor.fixtureCursorMode !== 'processed-fixture-ids-v1') return []
+  const violations = []
+  const normalizedIds = cursor.processedFixtureIds
+    .map(Number)
+    .filter((fixtureId) => Number.isSafeInteger(fixtureId) && fixtureId > 0)
+  if (normalizedIds.length !== cursor.processedFixtureIds.length || new Set(normalizedIds).size !== normalizedIds.length) violations.push('INVALID_PROCESSED_FIXTURE_IDS')
+  if (cursor.uniqueProcessedFixtureCount !== new Set(normalizedIds).size) violations.push('UNIQUE_PROCESSED_FIXTURE_COUNT_MISMATCH')
+  for (const [name, number] of [
+    ['fixtureCandidateCount', cursor.fixtureCandidateCount],
+    ['fixtureRemainingCount', cursor.fixtureRemainingCount],
+    ['fixtureStableEmptyPasses', cursor.fixtureStableEmptyPasses],
+    ['legacyFixtureOffsetValue', cursor.legacyFixtureOffsetValue],
+  ]) {
+    if (!Number.isInteger(number) || number < 0) violations.push(`INVALID_${name.replace(/[A-Z]/g, (letter) => `_${letter}`).toUpperCase()}`)
+  }
+  if (cursor.fixtureStableEmptyPasses > 2) violations.push('INVALID_FIXTURE_STABLE_EMPTY_PASSES')
+  if (cursor.fixtureRemainingCount > cursor.fixtureCandidateCount) violations.push('FIXTURE_REMAINING_EXCEEDS_CANDIDATES')
+  return violations
 }
 
 function explicitNonNegativeInteger(value) {

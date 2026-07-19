@@ -30,10 +30,14 @@ import {
 } from '../_shared/pipelinePolicy.js'
 import {
   API_FOOTBALL_DAILY_FIXTURES_PROVIDER_PAGE,
-  advanceDailyFixtureCursor,
+  PROCESSED_FIXTURE_IDS_CURSOR_MODE,
+  addProcessedFixtureId,
   buildApiFootballDailyFixturesParams,
   buildSinglePageFixtureDiscovery,
-  selectDailyFixtureBatch,
+  getFixtureStableEmptyDecision,
+  initializeProcessedFixtureCursor,
+  normalizeDailyFixtureCandidates,
+  selectProcessedFixtureBatch,
 } from '../_shared/dailyFixturesPolicy.js'
 import {
   advanceCoreAuxiliaryContinuation,
@@ -1162,6 +1166,7 @@ async function deferDailySyncStepForDeadline(run: any, step: any, context: Footb
     durationMs: context.executionBudget.budgetMs - getRemainingExecutionMs(context.executionBudget),
     continuation: continuationState,
   }) as DailyFullSyncStepSummary
+  summary.continuationState = continuationState
   const continuationPolicy = classifyDailyStepContinuation(summary, {
     previousContinuation: continuationState,
     nextContinuation: continuationState,
@@ -1924,29 +1929,83 @@ async function logDailyStepSkipped(context: FootballEnrichmentContext, step: num
 async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangkokDayRange>, batchSize: number, context: FootballEnrichmentContext) {
   const providerPage = API_FOOTBALL_DAILY_FIXTURES_PROVIDER_PAGE
   const discovery = await fetchApiFootballFixturesWithPaging(dayRange.dateKey, context)
-  const matches = [...discovery.matches].sort(compareFixtureSyncPriority)
-  const selected = selectDailyFixtureBatch(matches, context.continuationState?.fixtureOffset, batchSize)
-  const offset = selected.fixtureOffset
+  const matches = normalizeDailyFixtureCandidates(discovery.matches, compareFixtureSyncPriority)
+  const fixtureCursor = initializeProcessedFixtureCursor(context.continuationState)
+  const previousSnapshotSignature = fixtureCursor.fixtureSnapshotSignature
+  const fixtureSnapshotSignature = buildBatchSignature(matches.map((match: any) => match.raw_fixture_id))
+  const selected = selectProcessedFixtureBatch(matches, fixtureCursor.processedFixtureIds, batchSize)
   const batch = selected.batch
   const batchSignature = buildBatchSignature(batch.map((match: any) => match?.raw_fixture_id ?? match?.id))
-  if (!shouldProcessBatch(context.continuationState, batchSignature)) {
-    const cursor = advanceDailyFixtureCursor({ totalFixtures: selected.totalFixtures, fixtureOffset: offset, advancedBy: batch.length, batchComplete: true })
-    await persistStepContinuation(context, { providerPage: cursor.providerPage, fixtureOffset: cursor.fixtureOffset })
-    return { processed: 0, totalCandidates: matches.length, rowsSaved: 0, failed: 0, skipped: batch.length, partial: !cursor.providerComplete, nextOffset: cursor.fixtureOffset, hasMore: !cursor.providerComplete, providerComplete: cursor.providerComplete, batchSignature, duplicateBatchSkipped: true }
+  const baseContinuation = {
+    ...fixtureCursor,
+    providerPage,
+    fixtureCandidateCount: selected.totalCandidates,
+    fixtureRemainingCount: selected.remainingCount,
+    fixtureSnapshotSignature,
+    fixtureStableEmptyPasses: selected.remainingCount > 0 ? 0 : fixtureCursor.fixtureStableEmptyPasses,
+    batchSignature,
+    batchComplete: false,
   }
+
+  if (batch.length === 0) {
+    const stableEmpty = getFixtureStableEmptyDecision({
+      previousSnapshotSignature,
+      snapshotSignature: fixtureSnapshotSignature,
+      previousPasses: fixtureCursor.fixtureStableEmptyPasses,
+      remainingCount: selected.remainingCount,
+    })
+    await persistStepContinuation(context, {
+      ...baseContinuation,
+      ...stableEmpty,
+      batchSignature: fixtureSnapshotSignature,
+      batchComplete: true,
+    })
+    return {
+      processed: 0,
+      totalCandidates: matches.length,
+      rowsSaved: 0,
+      failed: 0,
+      skipped: 0,
+      partial: !stableEmpty.providerComplete,
+      nextOffset: context.continuationState?.fixtureOffset ?? 0,
+      hasMore: !stableEmpty.providerComplete,
+      providerComplete: stableEmpty.providerComplete,
+      batchSignature,
+      fixtureCursorMode: PROCESSED_FIXTURE_IDS_CURSOR_MODE,
+      uniqueProcessedFixtureCount: fixtureCursor.uniqueProcessedFixtureCount,
+      fixtureRemainingCount: 0,
+      fixtureStableEmptyPasses: stableEmpty.fixtureStableEmptyPasses,
+      providerPageCount: discovery.pageCount,
+    }
+  }
+
+  await persistStepContinuation(context, baseContinuation)
 
   const startedAt = Date.now()
   let processed = 0
+  let processedFixtureIds = fixtureCursor.processedFixtureIds
   const failures: Array<{ matchId?: number; message: string }> = []
   for (const footballDataMatch of batch) {
     if (Date.now() - startedAt > 18_000 || shouldStopForExecutionBudget(context)) break
     try {
       await syncMatch(footballDataMatch, { enrichFixtureData: false })
+      const previousUniqueCount = processedFixtureIds.length
+      processedFixtureIds = addProcessedFixtureId(processedFixtureIds, footballDataMatch.raw_fixture_id)
+      const addedUniqueFixture = processedFixtureIds.length > previousUniqueCount
       processed += 1
       await persistStepContinuation(context, {
         providerPage,
-        fixtureOffset: offset + processed,
-        processedFixtureCount: Number(context.continuationState?.processedFixtureCount ?? 0) + 1,
+        fixtureOffset: Number(context.continuationState?.fixtureOffset ?? 0) + (addedUniqueFixture ? 1 : 0),
+        processedFixtureCount: Number(context.continuationState?.processedFixtureCount ?? 0) + (addedUniqueFixture ? 1 : 0),
+        fixtureCursorMode: PROCESSED_FIXTURE_IDS_CURSOR_MODE,
+        processedFixtureIds,
+        uniqueProcessedFixtureCount: processedFixtureIds.length,
+        fixtureCandidateCount: selected.totalCandidates,
+        fixtureRemainingCount: Math.max(0, selected.remainingCount - processedFixtureIds.length + fixtureCursor.processedFixtureIds.length),
+        fixtureSnapshotSignature,
+        fixtureStableEmptyPasses: 0,
+        legacyFixtureOffsetIgnored: fixtureCursor.legacyFixtureOffsetIgnored,
+        legacyFixtureOffsetValue: fixtureCursor.legacyFixtureOffsetValue,
         lastProcessedFixtureId: nullableNumber(footballDataMatch?.raw_fixture_id),
         batchSignature,
         batchComplete: false,
@@ -1960,10 +2019,19 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
     }
   }
   const batchComplete = processed === batch.length && failures.length === 0
-  const cursor = advanceDailyFixtureCursor({ totalFixtures: selected.totalFixtures, fixtureOffset: offset, advancedBy: processed, batchComplete })
+  const remainingAfterBatch = selectProcessedFixtureBatch(matches, processedFixtureIds, batchSize).remainingCount
+  const stableEmpty = { fixtureStableEmptyPasses: 0, providerComplete: false }
   await persistStepContinuation(context, {
-    providerPage: cursor.providerPage,
-    fixtureOffset: cursor.fixtureOffset,
+    providerPage,
+    fixtureCursorMode: PROCESSED_FIXTURE_IDS_CURSOR_MODE,
+    processedFixtureIds,
+    uniqueProcessedFixtureCount: processedFixtureIds.length,
+    fixtureCandidateCount: selected.totalCandidates,
+    fixtureRemainingCount: remainingAfterBatch,
+    fixtureSnapshotSignature,
+    fixtureStableEmptyPasses: stableEmpty.fixtureStableEmptyPasses,
+    legacyFixtureOffsetIgnored: fixtureCursor.legacyFixtureOffsetIgnored,
+    legacyFixtureOffsetValue: fixtureCursor.legacyFixtureOffsetValue,
     lastProcessedFixtureId: processed > 0 ? nullableNumber(batch[processed - 1]?.raw_fixture_id) : context.continuationState?.lastProcessedFixtureId,
     batchSignature,
     batchComplete,
@@ -1973,11 +2041,15 @@ async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangk
     totalCandidates: matches.length,
     rowsSaved: processed,
     failed: failures.length,
-    partial: !cursor.providerComplete,
-    nextOffset: cursor.fixtureOffset,
-    hasMore: !cursor.providerComplete,
-    providerComplete: cursor.providerComplete,
+    partial: !stableEmpty.providerComplete,
+    nextOffset: context.continuationState?.fixtureOffset ?? 0,
+    hasMore: !stableEmpty.providerComplete,
+    providerComplete: stableEmpty.providerComplete,
     batchSignature,
+    fixtureCursorMode: PROCESSED_FIXTURE_IDS_CURSOR_MODE,
+    uniqueProcessedFixtureCount: processedFixtureIds.length,
+    fixtureRemainingCount: remainingAfterBatch,
+    fixtureStableEmptyPasses: stableEmpty.fixtureStableEmptyPasses,
     providerPageCount: discovery.pageCount,
     failures,
   }
