@@ -2,6 +2,8 @@ export const DEFAULT_SYNC_EXECUTION_BUDGET_MS = 40_000
 export const MAX_SYNC_EXECUTION_BUDGET_MS = 45_000
 export const MIN_SYNC_EXECUTION_BUDGET_MS = 15_000
 export const DEFAULT_DEADLINE_RESERVE_MS = 5_000
+export const MIN_PROVIDER_FETCH_WINDOW_MS = 2_000
+export const MAX_PROVIDER_FETCH_TIMEOUT_MS = 12_000
 export const MIN_PHASE_START_REMAINING_MS = 15_000
 export const MAX_DAILY_SYNC_STEPS_PER_REQUEST = 2
 export const UPSTREAM_BODY_PREVIEW_LIMIT = 512
@@ -47,6 +49,72 @@ export function getRemainingExecutionMs(budget, now = Date.now()) {
 
 export function shouldDeferExecution(budget, now = Date.now(), minimumRemainingMs = DEFAULT_DEADLINE_RESERVE_MS) {
   return getRemainingExecutionMs(budget, now) <= Math.max(0, Number(minimumRemainingMs) || 0)
+}
+
+export function planProviderFetch(budget, now = Date.now(), options = {}) {
+  const remainingExecutionMs = getRemainingExecutionMs(budget, now)
+  const executionReserveMs = Math.max(0, Number(budget?.reserveMs ?? DEFAULT_DEADLINE_RESERVE_MS) || 0)
+  const minimumFetchWindowMs = positiveInteger(options.minimumFetchWindowMs, MIN_PROVIDER_FETCH_WINDOW_MS)
+  const maximumFetchTimeoutMs = positiveInteger(options.maximumFetchTimeoutMs, MAX_PROVIDER_FETCH_TIMEOUT_MS)
+  const availableFetchMs = Math.max(0, remainingExecutionMs - executionReserveMs)
+  const deferred = availableFetchMs < minimumFetchWindowMs
+  return {
+    deferred,
+    reason: deferred ? 'INSUFFICIENT_EXECUTION_BUDGET' : null,
+    remainingExecutionMs,
+    executionReserveMs,
+    availableFetchMs,
+    minimumFetchWindowMs,
+    maximumFetchTimeoutMs,
+    timeoutMs: deferred ? null : Math.min(maximumFetchTimeoutMs, availableFetchMs),
+  }
+}
+
+export async function runProviderFetchWithinBudget(budget, worker, options = {}) {
+  const plan = planProviderFetch(budget, options.now ?? Date.now(), options)
+  if (plan.deferred) {
+    return {
+      ok: false,
+      started: false,
+      deferred: true,
+      reason: plan.reason,
+      remainingExecutionMs: plan.remainingExecutionMs,
+      executionReserveMs: plan.executionReserveMs,
+      availableFetchMs: plan.availableFetchMs,
+      minimumFetchWindowMs: plan.minimumFetchWindowMs,
+      maximumFetchTimeoutMs: plan.maximumFetchTimeoutMs,
+      timeoutMs: null,
+    }
+  }
+  return {
+    ok: true,
+    started: true,
+    deferred: false,
+    plan,
+    value: await worker(plan),
+  }
+}
+
+export function buildProviderFailureDiagnostic(input = {}, options = {}) {
+  const message = sanitizeText(input?.message ?? input?.error?.message ?? input?.error ?? 'provider request failed', options)
+  const fetchPlan = input?.fetchPlan && typeof input.fetchPlan === 'object' ? input.fetchPlan : {}
+  return {
+    apiLeagueId: finiteNumberOrNull(input?.meta?.apiLeagueId),
+    season: finiteNumberOrNull(input?.meta?.season),
+    endpoint: sanitizeText(input?.endpoint, options),
+    requestParams: sanitizeDiagnosticValue(input?.params ?? {}, options),
+    requestStage: sanitizeText(input?.requestStage ?? input?.meta?.requestStage, options) || null,
+    httpStatus: finiteNumberOrNull(input?.httpStatus ?? input?.error?.status ?? input?.error?.errorDetails?.status),
+    message,
+    timeout: /abort|timeout|signal timed out/i.test(`${input?.error?.name ?? ''} ${message}`),
+    deadline: {
+      remainingExecutionMs: finiteNumberOrNull(fetchPlan.remainingExecutionMs),
+      executionReserveMs: finiteNumberOrNull(fetchPlan.executionReserveMs),
+      availableFetchMs: finiteNumberOrNull(fetchPlan.availableFetchMs),
+      minimumFetchWindowMs: finiteNumberOrNull(fetchPlan.minimumFetchWindowMs),
+      timeoutMs: finiteNumberOrNull(fetchPlan.timeoutMs),
+    },
+  }
 }
 
 export function buildDeadlinePendingSummary({ stepOrder = 0, phase = 'daily-sync', durationMs = 0, continuation = {}, reason = 'SOFT_DEADLINE_REACHED' } = {}) {

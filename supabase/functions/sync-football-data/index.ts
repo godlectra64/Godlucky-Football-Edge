@@ -49,17 +49,22 @@ import {
   selectCoreAuxiliaryBatch,
 } from '../_shared/dailyContinuationPolicy.js'
 import {
+  MAX_PROVIDER_FETCH_TIMEOUT_MS,
   MAX_DAILY_SYNC_STEPS_PER_REQUEST,
+  MIN_PROVIDER_FETCH_WINDOW_MS,
   MIN_PHASE_START_REMAINING_MS,
   UpstreamResponseError,
   buildDeadlinePendingSummary,
   buildFinishLogFailureLog,
   buildPhaseLog,
+  buildProviderFailureDiagnostic,
   buildSyncFailureLog,
   createExecutionBudget,
   finishLogBestEffort,
   getRemainingExecutionMs,
   parseUpstreamJsonResponse,
+  planProviderFetch,
+  runProviderFetchWithinBudget,
   sanitizeDiagnosticValue as sanitizeReliabilityDiagnosticValue,
   sanitizeText as sanitizeReliabilityText,
   shouldDeferExecution,
@@ -655,6 +660,7 @@ type DailyFullSyncStepSummary = {
   rateLimited: boolean
   durationMs: number
   message?: string
+  failures?: Array<Record<string, unknown>>
   partial?: boolean
   endpointBreakdown?: Record<string, FootballEnrichmentEndpointCounter>
   details?: Record<string, unknown>
@@ -1469,7 +1475,9 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
     const totalCandidates = sumResultField(results, 'totalCandidates')
     const rowsSaved = sumResultField(results, 'rowsSaved') || endpointDelta.rowsSaved || processed
     const failed = sumResultField(results, 'failed') + endpointDelta.failed
-    const resultFailureCount = results.reduce((total, result) => total + (Array.isArray(result?.failures) ? result.failures.length : 0), 0)
+    const resultFailures = results.flatMap((result) => Array.isArray(result?.failures) ? result.failures : [])
+    const resultFailureCount = resultFailures.length
+    const resultMessage = results.map((result) => typeof result?.message === 'string' ? result.message.trim() : '').find(Boolean)
     const skipped = sumResultField(results, 'skipped') + endpointDelta.skipped
     const partial = context.deadlineReached || results.some((result) => Boolean(result?.partial)) || (phase === 'fixture-enrichment' && isFixtureEnrichmentPartial(results, endpointBreakdown))
     const status = failed > 0 || partial ? 'partial_success' : rowsSaved > 0 || processed > 0 || skipped > 0 ? 'success' : 'empty'
@@ -1488,6 +1496,8 @@ async function executeDailySyncPhase(stepOrder: number, phase: string, body: Rec
       rateLimited: context.rateLimited,
       durationMs: Date.now() - startedAt,
       partial,
+      ...(resultMessage ? { message: resultMessage } : {}),
+      ...(resultFailures.length ? { failures: resultFailures } : {}),
       endpointBreakdown,
       details: {
         ...buildDailyPhaseDetails(phase, results, context.continuationState),
@@ -1928,9 +1938,29 @@ async function logDailyStepSkipped(context: FootballEnrichmentContext, step: num
 
 async function syncApiFootballDailyFixtures(dayRange: ReturnType<typeof getBangkokDayRange>, batchSize: number, context: FootballEnrichmentContext) {
   const providerPage = API_FOOTBALL_DAILY_FIXTURES_PROVIDER_PAGE
-  const discovery = await fetchApiFootballFixturesWithPaging(dayRange.dateKey, context)
-  const matches = normalizeDailyFixtureCandidates(discovery.matches, compareFixtureSyncPriority)
   const fixtureCursor = initializeProcessedFixtureCursor(context.continuationState)
+  const discovery = await fetchApiFootballFixturesWithPaging(dayRange.dateKey, context)
+  if (discovery.deferred) {
+    return {
+      processed: 0,
+      totalCandidates: fixtureCursor.fixtureCandidateCount,
+      rowsSaved: 0,
+      failed: 0,
+      skipped: 0,
+      partial: true,
+      nextOffset: fixtureCursor.fixtureOffset,
+      hasMore: true,
+      providerComplete: false,
+      deferred: true,
+      providerFetchDeferral: discovery.providerFetchDeferral,
+      fixtureCursorMode: fixtureCursor.fixtureCursorMode,
+      uniqueProcessedFixtureCount: fixtureCursor.uniqueProcessedFixtureCount,
+      fixtureRemainingCount: fixtureCursor.fixtureRemainingCount,
+      fixtureStableEmptyPasses: fixtureCursor.fixtureStableEmptyPasses,
+      providerPageCount: 0,
+    }
+  }
+  const matches = normalizeDailyFixtureCandidates(discovery.matches, compareFixtureSyncPriority)
   const previousSnapshotSignature = fixtureCursor.fixtureSnapshotSignature
   const fixtureSnapshotSignature = buildBatchSignature(matches.map((match: any) => match.raw_fixture_id))
   const selected = selectProcessedFixtureBatch(matches, fixtureCursor.processedFixtureIds, batchSize)
@@ -2915,6 +2945,8 @@ async function syncApiFootballRounds(context: FootballEnrichmentContext) {
   const leagues = selected.batch
   let processed = 0
   let processedCandidates = 0
+  let providerFetchDeferral: Record<string, unknown> | null = null
+  const roundFailures: Array<Record<string, unknown>> = []
   if (selected.complete) {
     const completed = advanceCoreAuxiliaryContinuation(context.continuationState, 'rounds', {
       advancedBy: 0,
@@ -2925,10 +2957,34 @@ async function syncApiFootballRounds(context: FootballEnrichmentContext) {
   }
   for (const item of leagues) {
     if (context.rateLimited || shouldStopForExecutionBudget(context)) break
-    const allRounds = await trackedApiFootballGet(context, '/fixtures/rounds', { league: item.api_league_id, season: item.season }, { apiLeagueId: item.api_league_id, season: item.season })
-    if (!allRounds.ok || context.rateLimited) break
-    const current = await trackedApiFootballGet(context, '/fixtures/rounds', { league: item.api_league_id, season: item.season, current: 'true' }, { apiLeagueId: item.api_league_id, season: item.season })
-    if (!current.ok) break
+    const allRounds = await trackedApiFootballGet(
+      context,
+      '/fixtures/rounds',
+      { league: item.api_league_id, season: item.season },
+      { apiLeagueId: item.api_league_id, season: item.season, requestStage: 'all_rounds' },
+    )
+    if (allRounds.deferred) {
+      providerFetchDeferral = allRounds
+      break
+    }
+    if (!allRounds.ok || context.rateLimited) {
+      if (allRounds.failure) roundFailures.push(allRounds.failure)
+      break
+    }
+    const current = await trackedApiFootballGet(
+      context,
+      '/fixtures/rounds',
+      { league: item.api_league_id, season: item.season, current: 'true' },
+      { apiLeagueId: item.api_league_id, season: item.season, requestStage: 'current_round' },
+    )
+    if (current.deferred) {
+      providerFetchDeferral = current
+      break
+    }
+    if (!current.ok) {
+      if (current.failure) roundFailures.push(current.failure)
+      break
+    }
     const currentRound = Array.isArray(current.data) ? current.data[0] : null
     const rows = (allRounds.data ?? []).map((roundName: string, index: number) => ({
       api_league_id: item.api_league_id,
@@ -2960,7 +3016,19 @@ async function syncApiFootballRounds(context: FootballEnrichmentContext) {
     hasMore: !continuation.roundsComplete,
     nextOffset: continuation.roundsOffset,
     roundsComplete: continuation.roundsComplete,
+    deferred: Boolean(providerFetchDeferral),
+    providerFetchDeferral,
+    roundFailures,
+    failures: roundFailures,
+    ...(roundFailures.length ? { message: formatRoundFailureMessage(roundFailures[0]) } : {}),
   }
+}
+
+function formatRoundFailureMessage(failure: Record<string, any>) {
+  const league = failure?.apiLeagueId ?? 'unknown'
+  const season = failure?.season ?? 'unknown'
+  const stage = failure?.requestStage ?? 'rounds'
+  return `API-Football ${stage} failed for league=${league} season=${season}: ${failure?.message ?? 'provider request failed'}`
 }
 
 async function syncApiFootballFixtureEnrichment(dayRange: ReturnType<typeof getBangkokDayRange>, context: FootballEnrichmentContext, body: Record<string, unknown> = {}) {
@@ -5526,20 +5594,31 @@ async function apiFootballSafeGet(path: string, params: Record<string, string | 
 }
 
 async function trackedApiFootballGet(context: FootballEnrichmentContext, endpoint: string, params: Record<string, string | number | undefined> = {}, meta: any = {}) {
-  if (context.rateLimited || shouldStopForExecutionBudget(context)) {
+  if (context.rateLimited) {
     await logEnrichmentSync({ mode: context.mode, endpoint, status: 'skipped_not_due', ...toSyncMeta(meta) })
-    return { ok: false, data: [], raw: null, rateLimited: context.rateLimited, pendingRetry: context.deadlineReached }
+    return { ok: false, data: [], raw: null, rateLimited: true, pendingRetry: false }
+  }
+  if (shouldStopForExecutionBudget(context)) {
+    const deferral = planProviderFetch(context.executionBudget)
+    await logEnrichmentSync({ mode: context.mode, endpoint, status: 'skipped_not_due', ...toSyncMeta(meta) })
+    return providerFetchDeferredResult(deferral)
   }
 
   await sleep(700 + Math.floor(Math.random() * 501))
-  if (shouldStopForExecutionBudget(context)) {
-    await logEnrichmentSync({ mode: context.mode, endpoint, status: 'skipped_not_due', ...toSyncMeta(meta) })
-    return { ok: false, data: [], raw: null, rateLimited: false, pendingRetry: true }
-  }
-  bumpEndpoint(context, endpoint, 'called')
   const startedAt = new Date().toISOString()
+  let activeFetchPlan: Record<string, any> | null = null
   try {
-    const raw = await apiFootballGet(endpoint, params, context)
+    const attempt = await runProviderFetchWithinBudget(context.executionBudget, async (fetchPlan) => {
+      activeFetchPlan = fetchPlan
+      bumpEndpoint(context, endpoint, 'called')
+      return apiFootballGet(endpoint, params, context, fetchPlan)
+    })
+    if (attempt.deferred) {
+      context.deadlineReached = true
+      await logEnrichmentSync({ mode: context.mode, endpoint, status: 'skipped_not_due', started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
+      return providerFetchDeferredResult(attempt)
+    }
+    const raw = attempt.value
     const results = Number(raw?.results ?? (Array.isArray(raw?.response) ? raw.response.length : 0))
     const status = results === 0 ? 'empty' : 'success'
     bumpEndpoint(context, endpoint, results === 0 ? 'empty' : 'withData')
@@ -5550,7 +5629,25 @@ async function trackedApiFootballGet(context: FootballEnrichmentContext, endpoin
     if (message.includes('api-football 429')) context.rateLimited = true
     bumpEndpoint(context, endpoint, 'failed')
     await logEnrichmentSync({ mode: context.mode, endpoint, status: 'error', error_message: message, started_at: startedAt, finished_at: new Date().toISOString(), ...toSyncMeta(meta) })
-    return { ok: false, data: [], raw: null, error: message, rateLimited: context.rateLimited }
+    const failure = buildProviderFailureDiagnostic({ endpoint, params, meta, error, message, fetchPlan: activeFetchPlan }, { secrets: getSensitiveValues() })
+    return { ok: false, data: [], raw: null, error: message, failure, rateLimited: context.rateLimited, deferred: false }
+  }
+}
+
+function providerFetchDeferredResult(deferral: Record<string, any>) {
+  return {
+    ok: false,
+    data: [],
+    raw: null,
+    rateLimited: false,
+    pendingRetry: true,
+    deferred: true,
+    reason: deferral.reason ?? 'INSUFFICIENT_EXECUTION_BUDGET',
+    remainingExecutionMs: Number(deferral.remainingExecutionMs ?? 0),
+    executionReserveMs: Number(deferral.executionReserveMs ?? 0),
+    availableFetchMs: Number(deferral.availableFetchMs ?? 0),
+    minimumFetchWindowMs: Number(deferral.minimumFetchWindowMs ?? MIN_PROVIDER_FETCH_WINDOW_MS),
+    timeoutMs: null,
   }
 }
 
@@ -6110,6 +6207,8 @@ function buildDailyPhaseDetails(phase: string, results: Array<any>, continuation
       roundsCandidatesProcessed: Number(rounds?.processedCandidates ?? 0),
       roundsTotalCandidates: Number(rounds?.totalCandidates ?? continuation.roundsTotalCandidates),
       roundsComplete: continuation.roundsComplete,
+      roundFailures: Array.isArray(rounds?.roundFailures) ? rounds.roundFailures : [],
+      providerFetchDeferral: rounds?.providerFetchDeferral ?? null,
       coreAuxiliaryComplete: continuation.coreAuxiliaryComplete,
     }
   }
@@ -7313,7 +7412,7 @@ async function fetchFootballDataCompetitions() {
   return data.competitions ?? []
 }
 
-async function apiFootballGet(path: string, params: Record<string, string | number | undefined> = {}, context?: FootballEnrichmentContext) {
+async function apiFootballGet(path: string, params: Record<string, string | number | undefined> = {}, context?: FootballEnrichmentContext, fetchPlan?: Record<string, any>) {
   const url = new URL(`${API_FOOTBALL_BASE_URL}${path}`)
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') {
@@ -7321,24 +7420,26 @@ async function apiFootballGet(path: string, params: Record<string, string | numb
     }
   })
 
+  const signal = getProviderFetchSignal(context, fetchPlan)
+  if (!signal) throw new Error('Provider fetch requires execution-budget deferral before creating an AbortSignal')
   const response = await fetch(url, {
     headers: {
       'x-apisports-key': API_FOOTBALL_KEY ?? '',
       Accept: 'application/json',
     },
-    signal: getProviderFetchSignal(context),
+    signal,
   })
 
   const { data, text } = await parseUpstreamJsonResponse(response, { provider: 'api-football', errorStage: `api-football:${path}` })
 
   if (!response.ok) {
     const message = data?.message ?? data?.error ?? text ?? `api-football ${response.status}`
-    throw new Error(`api-football ${response.status}: ${sanitizeText(message)}`)
+    throw Object.assign(new Error(`api-football ${response.status}: ${sanitizeText(message)}`), { status: response.status })
   }
 
   const apiErrors = data?.errors
   const hasApiErrors = Array.isArray(apiErrors) ? apiErrors.length > 0 : apiErrors && typeof apiErrors === 'object' ? Object.keys(apiErrors).length > 0 : Boolean(apiErrors)
-  if (hasApiErrors) throw new Error(`api-football error: ${sanitizeText(JSON.stringify(apiErrors))}`)
+  if (hasApiErrors) throw Object.assign(new Error(`api-football error: ${sanitizeText(JSON.stringify(apiErrors))}`), { status: response.status })
 
   return data
 }
@@ -7348,13 +7449,30 @@ async function fetchApiFootballFixtures(dateKey: string) {
 }
 
 async function fetchApiFootballFixturesWithPaging(dateKey: string, context?: FootballEnrichmentContext) {
-  const payload = await apiFootballGet('/fixtures', buildApiFootballDailyFixturesParams(dateKey), context)
-  return buildSinglePageFixtureDiscovery(payload, normalizeApiFootballFixture)
+  if (!context) {
+    const payload = await apiFootballGet('/fixtures', buildApiFootballDailyFixturesParams(dateKey))
+    return buildSinglePageFixtureDiscovery(payload, normalizeApiFootballFixture)
+  }
+  const attempt = await runProviderFetchWithinBudget(context.executionBudget, (fetchPlan) => (
+    apiFootballGet('/fixtures', buildApiFootballDailyFixturesParams(dateKey), context, fetchPlan)
+  ))
+  if (attempt.deferred) {
+    context.deadlineReached = true
+    return {
+      ...buildSinglePageFixtureDiscovery({}, normalizeApiFootballFixture),
+      deferred: true,
+      providerFetchDeferral: providerFetchDeferredResult(attempt),
+    }
+  }
+  return buildSinglePageFixtureDiscovery(attempt.value, normalizeApiFootballFixture)
 }
 
-function getProviderFetchSignal(context?: FootballEnrichmentContext) {
-  const remainingMs = context ? getRemainingExecutionMs(context.executionBudget) - context.executionBudget.reserveMs : 12_000
-  return AbortSignal.timeout(Math.max(1, Math.min(12_000, remainingMs)))
+function getProviderFetchSignal(context?: FootballEnrichmentContext, fetchPlan?: Record<string, any>) {
+  if (!context) return AbortSignal.timeout(MAX_PROVIDER_FETCH_TIMEOUT_MS)
+  const plan = fetchPlan ?? planProviderFetch(context.executionBudget)
+  const timeoutMs = Number(plan?.timeoutMs)
+  if (plan?.deferred || !Number.isFinite(timeoutMs) || timeoutMs < MIN_PROVIDER_FETCH_WINDOW_MS) return null
+  return AbortSignal.timeout(Math.min(MAX_PROVIDER_FETCH_TIMEOUT_MS, timeoutMs))
 }
 
 async function guardedSupabaseFetch(input: RequestInfo | URL, init: RequestInit = {}) {

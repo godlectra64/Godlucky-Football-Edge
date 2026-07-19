@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import {
+  MAX_PROVIDER_FETCH_TIMEOUT_MS,
   MAX_DAILY_SYNC_STEPS_PER_REQUEST,
+  MIN_PROVIDER_FETCH_WINDOW_MS,
   UPSTREAM_BODY_PREVIEW_LIMIT,
   buildDeadlinePendingSummary,
   buildPhaseLog,
+  buildProviderFailureDiagnostic,
   buildSyncFailureLog,
   createExecutionBudget,
   finishLogBestEffort,
   parseUpstreamJsonResponse,
+  planProviderFetch,
+  runProviderFetchWithinBudget,
   sanitizeDiagnosticValue,
   shouldDeferExecution,
 } from '../supabase/functions/_shared/syncReliability.js'
@@ -89,6 +94,69 @@ const budget = createExecutionBudget(1_000, 40_000)
 assert.equal(budget.softDeadlineAt, 41_000)
 assert.equal(shouldDeferExecution(budget, 35_999, 5_000), false)
 assert.equal(shouldDeferExecution(budget, 36_000, 5_000), true)
+assert.equal(MIN_PROVIDER_FETCH_WINDOW_MS, 2_000)
+assert.equal(MAX_PROVIDER_FETCH_TIMEOUT_MS, 12_000)
+
+const insufficientProviderWindow = planProviderFetch(budget, 34_001)
+assert.equal(insufficientProviderWindow.remainingExecutionMs, 6_999)
+assert.equal(insufficientProviderWindow.availableFetchMs, 1_999)
+assert.equal(insufficientProviderWindow.deferred, true)
+assert.equal(insufficientProviderWindow.timeoutMs, null)
+let providerFetchCalls = 0
+const deferredProviderFetch = await runProviderFetchWithinBudget(budget, async () => {
+  providerFetchCalls += 1
+  return 'unexpected'
+}, { now: 34_001 })
+assert.equal(providerFetchCalls, 0, 'an insufficient provider window must defer before invoking fetch')
+assert.deepEqual({
+  ok: deferredProviderFetch.ok,
+  started: deferredProviderFetch.started,
+  deferred: deferredProviderFetch.deferred,
+  reason: deferredProviderFetch.reason,
+  availableFetchMs: deferredProviderFetch.availableFetchMs,
+  minimumFetchWindowMs: deferredProviderFetch.minimumFetchWindowMs,
+}, {
+  ok: false,
+  started: false,
+  deferred: true,
+  reason: 'INSUFFICIENT_EXECUTION_BUDGET',
+  availableFetchMs: 1_999,
+  minimumFetchWindowMs: 2_000,
+})
+
+const minimumProviderWindow = planProviderFetch(budget, 34_000)
+assert.equal(minimumProviderWindow.deferred, false)
+assert.equal(minimumProviderWindow.timeoutMs, MIN_PROVIDER_FETCH_WINDOW_MS, 'a created timeout must be at least the minimum provider window')
+const fullProviderWindow = planProviderFetch(budget, 1_000)
+assert.equal(fullProviderWindow.timeoutMs, MAX_PROVIDER_FETCH_TIMEOUT_MS, 'provider timeout must retain its normal upper bound')
+const startedProviderFetch = await runProviderFetchWithinBudget(budget, async (fetchPlan) => {
+  providerFetchCalls += 1
+  return fetchPlan.timeoutMs
+}, { now: 34_000 })
+assert.equal(startedProviderFetch.started, true)
+assert.equal(startedProviderFetch.value, MIN_PROVIDER_FETCH_WINDOW_MS)
+let realProviderFetchStarted = false
+await assert.rejects(runProviderFetchWithinBudget(budget, async () => {
+  realProviderFetchStarted = true
+  throw new Error('Signal timed out.')
+}, { now: 34_000 }), /Signal timed out/)
+assert.equal(realProviderFetchStarted, true, 'a timeout after a sufficient fetch window starts remains a real provider failure')
+
+const roundFailure = buildProviderFailureDiagnostic({
+  endpoint: '/fixtures/rounds',
+  params: { league: 385, season: 2026, current: 'true', apiKey: secret },
+  meta: { apiLeagueId: 385, season: 2026, requestStage: 'current_round' },
+  error: Object.assign(new Error('Signal timed out.'), { name: 'TimeoutError' }),
+  fetchPlan: minimumProviderWindow,
+}, { secrets: [secret] })
+assert.equal(roundFailure.apiLeagueId, 385)
+assert.equal(roundFailure.season, 2026)
+assert.equal(roundFailure.endpoint, '/fixtures/rounds')
+assert.equal(roundFailure.requestStage, 'current_round')
+assert.equal(roundFailure.httpStatus, null)
+assert.equal(roundFailure.timeout, true)
+assert.equal(roundFailure.deadline.timeoutMs, MIN_PROVIDER_FETCH_WINDOW_MS)
+assert.equal(Object.hasOwn(roundFailure.requestParams, 'apiKey'), false)
 const continuation = createContinuationState({
   providerPage: 4,
   fixtureOffset: 30,
@@ -157,6 +225,35 @@ assert.match(source, /new DailySyncPhaseError\(phase, error\)/)
 assert.match(source, /MAX_DAILY_SYNC_STEPS_PER_REQUEST/)
 assert.match(source, /summary\.continuationState = continuationState/, 'deadline responses must retain the full processed-fixture cursor')
 assert.equal(MAX_DAILY_SYNC_STEPS_PER_REQUEST, 2)
+const trackedProviderSource = functionSource(source, 'trackedApiFootballGet')
+assert.match(trackedProviderSource, /runProviderFetchWithinBudget\(context\.executionBudget/)
+assert.match(trackedProviderSource, /runProviderFetchWithinBudget[\s\S]*?bumpEndpoint\(context, endpoint, 'called'\)[\s\S]*?apiFootballGet/)
+assert.match(trackedProviderSource, /if \(attempt\.deferred\)[\s\S]*?context\.deadlineReached = true[\s\S]*?providerFetchDeferredResult\(attempt\)/)
+const deadlineDeferBranch = trackedProviderSource.slice(trackedProviderSource.indexOf('if (attempt.deferred)'), trackedProviderSource.indexOf('const raw = attempt.value'))
+assert.doesNotMatch(deadlineDeferBranch, /'failed'|status:\s*'error'/, 'deadline deferral must not increment or log an endpoint failure')
+assert.match(trackedProviderSource, /catch \(error\)[\s\S]*?bumpEndpoint\(context, endpoint, 'failed'\)/, 'a request failure after fetch starts must remain a real failure')
+assert.match(trackedProviderSource, /buildProviderFailureDiagnostic\(\{ endpoint, params, meta, error, message, fetchPlan: activeFetchPlan \}/)
+
+const providerSignalSource = functionSource(source, 'getProviderFetchSignal')
+assert.doesNotMatch(providerSignalSource, /Math\.max\(1/, 'provider signals must not clamp an unusable budget to a millisecond-scale timeout')
+assert.match(providerSignalSource, /timeoutMs < MIN_PROVIDER_FETCH_WINDOW_MS\) return null/)
+assert.match(providerSignalSource, /Math\.min\(MAX_PROVIDER_FETCH_TIMEOUT_MS, timeoutMs\)/)
+
+const roundsSource = functionSource(source, 'syncApiFootballRounds')
+assert.match(roundsSource, /requestStage: 'all_rounds'/)
+assert.match(roundsSource, /requestStage: 'current_round'/)
+assert.equal((roundsSource.match(/\.deferred\)/g) ?? []).length, 2, 'both rounds requests must support deadline deferral')
+assert.match(roundsSource, /if \(current\.deferred\)[\s\S]*?providerFetchDeferral = current[\s\S]*?break/)
+assert.match(roundsSource, /if \(!current\.ok\)[\s\S]*?roundFailures\.push\(current\.failure\)/)
+assert.doesNotMatch(roundsSource, /\bfailed\s*:/, 'structured round failures must not duplicate the canonical endpoint failed counter')
+assert.match(roundsSource, /message: formatRoundFailureMessage\(roundFailures\[0\]\)/)
+assert.match(source, /roundFailures: Array\.isArray\(rounds\?\.roundFailures\)/)
+assert.match(source, /const resultMessage = results\.map[\s\S]*?\.find\(Boolean\)/)
+assert.match(source, /error_message: retry\.continuationPolicy\.kind === 'real_failure' \? summary\.message/)
+assert.match(source, /const failed = sumResultField\(results, 'failed'\) \+ endpointDelta\.failed/, 'endpoint delta must remain the canonical provider failure counter')
+
+const upsertSource = functionSource(source, 'upsertApiFootballData')
+assert.match(upsertSource, /if \(result\.error\) throw result\.error/, 'database failure behavior must remain unchanged')
 const autoSource = functionSource(source, 'runDailySyncOrchestratorMode')
 assert.doesNotMatch(autoSource, /fetch\s*\(|sync-football-data/, 'daily-sync-auto must not invoke the Edge Function endpoint')
 assert.equal(autoSource.match(/runDailySyncOrchestratorMode\s*\(/g)?.length, 1, 'daily-sync-auto must not recurse')
@@ -166,7 +263,9 @@ console.log('Sync reliability unit tests passed.')
 function functionSource(sourceText, name) {
   const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(sourceText)
   assert.ok(match, `function ${name} not found`)
-  const openingBrace = sourceText.indexOf('{', match.index)
+  const bodyMatch = /\)\s*\{/.exec(sourceText.slice(match.index))
+  assert.ok(bodyMatch, `function ${name} body not found`)
+  const openingBrace = match.index + bodyMatch.index + bodyMatch[0].lastIndexOf('{')
   let depth = 0
   for (let index = openingBrace; index < sourceText.length; index += 1) {
     if (sourceText[index] === '{') depth += 1
