@@ -63,6 +63,23 @@ requirePattern(/!selfContinuationDriver\s*&&\s*!isComplete\(dailySync\)/, 'singl
 requirePattern(/continuationChainDepth\s*>=\s*20/, 'continuation chain depth limit')
 if ((workflow.match(/await dispatchSelfContinuation\s*\(/g) ?? []).length !== 1) throw new Error('workflow must dispatch self-continuation from exactly one call site')
 requirePattern(/invocation <= 12/, 'bounded workflow invocations')
+const countNormalizerSource = functionSource(workflow, 'normalizeExplicitNonNegativeInteger')
+requireSourcePattern(countNormalizerSource, /typeof value === ['"]number['"][\s\S]*?Number\.isInteger\(value\)[\s\S]*?value >= 0/, 'explicit non-negative numeric count validation')
+requireSourcePattern(countNormalizerSource, /typeof value !== ['"]string['"][\s\S]*?return null/, 'non-number and non-string count rejection')
+requireSourcePattern(countNormalizerSource, /normalized = value\.trim\(\)[\s\S]*?Number\.isSafeInteger\(parsed\)/, 'safe numeric-string count parsing')
+const failureEvidenceSource = functionSource(workflow, 'getCanonicalCurrentFailureEvidence')
+requireSourcePattern(failureEvidenceSource, /failedCount\s*=\s*normalizeExplicitNonNegativeInteger\(result\.failed\)/, 'canonical result.failed normalization')
+requireSourcePattern(failureEvidenceSource, /stepFailedCount\s*=\s*normalizeExplicitNonNegativeInteger\(currentStep\?\.failed\)/, 'canonical step.failed normalization')
+requireSourcePattern(failureEvidenceSource, /failedCount !== null && failedCount > 0\) reasons\.push\(['"]RESULT_FAILED_COUNT['"]\)/, 'positive explicit result.failed gate')
+requireSourcePattern(failureEvidenceSource, /stepFailedCount !== null && stepFailedCount > 0\) reasons\.push\(['"]STEP_FAILED_COUNT['"]\)/, 'positive explicit step.failed gate')
+for (const [forbiddenFallback, pattern] of [
+  ['currentStep?.summary?.failed', /currentStep\?\.summary\?\.failed(?![A-Za-z0-9_$])/],
+  ['attempt_count', /attempt_count/],
+  ['result.failureAttempts', /result\.failureAttempts/],
+  ['result.failures.length', /result\.failures\.length/],
+]) {
+  if (pattern.test(failureEvidenceSource)) throw new Error(`canonical failed-count evidence must not use ${forbiddenFallback}`)
+}
 const restPreflightSource = functionSource(workflow, 'getRestRows')
 requireSourcePattern(restPreflightSource, /apikey:\s*restServiceRoleKey/, 'REST apikey service-role header')
 requireSourcePattern(restPreflightSource, /Authorization:\s*`Bearer \$\{restServiceRoleKey\}`/, 'REST Bearer service-role header')
@@ -78,6 +95,8 @@ const selfContinuationDecisionSource = functionSource(workflow, 'getSelfContinua
 for (const requiredGate of ['run_id_mismatch', 'active_claim', 'failed_step_', 'canonical_run_complete', 'pending_retry', 'planned_continuation', 'failure_attempts_reported', 'retry_exhausted', 'invalid_next_retry_at']) {
   if (!selfContinuationDecisionSource.includes(requiredGate)) throw new Error(`self-continuation decision missing ${requiredGate} gate`)
 }
+requireSourcePattern(selfContinuationDecisionSource, /normalizeExplicitNonNegativeInteger\(step\.failed\)/, 'explicit self-continuation step.failed normalization')
+if (/Number\(step\.failed/.test(selfContinuationDecisionSource)) throw new Error('self-continuation must not coerce step.failed with Number()')
 const selfContinuationWaitSource = functionSource(workflow, 'getSelfContinuationWaitMs')
 requireSourcePattern(selfContinuationWaitSource, /Math\.min\(900_000,\s*Math\.max\(5_000,\s*nextRetryMs\s*-\s*nowMs\s*\+\s*5_000\)\)/, 'bounded next-retry wait calculation')
 const waitSource = functionSource(workflow, 'waitForSelfContinuation')

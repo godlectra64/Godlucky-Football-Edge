@@ -101,21 +101,40 @@ jobs:
             if (isDerivedCounterAdvisoryDiagnostic(value)) return false
             if (Array.isArray(value)) return value.some(hasExplicitRealError)
             if (typeof value === 'object') return Object.keys(value).length > 0
+            if (typeof value === 'string') return value.trim().length > 0
             return true
           }
 
-          function maximumCanonicalCounter(...values) {
-            const counters = values.map(Number).filter((value) => Number.isFinite(value) && value >= 0)
-            return counters.length > 0 ? Math.max(...counters) : 0
+          function normalizeExplicitNonNegativeInteger(value) {
+            if (typeof value === 'number') {
+              return Number.isInteger(value) && value >= 0 ? value : null
+            }
+            if (typeof value !== 'string') return null
+            const normalized = value.trim()
+            if (!/^(?:0|[1-9]\d*)$/.test(normalized)) return null
+            const parsed = Number(normalized)
+            return Number.isSafeInteger(parsed) ? parsed : null
+          }
+
+          function maximumExplicitNonNegativeInteger(...values) {
+            const counters = values
+              .map(normalizeExplicitNonNegativeInteger)
+              .filter((value) => value !== null)
+            return counters.length > 0 ? Math.max(...counters) : null
           }
 
           function getCanonicalCurrentFailureEvidence(result, currentStep) {
             const policy = getStepContinuationPolicy(currentStep)
             const policyReason = failureDiagnosticMessage(policy?.reason ?? '')
-            const failedCount = maximumCanonicalCounter(result.failed)
-            const stepFailedCount = maximumCanonicalCounter(currentStep?.failed, currentStep?.summary?.failed)
-            const failureAttempts = maximumCanonicalCounter(currentStep?.failureAttempts, currentStep?.failure_attempts)
-            const exhausted = currentStep?.exhausted === true || currentStep?.summary?.exhausted === true
+            const failedCount = normalizeExplicitNonNegativeInteger(result.failed)
+            const stepFailedCount = normalizeExplicitNonNegativeInteger(currentStep?.failed)
+            const failureAttempts = maximumExplicitNonNegativeInteger(currentStep?.failureAttempts, currentStep?.failure_attempts)
+            const maxAttempts = normalizeExplicitNonNegativeInteger(currentStep?.max_attempts)
+            const exhausted = currentStep?.exhausted === true
+              || currentStep?.summary?.exhausted === true
+              || currentStep?.summary?.details?.exhausted === true
+              || policy?.exhausted === true
+              || (failureAttempts !== null && failureAttempts > 0 && maxAttempts !== null && failureAttempts >= maxAttempts)
             const failedEndpoints = [result.failedEndpoints, currentStep?.failedEndpoints, currentStep?.summary?.failedEndpoints]
               .flatMap(asArray)
             const rateLimited = result.rateLimited === true
@@ -140,10 +159,10 @@ jobs:
             const nonSyntheticFailures = getCanonicalNonAdvisoryFailureDiagnostics(result, currentStep)
             const reasons = []
             if (result.ok !== true) reasons.push('OK_NOT_TRUE')
-            if (failedCount > 0) reasons.push('RESULT_FAILED_COUNT')
+            if (failedCount !== null && failedCount > 0) reasons.push('RESULT_FAILED_COUNT')
             if (currentStep?.status === 'failed') reasons.push('FAILED_STEP')
-            if (stepFailedCount > 0) reasons.push('STEP_FAILED_COUNT')
-            if (failureAttempts > 0) reasons.push('FAILURE_ATTEMPTS_REPORTED')
+            if (stepFailedCount !== null && stepFailedCount > 0) reasons.push('STEP_FAILED_COUNT')
+            if (failureAttempts !== null && failureAttempts > 0) reasons.push('FAILURE_ATTEMPTS_REPORTED')
             if (exhausted) reasons.push('EXHAUSTED_REAL_FAILURES')
             if (failedEndpoints.length > 0) reasons.push('FAILED_ENDPOINTS_REPORTED')
             if (rateLimited) reasons.push('RATE_LIMITED')
@@ -170,7 +189,8 @@ jobs:
           }
 
           function assertGenericModeSuccess(mode, result, { ignoreSyntheticFailureDiagnostics = false } = {}) {
-            if (Number(result.failed ?? 0) > 0) {
+            const failedCount = normalizeExplicitNonNegativeInteger(result.failed)
+            if (failedCount !== null && failedCount > 0) {
               throw new Error(`${mode} reported failed=${result.failed}`)
             }
             const failures = ignoreSyntheticFailureDiagnostics
@@ -341,25 +361,25 @@ jobs:
 
           function getCanonicalStepFailureAttempts(step) {
             const policy = getStepContinuationPolicy(step)
-            return maximumCanonicalCounter(
+            const policyFailureAttempts = ['planned_continuation', 'real_failure'].includes(policy?.kind)
+              ? maximumExplicitNonNegativeInteger(policy?.failureAttemptCount, policy?.failureAttempts)
+              : null
+            return maximumExplicitNonNegativeInteger(
               step?.failureAttempts,
               step?.failure_attempts,
-              step?.summary?.failureAttempts,
-              step?.summary?.failure_attempts,
-              step?.summary?.details?.failureAttempts,
-              policy?.failureAttemptCount,
-            )
+              policyFailureAttempts,
+            ) ?? 0
           }
 
           function isCanonicalRetryExhausted(step) {
             const policy = getStepContinuationPolicy(step)
             const failureAttempts = getCanonicalStepFailureAttempts(step)
-            const maxAttempts = Number(step?.max_attempts)
+            const maxAttempts = normalizeExplicitNonNegativeInteger(step?.max_attempts)
             return step?.status === 'failed'
               || policy?.exhausted === true
               || step?.summary?.exhausted === true
               || step?.summary?.details?.exhausted === true
-              || (failureAttempts > 0 && Number.isFinite(maxAttempts) && failureAttempts >= maxAttempts)
+              || (failureAttempts > 0 && maxAttempts !== null && failureAttempts >= maxAttempts)
           }
 
           function getSelfContinuationDecision(canonicalState, expectedRunId) {
@@ -375,7 +395,10 @@ jobs:
             const requiredSteps = requiredPhases.map((phase) => byPhase.get(phase)[0])
             const active = requiredSteps.find((step) => step.status === 'running')
             if (active) return { required: false, activeClaim: true, reason: 'active_claim', phase: active.phase }
-            const failed = requiredSteps.find((step) => step.status === 'failed' || Number(step.failed ?? 0) > 0)
+            const failed = requiredSteps.find((step) => {
+              const failedCount = normalizeExplicitNonNegativeInteger(step.failed)
+              return step.status === 'failed' || (failedCount !== null && failedCount > 0)
+            })
             if (failed) return { required: false, fatal: true, reason: `failed_step_${failed.phase}`, phase: failed.phase }
             const blocking = requiredSteps.find((step) => step.status !== 'success') ?? null
             if (!blocking || run.status === 'success') return { required: false, reason: 'canonical_run_complete' }

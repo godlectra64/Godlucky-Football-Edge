@@ -224,6 +224,13 @@ const syntaxCheck = spawnSync(process.execPath, ['--check', '-'], { input: inlin
 assert.equal(syntaxCheck.status, 0, `workflow inline script must parse on Node 22+: ${syntaxCheck.stderr}`)
 assert.equal(inlineScript.match(/await dispatchSelfContinuation\s*\(/g)?.length, 1, 'workflow code must have only one self-dispatch call site')
 const workflowPolicy = compileWorkflowPolicy(inlineScript)
+assert.equal(workflowPolicy.normalizeExplicitNonNegativeInteger(0), 0)
+assert.equal(workflowPolicy.normalizeExplicitNonNegativeInteger(1), 1)
+assert.equal(workflowPolicy.normalizeExplicitNonNegativeInteger('0'), 0)
+assert.equal(workflowPolicy.normalizeExplicitNonNegativeInteger('1'), 1)
+for (const value of [null, undefined, '', '   ', 'not-a-number', '1.5', '-1', -1, 1.5, true, false, [], [1], {}]) {
+  assert.equal(workflowPolicy.normalizeExplicitNonNegativeInteger(value), null, `non-explicit count ${JSON.stringify(value)} must normalize to null`)
+}
 assert.equal(workflowPolicy.parseContinuationChainDepth(undefined), 0)
 assert.equal(workflowPolicy.parseContinuationChainDepth('invalid'), 0)
 assert.equal(workflowPolicy.parseContinuationChainDepth('-1'), 0)
@@ -283,6 +290,60 @@ const plannedResult = workflowResult('planned_continuation', 'CURSOR_ADVANCED', 
 const longWindow = workflowPolicy.getRetryWindowDecision(plannedResult, Date.parse(now), 60)
 assert.equal(longWindow.action, 'schedule_next_workflow', 'planned retry windows longer than 60 seconds must exit successfully')
 assert.equal(workflowPolicy.classifyWorkflowContinuation(plannedResult).kind, 'planned_continuation')
+
+for (const zero of [0, '0']) {
+  const zeroResultFailed = structuredClone(plannedResult)
+  zeroResultFailed.failed = zero
+  const resultEvidence = workflowPolicy.getCanonicalCurrentFailureEvidence(zeroResultFailed, zeroResultFailed.steps[0])
+  assert.equal(resultEvidence.reasons.includes('RESULT_FAILED_COUNT'), false, `result.failed=${JSON.stringify(zero)} must not create RESULT_FAILED_COUNT`)
+
+  const zeroStepFailed = structuredClone(plannedResult)
+  zeroStepFailed.steps[0].failed = zero
+  zeroStepFailed.steps[0].error_message = null
+  const stepEvidence = workflowPolicy.getCanonicalCurrentFailureEvidence(zeroStepFailed, zeroStepFailed.steps[0])
+  assert.equal(stepEvidence.reasons.includes('STEP_FAILED_COUNT'), false, `step.failed=${JSON.stringify(zero)} must not create STEP_FAILED_COUNT`)
+  assert.equal(workflowPolicy.classifyWorkflowContinuation(zeroStepFailed).kind, 'planned_continuation')
+}
+
+const absentExplicitCounts = structuredClone(plannedResult)
+absentExplicitCounts.failed = null
+absentExplicitCounts.steps[0].failed = null
+absentExplicitCounts.steps[0].summary.failed = 9
+absentExplicitCounts.steps[0].attempt_count = 12
+absentExplicitCounts.steps[0].error_message = null
+const absentCountEvidence = workflowPolicy.getCanonicalCurrentFailureEvidence(absentExplicitCounts, absentExplicitCounts.steps[0])
+assert.equal(absentCountEvidence.failedCount, null)
+assert.equal(absentCountEvidence.stepFailedCount, null)
+assert.equal(absentCountEvidence.failureAttempts, null)
+assert.equal(absentCountEvidence.reasons.includes('RESULT_FAILED_COUNT'), false, 'a present null result.failed property must not create a failed count')
+assert.equal(absentCountEvidence.reasons.includes('STEP_FAILED_COUNT'), false, 'summary.failed and attempt_count must not be used as step.failed fallbacks')
+
+const positiveResultFailed = structuredClone(plannedResult)
+positiveResultFailed.failed = 1
+const positiveResultEvidence = workflowPolicy.getCanonicalCurrentFailureEvidence(positiveResultFailed, positiveResultFailed.steps[0])
+assert.equal(positiveResultEvidence.reasons.includes('RESULT_FAILED_COUNT'), true, 'result.failed=1 must create RESULT_FAILED_COUNT')
+
+const positiveStepFailed = structuredClone(plannedResult)
+positiveStepFailed.steps[0].failed = 1
+const positiveStepEvidence = workflowPolicy.getCanonicalCurrentFailureEvidence(positiveStepFailed, positiveStepFailed.steps[0])
+assert.equal(positiveStepEvidence.reasons.includes('STEP_FAILED_COUNT'), true, 'step.failed=1 must create STEP_FAILED_COUNT')
+
+const failedStepWithDatabaseError = structuredClone(plannedResult)
+failedStepWithDatabaseError.steps[0].status = 'failed'
+failedStepWithDatabaseError.steps[0].error_message = 'database write failed'
+const failedStepEvidence = workflowPolicy.getCanonicalCurrentFailureEvidence(failedStepWithDatabaseError, failedStepWithDatabaseError.steps[0])
+assert.equal(failedStepEvidence.reasons.includes('FAILED_STEP'), true)
+assert.equal(failedStepEvidence.reasons.includes('EXPLICIT_CURRENT_ERROR'), true)
+assert.equal(failedStepEvidence.reasons.includes('STEP_FAILED_COUNT'), false, 'failed status without an explicit numeric count must not invent STEP_FAILED_COUNT')
+
+const explicitFailureAttempt = structuredClone(plannedResult)
+explicitFailureAttempt.steps[0].failureAttempts = 1
+const failureAttemptEvidence = workflowPolicy.getCanonicalCurrentFailureEvidence(explicitFailureAttempt, explicitFailureAttempt.steps[0])
+assert.equal(failureAttemptEvidence.reasons.includes('FAILURE_ATTEMPTS_REPORTED'), true, 'explicit current-step failureAttempts=1 must remain a real failure')
+
+const retryExhaustedEvidence = structuredClone(plannedResult)
+retryExhaustedEvidence.steps[0].summary.details.exhausted = true
+assert.equal(workflowPolicy.getCanonicalCurrentFailureEvidence(retryExhaustedEvidence, retryExhaustedEvidence.steps[0]).reasons.includes('EXHAUSTED_REAL_FAILURES'), true, 'explicit retry exhaustion must remain a real failure')
 
 for (const reason of ['API_FOOTBALL_ERROR', 'DATABASE_ERROR']) {
   const advisoryPolicyOnlyResult = workflowResult('real_failure', reason, '2026-07-16T08:02:00.000Z')
@@ -476,6 +537,29 @@ assert.deepEqual(scheduledDueDispatches[0].body, { ref: 'main', inputs: { contin
 const scheduledDueWaits = workflowSleeps(scheduledDue)
 assert.equal(scheduledDueWaits.length, 1)
 assert.ok(scheduledDueWaits[0] >= 120_000 && scheduledDueWaits[0] <= 126_000, `future retry wait must include the retry window plus safety delay; got ${scheduledDueWaits[0]}`)
+
+const productionCoverageRetryAt = new Date(Date.now() + 120_000).toISOString()
+const productionCoverageResult = productionCoverageWorkflowResult({ nextRetryAt: productionCoverageRetryAt })
+const productionCoverageDueSteps = structuredClone(productionCoverageResult.steps)
+productionCoverageDueSteps[0].next_retry_at = new Date(Date.now() - 1_000).toISOString()
+const productionCoverageSelfDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: productionCoverageDueSteps, status: 200 },
+  { body: productionCoverageResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: productionCoverageResult.steps, status: 200 },
+  { body: null, status: 204 },
+])
+assert.equal(productionCoverageSelfDispatch.status, 0, `exact Production zero-count coverage payload must pass assertPipelineState and self-dispatch: ${productionCoverageSelfDispatch.stderr}`)
+assert.doesNotMatch(productionCoverageSelfDispatch.stderr, /RESULT_FAILED_COUNT|STEP_FAILED_COUNT|Daily pipeline real failure/)
+const productionCoverageEdgeRequests = workflowFetches(productionCoverageSelfDispatch).filter((request) => request.url.includes('/functions/v1/'))
+assert.equal(productionCoverageEdgeRequests.length, 1, 'Production continuation must invoke the Edge Function exactly once')
+assert.equal(productionCoverageEdgeRequests[0].body.runId, canonicalRunRow.id, 'Production continuation must reuse the canonical runId')
+assert.doesNotMatch(productionCoverageSelfDispatch.stdout, /daily bootstrap required|daily bootstrap invoked/, 'Production continuation must not bootstrap a new run')
+assert.match(productionCoverageSelfDispatch.stdout, /waiting for next_retry_at/)
+const productionCoverageDispatches = workflowFetches(productionCoverageSelfDispatch).filter((request) => request.url.startsWith('https://api.github.com/'))
+assert.equal(productionCoverageDispatches.length, 1, 'Production continuation must self-dispatch exactly once inside the inline wait limit')
+assert.deepEqual(productionCoverageDispatches[0].body, { ref: 'main', inputs: { continuation_chain_depth: '1' } })
 
 const chainedContinuation = runScheduledWorkflowSequence(inlineScript, [
   { body: [canonicalRunRow], status: 200 },
@@ -949,16 +1033,16 @@ incidentExhaustedStep.steps[0].exhausted = true
 const incidentExhaustedStepRun = runWorkflowScenario(inlineScript, incidentExhaustedStep)
 assert.equal(incidentExhaustedStepRun.status, 1, 'exhausted current step plus FAILED_COUNT_REPORTED must exit workflow with code 1')
 
-const incidentStepFailedCount = withSyntheticFailedCountPolicy(productionWorkflowResult({
+const incidentSummaryFailedCount = withSyntheticFailedCountPolicy(productionWorkflowResult({
   runId: incidentRunId,
   fixtureOffset: 260,
   processedFixtureCount: 260,
   nextRetryAt: productionFutureRetry,
   failures: [{ message: 'FAILED_COUNT_REPORTED' }],
 }))
-incidentStepFailedCount.steps[0].summary.failed = 1
-const incidentStepFailedCountRun = runWorkflowScenario(inlineScript, incidentStepFailedCount)
-assert.equal(incidentStepFailedCountRun.status, 1, 'current step failed count plus FAILED_COUNT_REPORTED must exit workflow with code 1')
+incidentSummaryFailedCount.steps[0].summary.failed = 1
+const incidentSummaryFailedCountRun = runWorkflowScenario(inlineScript, incidentSummaryFailedCount)
+assert.equal(incidentSummaryFailedCountRun.status, 0, 'summary.failed must not be used as a fallback for canonical step.failed')
 
 const incidentFailureAttempt = withSyntheticFailedCountPolicy(productionWorkflowResult({
   runId: incidentRunId,
@@ -1126,6 +1210,54 @@ function productionWorkflowResult({
   }
 }
 
+function productionCoverageWorkflowResult({ nextRetryAt } = {}) {
+  const runId = 'canonical-run'
+  const processedFixtureIds = Array.from({ length: 198 }, (_, index) => 1_600_000 + index)
+  const continuationState = {
+    providerPage: 1,
+    fixtureOffset: 198,
+    oddsOffset: 0,
+    processedFixtureCount: 198,
+    fixtureCursorMode: 'processed-fixture-ids-v1',
+    processedFixtureIds,
+    uniqueProcessedFixtureCount: 198,
+    fixtureCandidateCount: 198,
+    fixtureRemainingCount: 0,
+    fixtureStableEmptyPasses: 2,
+    completedBatchSignatures: [],
+    coreStage: 'coverage',
+    coverageOffset: 33,
+    coverageTotalCandidates: 122,
+    roundsOffset: 0,
+    roundsTotalCandidates: 0,
+    coreAuxiliaryComplete: false,
+  }
+  const continuationPolicy = {
+    kind: 'planned_continuation',
+    failureAttempts: 0,
+  }
+  const payload = productionWorkflowResult({
+    runId,
+    fixtureOffset: 198,
+    processedFixtureCount: 198,
+    nextRetryAt,
+  })
+  payload.status = 'pending_retry'
+  payload.phase = 'core'
+  payload.failed = 0
+  payload.continuationPolicy = continuationPolicy
+  payload.continuationState = continuationState
+  const currentStep = payload.steps[0]
+  currentStep.status = 'pending_retry'
+  currentStep.failed = 0
+  currentStep.failureAttempts = 0
+  currentStep.error_message = null
+  currentStep.continuation_state = continuationState
+  currentStep.summary.failed = 0
+  currentStep.summary.details.continuationPolicy = continuationPolicy
+  return payload
+}
+
 function failureAttemptsProductionWorkflowResult(options = {}) {
   const payload = productionWorkflowResult(options)
   payload.processed = 10
@@ -1239,7 +1371,8 @@ function compileWorkflowPolicy(source) {
     'getFailureDiagnostics',
     'getCanonicalNonAdvisoryFailureDiagnostics',
     'hasExplicitRealError',
-    'maximumCanonicalCounter',
+    'normalizeExplicitNonNegativeInteger',
+    'maximumExplicitNonNegativeInteger',
     'getRequiredSteps',
     'isComplete',
     'getBlockingStep',
@@ -1256,7 +1389,7 @@ function compileWorkflowPolicy(source) {
     'getRetryWindowDecision',
   ]
   const declarations = names.map((name) => functionSource(source, name)).join('\n')
-  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { bangkokDateKey, parseContinuationChainDepth, getSelfContinuationWaitMs, getSelfContinuationDecision, getCanonicalCurrentFailureEvidence, getContinuationCursor, inspectContinuationTransition, classifyWorkflowContinuation, getRetryWindowDecision }`)()
+  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { bangkokDateKey, parseContinuationChainDepth, normalizeExplicitNonNegativeInteger, getSelfContinuationWaitMs, getSelfContinuationDecision, getCanonicalCurrentFailureEvidence, getContinuationCursor, inspectContinuationTransition, classifyWorkflowContinuation, getRetryWindowDecision }`)()
 }
 
 function functionSource(source, name) {
