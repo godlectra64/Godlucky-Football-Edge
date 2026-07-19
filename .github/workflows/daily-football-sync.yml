@@ -263,19 +263,23 @@ jobs:
             return body
           }
 
-          async function getScheduledContinuation(now = new Date()) {
-            const preflightConfig = getScheduledPreflightConfig()
-            const runDate = bangkokDateKey(now)
-            const runs = await getRestRows(preflightConfig, 'api_football_daily_sync_runs', {
+          async function getCanonicalRuns(config, runDate, label) {
+            return getRestRows(config, 'api_football_daily_sync_runs', {
               select: 'id,run_date,mode,status,current_phase,started_at',
               run_date: `eq.${runDate}`,
               mode: 'eq.daily-full-sync-safe',
               order: 'started_at.desc',
               limit: '2',
-            }, 'canonical run preflight')
+            }, label)
+          }
+
+          async function getScheduledContinuation(now = new Date()) {
+            const preflightConfig = getScheduledPreflightConfig()
+            const runDate = bangkokDateKey(now)
+            const runs = await getCanonicalRuns(preflightConfig, runDate, 'canonical run preflight')
             if (runs.length > 1) throw new Error(`Canonical daily pipeline has duplicate runs for ${runDate}`)
             const run = runs[0]
-            if (!run) return { due: false, reason: 'canonical_run_missing', runDate }
+            if (!run) return { bootstrap: true, due: false, reason: 'canonical_run_missing', runDate }
 
             const steps = await getRestRows(preflightConfig, 'api_football_daily_sync_steps', {
               select: 'id,run_id,phase,step_order,status,next_retry_at,attempt_count,max_attempts',
@@ -288,7 +292,7 @@ jobs:
             const blocking = requiredPhases.map((phase) => byPhase.get(phase)).find((step) => step.status !== 'success') ?? null
             if (!blocking) return { due: false, reason: 'canonical_run_complete', runDate, runId: run.id }
             if (blocking.status !== 'pending_retry') {
-              return { due: false, reason: `step_status_${blocking.status ?? 'missing'}`, runDate, runId: run.id, phase: blocking.phase ?? null }
+              return { activeClaim: blocking.status === 'running', due: false, reason: `step_status_${blocking.status ?? 'missing'}`, runDate, runId: run.id, phase: blocking.phase ?? null }
             }
             const nextRetryMs = new Date(blocking.next_retry_at ?? '').getTime()
             if (!Number.isFinite(nextRetryMs)) throw new Error(`pending_retry step ${blocking.phase ?? 'unknown'} has invalid next_retry_at`)
@@ -296,6 +300,18 @@ jobs:
               return { due: false, reason: 'retry_not_due', runDate, runId: run.id, phase: blocking.phase ?? null, nextRetryAt: blocking.next_retry_at }
             }
             return { due: true, reason: 'retry_due', runDate, runId: run.id, phase: blocking.phase ?? null, nextRetryAt: blocking.next_retry_at }
+          }
+
+          async function assertCanonicalRunCreated(runDate, expectedRunId) {
+            const preflightConfig = getScheduledPreflightConfig()
+            const runs = await getCanonicalRuns(preflightConfig, runDate, 'canonical run bootstrap verification')
+            if (runs.length !== 1) throw new Error(`Daily bootstrap expected exactly one canonical run for ${runDate}; found ${runs.length}`)
+            const run = runs[0]
+            if (run.id !== expectedRunId) {
+              throw new Error(`Daily bootstrap returned run ${expectedRunId}, but canonical run for ${runDate} is ${run.id}`)
+            }
+            console.log(`canonical run created runDate=${runDate} runId=${run.id}`)
+            return run
           }
 
           function getRequiredSteps(result) {
@@ -326,6 +342,9 @@ jobs:
             const requestedStage = coreAuxiliaryComplete ? 'complete' : String(cursor.coreStage ?? 'fixtures')
             const coreStage = requestedStage
             const stageIndex = stages.indexOf(coreStage)
+            const processedFixtureIds = [...new Set(Array.isArray(cursor.processedFixtureIds)
+              ? cursor.processedFixtureIds.map(Number).filter((value) => Number.isSafeInteger(value) && value > 0)
+              : [])]
             return {
               providerPage: Number(cursor.providerPage ?? step?.provider_page ?? 1),
               fixtureOffset: Number(cursor.fixtureOffset ?? step?.fixture_offset ?? 0),
@@ -334,6 +353,15 @@ jobs:
               lastProcessedFixtureId: cursor.lastProcessedFixtureId ?? step?.last_processed_fixture_id ?? null,
               batchSignature: cursor.batchSignature ?? step?.batch_signature ?? null,
               completedBatchSignatures: [...new Set(Array.isArray(cursor.completedBatchSignatures) ? cursor.completedBatchSignatures.map(String) : [])],
+              fixtureCursorMode: cursor.fixtureCursorMode ?? null,
+              processedFixtureIds,
+              uniqueProcessedFixtureCount: Number(cursor.uniqueProcessedFixtureCount ?? processedFixtureIds.length),
+              fixtureCandidateCount: Number(cursor.fixtureCandidateCount ?? 0),
+              fixtureRemainingCount: Number(cursor.fixtureRemainingCount ?? 0),
+              fixtureSnapshotSignature: cursor.fixtureSnapshotSignature ?? null,
+              fixtureStableEmptyPasses: Number(cursor.fixtureStableEmptyPasses ?? 0),
+              legacyFixtureOffsetIgnored: Boolean(cursor.legacyFixtureOffsetIgnored),
+              legacyFixtureOffsetValue: Number(cursor.legacyFixtureOffsetValue ?? 0),
               coreStage,
               coverageOffset: Number(cursor.coverageOffset ?? 0),
               coverageTotalCandidates: Number(cursor.coverageTotalCandidates ?? 0),
@@ -354,6 +382,15 @@ jobs:
               fixtureOffset: cursor.fixtureOffset,
               oddsOffset: cursor.oddsOffset,
               processedFixtureCount: cursor.processedFixtureCount,
+              fixtureCursorMode: cursor.fixtureCursorMode,
+              processedFixtureIds: cursor.processedFixtureIds,
+              uniqueProcessedFixtureCount: cursor.uniqueProcessedFixtureCount,
+              fixtureCandidateCount: cursor.fixtureCandidateCount,
+              fixtureRemainingCount: cursor.fixtureRemainingCount,
+              fixtureSnapshotSignature: cursor.fixtureSnapshotSignature,
+              fixtureStableEmptyPasses: cursor.fixtureStableEmptyPasses,
+              legacyFixtureOffsetIgnored: cursor.legacyFixtureOffsetIgnored,
+              legacyFixtureOffsetValue: cursor.legacyFixtureOffsetValue,
               completedBatchSignatures: cursor.completedBatchSignatures,
               coreStage: cursor.coreStage,
               coverageOffset: cursor.coverageOffset,
@@ -374,10 +411,14 @@ jobs:
               return { kind: 'planned_continuation', reason: policy.reason ?? 'PLANNED_CONTINUATION', step, policy, evidence }
             }
             const cursor = getContinuationCursor(step)
+            const processedIdMode = cursor.fixtureCursorMode === 'processed-fixture-ids-v1'
             const derivedPlanned = step?.status === 'pending_retry'
               && validateContinuationCursor(cursor).valid
-              && (cursor.fixtureOffset > 0
-                || cursor.processedFixtureCount > 0
+              && ((!processedIdMode && cursor.fixtureOffset > 0)
+                || (!processedIdMode && cursor.processedFixtureCount > 0)
+                || cursor.uniqueProcessedFixtureCount > 0
+                || cursor.processedFixtureIds.length > 0
+                || cursor.fixtureStableEmptyPasses > 0
                 || cursor.oddsOffset > 0
                 || cursor.coverageOffset > 0
                 || cursor.roundsOffset > 0
@@ -397,11 +438,14 @@ jobs:
           }
 
           function validateContinuationCursor(cursor) {
-            const numericFields = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount', 'coverageOffset', 'coverageTotalCandidates', 'roundsOffset', 'roundsTotalCandidates']
+            const numericFields = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount', 'uniqueProcessedFixtureCount', 'fixtureCandidateCount', 'fixtureRemainingCount', 'fixtureStableEmptyPasses', 'legacyFixtureOffsetValue', 'coverageOffset', 'coverageTotalCandidates', 'roundsOffset', 'roundsTotalCandidates']
             const malformedField = numericFields.find((field) => !Number.isFinite(cursor?.[field]) || cursor[field] < 0 || !Number.isInteger(cursor[field]))
             if (malformedField) return { valid: false, reason: `MALFORMED_CURSOR:${malformedField}` }
             if (cursor.providerPage !== 1) return { valid: false, reason: 'INVALID_PROVIDER_PAGE' }
             if (!['fixtures', 'coverage', 'rounds', 'complete'].includes(cursor.coreStage)) return { valid: false, reason: 'INVALID_CORE_STAGE' }
+            if (cursor.fixtureCursorMode && cursor.fixtureCursorMode !== 'processed-fixture-ids-v1') return { valid: false, reason: 'INVALID_FIXTURE_CURSOR_MODE' }
+            if (cursor.fixtureCursorMode === 'processed-fixture-ids-v1' && cursor.uniqueProcessedFixtureCount !== cursor.processedFixtureIds.length) return { valid: false, reason: 'INVALID_UNIQUE_PROCESSED_FIXTURE_COUNT' }
+            if (cursor.fixtureStableEmptyPasses > 2) return { valid: false, reason: 'INVALID_FIXTURE_STABLE_EMPTY_PASSES' }
             return { valid: true, reason: null }
           }
 
@@ -409,8 +453,12 @@ jobs:
             const currentValidation = validateContinuationCursor(currentCursor)
             if (!currentValidation.valid) return { valid: false, regression: true, progress: false, reason: currentValidation.reason }
             if (!previousCursor) {
-              const persistedProgress = currentCursor.fixtureOffset > 0
-                || currentCursor.processedFixtureCount > 0
+              const processedIdMode = currentCursor.fixtureCursorMode === 'processed-fixture-ids-v1'
+              const persistedProgress = (!processedIdMode && currentCursor.fixtureOffset > 0)
+                || (!processedIdMode && currentCursor.processedFixtureCount > 0)
+                || currentCursor.uniqueProcessedFixtureCount > 0
+                || currentCursor.processedFixtureIds.length > 0
+                || currentCursor.fixtureStableEmptyPasses > 0
                 || currentCursor.oddsOffset > 0
                 || currentCursor.coverageOffset > 0
                 || currentCursor.roundsOffset > 0
@@ -421,9 +469,17 @@ jobs:
             }
             const previousValidation = validateContinuationCursor(previousCursor)
             if (!previousValidation.valid) return { valid: false, regression: true, progress: false, reason: previousValidation.reason }
-            const regressionField = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount', 'coverageOffset', 'roundsOffset']
+            const processedIdMode = currentCursor.fixtureCursorMode === 'processed-fixture-ids-v1'
+            const previousProcessedIdMode = previousCursor.fixtureCursorMode === 'processed-fixture-ids-v1'
+            const regressionFields = ['providerPage', 'oddsOffset', 'coverageOffset', 'roundsOffset']
+            if (!processedIdMode || !previousProcessedIdMode) regressionFields.push('fixtureOffset', 'processedFixtureCount')
+            if (processedIdMode && previousProcessedIdMode) regressionFields.push('uniqueProcessedFixtureCount')
+            const regressionField = regressionFields
               .find((field) => currentCursor[field] < previousCursor[field])
             if (regressionField) return { valid: false, regression: true, progress: false, reason: `CURSOR_REGRESSION:${regressionField}` }
+            if (processedIdMode && previousProcessedIdMode && previousCursor.processedFixtureIds.some((fixtureId) => !currentCursor.processedFixtureIds.includes(fixtureId))) {
+              return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:processedFixtureIds' }
+            }
             const stages = ['fixtures', 'coverage', 'rounds', 'complete']
             if (stages.indexOf(currentCursor.coreStage) < stages.indexOf(previousCursor.coreStage)) return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:coreStage' }
             if (previousCursor.coverageComplete && !currentCursor.coverageComplete) return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:coverageComplete' }
@@ -431,8 +487,15 @@ jobs:
             if (previousCursor.coreAuxiliaryComplete && !currentCursor.coreAuxiliaryComplete) return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:coreAuxiliaryComplete' }
             const addedBatchSignature = currentCursor.completedBatchSignatures.some((signature) => !previousCursor.completedBatchSignatures.includes(signature))
             if (!addedBatchSignature && previousCursor.completedBatchSignatures.some((signature) => !currentCursor.completedBatchSignatures.includes(signature))) return { valid: false, regression: true, progress: false, reason: 'CURSOR_REGRESSION:completedBatchSignatures' }
-            const progress = ['providerPage', 'fixtureOffset', 'oddsOffset', 'processedFixtureCount', 'coverageOffset', 'roundsOffset']
+            const addedProcessedFixtureId = currentCursor.processedFixtureIds.some((fixtureId) => !previousCursor.processedFixtureIds.includes(fixtureId))
+            const progressFields = ['providerPage', 'oddsOffset', 'coverageOffset', 'roundsOffset']
+            if (!processedIdMode) progressFields.push('fixtureOffset', 'processedFixtureCount')
+            const progress = progressFields
               .some((field) => currentCursor[field] > previousCursor[field])
+              || currentCursor.uniqueProcessedFixtureCount > previousCursor.uniqueProcessedFixtureCount
+              || addedProcessedFixtureId
+              || currentCursor.fixtureRemainingCount < previousCursor.fixtureRemainingCount
+              || currentCursor.fixtureStableEmptyPasses > previousCursor.fixtureStableEmptyPasses
               || stages.indexOf(currentCursor.coreStage) > stages.indexOf(previousCursor.coreStage)
               || (!previousCursor.coverageComplete && currentCursor.coverageComplete)
               || (!previousCursor.roundsComplete && currentCursor.roundsComplete)
@@ -529,6 +592,15 @@ jobs:
                 fixtureOffset: cursor.fixtureOffset ?? step?.fixture_offset ?? null,
                 oddsOffset: cursor.oddsOffset ?? step?.odds_offset ?? null,
                 processedFixtureCount: cursor.processedFixtureCount ?? step?.processed_fixture_count ?? null,
+                fixtureCursorMode: cursor.fixtureCursorMode,
+                processedFixtureIds: cursor.processedFixtureIds,
+                uniqueProcessedFixtureCount: cursor.uniqueProcessedFixtureCount,
+                fixtureCandidateCount: cursor.fixtureCandidateCount,
+                fixtureRemainingCount: cursor.fixtureRemainingCount,
+                fixtureSnapshotSignature: cursor.fixtureSnapshotSignature,
+                fixtureStableEmptyPasses: cursor.fixtureStableEmptyPasses,
+                legacyFixtureOffsetIgnored: cursor.legacyFixtureOffsetIgnored,
+                legacyFixtureOffsetValue: cursor.legacyFixtureOffsetValue,
                 lastProcessedFixtureId: cursor.lastProcessedFixtureId ?? step?.last_processed_fixture_id ?? null,
                 batchSignature: cursor.batchSignature ?? step?.batch_signature ?? null,
                 completedBatchSignatures: cursor.completedBatchSignatures ?? [],
@@ -565,18 +637,26 @@ jobs:
 
           async function main() {
           let initialPayload = { mode: 'daily-sync-auto' }
+          let dailyBootstrap = null
           if (eventName === 'schedule') {
             const continuation = await getScheduledContinuation()
-            if (!continuation.due) {
+            if (continuation.bootstrap) {
+              dailyBootstrap = { runDate: continuation.runDate }
+              console.log(`daily bootstrap required runDate=${continuation.runDate}`)
+            } else if (continuation.activeClaim) {
+              console.log(`active claim runDate=${continuation.runDate} runId=${continuation.runId} phase=${continuation.phase ?? 'none'}`)
+              return
+            } else if (!continuation.due) {
               console.log(`no continuation due reason=${continuation.reason} runDate=${continuation.runDate} runId=${continuation.runId ?? 'none'} phase=${continuation.phase ?? 'none'} nextRetryAt=${continuation.nextRetryAt ?? 'none'}`)
               return
-            }
-            console.log(`continuation due runId=${continuation.runId} phase=${continuation.phase} nextRetryAt=${continuation.nextRetryAt}`)
-            initialPayload = {
-              mode: 'daily-sync-auto',
-              runId: continuation.runId,
-              autoAdvance: true,
-              maxStepsPerRequest: 2,
+            } else {
+              console.log(`continuation due runId=${continuation.runId} phase=${continuation.phase} nextRetryAt=${continuation.nextRetryAt}`)
+              initialPayload = {
+                mode: 'daily-sync-auto',
+                runId: continuation.runId,
+                autoAdvance: true,
+                maxStepsPerRequest: 2,
+              }
             }
           }
 
@@ -584,6 +664,13 @@ jobs:
           const runId = dailySync.runId
           if (!runId) {
             throw new Error('daily-sync-auto response did not include runId')
+          }
+          if (dailyBootstrap) {
+            console.log(`daily bootstrap invoked runDate=${dailyBootstrap.runDate} runId=${runId}`)
+            await assertCanonicalRunCreated(dailyBootstrap.runDate, runId)
+            assertPipelineState(dailySync, runId)
+            logContinuation(dailySync, 1)
+            return
           }
           let pipelineState = assertPipelineState(dailySync, runId)
           logContinuation(dailySync, 1)

@@ -219,6 +219,54 @@ const inlineScript = extractWorkflowNodeScript(workflow)
 const syntaxCheck = spawnSync(process.execPath, ['--check', '-'], { input: inlineScript, encoding: 'utf8' })
 assert.equal(syntaxCheck.status, 0, `workflow inline script must parse on Node 22+: ${syntaxCheck.stderr}`)
 const workflowPolicy = compileWorkflowPolicy(inlineScript)
+assert.equal(workflowPolicy.bangkokDateKey(new Date('2026-07-18T16:59:59.999Z')), '2026-07-18', 'UTC instant immediately before Bangkok midnight must remain on the prior canonical date')
+assert.equal(workflowPolicy.bangkokDateKey(new Date('2026-07-18T17:00:00.000Z')), '2026-07-19', 'UTC instant at Bangkok midnight must advance the canonical date')
+const processedIdPreviousCursor = workflowPolicy.getContinuationCursor({
+  continuation_state: {
+    fixtureCursorMode: 'processed-fixture-ids-v1',
+    processedFixtureIds: [101],
+    uniqueProcessedFixtureCount: 1,
+    fixtureCandidateCount: 3,
+    fixtureRemainingCount: 2,
+    fixtureStableEmptyPasses: 0,
+    fixtureOffset: 722,
+  },
+})
+const processedIdCurrentCursor = workflowPolicy.getContinuationCursor({
+  continuation_state: {
+    fixtureCursorMode: 'processed-fixture-ids-v1',
+    processedFixtureIds: [101, 102],
+    uniqueProcessedFixtureCount: 2,
+    fixtureCandidateCount: 3,
+    fixtureRemainingCount: 1,
+    fixtureStableEmptyPasses: 0,
+    fixtureOffset: 722,
+  },
+})
+assert.equal(workflowPolicy.inspectContinuationTransition(processedIdPreviousCursor, processedIdCurrentCursor).progress, true, 'workflow progress detector must accept unique processed fixture progress without fixtureOffset movement')
+const stableEmptyCursor = workflowPolicy.getContinuationCursor({
+  continuation_state: {
+    ...processedIdCurrentCursor,
+    fixtureRemainingCount: 0,
+    fixtureStableEmptyPasses: 1,
+  },
+})
+assert.equal(workflowPolicy.inspectContinuationTransition(processedIdCurrentCursor, stableEmptyCursor).progress, true, 'workflow progress detector must accept remaining-count and stable-empty progress')
+const positionalOnlyCursor = workflowPolicy.getContinuationCursor({
+  continuation_state: {
+    ...processedIdPreviousCursor,
+    fixtureOffset: 723,
+    processedFixtureCount: 723,
+  },
+})
+assert.equal(workflowPolicy.inspectContinuationTransition(processedIdPreviousCursor, positionalOnlyCursor).progress, false, 'processed-ID workflow progress must not rely on legacy positional or cumulative counters')
+assert.equal(workflowPolicy.inspectContinuationTransition(null, workflowPolicy.getContinuationCursor({
+  continuation_state: {
+    fixtureCursorMode: 'processed-fixture-ids-v1',
+    fixtureOffset: 722,
+    processedFixtureCount: 722,
+  },
+})).progress, false, 'initial v1 progress must not be inferred from unproven legacy counters')
 const plannedResult = workflowResult('planned_continuation', 'CURSOR_ADVANCED', '2026-07-16T08:02:00.000Z')
 const longWindow = workflowPolicy.getRetryWindowDecision(plannedResult, Date.parse(now), 60)
 assert.equal(longWindow.action, 'schedule_next_workflow', 'planned retry windows longer than 60 seconds must exit successfully')
@@ -261,24 +309,77 @@ assert.equal(workflowFetches(wrongProjectUrl).length, 0, 'wrong-project URL must
 
 const canonicalRunRow = {
   id: 'canonical-run',
-  run_date: now.slice(0, 10),
+  run_date: workflowPolicy.bangkokDateKey(new Date()),
   mode: 'daily-full-sync-safe',
   status: 'partial',
   current_phase: 'core',
   started_at: now,
 }
-const scheduledMissingRun = runScheduledWorkflowSequence(inlineScript, [{ body: [], status: 200 }])
-assert.equal(scheduledMissingRun.status, 0, `scheduled preflight without a canonical run must exit 0: ${scheduledMissingRun.stderr}`)
-assert.match(scheduledMissingRun.stdout, /no continuation due reason=canonical_run_missing/)
-assert.equal(workflowFetches(scheduledMissingRun).filter((request) => request.url.includes('/functions/v1/')).length, 0, 'missing canonical run must not invoke the Edge Function')
+const bootstrapResult = workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() - 1_000).toISOString())
+const scheduledMissingRun = runScheduledWorkflowSequence(inlineScript, [
+  { body: [], status: 200 },
+  { body: bootstrapResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+])
+assert.equal(scheduledMissingRun.status, 0, `scheduled preflight without a canonical run must bootstrap today's run: ${scheduledMissingRun.stderr}`)
+assert.match(scheduledMissingRun.stdout, /daily bootstrap required runDate=/)
+assert.match(scheduledMissingRun.stdout, /daily bootstrap invoked runDate=.* runId=canonical-run/)
+assert.match(scheduledMissingRun.stdout, /canonical run created runDate=.* runId=canonical-run/)
+assert.doesNotMatch(scheduledMissingRun.stdout, /no continuation due reason=canonical_run_missing/)
+const scheduledMissingRunEdgeRequests = workflowFetches(scheduledMissingRun).filter((request) => request.url.includes('/functions/v1/'))
+assert.equal(scheduledMissingRunEdgeRequests.length, 1, 'missing canonical run must invoke the daily bootstrap exactly once')
+assert.equal(scheduledMissingRunEdgeRequests[0].body.mode, 'daily-sync-auto')
+assert.equal(scheduledMissingRunEdgeRequests[0].body.runId, undefined, 'daily bootstrap must not resume an older run id')
+assert.equal(scheduledMissingRunEdgeRequests[0].body.autoAdvance, undefined, 'daily bootstrap must reuse the unchanged manual payload')
+assert.equal(scheduledMissingRunEdgeRequests[0].body.maxStepsPerRequest, undefined, 'daily bootstrap must reuse the unchanged manual payload')
 const scheduledMissingRunRestRequest = workflowFetches(scheduledMissingRun).find((request) => request.url.includes('/rest/v1/'))
 assert.ok(scheduledMissingRunRestRequest, 'scheduled preflight must query Supabase REST')
 assert.match(scheduledMissingRunRestRequest.url, /^https:\/\/fzjbnxomflqopwhzxfog\.supabase\.co\/rest\/v1\//)
+assert.equal(new URL(scheduledMissingRunRestRequest.url).searchParams.get('run_date'), `eq.${workflowPolicy.bangkokDateKey(new Date())}`, 'scheduled preflight must query only the current Bangkok date')
+assert.equal(new URL(scheduledMissingRunRestRequest.url).searchParams.get('mode'), 'eq.daily-full-sync-safe')
 assert.equal(scheduledMissingRunRestRequest.auth.apikeyUsesServiceRole, true)
 assert.equal(scheduledMissingRunRestRequest.auth.bearerUsesServiceRole, true)
 assert.equal(scheduledMissingRunRestRequest.auth.contentType, 'application/json')
 assert.equal(scheduledMissingRunRestRequest.auth.apikeyUsesResultAdmin, false)
 assert.equal(scheduledMissingRunRestRequest.auth.apikeyUsesEdgeAdmin, false)
+
+const todayAlreadyComplete = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: completedWorkflowResult().steps, status: 200 },
+])
+assert.equal(todayAlreadyComplete.status, 0, `an existing canonical run must not bootstrap again: ${todayAlreadyComplete.stderr}`)
+assert.match(todayAlreadyComplete.stdout, /no continuation due reason=canonical_run_complete/)
+assert.doesNotMatch(todayAlreadyComplete.stdout, /daily bootstrap required/)
+assert.equal(workflowFetches(todayAlreadyComplete).filter((request) => request.url.includes('/functions/v1/')).length, 0)
+
+const yesterdayRunId = 'yesterday-canonical-run'
+const yesterdayCanonicalRun = {
+  ...canonicalRunRow,
+  id: yesterdayRunId,
+  run_date: workflowPolicy.bangkokDateKey(new Date(Date.now() - 86_400_000)),
+}
+const currentBangkokDate = workflowPolicy.bangkokDateKey(new Date())
+const yesterdayOnlyPreflightRows = [yesterdayCanonicalRun].filter((run) => run.run_date === currentBangkokDate)
+assert.deepEqual(yesterdayOnlyPreflightRows, [], 'a prior Bangkok date must be excluded from today-only preflight results')
+const scheduledYesterdayOnly = runScheduledWorkflowSequence(inlineScript, [
+  { body: yesterdayOnlyPreflightRows, status: 200 },
+  { body: bootstrapResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+])
+assert.equal(scheduledYesterdayOnly.status, 0, `yesterday-only state must bootstrap today: ${scheduledYesterdayOnly.stderr}`)
+assert.match(scheduledYesterdayOnly.stdout, /daily bootstrap required/)
+const yesterdayOnlyEdgeRequests = workflowFetches(scheduledYesterdayOnly).filter((request) => request.url.includes('/functions/v1/'))
+assert.equal(yesterdayOnlyEdgeRequests.length, 1)
+assert.equal(yesterdayOnlyEdgeRequests[0].body.runId, undefined, 'a run from yesterday must never be resumed when the current Bangkok date has no canonical run')
+
+const duplicateBootstrapVerification = runScheduledWorkflowSequence(inlineScript, [
+  { body: [], status: 200 },
+  { body: bootstrapResult, status: 200 },
+  { body: [canonicalRunRow, { ...canonicalRunRow, id: 'duplicate-run' }], status: 200 },
+])
+assert.equal(duplicateBootstrapVerification.status, 1, 'bootstrap must fail if post-invoke verification observes duplicate canonical runs')
+assert.match(duplicateBootstrapVerification.stderr, /expected exactly one canonical run/)
+assert.equal(workflowFetches(duplicateBootstrapVerification).filter((request) => request.url.includes('/functions/v1/')).length, 1, 'duplicate verification must not trigger another bootstrap invocation')
 
 const redactionServiceRole = 'service-role-redaction-sentinel'
 const failedPreflight = runScheduledWorkflowSequence(inlineScript, [{
@@ -307,8 +408,14 @@ const overlappingScheduledRun = runScheduledWorkflowSequence(inlineScript, [
   { body: activeClaimSteps, status: 200 },
 ])
 assert.equal(overlappingScheduledRun.status, 0, `queued overlap observing an active claim must exit 0: ${overlappingScheduledRun.stderr}`)
-assert.match(overlappingScheduledRun.stdout, /no continuation due reason=step_status_running/)
+assert.match(overlappingScheduledRun.stdout, /active claim runDate=.* runId=canonical-run phase=core/)
+assert.doesNotMatch(overlappingScheduledRun.stdout, /daily bootstrap required|continuation due/)
 assert.equal(workflowFetches(overlappingScheduledRun).filter((request) => request.url.includes('/functions/v1/')).length, 0, 'overlapping workflow must not duplicate an active Edge invocation')
+assert.equal(
+  scheduledMissingRunEdgeRequests.length + workflowFetches(overlappingScheduledRun).filter((request) => request.url.includes('/functions/v1/')).length,
+  1,
+  'serialized colliding scheduled preflights must produce only one daily bootstrap invocation',
+)
 
 const dueRetryAt = new Date(Date.now() - 1_000).toISOString()
 const scheduledDueSteps = workflowResult('planned_continuation', 'CURSOR_ADVANCED', dueRetryAt).steps
@@ -721,6 +828,9 @@ assert.equal(completedSyntheticDiagnosticRun.status, 0, 'FAILED_COUNT_REPORTED a
 assert.match(inlineScript, /invocation <= 12/)
 assert.match(inlineScript, /STUCK_CONTINUATION/)
 assert.match(inlineScript, /continuation scheduled runId=/)
+assert.match(inlineScript, /uniqueProcessedFixtureCount/)
+assert.match(inlineScript, /processedFixtureIds/)
+assert.match(inlineScript, /fixtureStableEmptyPasses/)
 assert.match(inlineScript, /async function main\(\)/)
 assert.doesNotMatch(inlineScript, /retryAfterSeconds > 60\) throw new Error/)
 
@@ -923,6 +1033,7 @@ function completedWorkflowResult() {
 
 function compileWorkflowPolicy(source) {
   const names = [
+    'bangkokDateKey',
     'hasItems',
     'asArray',
     'failureDiagnosticMessage',
@@ -943,7 +1054,7 @@ function compileWorkflowPolicy(source) {
     'getRetryWindowDecision',
   ]
   const declarations = names.map((name) => functionSource(source, name)).join('\n')
-  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { getCanonicalCurrentFailureEvidence, getContinuationCursor, inspectContinuationTransition, classifyWorkflowContinuation, getRetryWindowDecision }`)()
+  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { bangkokDateKey, getCanonicalCurrentFailureEvidence, getContinuationCursor, inspectContinuationTransition, classifyWorkflowContinuation, getRetryWindowDecision }`)()
 }
 
 function functionSource(source, name) {
