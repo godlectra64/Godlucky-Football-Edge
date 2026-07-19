@@ -4,9 +4,16 @@ on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      continuation_chain_depth:
+        description: 'Internal continuation chain depth'
+        required: false
+        default: '0'
+        type: string
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: daily-football-sync
@@ -22,6 +29,8 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       EDGE_ADMIN_SECRET: ${{ secrets.EDGE_ADMIN_SECRET }}
+      GITHUB_TOKEN: ${{ github.token }}
+      CONTINUATION_CHAIN_DEPTH: ${{ inputs.continuation_chain_depth || '0' }}
 
     steps:
       - name: Run daily sync and result refresh
@@ -32,6 +41,8 @@ jobs:
           const supabaseUrl = process.env.SUPABASE_URL
           const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
           const adminSecret = process.env.EDGE_ADMIN_SECRET
+          const githubToken = process.env.GITHUB_TOKEN
+          const githubRepository = process.env.GITHUB_REPOSITORY
           const eventName = process.env.GITHUB_EVENT_NAME || 'workflow_dispatch'
 
           if (!adminSecret) {
@@ -39,7 +50,7 @@ jobs:
           }
 
           function maskText(value) {
-            return [adminSecret, serviceRoleKey].filter(Boolean).reduce((text, secret) => text.split(secret).join('[masked]'), String(value))
+            return [adminSecret, serviceRoleKey, githubToken].filter(Boolean).reduce((text, secret) => text.split(secret).join('[masked]'), String(value))
               .replace(/sb_secret_[A-Za-z0-9._-]+/g, 'sb_secret_[masked]')
               .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [masked]')
           }
@@ -273,6 +284,23 @@ jobs:
             }, label)
           }
 
+          async function getCanonicalSteps(config, runId, label) {
+            return getRestRows(config, 'api_football_daily_sync_steps', {
+              select: 'id,run_id,phase,step_order,status,next_retry_at,attempt_count,max_attempts,failed,summary,error_message',
+              run_id: `eq.${runId}`,
+              order: 'step_order.asc',
+            }, label)
+          }
+
+          async function getCanonicalState(runDate, label) {
+            const preflightConfig = getScheduledPreflightConfig()
+            const runs = await getCanonicalRuns(preflightConfig, runDate, `${label} run`)
+            if (runs.length !== 1) throw new Error(`${label} expected exactly one canonical run for ${runDate}; found ${runs.length}`)
+            const run = runs[0]
+            const steps = await getCanonicalSteps(preflightConfig, run.id, `${label} steps`)
+            return { run, steps }
+          }
+
           async function getScheduledContinuation(now = new Date()) {
             const preflightConfig = getScheduledPreflightConfig()
             const runDate = bangkokDateKey(now)
@@ -281,11 +309,7 @@ jobs:
             const run = runs[0]
             if (!run) return { bootstrap: true, due: false, reason: 'canonical_run_missing', runDate }
 
-            const steps = await getRestRows(preflightConfig, 'api_football_daily_sync_steps', {
-              select: 'id,run_id,phase,step_order,status,next_retry_at,attempt_count,max_attempts',
-              run_id: `eq.${run.id}`,
-              order: 'step_order.asc',
-            }, 'canonical step preflight')
+            const steps = await getCanonicalSteps(preflightConfig, run.id, 'canonical step preflight')
             const byPhase = new Map(steps.map((step) => [step.phase, step]))
             const missingPhase = requiredPhases.find((phase) => !byPhase.has(phase))
             if (missingPhase) return { due: false, reason: `canonical_step_missing_${missingPhase}`, runDate, runId: run.id, phase: missingPhase }
@@ -302,16 +326,112 @@ jobs:
             return { due: true, reason: 'retry_due', runDate, runId: run.id, phase: blocking.phase ?? null, nextRetryAt: blocking.next_retry_at }
           }
 
-          async function assertCanonicalRunCreated(runDate, expectedRunId) {
-            const preflightConfig = getScheduledPreflightConfig()
-            const runs = await getCanonicalRuns(preflightConfig, runDate, 'canonical run bootstrap verification')
-            if (runs.length !== 1) throw new Error(`Daily bootstrap expected exactly one canonical run for ${runDate}; found ${runs.length}`)
-            const run = runs[0]
-            if (run.id !== expectedRunId) {
-              throw new Error(`Daily bootstrap returned run ${expectedRunId}, but canonical run for ${runDate} is ${run.id}`)
+          function assertCanonicalRunCreated(canonicalState, runDate, expectedRunId) {
+            if (canonicalState.run.id !== expectedRunId) {
+              throw new Error(`Daily bootstrap returned run ${expectedRunId}, but canonical run for ${runDate} is ${canonicalState.run.id}`)
             }
-            console.log(`canonical run created runDate=${runDate} runId=${run.id}`)
-            return run
+            console.log(`canonical run created runDate=${runDate} runId=${canonicalState.run.id}`)
+            return canonicalState.run
+          }
+
+          function parseContinuationChainDepth(value) {
+            const parsed = Number(value)
+            return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0
+          }
+
+          function getCanonicalStepFailureAttempts(step) {
+            const policy = getStepContinuationPolicy(step)
+            return maximumCanonicalCounter(
+              step?.failureAttempts,
+              step?.failure_attempts,
+              step?.summary?.failureAttempts,
+              step?.summary?.failure_attempts,
+              step?.summary?.details?.failureAttempts,
+              policy?.failureAttemptCount,
+            )
+          }
+
+          function isCanonicalRetryExhausted(step) {
+            const policy = getStepContinuationPolicy(step)
+            const failureAttempts = getCanonicalStepFailureAttempts(step)
+            const maxAttempts = Number(step?.max_attempts)
+            return step?.status === 'failed'
+              || policy?.exhausted === true
+              || step?.summary?.exhausted === true
+              || step?.summary?.details?.exhausted === true
+              || (failureAttempts > 0 && Number.isFinite(maxAttempts) && failureAttempts >= maxAttempts)
+          }
+
+          function getSelfContinuationDecision(canonicalState, expectedRunId) {
+            const { run, steps } = canonicalState
+            if (run?.id !== expectedRunId) return { required: false, fatal: true, reason: 'run_id_mismatch' }
+            const byPhase = new Map()
+            for (const step of steps ?? []) {
+              if (!byPhase.has(step.phase)) byPhase.set(step.phase, [])
+              byPhase.get(step.phase).push(step)
+            }
+            const invalidPhase = requiredPhases.find((phase) => byPhase.get(phase)?.length !== 1)
+            if (invalidPhase) return { required: false, fatal: true, reason: `canonical_step_cardinality_${invalidPhase}` }
+            const requiredSteps = requiredPhases.map((phase) => byPhase.get(phase)[0])
+            const active = requiredSteps.find((step) => step.status === 'running')
+            if (active) return { required: false, activeClaim: true, reason: 'active_claim', phase: active.phase }
+            const failed = requiredSteps.find((step) => step.status === 'failed' || Number(step.failed ?? 0) > 0)
+            if (failed) return { required: false, fatal: true, reason: `failed_step_${failed.phase}`, phase: failed.phase }
+            const blocking = requiredSteps.find((step) => step.status !== 'success') ?? null
+            if (!blocking || run.status === 'success') return { required: false, reason: 'canonical_run_complete' }
+            if (String(run.current_phase ?? '').toLowerCase() === 'complete') return { required: false, fatal: true, reason: 'incomplete_steps_at_complete_phase' }
+            if (run.status !== 'partial') return { required: false, reason: `run_status_${run.status ?? 'missing'}` }
+            if (blocking.status !== 'pending_retry') return { required: false, reason: `step_status_${blocking.status ?? 'missing'}`, phase: blocking.phase }
+            const policy = getStepContinuationPolicy(blocking)
+            if (policy?.kind !== 'planned_continuation') {
+              return { required: false, reason: `continuation_policy_${policy?.kind ?? 'missing'}`, phase: blocking.phase }
+            }
+            const failureAttempts = Math.max(...requiredSteps.map(getCanonicalStepFailureAttempts))
+            if (failureAttempts > 0) return { required: false, fatal: true, reason: 'failure_attempts_reported', phase: blocking.phase, failureAttempts }
+            if (isCanonicalRetryExhausted(blocking)) return { required: false, fatal: true, reason: 'retry_exhausted', phase: blocking.phase }
+            const nextRetryMs = new Date(blocking.next_retry_at ?? '').getTime()
+            if (!Number.isFinite(nextRetryMs)) return { required: false, fatal: true, reason: 'invalid_next_retry_at', phase: blocking.phase }
+            return {
+              required: true,
+              reason: 'planned_continuation',
+              phase: blocking.phase,
+              nextRetryAt: blocking.next_retry_at,
+            }
+          }
+
+          function getSelfContinuationWaitMs(nextRetryAt, nowMs = Date.now()) {
+            const nextRetryMs = new Date(nextRetryAt ?? '').getTime()
+            if (!Number.isFinite(nextRetryMs)) throw new Error('Self continuation requires a valid next_retry_at')
+            return Math.min(900_000, Math.max(5_000, nextRetryMs - nowMs + 5_000))
+          }
+
+          async function waitForSelfContinuation(nextRetryAt) {
+            const waitMs = getSelfContinuationWaitMs(nextRetryAt)
+            console.log(`waiting for next_retry_at nextRetryAt=${nextRetryAt} waitMs=${waitMs}`)
+            await new Promise((resolve) => setTimeout(resolve, waitMs))
+          }
+
+          async function dispatchSelfContinuation(nextDepth) {
+            if (!githubToken) throw new Error('Self continuation dispatch requires the GitHub workflow token')
+            if (!/^[^/\s]+\/[^/\s]+$/.test(githubRepository ?? '')) throw new Error('Self continuation dispatch requires a valid GitHub repository')
+            const response = await fetch(`https://api.github.com/repos/${githubRepository}/actions/workflows/daily-football-sync.yml/dispatches`, {
+              method: 'POST',
+              headers: {
+                Accept: 'application/vnd.github+json',
+                Authorization: `Bearer ${githubToken}`,
+                'X-GitHub-Api-Version': '2026-03-10',
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                ref: 'main',
+                inputs: { continuation_chain_depth: String(nextDepth) },
+              }),
+            })
+            if (![200, 204].includes(response.status)) {
+              const kind = [401, 403].includes(response.status) ? 'was rejected' : 'failed'
+              throw new Error(`Self continuation dispatch ${kind} with HTTP ${response.status}`)
+            }
+            console.log(`self continuation dispatched depth=${nextDepth}`)
           }
 
           function getRequiredSteps(result) {
@@ -636,10 +756,15 @@ jobs:
           }
 
           async function main() {
+          const continuationChainDepth = parseContinuationChainDepth(process.env.CONTINUATION_CHAIN_DEPTH)
+          const selfContinuationDriver = eventName === 'schedule' || continuationChainDepth > 0
           let initialPayload = { mode: 'daily-sync-auto' }
+          let canonicalRunDate = bangkokDateKey()
+          let preInvokeRunId = null
           let dailyBootstrap = null
-          if (eventName === 'schedule') {
+          if (selfContinuationDriver) {
             const continuation = await getScheduledContinuation()
+            canonicalRunDate = continuation.runDate
             if (continuation.bootstrap) {
               dailyBootstrap = { runDate: continuation.runDate }
               console.log(`daily bootstrap required runDate=${continuation.runDate}`)
@@ -648,9 +773,11 @@ jobs:
               return
             } else if (!continuation.due) {
               console.log(`no continuation due reason=${continuation.reason} runDate=${continuation.runDate} runId=${continuation.runId ?? 'none'} phase=${continuation.phase ?? 'none'} nextRetryAt=${continuation.nextRetryAt ?? 'none'}`)
+              console.log(`no continuation required reason=${continuation.reason} runDate=${continuation.runDate}`)
               return
             } else {
               console.log(`continuation due runId=${continuation.runId} phase=${continuation.phase} nextRetryAt=${continuation.nextRetryAt}`)
+              preInvokeRunId = continuation.runId
               initialPayload = {
                 mode: 'daily-sync-auto',
                 runId: continuation.runId,
@@ -665,21 +792,15 @@ jobs:
           if (!runId) {
             throw new Error('daily-sync-auto response did not include runId')
           }
-          if (dailyBootstrap) {
-            console.log(`daily bootstrap invoked runDate=${dailyBootstrap.runDate} runId=${runId}`)
-            await assertCanonicalRunCreated(dailyBootstrap.runDate, runId)
-            assertPipelineState(dailySync, runId)
-            logContinuation(dailySync, 1)
-            return
-          }
-          let pipelineState = assertPipelineState(dailySync, runId)
+          const expectedRunId = preInvokeRunId ?? runId
+          let pipelineState = assertPipelineState(dailySync, expectedRunId)
           logContinuation(dailySync, 1)
           let continuationScheduled = false
           let invocationCount = 1
           let previousCursorKey = continuationCursorKey(dailySync)
           let repeatedNoProgress = 0
 
-          for (let invocation = 2; invocation <= 12 && !isComplete(dailySync); invocation += 1) {
+          for (let invocation = 2; invocation <= 12 && !selfContinuationDriver && !isComplete(dailySync); invocation += 1) {
             const retryWindow = await waitForRetryWindow(dailySync)
             if (retryWindow.action === 'schedule_next_workflow') {
               continuationScheduled = true
@@ -706,7 +827,28 @@ jobs:
             previousCursorKey = currentCursorKey
           }
 
-          if (!isComplete(dailySync)) {
+          const canonicalState = await getCanonicalState(canonicalRunDate, 'canonical post-invoke check')
+          if (canonicalState.run.id !== expectedRunId) {
+            throw new Error(`Canonical post-invoke run id mismatch: expected ${expectedRunId}, found ${canonicalState.run.id}`)
+          }
+          if (dailyBootstrap) {
+            console.log(`daily bootstrap invoked runDate=${dailyBootstrap.runDate} runId=${runId}`)
+            assertCanonicalRunCreated(canonicalState, dailyBootstrap.runDate, runId)
+          }
+
+          const selfContinuation = getSelfContinuationDecision(canonicalState, expectedRunId)
+
+          if (isComplete(dailySync)) {
+            if (selfContinuation.reason !== 'canonical_run_complete') {
+              throw new Error(`Canonical post-invoke state did not confirm completed run ${runId}`)
+            }
+            console.log(`Daily Market-Ready pipeline ${runId} completed all required phases.`)
+            await postSync({ mode: 'result-refresh', limit: 20 })
+            console.log('Daily football sync workflow completed successfully.')
+            return
+          }
+
+          {
             const step = getBlockingStep(dailySync)
             const disposition = classifyWorkflowContinuation(dailySync)
             const finalRetryWindow = getRetryWindowDecision(dailySync)
@@ -716,12 +858,24 @@ jobs:
             }
             const cursor = getContinuationCursor(step)
             console.log(`continuation scheduled runId=${runId} phase=${step?.phase ?? dailySync.phase ?? 'unknown'} fixtureOffset=${cursor.fixtureOffset} processedFixtureCount=${cursor.processedFixtureCount} coreStage=${cursor.coreStage} coverageOffset=${cursor.coverageOffset} roundsOffset=${cursor.roundsOffset} nextRetryAt=${step?.next_retry_at ?? 'active-claim'} invocation=${invocationCount}/12 deferred=${continuationScheduled}`)
-            console.log('Daily pipeline planned continuation accepted; the next scheduled workflow will resume the canonical run.')
-          } else {
-            console.log(`Daily Market-Ready pipeline ${runId} completed all required phases.`)
-            await postSync({ mode: 'result-refresh', limit: 20 })
-            console.log('Daily football sync workflow completed successfully.')
           }
+
+          if (!selfContinuation.required) {
+            if (selfContinuation.activeClaim) {
+              console.log(`active claim runDate=${canonicalRunDate} runId=${expectedRunId} phase=${selfContinuation.phase ?? 'none'}`)
+            }
+            console.log(`no continuation required reason=${selfContinuation.reason} runDate=${canonicalRunDate} runId=${expectedRunId}`)
+            if (selfContinuation.fatal) throw new Error(`Self continuation rejected: ${selfContinuation.reason}`)
+            return
+          }
+
+          console.log(`self continuation required runId=${expectedRunId} phase=${selfContinuation.phase} nextRetryAt=${selfContinuation.nextRetryAt} depth=${continuationChainDepth}`)
+          if (continuationChainDepth >= 20) {
+            console.log(`continuation chain depth exhausted depth=${continuationChainDepth}`)
+            throw new Error('Continuation chain depth exhausted at maximum depth 20')
+          }
+          await waitForSelfContinuation(selfContinuation.nextRetryAt)
+          await dispatchSelfContinuation(continuationChainDepth + 1)
           }
 
           main().catch((error) => {

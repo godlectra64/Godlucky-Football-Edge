@@ -211,14 +211,26 @@ for (const oldCron of ['10 0 * * *', '10 11 * * *', '40 16 * * *']) {
   assert.equal(workflowCrons.includes(oldCron), false, `workflow must remove obsolete cron ${oldCron}`)
 }
 assert.match(workflow, /workflow_dispatch:/, 'manual workflow dispatch must remain available')
+assert.match(workflow, /workflow_dispatch:\s*[\s\S]*?continuation_chain_depth:\s*[\s\S]*?default:\s*['"]0['"][\s\S]*?type:\s*string/, 'workflow dispatch must expose the internal continuation depth input')
+assert.match(workflow, /permissions:\s*\n\s*contents:\s*read\s*\n\s*actions:\s*write/, 'workflow permissions must be limited to contents read and actions write')
 assert.match(workflow, /concurrency:\s*[\s\S]*?group:\s*daily-football-sync[\s\S]*?cancel-in-progress:\s*false/, 'overlapping workflows must serialize without cancelling the active canonical run')
 assert.match(workflow, /SUPABASE_URL:\s*\$\{\{\s*secrets\.SUPABASE_URL\s*\}\}/, 'REST preflight must use the SUPABASE_URL GitHub secret')
 assert.match(workflow, /SUPABASE_SERVICE_ROLE_KEY:\s*\$\{\{\s*secrets\.SUPABASE_SERVICE_ROLE_KEY\s*\}\}/, 'REST preflight must use the SUPABASE_SERVICE_ROLE_KEY GitHub secret')
+assert.match(workflow, /GITHUB_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/, 'self-dispatch must receive the workflow-scoped GitHub token')
+assert.doesNotMatch(workflow, /GITHUB_TOKEN:\s*\$\{\{\s*secrets\./, 'self-dispatch must not use a stored GitHub token secret')
 assert.doesNotMatch(workflow, /SUPABASE_READ_KEY|SUPABASE_ANON_KEY|VITE_SUPABASE_ANON_KEY/, 'REST preflight must not fall back to an anon or mixed-purpose read key')
 const inlineScript = extractWorkflowNodeScript(workflow)
 const syntaxCheck = spawnSync(process.execPath, ['--check', '-'], { input: inlineScript, encoding: 'utf8' })
 assert.equal(syntaxCheck.status, 0, `workflow inline script must parse on Node 22+: ${syntaxCheck.stderr}`)
+assert.equal(inlineScript.match(/await dispatchSelfContinuation\s*\(/g)?.length, 1, 'workflow code must have only one self-dispatch call site')
 const workflowPolicy = compileWorkflowPolicy(inlineScript)
+assert.equal(workflowPolicy.parseContinuationChainDepth(undefined), 0)
+assert.equal(workflowPolicy.parseContinuationChainDepth('invalid'), 0)
+assert.equal(workflowPolicy.parseContinuationChainDepth('-1'), 0)
+assert.equal(workflowPolicy.parseContinuationChainDepth('7'), 7)
+assert.equal(workflowPolicy.getSelfContinuationWaitMs('2026-07-16T08:01:00.000Z', Date.parse(now)), 65_000, 'future retry must wait through next_retry_at plus five seconds')
+assert.equal(workflowPolicy.getSelfContinuationWaitMs('2026-07-16T07:59:00.000Z', Date.parse(now)), 5_000, 'overdue retry must retain the five-second safety delay')
+assert.equal(workflowPolicy.getSelfContinuationWaitMs('2026-07-16T09:00:00.000Z', Date.parse(now)), 900_000, 'self-continuation wait must be capped at 900 seconds')
 assert.equal(workflowPolicy.bangkokDateKey(new Date('2026-07-18T16:59:59.999Z')), '2026-07-18', 'UTC instant immediately before Bangkok midnight must remain on the prior canonical date')
 assert.equal(workflowPolicy.bangkokDateKey(new Date('2026-07-18T17:00:00.000Z')), '2026-07-19', 'UTC instant at Bangkok midnight must advance the canonical date')
 const processedIdPreviousCursor = workflowPolicy.getContinuationCursor({
@@ -290,6 +302,13 @@ assert.doesNotMatch(restPreflightSource, /adminSecret|RESULT_ADMIN_SECRET|sb_sec
 const edgeInvocationSource = functionSource(inlineScript, 'postSync')
 assert.match(edgeInvocationSource, /sb_secret:\s*adminSecret/, 'Edge invocation must keep its existing admin secret')
 assert.doesNotMatch(edgeInvocationSource, /serviceRoleKey/, 'Edge invocation must not use the REST service-role key')
+const githubDispatchSource = functionSource(inlineScript, 'dispatchSelfContinuation')
+assert.match(githubDispatchSource, /https:\/\/api\.github\.com\/repos\/\$\{githubRepository\}\/actions\/workflows\/daily-football-sync\.yml\/dispatches/)
+assert.match(githubDispatchSource, /Authorization:\s*`Bearer \$\{githubToken\}`/)
+assert.match(githubDispatchSource, /['"]X-GitHub-Api-Version['"]:\s*['"]2026-03-10['"]/)
+assert.match(githubDispatchSource, /ref:\s*['"]main['"]/)
+assert.match(githubDispatchSource, /continuation_chain_depth:\s*String\(nextDepth\)/)
+assert.doesNotMatch(githubDispatchSource, /adminSecret|serviceRoleKey|supabaseUrl|EDGE_ADMIN_SECRET|SUPABASE_/)
 
 const missingServiceRole = runScheduledWorkflowSequence(inlineScript, [], {
   serviceRoleKey: null,
@@ -320,6 +339,8 @@ const scheduledMissingRun = runScheduledWorkflowSequence(inlineScript, [
   { body: [], status: 200 },
   { body: bootstrapResult, status: 200 },
   { body: [canonicalRunRow], status: 200 },
+  { body: bootstrapResult.steps, status: 200 },
+  { body: null, status: 204 },
 ])
 assert.equal(scheduledMissingRun.status, 0, `scheduled preflight without a canonical run must bootstrap today's run: ${scheduledMissingRun.stderr}`)
 assert.match(scheduledMissingRun.stdout, /daily bootstrap required runDate=/)
@@ -332,6 +353,16 @@ assert.equal(scheduledMissingRunEdgeRequests[0].body.mode, 'daily-sync-auto')
 assert.equal(scheduledMissingRunEdgeRequests[0].body.runId, undefined, 'daily bootstrap must not resume an older run id')
 assert.equal(scheduledMissingRunEdgeRequests[0].body.autoAdvance, undefined, 'daily bootstrap must reuse the unchanged manual payload')
 assert.equal(scheduledMissingRunEdgeRequests[0].body.maxStepsPerRequest, undefined, 'daily bootstrap must reuse the unchanged manual payload')
+const scheduledMissingRunDispatches = workflowFetches(scheduledMissingRun).filter((request) => request.url.startsWith('https://api.github.com/'))
+assert.equal(scheduledMissingRunDispatches.length, 1, 'valid bootstrap continuation must self-dispatch exactly once')
+assert.deepEqual(scheduledMissingRunDispatches[0].body, { ref: 'main', inputs: { continuation_chain_depth: '1' } })
+assert.equal(scheduledMissingRunDispatches[0].auth.bearerUsesGithubToken, true)
+assert.equal(scheduledMissingRunDispatches[0].auth.githubAccept, 'application/vnd.github+json')
+assert.equal(scheduledMissingRunDispatches[0].auth.githubApiVersion, '2026-03-10')
+assert.match(scheduledMissingRun.stdout, /self continuation required/)
+assert.match(scheduledMissingRun.stdout, /waiting for next_retry_at/)
+assert.match(scheduledMissingRun.stdout, /self continuation dispatched depth=1/)
+assert.deepEqual(workflowSleeps(scheduledMissingRun), [5_000], 'overdue bootstrap continuation must wait the safety delay')
 const scheduledMissingRunRestRequest = workflowFetches(scheduledMissingRun).find((request) => request.url.includes('/rest/v1/'))
 assert.ok(scheduledMissingRunRestRequest, 'scheduled preflight must query Supabase REST')
 assert.match(scheduledMissingRunRestRequest.url, /^https:\/\/fzjbnxomflqopwhzxfog\.supabase\.co\/rest\/v1\//)
@@ -365,6 +396,8 @@ const scheduledYesterdayOnly = runScheduledWorkflowSequence(inlineScript, [
   { body: yesterdayOnlyPreflightRows, status: 200 },
   { body: bootstrapResult, status: 200 },
   { body: [canonicalRunRow], status: 200 },
+  { body: bootstrapResult.steps, status: 200 },
+  { body: null, status: 204 },
 ])
 assert.equal(scheduledYesterdayOnly.status, 0, `yesterday-only state must bootstrap today: ${scheduledYesterdayOnly.stderr}`)
 assert.match(scheduledYesterdayOnly.stdout, /daily bootstrap required/)
@@ -424,6 +457,9 @@ const scheduledDue = runScheduledWorkflowSequence(inlineScript, [
   { body: [canonicalRunRow], status: 200 },
   { body: scheduledDueSteps, status: 200 },
   { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueResult.steps, status: 200 },
+  { body: null, status: 204 },
 ])
 assert.equal(scheduledDue.status, 0, `due scheduled continuation must exit 0 after deferring planned work: ${scheduledDue.stderr}`)
 const scheduledDueEdgeRequests = workflowFetches(scheduledDue).filter((request) => request.url.includes('/functions/v1/'))
@@ -434,6 +470,157 @@ assert.equal(scheduledDueEdgeRequests[0].body.autoAdvance, true)
 assert.equal(scheduledDueEdgeRequests[0].edgeSecretUsesAdmin, true, 'Edge invocation must continue using EDGE_ADMIN_SECRET')
 assert.match(scheduledDue.stdout, /continuation due runId=canonical-run/)
 assert.match(scheduledDue.stdout, /continuation scheduled runId=canonical-run/)
+const scheduledDueDispatches = workflowFetches(scheduledDue).filter((request) => request.url.startsWith('https://api.github.com/'))
+assert.equal(scheduledDueDispatches.length, 1, 'valid planned continuation must dispatch exactly once')
+assert.deepEqual(scheduledDueDispatches[0].body, { ref: 'main', inputs: { continuation_chain_depth: '1' } })
+const scheduledDueWaits = workflowSleeps(scheduledDue)
+assert.equal(scheduledDueWaits.length, 1)
+assert.ok(scheduledDueWaits[0] >= 120_000 && scheduledDueWaits[0] <= 126_000, `future retry wait must include the retry window plus safety delay; got ${scheduledDueWaits[0]}`)
+
+const chainedContinuation = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueResult.steps, status: 200 },
+  { body: null, status: 204 },
+], { eventName: 'workflow_dispatch', continuationDepth: '7' })
+assert.equal(chainedContinuation.status, 0, `self-dispatched continuation must preflight and continue the same run: ${chainedContinuation.stderr}`)
+const chainedEdgeRequests = workflowFetches(chainedContinuation).filter((request) => request.url.includes('/functions/v1/'))
+assert.equal(chainedEdgeRequests.length, 1)
+assert.equal(chainedEdgeRequests[0].body.runId, canonicalRunRow.id)
+const chainedDispatches = workflowFetches(chainedContinuation).filter((request) => request.url.startsWith('https://api.github.com/'))
+assert.equal(chainedDispatches.length, 1)
+assert.equal(chainedDispatches[0].body.inputs.continuation_chain_depth, '8', 'self-dispatched depth must increment continuously')
+
+const completedAfterInvocation = completedWorkflowResult()
+const completedCanonicalRun = { ...canonicalRunRow, status: 'success', current_phase: 'complete' }
+const completedNoDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: completedAfterInvocation, status: 200 },
+  { body: [completedCanonicalRun], status: 200 },
+  { body: completedAfterInvocation.steps, status: 200 },
+  { body: { ok: true, failed: 0, failures: [] }, status: 200 },
+])
+assert.equal(completedNoDispatch.status, 0, `completed canonical run must finish without self-dispatch: ${completedNoDispatch.stderr}`)
+assert.equal(workflowFetches(completedNoDispatch).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
+
+const failureAttemptSteps = structuredClone(scheduledDueResult.steps)
+failureAttemptSteps[0].summary.details.continuationPolicy.failureAttemptCount = 1
+const failureAttemptNoDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: failureAttemptSteps, status: 200 },
+])
+assert.equal(failureAttemptNoDispatch.status, 1, 'canonical failureAttempts > 0 must reject self-dispatch')
+assert.match(failureAttemptNoDispatch.stderr, /failure_attempts_reported/)
+assert.equal(workflowFetches(failureAttemptNoDispatch).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
+
+const failedCanonicalSteps = structuredClone(scheduledDueResult.steps)
+failedCanonicalSteps[0].status = 'failed'
+failedCanonicalSteps[0].failed = 1
+failedCanonicalSteps[0].next_retry_at = null
+const failedStepNoDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: failedCanonicalSteps, status: 200 },
+])
+assert.equal(failedStepNoDispatch.status, 1, 'failed canonical step must reject self-dispatch')
+assert.equal(workflowFetches(failedStepNoDispatch).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
+
+const activePostCheckSteps = structuredClone(scheduledDueResult.steps)
+activePostCheckSteps[0].status = 'running'
+activePostCheckSteps[0].next_retry_at = null
+const activePostCheckNoDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: activePostCheckSteps, status: 200 },
+])
+assert.equal(activePostCheckNoDispatch.status, 0, `active post-check claim must exit without dispatch: ${activePostCheckNoDispatch.stderr}`)
+assert.match(activePostCheckNoDispatch.stdout, /active claim/)
+assert.equal(workflowFetches(activePostCheckNoDispatch).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
+
+const mismatchedPostCheck = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [{ ...canonicalRunRow, id: 'other-canonical-run' }], status: 200 },
+  { body: scheduledDueResult.steps, status: 200 },
+])
+assert.equal(mismatchedPostCheck.status, 1, 'post-invoke runId mismatch must fail without dispatch')
+assert.match(mismatchedPostCheck.stderr, /run id mismatch/)
+assert.equal(workflowFetches(mismatchedPostCheck).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
+
+const duplicatePostCheck = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow, { ...canonicalRunRow, id: 'duplicate-canonical-run' }], status: 200 },
+])
+assert.equal(duplicatePostCheck.status, 1, 'duplicate canonical post-check must fail without dispatch')
+assert.match(duplicatePostCheck.stderr, /expected exactly one canonical run/)
+assert.equal(workflowFetches(duplicatePostCheck).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
+
+const exhaustedRetrySteps = structuredClone(scheduledDueResult.steps)
+exhaustedRetrySteps[0].summary.details.exhausted = true
+const exhaustedRetryNoDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: exhaustedRetrySteps, status: 200 },
+])
+assert.equal(exhaustedRetryNoDispatch.status, 1, 'exhausted canonical retry must reject self-dispatch')
+assert.match(exhaustedRetryNoDispatch.stderr, /retry_exhausted/)
+assert.equal(workflowFetches(exhaustedRetryNoDispatch).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
+
+const depthExhausted = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueResult.steps, status: 200 },
+], { eventName: 'workflow_dispatch', continuationDepth: '20' })
+assert.equal(depthExhausted.status, 1, 'depth 20 must fail visibly without another dispatch')
+assert.match(depthExhausted.stdout, /continuation chain depth exhausted depth=20/)
+assert.equal(workflowFetches(depthExhausted).filter((request) => request.url.startsWith('https://api.github.com/')).length, 0)
+
+const githubTokenSentinel = 'github-token-must-never-appear'
+const redactedDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueSteps, status: 200 },
+  { body: scheduledDueResult, status: 200 },
+  { body: [canonicalRunRow], status: 200 },
+  { body: scheduledDueResult.steps, status: 200 },
+  { body: {}, status: 200 },
+], { githubToken: githubTokenSentinel })
+assert.equal(redactedDispatch.status, 0, `GitHub workflow-token dispatch must succeed: ${redactedDispatch.stderr}`)
+const redactedDispatchRequest = workflowFetches(redactedDispatch).find((request) => request.url.startsWith('https://api.github.com/'))
+assert.equal(redactedDispatchRequest.auth.bearerUsesGithubToken, true)
+assert.equal(redactedDispatchRequest.auth.bearerUsesServiceRole, false)
+assert.equal(redactedDispatchRequest.edgeSecretUsesAdmin, false)
+assert.doesNotMatch(`${redactedDispatch.stdout}\n${redactedDispatch.stderr}`, new RegExp(githubTokenSentinel), 'GitHub token value must never appear in logs')
+
+for (const rejectedStatus of [401, 403]) {
+  const rejectedDispatch = runScheduledWorkflowSequence(inlineScript, [
+    { body: [canonicalRunRow], status: 200 },
+    { body: scheduledDueSteps, status: 200 },
+    { body: scheduledDueResult, status: 200 },
+    { body: [canonicalRunRow], status: 200 },
+    { body: scheduledDueResult.steps, status: 200 },
+    { body: { message: githubTokenSentinel }, status: rejectedStatus },
+  ], { githubToken: githubTokenSentinel })
+  assert.equal(rejectedDispatch.status, 1, `GitHub ${rejectedStatus} must fail the workflow`)
+  assert.match(rejectedDispatch.stderr, new RegExp(`Self continuation dispatch was rejected with HTTP ${rejectedStatus}`))
+  assert.doesNotMatch(`${rejectedDispatch.stdout}\n${rejectedDispatch.stderr}`, new RegExp(githubTokenSentinel), 'GitHub dispatch failure must not reveal the token or response body')
+}
 
 const scheduledRun = runWorkflowScenario(inlineScript, workflowResult('planned_continuation', 'CURSOR_ADVANCED', new Date(Date.now() + 120_000).toISOString()))
 assert.equal(scheduledRun.status, 0, `planned continuation must exit workflow successfully: ${scheduledRun.stderr}`)
@@ -997,7 +1184,7 @@ function runWorkflowScenario(inlineScript, responseBody, status = 200) {
 
 function runWorkflowSequence(inlineScript, responses) {
   const serialized = JSON.stringify(responses)
-  const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/sync'; process.env.EDGE_ADMIN_SECRET = 'test-secret'; const mockResponses = ${serialized}; let mockIndex = 0; globalThis.fetch = async () => { const item = mockResponses[Math.min(mockIndex, mockResponses.length - 1)]; mockIndex += 1; return new Response(JSON.stringify(item.body), { status: item.status, headers: { 'content-type': 'application/json' } }); };\n`
+  const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/functions/v1/sync-football-data'; process.env.SUPABASE_URL = 'https://fzjbnxomflqopwhzxfog.supabase.co'; process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key'; process.env.EDGE_ADMIN_SECRET = 'test-secret'; process.env.GITHUB_TOKEN = 'test-github-token'; process.env.GITHUB_REPOSITORY = 'owner/repo'; process.env.GITHUB_EVENT_NAME = 'workflow_dispatch'; process.env.CONTINUATION_CHAIN_DEPTH = '0'; const mockResponses = ${serialized}; let mockIndex = 0; let latestEdgeBody = null; globalThis.setTimeout = (resolve, milliseconds) => { console.log('TEST_SLEEP ' + milliseconds); queueMicrotask(resolve); return 0; }; globalThis.fetch = async (input) => { const url = String(input); if (url.includes('/rest/v1/api_football_daily_sync_runs')) { const status = latestEdgeBody?.status === 'success' ? 'success' : 'partial'; return new Response(JSON.stringify([{ id: latestEdgeBody?.runId, run_date: '2026-07-19', mode: 'daily-full-sync-safe', status, current_phase: status === 'success' ? 'complete' : latestEdgeBody?.phase ?? 'core' }]), { status: 200 }); } if (url.includes('/rest/v1/api_football_daily_sync_steps')) return new Response(JSON.stringify(latestEdgeBody?.steps ?? []), { status: 200 }); if (url.startsWith('https://api.github.com/')) return new Response(null, { status: 204 }); const item = mockResponses[Math.min(mockIndex, mockResponses.length - 1)]; mockIndex += 1; latestEdgeBody = item.body; const responseBody = [204, 205, 304].includes(item.status) ? null : JSON.stringify(item.body); return new Response(responseBody, { status: item.status, headers: { 'content-type': 'application/json' } }); };\n`
   return spawnSync(process.execPath, [], { input: `${prelude}${inlineScript}`, encoding: 'utf8', timeout: 5_000 })
 }
 
@@ -1008,9 +1195,13 @@ function runScheduledWorkflowSequence(inlineScript, responses, options = {}) {
     serviceRoleKey: 'test-service-role-key',
     edgeAdminSecret: 'test-edge-admin-secret',
     resultAdminSecret: 'test-result-admin-secret',
+    githubToken: 'test-github-workflow-token',
+    githubRepository: 'owner/repo',
+    continuationDepth: '0',
+    eventName: 'schedule',
     ...options,
   })
-  const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/functions/v1/sync-football-data'; const mockConfig = ${config}; if (mockConfig.supabaseUrl == null) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = mockConfig.supabaseUrl; if (mockConfig.serviceRoleKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = mockConfig.serviceRoleKey; process.env.EDGE_ADMIN_SECRET = mockConfig.edgeAdminSecret; process.env.RESULT_ADMIN_SECRET = mockConfig.resultAdminSecret; process.env.GITHUB_EVENT_NAME = 'schedule'; const mockResponses = ${serialized}; let mockIndex = 0; globalThis.fetch = async (input, init = {}) => { const item = mockResponses[Math.min(mockIndex, mockResponses.length - 1)]; mockIndex += 1; const headers = new Headers(init.headers); const body = init.body ? JSON.parse(init.body) : null; const edgeSecretUsesAdmin = body?.sb_secret === process.env.EDGE_ADMIN_SECRET; if (body?.sb_secret) body.sb_secret = '[masked]'; const auth = { apikeyUsesServiceRole: headers.get('apikey') === process.env.SUPABASE_SERVICE_ROLE_KEY, bearerUsesServiceRole: headers.get('authorization') === 'Bearer ' + process.env.SUPABASE_SERVICE_ROLE_KEY, contentType: headers.get('content-type'), apikeyUsesResultAdmin: headers.get('apikey') === process.env.RESULT_ADMIN_SECRET, apikeyUsesEdgeAdmin: headers.get('apikey') === process.env.EDGE_ADMIN_SECRET }; console.log('TEST_FETCH ' + JSON.stringify({ url: String(input), method: init.method ?? 'GET', body, auth, edgeSecretUsesAdmin })); return new Response(JSON.stringify(item.body), { status: item.status, headers: { 'content-type': 'application/json' } }); };\n`
+  const prelude = `process.env.SYNC_ENDPOINT = 'https://example.invalid/functions/v1/sync-football-data'; const mockConfig = ${config}; if (mockConfig.supabaseUrl == null) delete process.env.SUPABASE_URL; else process.env.SUPABASE_URL = mockConfig.supabaseUrl; if (mockConfig.serviceRoleKey == null) delete process.env.SUPABASE_SERVICE_ROLE_KEY; else process.env.SUPABASE_SERVICE_ROLE_KEY = mockConfig.serviceRoleKey; process.env.EDGE_ADMIN_SECRET = mockConfig.edgeAdminSecret; process.env.RESULT_ADMIN_SECRET = mockConfig.resultAdminSecret; if (mockConfig.githubToken == null) delete process.env.GITHUB_TOKEN; else process.env.GITHUB_TOKEN = mockConfig.githubToken; process.env.GITHUB_REPOSITORY = mockConfig.githubRepository; process.env.CONTINUATION_CHAIN_DEPTH = mockConfig.continuationDepth; process.env.GITHUB_EVENT_NAME = mockConfig.eventName; const mockResponses = ${serialized}; let mockIndex = 0; globalThis.setTimeout = (resolve, milliseconds) => { console.log('TEST_SLEEP ' + milliseconds); queueMicrotask(resolve); return 0; }; globalThis.fetch = async (input, init = {}) => { const item = mockResponses[Math.min(mockIndex, mockResponses.length - 1)]; mockIndex += 1; const headers = new Headers(init.headers); const body = init.body ? JSON.parse(init.body) : null; const edgeSecretUsesAdmin = body?.sb_secret === process.env.EDGE_ADMIN_SECRET; if (body?.sb_secret) body.sb_secret = '[masked]'; const auth = { apikeyUsesServiceRole: headers.get('apikey') === process.env.SUPABASE_SERVICE_ROLE_KEY, bearerUsesServiceRole: headers.get('authorization') === 'Bearer ' + process.env.SUPABASE_SERVICE_ROLE_KEY, contentType: headers.get('content-type'), apikeyUsesResultAdmin: headers.get('apikey') === process.env.RESULT_ADMIN_SECRET, apikeyUsesEdgeAdmin: headers.get('apikey') === process.env.EDGE_ADMIN_SECRET, bearerUsesGithubToken: headers.get('authorization') === 'Bearer ' + process.env.GITHUB_TOKEN, githubAccept: headers.get('accept'), githubApiVersion: headers.get('x-github-api-version') }; console.log('TEST_FETCH ' + JSON.stringify({ url: String(input), method: init.method ?? 'GET', body, auth, edgeSecretUsesAdmin })); const responseBody = [204, 205, 304].includes(item.status) ? null : JSON.stringify(item.body); return new Response(responseBody, { status: item.status, headers: { 'content-type': 'application/json' } }); };\n`
   return spawnSync(process.execPath, [], { input: `${prelude}${inlineScript}`, encoding: 'utf8', timeout: 5_000 })
 }
 
@@ -1018,6 +1209,12 @@ function workflowFetches(result) {
   return result.stdout.split(/\r?\n/)
     .filter((line) => line.startsWith('TEST_FETCH '))
     .map((line) => JSON.parse(line.slice('TEST_FETCH '.length)))
+}
+
+function workflowSleeps(result) {
+  return result.stdout.split(/\r?\n/)
+    .filter((line) => line.startsWith('TEST_SLEEP '))
+    .map((line) => Number(line.slice('TEST_SLEEP '.length)))
 }
 
 function completedWorkflowResult() {
@@ -1034,6 +1231,7 @@ function completedWorkflowResult() {
 function compileWorkflowPolicy(source) {
   const names = [
     'bangkokDateKey',
+    'parseContinuationChainDepth',
     'hasItems',
     'asArray',
     'failureDiagnosticMessage',
@@ -1046,6 +1244,10 @@ function compileWorkflowPolicy(source) {
     'isComplete',
     'getBlockingStep',
     'getStepContinuationPolicy',
+    'getCanonicalStepFailureAttempts',
+    'isCanonicalRetryExhausted',
+    'getSelfContinuationDecision',
+    'getSelfContinuationWaitMs',
     'getCanonicalCurrentFailureEvidence',
     'getContinuationCursor',
     'validateContinuationCursor',
@@ -1054,7 +1256,7 @@ function compileWorkflowPolicy(source) {
     'getRetryWindowDecision',
   ]
   const declarations = names.map((name) => functionSource(source, name)).join('\n')
-  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { bangkokDateKey, getCanonicalCurrentFailureEvidence, getContinuationCursor, inspectContinuationTransition, classifyWorkflowContinuation, getRetryWindowDecision }`)()
+  return new Function(`const requiredPhases = ['core', 'fixture-enrichment', 'team-enrichment', 'league-enrichment', 'ranking']; ${declarations}; return { bangkokDateKey, parseContinuationChainDepth, getSelfContinuationWaitMs, getSelfContinuationDecision, getCanonicalCurrentFailureEvidence, getContinuationCursor, inspectContinuationTransition, classifyWorkflowContinuation, getRetryWindowDecision }`)()
 }
 
 function functionSource(source, name) {
