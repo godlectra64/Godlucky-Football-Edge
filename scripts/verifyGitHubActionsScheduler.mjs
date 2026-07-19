@@ -80,6 +80,8 @@ for (const [forbiddenFallback, pattern] of [
 ]) {
   if (pattern.test(failureEvidenceSource)) throw new Error(`canonical failed-count evidence must not use ${forbiddenFallback}`)
 }
+const failureDiagnosticsSource = functionSource(workflow, 'getFailureDiagnostics')
+if (/result\.failures/.test(failureDiagnosticsSource)) throw new Error('canonical current failure diagnostics must not consume historical top-level result.failures')
 const canonicalFailureAttemptsSource = functionSource(workflow, 'getCanonicalFailureAttempts')
 for (const canonicalField of [
   'result?.failureAttempts',
@@ -120,7 +122,7 @@ const selfContinuationDecisionSource = functionSource(workflow, 'getSelfContinua
 for (const requiredGate of ['run_id_mismatch', 'active_claim', 'failed_step_', 'canonical_run_complete', 'pending_retry', 'planned_continuation', 'failure_attempts_reported', 'retry_exhausted', 'invalid_next_retry_at']) {
   if (!selfContinuationDecisionSource.includes(requiredGate)) throw new Error(`self-continuation decision missing ${requiredGate} gate`)
 }
-requireSourcePattern(selfContinuationDecisionSource, /normalizeExplicitNonNegativeInteger\(step\.failed\)/, 'explicit self-continuation step.failed normalization')
+requireSourcePattern(selfContinuationDecisionSource, /blockingFailedCount\s*=\s*normalizeExplicitNonNegativeInteger\(blocking\.failed\)/, 'blocking-only self-continuation step.failed normalization')
 requireSourcePattern(selfContinuationDecisionSource, /failureAttempts\s*=\s*getCanonicalStepFailureAttempts\(blocking\)/, 'blocking-step canonical failure attempts')
 if (/Number\(step\.failed/.test(selfContinuationDecisionSource)) throw new Error('self-continuation must not coerce step.failed with Number()')
 const canonicalStepFailureAttemptsSource = functionSource(workflow, 'getCanonicalStepFailureAttempts')

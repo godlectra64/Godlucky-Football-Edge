@@ -9,6 +9,7 @@ import {
   buildDailySyncStatusPayload,
   buildDailySyncStepResponseCached,
   buildFinalDailySummary,
+  buildRecoveredDailySyncStepFailurePatch,
   calculateRunProgress,
   emptyAnalysisDailySummary,
   emptyFixtureEnrichmentSummary,
@@ -1083,6 +1084,25 @@ async function recoverStaleDailySyncSteps(runId: string, staleAfterMs = 15 * 60 
       .eq('status', 'running')
       .eq('attempt_count', Number(step.attempt_count ?? 0))
       .eq('updated_at', step.updated_at)
+    if (update.error) throw update.error
+  }
+  await clearRecoveredDailySyncStepFailures(runId)
+}
+
+async function clearRecoveredDailySyncStepFailures(runId: string) {
+  const result = await supabase
+    .from('api_football_daily_sync_steps')
+    .select('*')
+    .eq('run_id', runId)
+  if (result.error) throw result.error
+  for (const step of result.data ?? []) {
+    const patch = buildRecoveredDailySyncStepFailurePatch(step)
+    if (!patch) continue
+    let query = supabase
+      .from('api_football_daily_sync_steps')
+      .update(patch)
+    query = matchDailySyncStepVersion(query, step)
+    const update = await query.select('id').maybeSingle()
     if (update.error) throw update.error
   }
 }

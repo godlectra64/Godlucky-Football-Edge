@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises'
 import {
   buildCachedFinalDailySummary,
   buildDailyRunSummaryCached,
+  buildCurrentDailySyncFailures,
+  buildRecoveredDailySyncStepFailurePatch,
   buildDailySyncStatusPayload,
   buildDailySyncStepResponseCached,
   emptyAnalysisDailySummary,
@@ -154,6 +156,67 @@ const cachedFallback = buildDailySyncStepResponseCached('daily-sync-next', {
 }, {}, 40, { now })
 assert.deepEqual(cachedFallback.rankingReadiness, storedRankingReadiness)
 
+const recoveredCore = {
+  ...structuredClone(steps[0]),
+  failed: 0,
+  error_message: 'FAILED_COUNT_REPORTED',
+  summary: {
+    status: 'success',
+    failed: 1,
+    message: 'FAILED_COUNT_REPORTED',
+    failures: [{ message: 'FAILED_COUNT_REPORTED' }],
+    errors: [{ message: 'old provider failure' }],
+    details: {
+      failures: [{ message: 'old provider failure' }],
+      errors: [{ message: 'old database failure' }],
+      roundFailures: [{ leagueId: 39, season: 2025 }],
+      errorCode: 'OLD_ATTEMPT_ERROR',
+    },
+  },
+}
+const plannedFixture = {
+  ...structuredClone(steps[1]),
+  failed: 0,
+  error_message: null,
+  summary: {
+    status: 'partial_success',
+    failed: 0,
+    details: {
+      reason: 'SOFT_DEADLINE_REACHED',
+      continuationPolicy: { kind: 'planned_continuation', reason: 'EXECUTION_BUDGET_DEFERRED', failureAttemptCount: 3 },
+    },
+  },
+}
+const recoveredPatch = buildRecoveredDailySyncStepFailurePatch(recoveredCore)
+assert.equal(recoveredPatch.error_message, null)
+assert.equal(recoveredPatch.summary.failed, 0)
+assert.equal(recoveredPatch.summary.message, undefined)
+assert.equal(recoveredPatch.summary.failures, undefined)
+assert.equal(recoveredPatch.summary.errors, undefined)
+assert.equal(recoveredPatch.summary.details.failures, undefined)
+assert.equal(recoveredPatch.summary.details.errors, undefined)
+assert.equal(recoveredPatch.summary.details.roundFailures, undefined)
+assert.equal(recoveredPatch.summary.details.errorCode, undefined)
+
+const recoveredResponse = buildDailySyncStepResponseCached('daily-sync-auto', {
+  ...stepResult,
+  step: plannedFixture,
+  steps: [recoveredCore, plannedFixture, ...steps.slice(2)],
+  summary: { ...stepResult.summary, status: 'pending_retry', failed: 0 },
+}, {}, 40, { now })
+assert.deepEqual(recoveredResponse.failures, [], 'a recovered success step must not repopulate top-level failures')
+assert.equal(recoveredResponse.steps[0].error_message, null)
+assert.equal(recoveredResponse.steps[0].summary.failures, undefined)
+assert.equal(recoveredResponse.steps[1].summary.details.reason, 'SOFT_DEADLINE_REACHED', 'planned continuation details must survive stale-failure cleanup')
+assert.equal(recoveredResponse.steps[1].summary.details.continuationPolicy.failureAttemptCount, 3, 'historical advisory counters remain diagnostic-only')
+
+assert.deepEqual(buildCurrentDailySyncFailures({ mode: 'core', status: 'success', failed: 0 }, recoveredCore), [])
+assert.equal(buildCurrentDailySyncFailures({ mode: 'core', status: 'partial_success', failed: 1 }, plannedFixture).length, 1, 'current result.failed > 0 must remain fatal')
+assert.equal(buildCurrentDailySyncFailures({ mode: 'core', status: 'partial_success', failed: 0 }, { ...plannedFixture, failed: 1 }).length, 1, 'current step.failed > 0 must remain fatal')
+assert.equal(buildCurrentDailySyncFailures({ mode: 'core', status: 'partial_success', failed: 0 }, { ...plannedFixture, status: 'failed' }).length, 1, 'current failed step status must remain fatal')
+assert.equal(buildCurrentDailySyncFailures({ mode: 'core', status: 'partial_success', failed: 0, details: { errorCode: 'DATABASE_WRITE_FAILED' } }, plannedFixture).length, 1, 'current canonical error must remain fatal')
+assert.equal(buildCurrentDailySyncFailures({ mode: 'core', status: 'partial_success', failed: 0, failures: [{ message: 'current upstream HTTP 500' }] }, plannedFixture).length, 1, 'current summary failure diagnostics must remain fatal')
+
 const indexSource = await readFile(new URL('../supabase/functions/sync-football-data/index.ts', import.meta.url), 'utf8')
 const sharedSource = await readFile(new URL('../supabase/functions/_shared/dailySyncResponse.js', import.meta.url), 'utf8')
 for (const functionName of [
@@ -171,6 +234,10 @@ assert.doesNotMatch(indexSource, /const\s+dbFinalSummary\b/)
 assert.doesNotMatch(indexSource, /const\s+finalSummary\s*=\s*[^\n]*\|\|[^\n]*\?/)
 assert.match(functionSource(indexSource, 'buildDailySyncStatusResponse'), /buildCachedFinalDailySummaryWithTiming/)
 assert.match(functionSource(indexSource, 'buildDailySyncStepResponse'), /buildDailySyncStepResponseCached/)
+assert.match(functionSource(indexSource, 'recoverStaleDailySyncSteps'), /clearRecoveredDailySyncStepFailures\(runId\)/, 'resume recovery must clear stale failure state')
+assert.match(functionSource(indexSource, 'clearRecoveredDailySyncStepFailures'), /buildRecoveredDailySyncStepFailurePatch\(step\)/)
+assert.match(functionSource(indexSource, 'clearRecoveredDailySyncStepFailures'), /\.update\(patch\)/)
+assert.match(functionSource(indexSource, 'runDailySyncStep'), /error_message:\s*retry\.continuationPolicy\.kind === 'real_failure'[^\n]*:\s*null/, 'a recovered success or planned retry must clear the current step error')
 
 console.log('Daily sync cached response unit tests passed.')
 

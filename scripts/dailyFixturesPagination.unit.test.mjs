@@ -124,7 +124,8 @@ const fetchStart = source.indexOf('async function fetchApiFootballFixturesWithPa
 const fetchEnd = source.indexOf('function getProviderFetchSignal', fetchStart)
 const fetchSource = source.slice(fetchStart, fetchEnd)
 assert.ok(fetchStart >= 0 && fetchEnd > fetchStart)
-assert.match(fetchSource, /apiFootballGet\('\/fixtures', buildApiFootballDailyFixturesParams\(dateKey\), context\)/)
+assert.match(fetchSource, /runProviderFetchWithinBudget\(context\.executionBudget/)
+assert.match(fetchSource, /apiFootballGet\('\/fixtures', buildApiFootballDailyFixturesParams\(dateKey\), context, fetchPlan\)/)
 assert.doesNotMatch(fetchSource, /\bpage\s*:/)
 assert.doesNotMatch(fetchSource, /startPage|collectProviderPages/)
 
@@ -143,6 +144,6 @@ assert.match(syncSource, /await syncMatch\([\s\S]*?addProcessedFixtureId\(/, 'a 
 assert.match(syncSource, /fixtureStableEmptyPasses: stableEmpty\.fixtureStableEmptyPasses/)
 assert.match(source, /fixtureResult\?\.providerComplete === true[\s\S]*?persistStepContinuation\(context, \{ coreStage: 'coverage' \}\)/, 'core must enter coverage only after provider completion without failure')
 assert.match(source, /if \(!response\.ok\)[\s\S]*?throw new Error/)
-assert.match(source, /if \(hasApiErrors\) throw new Error/, 'provider HTTP or API errors must throw instead of completing fixtures')
+assert.match(source, /if \(hasApiErrors\) throw Object\.assign\(new Error/, 'provider HTTP or API errors must throw instead of completing fixtures')
 
 console.log('daily fixtures pagination unit tests passed')

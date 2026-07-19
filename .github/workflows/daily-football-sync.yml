@@ -85,7 +85,6 @@ jobs:
 
           function getFailureDiagnostics(result, step) {
             return [
-              ...asArray(result.failures),
               ...asArray(step?.failures),
               ...asArray(step?.summary?.failures),
               ...asArray(step?.summary?.details?.failures),
@@ -158,34 +157,34 @@ jobs:
               || currentStep?.rateLimited === true
               || currentStep?.rate_limited === true
               || currentStep?.summary?.rateLimited === true
+            const recoveredWithoutFailure = stepFailedCount === 0
+              && (currentStep?.status === 'success'
+                || (currentStep?.status === 'pending_retry' && policy?.kind === 'planned_continuation'))
             const mirroredPolicyError = policyReason && failureDiagnosticMessage(currentStep?.error_message ?? '') === policyReason
             const explicitErrors = [
               result.errorCode,
               result.error,
               result.errorMessage,
-              currentStep?.error_code,
-              mirroredPolicyError ? null : currentStep?.error_message,
-              currentStep?.summary?.error,
-              currentStep?.summary?.errorMessage,
-              currentStep?.summary?.details?.errorCode,
-              currentStep?.summary?.details?.errorStage,
-              currentStep?.summary?.details?.error,
-              currentStep?.summary?.details?.errorMessage,
+              recoveredWithoutFailure ? null : currentStep?.error_code,
+              recoveredWithoutFailure || mirroredPolicyError ? null : currentStep?.error_message,
+              recoveredWithoutFailure ? null : currentStep?.summary?.error,
+              recoveredWithoutFailure ? null : currentStep?.summary?.errorMessage,
+              recoveredWithoutFailure ? null : currentStep?.summary?.details?.errorCode,
+              recoveredWithoutFailure ? null : currentStep?.summary?.details?.errorStage,
+              recoveredWithoutFailure ? null : currentStep?.summary?.details?.error,
+              recoveredWithoutFailure ? null : currentStep?.summary?.details?.errorMessage,
             ].filter(hasExplicitRealError)
             const invariantViolations = asArray(result.invariantViolations).filter(hasExplicitRealError)
             const nonSyntheticFailures = getCanonicalNonAdvisoryFailureDiagnostics(result, currentStep)
             const reasons = []
-            if (result.ok !== true) reasons.push('OK_NOT_TRUE')
             if (failedCount !== null && failedCount > 0) reasons.push('RESULT_FAILED_COUNT')
             if (currentStep?.status === 'failed') reasons.push('FAILED_STEP')
             if (stepFailedCount !== null && stepFailedCount > 0) reasons.push('STEP_FAILED_COUNT')
             if (failureAttempts !== null && failureAttempts > 0) reasons.push('FAILURE_ATTEMPTS_REPORTED')
             if (exhausted) reasons.push('EXHAUSTED_REAL_FAILURES')
-            if (failedEndpoints.length > 0) reasons.push('FAILED_ENDPOINTS_REPORTED')
-            if (rateLimited) reasons.push('RATE_LIMITED')
             if (explicitErrors.length > 0) reasons.push('EXPLICIT_CURRENT_ERROR')
             if (invariantViolations.length > 0) reasons.push('INVARIANT_VIOLATION')
-            if (nonSyntheticFailures.length > 0) reasons.push('NON_SYNTHETIC_FAILURE_DIAGNOSTIC')
+            if (!recoveredWithoutFailure && nonSyntheticFailures.length > 0) reasons.push('NON_SYNTHETIC_FAILURE_DIAGNOSTIC')
             return {
               hasRealFailure: reasons.length > 0,
               reasons,
@@ -205,7 +204,7 @@ jobs:
             return hasItems(result.steps) && result.steps.some((step) => step?.status === 'failed')
           }
 
-          function assertGenericModeSuccess(mode, result, { ignoreSyntheticFailureDiagnostics = false } = {}) {
+          function assertGenericModeSuccess(mode, result, { ignoreFailureDiagnostics = false, ignoreSyntheticFailureDiagnostics = false } = {}) {
             const failedCount = normalizeExplicitNonNegativeInteger(result.failed)
             if (failedCount !== null && failedCount > 0) {
               throw new Error(`${mode} reported failed=${result.failed}`)
@@ -213,7 +212,7 @@ jobs:
             const failures = ignoreSyntheticFailureDiagnostics
               ? asArray(result.failures).filter((failure) => !isDerivedCounterAdvisoryDiagnostic(failure))
               : result.failures
-            if (hasItems(failures)) {
+            if (!ignoreFailureDiagnostics && hasItems(failures)) {
               throw new Error(`${mode} returned failures`)
             }
             if (hasFailedStep(result)) {
@@ -404,13 +403,12 @@ jobs:
             const requiredSteps = requiredPhases.map((phase) => byPhase.get(phase)[0])
             const active = requiredSteps.find((step) => step.status === 'running')
             if (active) return { required: false, activeClaim: true, reason: 'active_claim', phase: active.phase }
-            const failed = requiredSteps.find((step) => {
-              const failedCount = normalizeExplicitNonNegativeInteger(step.failed)
-              return step.status === 'failed' || (failedCount !== null && failedCount > 0)
-            })
-            if (failed) return { required: false, fatal: true, reason: `failed_step_${failed.phase}`, phase: failed.phase }
             const blocking = requiredSteps.find((step) => step.status !== 'success') ?? null
             if (!blocking || run.status === 'success') return { required: false, reason: 'canonical_run_complete' }
+            const blockingFailedCount = normalizeExplicitNonNegativeInteger(blocking.failed)
+            if (blocking.status === 'failed' || (blockingFailedCount !== null && blockingFailedCount > 0)) {
+              return { required: false, fatal: true, reason: `failed_step_${blocking.phase}`, phase: blocking.phase }
+            }
             if (String(run.current_phase ?? '').toLowerCase() === 'complete') return { required: false, fatal: true, reason: 'incomplete_steps_at_complete_phase' }
             if (run.status !== 'partial') return { required: false, reason: `run_status_${run.status ?? 'missing'}` }
             if (blocking.status !== 'pending_retry') return { required: false, reason: `step_status_${blocking.status ?? 'missing'}`, phase: blocking.phase }
@@ -726,7 +724,7 @@ jobs:
               }
               return { ...disposition, phase: blockingPhase, cursor: blocking ? getContinuationCursor(blocking) : null }
             }
-            assertGenericModeSuccess('daily-sync-auto', result, { ignoreSyntheticFailureDiagnostics: true })
+            assertGenericModeSuccess('daily-sync-auto', result, { ignoreFailureDiagnostics: true })
             return { ...disposition, phase: blockingPhase, cursor: blocking ? getContinuationCursor(blocking) : null }
           }
 

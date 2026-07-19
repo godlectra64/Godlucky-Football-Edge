@@ -32,7 +32,7 @@ export function buildDailyRunSummaryCached(steps = [], storedRunSummary = null, 
 
 export function buildDailySyncStartPayload(mode, state, durationMs, options = {}) {
   const now = options.now ?? Date.now()
-  const steps = state?.steps ?? []
+  const steps = sanitizeDailySyncStepsForResponse(state?.steps ?? [])
   const nextStep = findNextRequiredStep(steps, now)
   const waitingRetry = !nextStep ? findWaitingRetryStep(steps, now) : null
   const finalSummary = options.finalSummary ?? buildCachedFinalDailySummary(steps, state?.run?.summary?.finalSummary)
@@ -62,7 +62,7 @@ export function buildDailySyncStartPayload(mode, state, durationMs, options = {}
 
 export function buildDailySyncStatusPayload(mode, state, durationMs, message = '', options = {}) {
   const now = options.now ?? Date.now()
-  const steps = state?.steps ?? []
+  const steps = sanitizeDailySyncStepsForResponse(state?.steps ?? [])
   const nextStep = findNextRequiredStep(steps, now)
   const waitingRetry = !nextStep ? findWaitingRetryStep(steps, now) : null
   const finalSummary = options.finalSummary ?? buildCachedFinalDailySummary(steps, state?.run?.summary?.finalSummary)
@@ -94,7 +94,8 @@ export function buildDailySyncStepResponseCached(mode, result, providerResult, d
   const now = options.now ?? Date.now()
   const summary = result?.summary ?? emptyDailyStepSummary(result?.step?.phase ?? null, 'success')
   const nextStep = result?.nextStep
-  const steps = result?.steps ?? []
+  const steps = sanitizeDailySyncStepsForResponse(result?.steps ?? [])
+  const currentStep = sanitizeDailySyncStepForResponse(result?.step ?? null)
   const waitingRetry = !nextStep ? findWaitingRetryStep(steps, now) : null
   const finalSummary = options.finalSummary ?? buildCachedFinalDailySummary(steps, result?.run?.summary?.finalSummary)
   const rankingReadiness = summary.rankingReadiness
@@ -115,7 +116,7 @@ export function buildDailySyncStepResponseCached(mode, result, providerResult, d
     failed: summary.failed,
     skipped: summary.skipped,
     skippedByLimit: 0,
-    failures: summary.failed ? [{ message: summary.message ?? `${summary.mode} failed` }] : [],
+    failures: buildCurrentDailySyncFailures(summary, currentStep),
     rankedSelectionRows: summary.mode === 'ranking' ? summary.processed : 0,
     topSelections: [],
     endpointCoverage: {},
@@ -134,6 +135,129 @@ export function buildDailySyncStepResponseCached(mode, result, providerResult, d
     nextAction: nextStep ? (mode === 'daily-sync-auto' ? 'Call this same endpoint again later' : 'call daily-sync-next again') : waitingRetry ? 'Retry after next_retry_at' : 'No action required',
     nextRequestExample: nextStep || waitingRetry ? { mode: mode === 'daily-sync-auto' ? 'daily-sync-auto' : 'daily-sync-next', runId: result?.run?.id, autoAdvance: true, maxStepsPerRequest: 2 } : { mode: 'daily-sync-status', runId: result?.run?.id },
   }
+}
+
+export function buildCurrentDailySyncFailures(summary = {}, step = null) {
+  const currentSummary = objectValue(summary)
+  const currentStep = sanitizeDailySyncStepForResponse(step)
+  const policy = currentStep?.summary?.details?.continuationPolicy
+    ?? currentStep?.summary?.continuationPolicy
+    ?? currentSummary?.details?.continuationPolicy
+    ?? currentSummary?.continuationPolicy
+    ?? null
+  const failedCount = explicitNonNegativeInteger(currentSummary.failed)
+  const stepFailedCount = explicitNonNegativeInteger(currentStep?.failed)
+  const failureAttempts = maximumExplicitNonNegativeInteger(
+    currentSummary.failureAttempts,
+    currentSummary.failure_attempts,
+    currentSummary.details?.failureAttempts,
+    currentSummary.details?.failure_attempts,
+    currentStep?.failureAttempts,
+    currentStep?.failure_attempts,
+    policy?.failureAttempts,
+    policy?.failure_attempts,
+  )
+  const exhausted = currentSummary.exhausted === true
+    || currentSummary.details?.exhausted === true
+    || currentStep?.exhausted === true
+    || currentStep?.summary?.exhausted === true
+    || currentStep?.summary?.details?.exhausted === true
+    || policy?.exhausted === true
+    || (failureAttempts !== null
+      && failureAttempts > 0
+      && explicitNonNegativeInteger(currentStep?.max_attempts) !== null
+      && failureAttempts >= explicitNonNegativeInteger(currentStep?.max_attempts))
+  const explicitErrors = [
+    currentSummary.errorCode,
+    currentSummary.error,
+    currentSummary.errorMessage,
+    currentSummary.details?.errorCode,
+    currentSummary.details?.errorStage,
+    currentSummary.details?.error,
+    currentSummary.details?.errorMessage,
+    currentStep?.error_code,
+    currentStep?.error_message,
+  ].filter(hasCanonicalError)
+  const diagnostics = [
+    ...arrayValue(currentSummary.failures),
+    ...arrayValue(currentSummary.errors),
+    ...arrayValue(currentSummary.roundFailures),
+    ...arrayValue(currentSummary.details?.failures),
+    ...arrayValue(currentSummary.details?.errors),
+    ...arrayValue(currentSummary.details?.roundFailures),
+  ].filter((diagnostic) => hasCanonicalError(diagnostic) && !isSyntheticFailureDiagnostic(diagnostic))
+  const hasFailure = (failedCount !== null && failedCount > 0)
+    || (stepFailedCount !== null && stepFailedCount > 0)
+    || currentSummary.status === 'error'
+    || currentStep?.status === 'failed'
+    || (failureAttempts !== null && failureAttempts > 0)
+    || exhausted
+    || explicitErrors.length > 0
+    || diagnostics.length > 0
+  if (!hasFailure) return []
+  if (diagnostics.length > 0) return diagnostics.map(normalizeFailureDiagnostic)
+  const message = explicitErrors.map(failureDiagnosticMessage).find(Boolean)
+    ?? (isSyntheticFailureDiagnostic(currentSummary.message) ? null : failureDiagnosticMessage(currentSummary.message))
+    ?? `${currentSummary.mode ?? currentStep?.phase ?? 'daily sync'} failed`
+  return [{ message }]
+}
+
+export function buildRecoveredDailySyncStepFailurePatch(step) {
+  if (!isRecoveredDailySyncStep(step)) return null
+  const originalSummary = objectValue(step?.summary)
+  const summary = { ...originalSummary }
+  let summaryChanged = false
+  const summaryFailureKeys = ['failures', 'errors', 'roundFailures', 'errorCode', 'error', 'errorMessage']
+  for (const key of summaryFailureKeys) {
+    if (Object.hasOwn(summary, key)) {
+      delete summary[key]
+      summaryChanged = true
+    }
+  }
+  if (Object.hasOwn(summary, 'failed') && Number(summary.failed ?? 0) !== 0) {
+    summary.failed = 0
+    summaryChanged = true
+  }
+
+  const originalDetails = objectValue(originalSummary.details)
+  const details = { ...originalDetails }
+  const detailFailureKeys = ['failures', 'errors', 'roundFailures', 'errorCode', 'errorStage', 'error', 'errorMessage', 'errorDetails']
+  for (const key of detailFailureKeys) {
+    if (Object.hasOwn(details, key)) {
+      delete details[key]
+      summaryChanged = true
+    }
+  }
+  if (Object.keys(originalDetails).length > 0 || Object.hasOwn(originalSummary, 'details')) summary.details = details
+
+  const staleErrorMessage = failureDiagnosticMessage(step?.error_message)
+  const summaryMessage = failureDiagnosticMessage(summary.message)
+  const plannedContinuationMessage = /^(?:PLANNED_CONTINUATION|SOFT_DEADLINE|EXECUTION_BUDGET)/.test(summaryMessage)
+  const staleFailureMessage = Boolean(summaryMessage)
+    && (isSyntheticFailureDiagnostic(summaryMessage)
+      || (!plannedContinuationMessage
+        && (summaryMessage === staleErrorMessage
+          || originalSummary.status === 'error'
+          || summaryChanged)))
+  if (staleFailureMessage) {
+    delete summary.message
+    summaryChanged = true
+  }
+  if (originalSummary.status === 'error') {
+    summary.status = step.status === 'success' ? 'success' : 'pending_retry'
+    summaryChanged = true
+  }
+
+  const errorMessageChanged = step?.error_message != null && step.error_message !== ''
+  if (!summaryChanged && !errorMessageChanged) return null
+  return {
+    error_message: null,
+    ...(summaryChanged ? { summary } : {}),
+  }
+}
+
+export function sanitizeDailySyncStepsForResponse(steps = []) {
+  return steps.map(sanitizeDailySyncStepForResponse)
 }
 
 export function findWaitingRetryStep(steps = [], now = Date.now()) {
@@ -299,4 +423,55 @@ function objectValue(value) {
 
 function nonEmptyObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length ? value : null
+}
+
+function sanitizeDailySyncStepForResponse(step) {
+  if (!step || typeof step !== 'object') return step
+  const patch = buildRecoveredDailySyncStepFailurePatch(step)
+  return patch ? { ...step, ...patch } : step
+}
+
+function isRecoveredDailySyncStep(step) {
+  const failed = explicitNonNegativeInteger(step?.failed)
+  if (failed !== 0) return false
+  if (step?.status === 'success') return true
+  const policy = step?.summary?.details?.continuationPolicy ?? step?.summary?.continuationPolicy ?? null
+  return step?.status === 'pending_retry' && policy?.kind === 'planned_continuation'
+}
+
+function explicitNonNegativeInteger(value) {
+  if (typeof value === 'number') return Number.isInteger(value) && value >= 0 ? value : null
+  if (typeof value !== 'string' || !/^(?:0|[1-9]\d*)$/.test(value.trim())) return null
+  const parsed = Number(value.trim())
+  return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+function maximumExplicitNonNegativeInteger(...values) {
+  const counters = values.map(explicitNonNegativeInteger).filter((value) => value !== null)
+  return counters.length > 0 ? Math.max(...counters) : null
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : value == null ? [] : [value]
+}
+
+function failureDiagnosticMessage(value) {
+  return String(value?.message ?? value ?? '').trim()
+}
+
+function isSyntheticFailureDiagnostic(value) {
+  return /^(?:[A-Z0-9]+_)*(?:FAILED_COUNT|FAILURE_ATTEMPTS|FAILURES)_REPORTED$/.test(failureDiagnosticMessage(value))
+}
+
+function hasCanonicalError(value) {
+  if (value == null || value === false || value === '') return false
+  if (isSyntheticFailureDiagnostic(value)) return false
+  if (Array.isArray(value)) return value.some(hasCanonicalError)
+  if (typeof value === 'object') return Object.keys(value).length > 0
+  return String(value).trim().length > 0
+}
+
+function normalizeFailureDiagnostic(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value
+  return { message: failureDiagnosticMessage(value) }
 }

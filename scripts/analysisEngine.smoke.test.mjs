@@ -94,7 +94,7 @@ const dailyTop10RepositorySource = readFileSync(new URL('../src/repositories/dai
 assert.ok(syncFootballDataSource.includes("Deno.env.get('FOOTBALL_PROVIDER') ?? 'api-football'"), 'sync-football-data should default to API-FOOTBALL')
 assert.ok(syncFootballDataSource.includes('const primaryProvider = getProviderAdapter(requestedProviderName)'), 'sync-football-data should choose the primary provider before fetching')
 assert.ok(syncFootballDataSource.includes("fetchFixtures: ({ dateKey }) => fetchApiFootballFixtures(dateKey)"), 'API-FOOTBALL adapter should fetch fixtures by Bangkok dateKey')
-assert.ok(syncFootballDataSource.includes("apiFootballGet('/fixtures', buildApiFootballDailyFixturesParams(dateKey), context)"), 'API-FOOTBALL daily fixtures must request only the date filter')
+assert.ok(syncFootballDataSource.includes("apiFootballGet('/fixtures', buildApiFootballDailyFixturesParams(dateKey), context, fetchPlan)"), 'API-FOOTBALL daily fixtures must request only the date filter through the budgeted fetch plan')
 assert.ok(syncFootballDataSource.includes('buildSinglePageFixtureDiscovery'), 'API-FOOTBALL daily fixtures must be treated as a single provider response')
 assert.ok(syncFootballDataSource.includes("const fallbackProvider = getProviderAdapter('football-data.org')"), 'football-data.org must remain as fallback provider')
 assert.ok(syncFootballDataSource.includes('fallbackProvider: providerResult.fallbackProvider'), 'sync response should expose fallbackProvider')

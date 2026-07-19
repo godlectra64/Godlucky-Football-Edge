@@ -67,10 +67,16 @@ const deadline = classifyDailyStepContinuation({
 assert.equal(deadline.kind, 'planned_continuation')
 assert.equal(deadline.reason, 'EXECUTION_BUDGET_DEFERRED')
 assert.equal(deadline.failureAttemptCount, 2)
-assert.equal(deadline.stuckContinuationCount, 1)
+assert.equal(deadline.stuckContinuationCount, 0)
+assert.equal(deadline.consumesFailureBudget, false)
+const deadlineRetry = buildDailyContinuationRetryPlan(deadline, { claimedAttemptCount: 6, maxAttempts: 20, now })
+assert.equal(deadlineRetry.retry, true)
+assert.equal(deadlineRetry.exhausted, false)
+assert.equal(deadlineRetry.persistedAttemptCount, 5)
+assert.ok(deadlineRetry.nextRetryAt)
 
 let repeatedDeadline = deadline
-for (let count = 1; count < STUCK_CONTINUATION_THRESHOLD; count += 1) {
+for (let count = 1; count <= STUCK_CONTINUATION_THRESHOLD + 1; count += 1) {
   repeatedDeadline = classifyDailyStepContinuation({
     status: 'partial_success',
     partial: true,
@@ -84,8 +90,51 @@ for (let count = 1; count < STUCK_CONTINUATION_THRESHOLD; count += 1) {
     previousStuckContinuationCount: repeatedDeadline.stuckContinuationCount,
   })
 }
-assert.equal(repeatedDeadline.kind, 'real_failure', 'three identical soft-deadline continuations without cursor progress must fail as stuck')
-assert.equal(repeatedDeadline.reason, 'STUCK_CONTINUATION')
+assert.equal(repeatedDeadline.kind, 'planned_continuation', 'execution-budget deferrals without cursor progress must remain planned')
+assert.equal(repeatedDeadline.reason, 'EXECUTION_BUDGET_DEFERRED')
+assert.equal(repeatedDeadline.stuckContinuationCount, 0)
+assert.equal(repeatedDeadline.consumesFailureBudget, false)
+
+const productionRoundsDeadlineSummary = {
+  status: 'partial_success',
+  partial: true,
+  failed: 0,
+  failures: [],
+  continuationState: {
+    ...previousCursor,
+    coreStage: 'rounds',
+    coverageOffset: 122,
+    coverageTotalCandidates: 122,
+    coverageComplete: true,
+    roundsOffset: 60,
+    roundsTotalCandidates: 122,
+    roundsComplete: false,
+  },
+  details: {
+    reason: 'SOFT_DEADLINE_REACHED',
+    roundFailures: [],
+    providerFetchDeferral: {
+      deferred: true,
+      reason: 'INSUFFICIENT_EXECUTION_BUDGET',
+      availableFetchMs: 1_999,
+      minimumFetchWindowMs: 2_000,
+    },
+    continuationSignals: { executionBudgetDeferred: true, hasMore: true, resultFailureCount: 0 },
+  },
+}
+const productionRoundsDeadlinePolicy = classifyDailyStepContinuation(productionRoundsDeadlineSummary, {
+  previousContinuation: productionRoundsDeadlineSummary.continuationState,
+  nextContinuation: productionRoundsDeadlineSummary.continuationState,
+  previousFailureAttemptCount: 0,
+  previousStuckContinuationCount: STUCK_CONTINUATION_THRESHOLD - 1,
+})
+assert.equal(productionRoundsDeadlineSummary.failed, 0)
+assert.equal(productionRoundsDeadlinePolicy.kind, 'planned_continuation')
+assert.equal(productionRoundsDeadlinePolicy.reason, 'EXECUTION_BUDGET_DEFERRED')
+assert.notEqual(productionRoundsDeadlinePolicy.reason, 'FAILED_COUNT_REPORTED')
+assert.equal(productionRoundsDeadlinePolicy.consumesFailureBudget, false)
+assert.equal(productionRoundsDeadlinePolicy.failureAttemptCount, 0)
+assert.equal(productionRoundsDeadlinePolicy.stuckContinuationCount, 0)
 
 assert.equal(hasContinuationProgress(previousCursor, advancedCursor), true)
 assert.equal(validateContinuationTransition(advancedCursor, previousCursor).valid, false)
@@ -133,6 +182,15 @@ roundsCursor = advanceCoreAuxiliaryContinuation(roundsCursor, 'rounds', { advanc
 assert.equal(roundsCursor.roundsComplete, true)
 assert.equal(roundsCursor.coreStage, 'complete')
 assert.equal(roundsCursor.coreAuxiliaryComplete, true)
+
+const productionRoundsCandidates = Array.from({ length: 122 }, (_, index) => ({ id: index }))
+const productionRoundsCursor = getCoreAuxiliaryContinuation({ coreStage: 'rounds', coverageComplete: true, coverageOffset: 122, roundsOffset: 60, roundsTotalCandidates: 122 })
+const deferredRoundsBatch = selectCoreAuxiliaryBatch(productionRoundsCandidates, productionRoundsCursor.roundsOffset, 50)
+assert.equal(deferredRoundsBatch.batch[0].id, 60)
+const unchangedAfterCurrentRoundDeferral = getCoreAuxiliaryContinuation(productionRoundsCursor)
+assert.equal(unchangedAfterCurrentRoundDeferral.roundsOffset, 60, 'all-rounds success followed by current-round deferral must not advance the candidate cursor')
+const retriedRoundsBatch = selectCoreAuxiliaryBatch(productionRoundsCandidates, unchangedAfterCurrentRoundDeferral.roundsOffset, 50)
+assert.equal(retriedRoundsBatch.batch[0].id, 60, 'the deferred league/season candidate must be retried next invocation')
 assert.equal(findNextRequiredStep([
   { phase: 'core', step_order: 1, status: 'success' },
   { phase: 'fixture-enrichment', step_order: 2, status: 'pending' },
@@ -615,6 +673,36 @@ const productionCoverageDispatches = workflowFetches(productionCoverageSelfDispa
 assert.equal(productionCoverageDispatches.length, 1, 'Production continuation must self-dispatch exactly once inside the inline wait limit')
 assert.deepEqual(productionCoverageDispatches[0].body, { ref: 'main', inputs: { continuation_chain_depth: '1' } })
 
+const staleFailureRunId = '71f2e40a-7c5e-4b85-8034-902edc8cf2bb'
+const staleFailureRetryAt = new Date(Date.now() + 120_000).toISOString()
+const staleFailureResult = productionFixtureEnrichmentStaleFailureResult({ runId: staleFailureRunId, nextRetryAt: staleFailureRetryAt })
+const staleFailureDueSteps = structuredClone(staleFailureResult.steps)
+staleFailureDueSteps[1].next_retry_at = new Date(Date.now() - 1_000).toISOString()
+const staleFailureCanonicalRun = { ...canonicalRunRow, id: staleFailureRunId, status: 'partial', current_phase: 'fixture-enrichment' }
+const staleFailureSelfDispatch = runScheduledWorkflowSequence(inlineScript, [
+  { body: [staleFailureCanonicalRun], status: 200 },
+  { body: staleFailureDueSteps, status: 200 },
+  { body: staleFailureResult, status: 200 },
+  { body: [staleFailureCanonicalRun], status: 200 },
+  { body: staleFailureResult.steps, status: 200 },
+  { body: null, status: 204 },
+])
+assert.equal(staleFailureResult.phase, 'fixture-enrichment')
+assert.equal(staleFailureResult.status, 'pending_retry')
+assert.equal(staleFailureResult.failed, 0)
+assert.equal(staleFailureResult.steps[0].status, 'success')
+assert.equal(staleFailureResult.steps[0].error_message, 'FAILED_COUNT_REPORTED')
+assert.equal(staleFailureResult.steps[1].status, 'pending_retry')
+assert.equal(staleFailureSelfDispatch.status, 0, `Production-shaped stale failure payload must pass and self-dispatch: ${staleFailureSelfDispatch.stderr}`)
+assert.doesNotMatch(staleFailureSelfDispatch.stderr, /Daily pipeline real failure|FAILED_COUNT_REPORTED/)
+const staleFailureEdgeRequests = workflowFetches(staleFailureSelfDispatch).filter((request) => request.url.includes('/functions/v1/'))
+assert.equal(staleFailureEdgeRequests.length, 1, 'stale failure recovery must invoke the Edge Function exactly once')
+assert.equal(staleFailureEdgeRequests[0].body.runId, staleFailureRunId, 'stale failure recovery must preserve the canonical runId')
+assert.doesNotMatch(staleFailureSelfDispatch.stdout, /daily bootstrap required|daily bootstrap invoked/, 'stale failure recovery must not bootstrap another run')
+const staleFailureDispatches = workflowFetches(staleFailureSelfDispatch).filter((request) => request.url.startsWith('https://api.github.com/'))
+assert.equal(staleFailureDispatches.length, 1, 'stale failure recovery must dispatch exactly one continuation')
+assert.deepEqual(staleFailureDispatches[0].body, { ref: 'main', inputs: { continuation_chain_depth: '1' } })
+
 const productionRoundsRunId = '71f2e40a-7c5e-4b85-8034-902edc8cf2bb'
 const productionRoundsCanonicalRun = { ...canonicalRunRow, id: productionRoundsRunId }
 const productionRoundsRetryAt = new Date(Date.now() + 120_000).toISOString()
@@ -1093,10 +1181,27 @@ assert.equal(exhaustedProductionRun.status, 1, 'exhausted blocking step without 
 const missingProductionRetryRun = runWorkflowScenario(inlineScript, productionWorkflowResult({ nextRetryAt: null }))
 assert.equal(missingProductionRetryRun.status, 1, 'pending_retry without a valid next_retry_at must exit workflow with code 1')
 
-const productionApiFailure = productionWorkflowResult({ nextRetryAt: productionFutureRetry })
-productionApiFailure.failures = [{ message: 'api-football error: upstream HTTP 500' }]
-const productionApiFailureRun = runWorkflowScenario(inlineScript, productionApiFailure)
-assert.equal(productionApiFailureRun.status, 1, 'Production-shaped API failure must exit workflow with code 1')
+const historicalFailureArray = productionWorkflowResult({ nextRetryAt: productionFutureRetry })
+historicalFailureArray.failures = [{ message: 'api-football error: upstream HTTP 500 from a prior invocation' }]
+const historicalFailureArrayRun = runWorkflowScenario(inlineScript, historicalFailureArray)
+assert.equal(historicalFailureArrayRun.status, 0, `a historical top-level failures array must not reject current failed=0: ${historicalFailureArrayRun.stderr}`)
+
+const stalePayloadBlockingCount = structuredClone(staleFailureResult)
+stalePayloadBlockingCount.steps[1].failed = 1
+assert.equal(runWorkflowScenario(inlineScript, stalePayloadBlockingCount).status, 1, 'current blocking fixture-enrichment step.failed=1 must exit 1')
+
+const stalePayloadBlockingStatus = structuredClone(staleFailureResult)
+stalePayloadBlockingStatus.steps[1].status = 'failed'
+assert.equal(runWorkflowScenario(inlineScript, stalePayloadBlockingStatus).status, 1, 'current blocking fixture-enrichment status=failed must exit 1')
+
+const stalePayloadCurrentError = structuredClone(staleFailureResult)
+stalePayloadCurrentError.errorMessage = 'database write failed for the current fixture-enrichment invocation'
+assert.equal(runWorkflowScenario(inlineScript, stalePayloadCurrentError).status, 1, 'current canonical error must exit 1 even when stale failures are also present')
+
+const currentBlockingDiagnostic = structuredClone(staleFailureResult)
+currentBlockingDiagnostic.steps[1].summary.failures = [{ message: 'api-football upstream HTTP 500 in the current invocation' }]
+currentBlockingDiagnostic.steps[1].summary.details.continuationPolicy = { kind: 'real_failure', reason: 'API_FOOTBALL_ERROR' }
+assert.equal(runWorkflowScenario(inlineScript, currentBlockingDiagnostic).status, 1, 'a current blocking-step failure diagnostic must still exit 1')
 
 const productionDatabaseFailure = productionWorkflowResult({ nextRetryAt: productionFutureRetry })
 productionDatabaseFailure.errorMessage = 'database query failed'
@@ -1399,6 +1504,73 @@ function productionRoundsWorkflowResult({
   currentStep.failureAttempts = 0
   currentStep.continuation_state = continuationState
   currentStep.summary.details.continuationPolicy = continuationPolicy
+  return payload
+}
+
+function productionFixtureEnrichmentStaleFailureResult({ runId = 'canonical-run', nextRetryAt } = {}) {
+  const payload = productionWorkflowResult({ runId, nextRetryAt })
+  const continuationState = {
+    providerPage: 1,
+    fixtureOffset: 210,
+    oddsOffset: 10,
+    processedFixtureCount: 210,
+    completedBatchSignatures: [],
+    coreStage: 'complete',
+    coverageOffset: 122,
+    coverageTotalCandidates: 122,
+    coverageComplete: true,
+    roundsOffset: 122,
+    roundsTotalCandidates: 122,
+    roundsComplete: true,
+    coreAuxiliaryComplete: true,
+  }
+  const continuationPolicy = {
+    kind: 'planned_continuation',
+    reason: 'EXECUTION_BUDGET_DEFERRED',
+    planned: true,
+    failureAttemptCount: 4,
+    consumesFailureBudget: false,
+    exhausted: false,
+  }
+  payload.phase = 'fixture-enrichment'
+  payload.status = 'pending_retry'
+  payload.partial = true
+  payload.processed = 210
+  payload.rowsSaved = 210
+  payload.failed = 0
+  payload.failures = [{ message: 'FAILED_COUNT_REPORTED' }]
+  payload.failureAttempts = 0
+  payload.continuation = continuationState
+  const core = payload.steps[0]
+  core.status = 'success'
+  core.failed = 0
+  core.error_message = 'FAILED_COUNT_REPORTED'
+  core.next_retry_at = null
+  core.continuation_state = continuationState
+  core.summary = {
+    status: 'success',
+    failed: 0,
+    message: 'FAILED_COUNT_REPORTED',
+    failures: [{ message: 'FAILED_COUNT_REPORTED' }],
+    details: { continuationPolicy: { kind: 'real_failure', reason: 'FAILED_COUNT_REPORTED', failureAttemptCount: 1 } },
+  }
+  const fixtureEnrichment = payload.steps[1]
+  fixtureEnrichment.status = 'pending_retry'
+  fixtureEnrichment.failed = 0
+  fixtureEnrichment.failureAttempts = 0
+  fixtureEnrichment.max_attempts = 20
+  fixtureEnrichment.next_retry_at = nextRetryAt
+  fixtureEnrichment.error_message = null
+  fixtureEnrichment.continuation_state = continuationState
+  fixtureEnrichment.summary = {
+    status: 'partial_success',
+    partial: true,
+    failed: 0,
+    details: {
+      reason: 'SOFT_DEADLINE_REACHED',
+      continuationPolicy,
+    },
+  }
   return payload
 }
 

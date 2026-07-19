@@ -148,6 +148,17 @@ export function classifyDailyStepContinuation(summary = {}, options = {}) {
       cursorProgress,
     }
   }
+  if (executionBudgetDeferred) {
+    return {
+      kind: 'planned_continuation',
+      reason: 'EXECUTION_BUDGET_DEFERRED',
+      planned: true,
+      consumesFailureBudget: false,
+      failureAttemptCount: previousFailureAttemptCount,
+      stuckContinuationCount: 0,
+      cursorProgress: false,
+    }
+  }
 
   const stuckContinuationCount = previousStuckContinuationCount + 1
   if (stuckContinuationCount >= STUCK_CONTINUATION_THRESHOLD) {
@@ -155,7 +166,7 @@ export function classifyDailyStepContinuation(summary = {}, options = {}) {
   }
   return {
     kind: 'planned_continuation',
-    reason: executionBudgetDeferred ? 'EXECUTION_BUDGET_DEFERRED' : 'PROGRESS_THRESHOLD_PENDING',
+    reason: 'PROGRESS_THRESHOLD_PENDING',
     planned: true,
     consumesFailureBudget: false,
     failureAttemptCount: previousFailureAttemptCount,
