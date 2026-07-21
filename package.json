@@ -30,7 +30,7 @@
     "bootstrap:football:dry-run": "node scripts/bootstrapNewFootballEnvironment.mjs",
     "bootstrap:football:local": "node scripts/bootstrapNewFootballEnvironment.mjs --apply-local",
     "test:daily-sync-auth": "node scripts/dailySyncAuth.unit.test.mjs",
-    "test:clean-core": "node scripts/cleanCoreContracts.unit.test.mjs && node scripts/cleanCoreMarkets.unit.test.mjs && node scripts/cleanCorePipeline.unit.test.mjs && node scripts/cleanCoreValidation.unit.test.mjs && node scripts/cleanCoreSelection.unit.test.mjs && node scripts/cleanCoreDecision.unit.test.mjs && node scripts/cleanCoreConfidence.unit.test.mjs && node scripts/cleanCoreResults.unit.test.mjs",
+    "test:clean-core": "node scripts/cleanCoreImport.unit.test.mjs && node scripts/cleanCoreContracts.unit.test.mjs && node scripts/cleanCoreMarkets.unit.test.mjs && node scripts/cleanCorePipeline.unit.test.mjs && node scripts/cleanCoreValidation.unit.test.mjs && node scripts/cleanCoreSelection.unit.test.mjs && node scripts/cleanCoreDecision.unit.test.mjs && node scripts/cleanCoreConfidence.unit.test.mjs && node scripts/cleanCoreResults.unit.test.mjs && node scripts/cleanCoreInvariants.unit.test.mjs",
     "test:football-enrichment": "node scripts/verifyAnalysisIntegrity.mjs",
     "build": "vite build",
     "lint": "eslint .",

@@ -1,21 +1,14 @@
-import { FIXTURE_ONLY_CONFIDENCE_CAP, RISK_LEVEL } from './contracts.js'
-
-const COMPONENT_WEIGHTS = Object.freeze({
-  dataQuality: 0.25,
-  analysisQuality: 0.25,
-  modelAgreement: 0.2,
-  marketCompleteness: 0.15,
-  marketFreshness: 0.15,
-})
+import { CONFIDENCE_COMPONENT_WEIGHTS, FIXTURE_ONLY_CONFIDENCE_CAP, RISK_LEVEL } from './contracts.js'
 
 export function calculateDecisionConfidence(input = {}) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
   const components = Object.fromEntries(
-    Object.entries(COMPONENT_WEIGHTS).map(([name, weight]) => [name, round(normalizedScore(input[name]) * weight)]),
+    Object.entries(CONFIDENCE_COMPONENT_WEIGHTS).map(([name, weight]) => [name, round(normalizedScore(source[name]) * weight)]),
   )
   const penalties = {
-    riskPenalty: normalizedPenalty(input.riskPenalty),
-    missingDataPenalty: normalizedPenalty(input.missingDataPenalty),
-    contradictionPenalty: normalizedPenalty(input.contradictionPenalty),
+    riskPenalty: normalizedPenalty(source.riskPenalty),
+    missingDataPenalty: normalizedPenalty(source.missingDataPenalty),
+    contradictionPenalty: normalizedPenalty(source.contradictionPenalty),
   }
   const componentTotal = round(Object.values(components).reduce((sum, value) => sum + value, 0))
   const penaltyTotal = round(Object.values(penalties).reduce((sum, value) => sum + value, 0))
@@ -24,12 +17,12 @@ export function calculateDecisionConfidence(input = {}) {
   let score = uncappedScore
   let capReason = null
 
-  if (input.fixtureOnly === true && score > FIXTURE_ONLY_CONFIDENCE_CAP) {
+  if (source.fixtureOnly === true && score > FIXTURE_ONLY_CONFIDENCE_CAP) {
     score = FIXTURE_ONLY_CONFIDENCE_CAP
     capReason = 'FIXTURE_ONLY'
   }
-  if (String(input.riskLevel ?? input.risk ?? '').toUpperCase() === RISK_LEVEL.CRITICAL && score > 0) {
-    score = 0
+  if (String(source.riskLevel ?? source.risk ?? '').toUpperCase() === RISK_LEVEL.CRITICAL) {
+    if (score > 0) score = 0
     capReason = 'RISK_CRITICAL'
   }
 
@@ -47,11 +40,13 @@ export function calculateDecisionConfidence(input = {}) {
 }
 
 function normalizedScore(value) {
+  if (!['number', 'string'].includes(typeof value) || value === '') return 0
   const parsed = Number(value)
   return Number.isFinite(parsed) ? clamp(parsed) : 0
 }
 
 function normalizedPenalty(value) {
+  if (!['number', 'string'].includes(typeof value) || value === '') return 0
   const parsed = Number(value)
   return Number.isFinite(parsed) ? clamp(parsed) : 0
 }

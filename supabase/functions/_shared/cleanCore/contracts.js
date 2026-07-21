@@ -1,11 +1,13 @@
-export const DECISION_STATUS = Object.freeze({
+import { deepFreeze } from './immutable.js'
+
+export const DECISION_STATUS = deepFreeze({
   READY: 'READY',
   WATCH: 'WATCH',
   WAIT: 'WAIT',
   REJECTED: 'REJECTED',
 })
 
-export const PIPELINE_STAGE = Object.freeze({
+export const PIPELINE_STAGE = deepFreeze({
   OPEN_DAY: 'OPEN_DAY',
   FIXTURE_DISCOVERY: 'FIXTURE_DISCOVERY',
   BASE_ENRICHMENT: 'BASE_ENRICHMENT',
@@ -21,7 +23,7 @@ export const PIPELINE_STAGE = Object.freeze({
   COMPLETE: 'COMPLETE',
 })
 
-export const REQUIRED_PIPELINE_SEQUENCE = Object.freeze([
+export const REQUIRED_PIPELINE_SEQUENCE = deepFreeze([
   PIPELINE_STAGE.OPEN_DAY,
   PIPELINE_STAGE.FIXTURE_DISCOVERY,
   PIPELINE_STAGE.BASE_ENRICHMENT,
@@ -37,12 +39,12 @@ export const REQUIRED_PIPELINE_SEQUENCE = Object.freeze([
   PIPELINE_STAGE.COMPLETE,
 ])
 
-export const FUTURE_PIPELINE_STAGE = Object.freeze({
+export const FUTURE_PIPELINE_STAGE = deepFreeze({
   NEAR_KICKOFF_REFRESH: 'NEAR_KICKOFF_REFRESH',
   FINAL_LOCK: 'FINAL_LOCK',
 })
 
-export const MARKET_TYPE = Object.freeze({
+export const MARKET_TYPE = deepFreeze({
   ASIAN_HANDICAP: 'ASIAN_HANDICAP',
   OVER_UNDER: 'OVER_UNDER',
   MATCH_WINNER: 'MATCH_WINNER',
@@ -52,14 +54,14 @@ export const MARKET_TYPE = Object.freeze({
   UNKNOWN: 'UNKNOWN',
 })
 
-export const RISK_LEVEL = Object.freeze({
+export const RISK_LEVEL = deepFreeze({
   LOW: 'LOW',
   MEDIUM: 'MEDIUM',
   HIGH: 'HIGH',
   CRITICAL: 'CRITICAL',
 })
 
-export const REASON_CODE = Object.freeze({
+export const REASON_CODE = deepFreeze({
   READY_ALL_GATES_PASSED: 'READY_ALL_GATES_PASSED',
   WAIT_MARKET_MISSING: 'WAIT_MARKET_MISSING',
   WAIT_MARKET_STALE: 'WAIT_MARKET_STALE',
@@ -75,6 +77,22 @@ export const REASON_CODE = Object.freeze({
   REJECT_RISK_CRITICAL: 'REJECT_RISK_CRITICAL',
   REJECT_MATCH_NOT_PLAYABLE: 'REJECT_MATCH_NOT_PLAYABLE',
   REJECT_FINAL_PICK_INVALID: 'REJECT_FINAL_PICK_INVALID',
+  REJECT_THRESHOLD_INVALID: 'REJECT_THRESHOLD_INVALID',
 })
 
 export const FIXTURE_ONLY_CONFIDENCE_CAP = 60
+
+export const DEFAULT_DECISION_THRESHOLDS = deepFreeze({
+  readyConfidenceThreshold: 80,
+  watchConfidenceThreshold: 70,
+  minimumDataQuality: 60,
+  marketFreshnessHours: 12,
+})
+
+export const CONFIDENCE_COMPONENT_WEIGHTS = deepFreeze({
+  dataQuality: 0.25,
+  analysisQuality: 0.25,
+  modelAgreement: 0.2,
+  marketCompleteness: 0.15,
+  marketFreshness: 0.15,
+})

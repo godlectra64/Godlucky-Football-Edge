@@ -1,47 +1,54 @@
 import { MARKET_TYPE } from './contracts.js'
+import { getMatchStatusKind, normalizeMatchStatus } from './matchStatus.js'
 import { isSettlementSupported, normalizeMarketType } from './markets.js'
-
-const FINISHED_STATUSES = new Set(['FT', 'AET', 'PEN', 'FINISHED'])
-const VOID_STATUSES = new Set(['PST', 'CANC', 'ABD', 'AWD', 'WO', 'POSTPONED', 'CANCELLED', 'ABANDONED'])
 
 export function canSettleMarket(value) {
   return isSettlementSupported(value)
 }
 
 export function validateSettlementInput(input = {}) {
+  const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input : {}
   const errors = []
   const warnings = []
-  const marketType = normalizeMarketType(input.marketType ?? input.market_type ?? input.marketFocus ?? input.market_focus)
-  const status = String(input.statusShort ?? input.status_short ?? input.matchStatus ?? input.match_status ?? input.status ?? '')
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-  const homeScore = score(input.homeScore ?? input.home_score ?? input.homeGoals ?? input.home_goals)
-  const awayScore = score(input.awayScore ?? input.away_score ?? input.awayGoals ?? input.away_goals)
-  const selection = String(input.selection ?? input.direction ?? input.side ?? '').trim().toUpperCase()
-  const line = finiteNumber(input.line ?? input.marketLine ?? input.market_line)
+  const marketType = normalizeMarketType(source.marketType ?? source.market_type ?? source.marketFocus ?? source.market_focus)
+  const status = normalizeMatchStatus(source.statusShort ?? source.status_short ?? source.matchStatus ?? source.match_status ?? source.status)
+  const statusKind = getMatchStatusKind(status)
+  const homeScore = score(source.homeScore ?? source.home_score ?? source.homeGoals ?? source.home_goals)
+  const awayScore = score(source.awayScore ?? source.away_score ?? source.awayGoals ?? source.away_goals)
+  const selection = normalizeSelection(source.selection ?? source.direction ?? source.side)
+  const line = parseLine(source.line ?? source.marketLine ?? source.market_line)
 
   if (!canSettleMarket(marketType)) errors.push('SETTLEMENT_MARKET_UNSUPPORTED')
-  if (!FINISHED_STATUSES.has(status) && !VOID_STATUSES.has(status)) errors.push('SETTLEMENT_STATUS_NOT_TERMINAL')
-  if (!VOID_STATUSES.has(status)) {
+  if (!['FINISHED', 'VOID'].includes(statusKind)) errors.push('SETTLEMENT_STATUS_NOT_TERMINAL')
+  if (statusKind !== 'VOID') {
     if (homeScore === null || awayScore === null) errors.push('SETTLEMENT_SCORE_INVALID')
     if (!selection) errors.push('SETTLEMENT_SELECTION_MISSING')
-    if ([MARKET_TYPE.ASIAN_HANDICAP, MARKET_TYPE.OVER_UNDER].includes(marketType) && line === null) errors.push('SETTLEMENT_LINE_INVALID')
+    if ([MARKET_TYPE.ASIAN_HANDICAP, MARKET_TYPE.OVER_UNDER].includes(marketType) && line === null) {
+      errors.push('SETTLEMENT_LINE_INVALID')
+    }
     if (marketType === MARKET_TYPE.MATCH_WINNER && !['HOME', 'DRAW', 'AWAY', '1', 'X', '2'].includes(selection)) {
       errors.push('SETTLEMENT_SELECTION_INVALID')
     }
   }
 
-  return { valid: errors.length === 0, errors: [...new Set(errors)], warnings }
+  const reasonCodes = [...new Set(errors)]
+  return { valid: reasonCodes.length === 0, errors: reasonCodes, warnings, reasonCodes }
 }
 
 function score(value) {
-  const parsed = finiteNumber(value)
-  return parsed !== null && parsed >= 0 ? parsed : null
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
 }
 
-function finiteNumber(value) {
-  if (value === null || value === undefined || value === '') return null
-  const parsed = Number(value)
+function parseLine(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value !== 'string') return null
+  const normalized = value.trim()
+  if (!/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized)) return null
+  const parsed = Number(normalized)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+function normalizeSelection(value) {
+  if (!['string', 'number'].includes(typeof value)) return null
+  return String(value).trim().toUpperCase() || null
 }

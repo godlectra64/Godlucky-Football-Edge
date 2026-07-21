@@ -1,68 +1,68 @@
 import { MARKET_TYPE } from './contracts.js'
+import { deepFreeze } from './immutable.js'
 
-const capability = (value) => Object.freeze({ ...value })
-
-export const MARKET_CAPABILITIES = Object.freeze({
-  [MARKET_TYPE.ASIAN_HANDICAP]: capability({
+export const MARKET_CAPABILITIES = deepFreeze({
+  [MARKET_TYPE.ASIAN_HANDICAP]: {
     parsable: true,
     analyzable: true,
     actionable: true,
     canProduceReady: true,
     settlementSupported: true,
     insightOnly: false,
-  }),
-  [MARKET_TYPE.OVER_UNDER]: capability({
+  },
+  [MARKET_TYPE.OVER_UNDER]: {
     parsable: true,
     analyzable: true,
     actionable: true,
     canProduceReady: true,
     settlementSupported: true,
     insightOnly: false,
-  }),
-  [MARKET_TYPE.MATCH_WINNER]: capability({
+  },
+  [MARKET_TYPE.MATCH_WINNER]: {
     parsable: true,
     analyzable: false,
     actionable: false,
     canProduceReady: false,
     settlementSupported: true,
     insightOnly: true,
-  }),
-  [MARKET_TYPE.DOUBLE_CHANCE]: capability({
+  },
+  [MARKET_TYPE.DOUBLE_CHANCE]: {
     parsable: true,
     analyzable: false,
     actionable: false,
     canProduceReady: false,
     settlementSupported: false,
     insightOnly: true,
-  }),
-  [MARKET_TYPE.CORRECT_SCORE]: capability({
+  },
+  [MARKET_TYPE.CORRECT_SCORE]: {
     parsable: true,
     analyzable: false,
     actionable: false,
     canProduceReady: false,
     settlementSupported: false,
     insightOnly: true,
-  }),
-  [MARKET_TYPE.BTTS]: capability({
+  },
+  [MARKET_TYPE.BTTS]: {
     parsable: true,
     analyzable: false,
     actionable: false,
     canProduceReady: false,
     settlementSupported: false,
     insightOnly: true,
-  }),
-  [MARKET_TYPE.UNKNOWN]: capability({
+  },
+  [MARKET_TYPE.UNKNOWN]: {
     parsable: false,
     analyzable: false,
     actionable: false,
     canProduceReady: false,
     settlementSupported: false,
     insightOnly: false,
-  }),
+  },
 })
 
 export function normalizeMarketType(value) {
-  const normalized = String(value ?? '')
+  if (typeof value !== 'string') return MARKET_TYPE.UNKNOWN
+  const normalized = value
     .trim()
     .toUpperCase()
     .replaceAll('&', ' AND ')
