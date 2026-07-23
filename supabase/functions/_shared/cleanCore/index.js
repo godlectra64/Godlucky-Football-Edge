@@ -5,6 +5,7 @@ export {
   FIXTURE_ONLY_CONFIDENCE_CAP,
   FUTURE_PIPELINE_STAGE,
   MARKET_TYPE,
+  MATCH_STATUS_CATEGORY,
   PIPELINE_STAGE,
   REASON_CODE,
   REQUIRED_PIPELINE_SEQUENCE,
@@ -19,6 +20,16 @@ export {
   isSettlementSupported,
   normalizeMarketType,
 } from './markets.js'
+
+export {
+  getMatchStatusCategory,
+  isDisplayableMatchStatus,
+  isEligibleForNewDecision,
+  isRetryableMatchStatus,
+  isStartedMatchStatus,
+  isTerminalMatchStatus,
+  normalizeMatchStatus,
+} from './matchStatus.js'
 
 export { getNextRequiredStage, isValidStageTransition, validatePipelineCompletion } from './pipeline.js'
 export { buildCandidatePool, evaluateFixtureEligibility, rankCandidates, validateDynamicRanking } from './selection.js'

@@ -55,6 +55,7 @@ assert.deepEqual(Object.keys(publicApi).sort(), [
   'FUTURE_PIPELINE_STAGE',
   'MARKET_CAPABILITIES',
   'MARKET_TYPE',
+  'MATCH_STATUS_CATEGORY',
   'PIPELINE_STAGE',
   'REASON_CODE',
   'REQUIRED_PIPELINE_SEQUENCE',
@@ -67,11 +68,18 @@ assert.deepEqual(Object.keys(publicApi).sort(), [
   'classifyDecision',
   'evaluateFixtureEligibility',
   'getMarketCapability',
+  'getMatchStatusCategory',
   'getNextRequiredStage',
   'isActionableMarket',
+  'isDisplayableMatchStatus',
+  'isEligibleForNewDecision',
+  'isRetryableMatchStatus',
   'isSettlementSupported',
+  'isStartedMatchStatus',
+  'isTerminalMatchStatus',
   'isValidStageTransition',
   'normalizeMarketType',
+  'normalizeMatchStatus',
   'rankCandidates',
   'validateAnalysis',
   'validateDynamicRanking',
@@ -82,7 +90,7 @@ assert.deepEqual(Object.keys(publicApi).sort(), [
   'validateSettlementInput',
 ].sort())
 assert.equal('deepFreeze' in publicApi, false, 'internal immutable helper must not be public')
-assert.equal('normalizeMatchStatus' in publicApi, false, 'internal status helper must not be public')
+assert.equal(typeof publicApi.normalizeMatchStatus, 'function', 'status policy helpers must be public')
 
 console.log('clean core import smoke tests passed')
 

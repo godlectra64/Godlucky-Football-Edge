@@ -1,10 +1,12 @@
 import {
   DECISION_STATUS,
   DEFAULT_DECISION_THRESHOLDS,
+  MATCH_STATUS_CATEGORY,
   REASON_CODE,
   RISK_LEVEL,
 } from './contracts.js'
 import { canMarketProduceReady, getMarketCapability, normalizeMarketType } from './markets.js'
+import { isEligibleForNewDecision } from './matchStatus.js'
 import { validateAnalysis, validateFinalPick, validateFixture } from './validation.js'
 
 const REASON_MESSAGES_TH = Object.freeze({
@@ -13,6 +15,7 @@ const REASON_MESSAGES_TH = Object.freeze({
   [REASON_CODE.WAIT_MARKET_STALE]: 'รอข้อมูลตลาด: ราคาล่าสุดเก่าเกินเกณฑ์ที่กำหนด',
   [REASON_CODE.WAIT_MARKET_REFRESH]: 'รอข้อมูลตลาด: การรีเฟรชข้อมูลยังไม่เสร็จ',
   [REASON_CODE.WAIT_ANALYSIS_INCOMPLETE]: 'รอการวิเคราะห์: ข้อมูลยังไม่ครบและอาจสมบูรณ์ได้ภายหลัง',
+  [REASON_CODE.WAIT_MATCH_RESCHEDULE]: 'การแข่งขันถูกเลื่อน รอกำหนดเวลาใหม่',
   [REASON_CODE.WATCH_CONFIDENCE_BELOW_READY]: 'เฝ้าดู: ความมั่นใจยังต่ำกว่าเกณฑ์ READY',
   [REASON_CODE.WATCH_MARKET_EDGE_WEAK]: 'เฝ้าดู: ตลาดหรือความได้เปรียบยังไม่พอสำหรับ Final Pick',
   [REASON_CODE.WATCH_DATA_QUALITY_BORDERLINE]: 'เฝ้าดู: คุณภาพข้อมูลผ่านขั้นต่ำแต่อยู่ใกล้ขอบเกณฑ์',
@@ -21,14 +24,17 @@ const REASON_MESSAGES_TH = Object.freeze({
   [REASON_CODE.REJECT_DATA_QUALITY_FAILED]: 'ไม่ผ่านเกณฑ์: คุณภาพข้อมูลต่ำกว่าเกณฑ์ขั้นต่ำ',
   [REASON_CODE.REJECT_ANALYSIS_INVALID]: 'ไม่ผ่านเกณฑ์: ผลการวิเคราะห์ไม่ถูกต้อง',
   [REASON_CODE.REJECT_RISK_CRITICAL]: 'ไม่ผ่านเกณฑ์: ความเสี่ยงอยู่ในระดับวิกฤต',
+  [REASON_CODE.REJECT_MATCH_ALREADY_STARTED]: 'การแข่งขันเริ่มแล้ว จึงไม่สร้างคำแนะนำใหม่',
   [REASON_CODE.REJECT_MATCH_NOT_PLAYABLE]: 'ไม่ผ่านเกณฑ์: สถานะการแข่งขันไม่สามารถนำมาประเมินได้',
   [REASON_CODE.REJECT_FINAL_PICK_INVALID]: 'ไม่ผ่านเกณฑ์: Final Pick มีรูปแบบไม่ถูกต้อง',
   [REASON_CODE.REJECT_THRESHOLD_INVALID]: 'ไม่ผ่านเกณฑ์: ค่า threshold ของการตัดสินใจไม่ถูกต้อง',
 })
 
 const REASON_PRIORITY = Object.freeze([
-  REASON_CODE.REJECT_MATCH_NOT_PLAYABLE,
   REASON_CODE.REJECT_FIXTURE_INVALID,
+  REASON_CODE.REJECT_MATCH_NOT_PLAYABLE,
+  REASON_CODE.REJECT_MATCH_ALREADY_STARTED,
+  REASON_CODE.WAIT_MATCH_RESCHEDULE,
   REASON_CODE.REJECT_UNSUPPORTED_LEAGUE,
   REASON_CODE.REJECT_RISK_CRITICAL,
   REASON_CODE.REJECT_DATA_QUALITY_FAILED,
@@ -48,6 +54,7 @@ export function classifyDecision(input = {}) {
   const context = buildDecisionContext(isRecord(input) ? input : {})
   const reasonCodes = collectReasonCodes(context)
   const ready = reasonCodes.length === 0
+    && context.decisionEligible
     && context.marketReady
     && context.marketCapability.canProduceReady
     && context.finalPickValid
@@ -62,6 +69,7 @@ export function classifyDecision(input = {}) {
 
 export function buildCanonicalFinalPick(input = {}) {
   const inputValue = isRecord(input) ? input : {}
+  if (!allowsNewDecision(inputValue)) return null
   const source = inputValue.finalPick ?? inputValue
   if (!isRecord(source)) return null
   const marketType = normalizeMarketType(source.marketType ?? source.market_type ?? source.type ?? inputValue.marketType)
@@ -92,11 +100,38 @@ export function buildCanonicalFinalPick(input = {}) {
 function buildDecisionContext(input) {
   const fixtureValidation = input.fixtureValidation ?? (input.fixture ? validateFixture(input.fixture) : null)
   const analysisValidation = input.analysisValidation ?? (input.analysis ? validateAnalysis(input.analysis, input.analysisValidationOptions) : null)
-  const fixtureValid = booleanOr(input.fixtureValid, fixtureValidation?.valid, false)
+  const fixtureValid = fixtureValidation
+    ? (fixtureValidation.reasonCode === undefined
+        ? fixtureValidation.valid === true
+        : fixtureValidation.reasonCode !== REASON_CODE.REJECT_FIXTURE_INVALID)
+      && input.fixtureValid !== false
+    : booleanOr(input.fixtureValid, false)
+  const statusCategory = firstDefined(fixtureValidation?.statusCategory, input.statusCategory, null)
+  const decisionEligible = fixtureValidation && typeof fixtureValidation.decisionEligible === 'boolean'
+    ? fixtureValidation.decisionEligible
+      && fixtureValid
+      && input.decisionEligible !== false
+      && input.matchPlayable !== false
+      && input.fixturePlayable !== false
+    : statusCategory === MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE
+      && fixtureValid
+      && input.decisionEligible !== false
+      && input.matchPlayable !== false
+      && input.fixturePlayable !== false
+  const displayable = fixtureValidation && typeof fixtureValidation.displayable === 'boolean'
+    ? fixtureValidation.displayable
+    : booleanOr(input.displayable, input.matchPlayable ?? input.fixturePlayable, decisionEligible)
+  const terminalMatch = fixtureValidation
+    ? fixtureValidation.terminal === true
+    : booleanOr(input.matchTerminal, input.terminal, statusCategory === MATCH_STATUS_CATEGORY.TERMINAL_OR_VOID)
+  const retryableMatch = fixtureValidation
+    ? fixtureValidation.retryable === true
+    : booleanOr(input.matchRetryable, input.retryable, statusCategory === MATCH_STATUS_CATEGORY.RETRYABLE_NOT_READY)
+  const startedMatch = statusCategory === MATCH_STATUS_CATEGORY.STARTED_OR_LIVE || input.matchStarted === true
   const matchPlayable = booleanOr(
     input.matchPlayable ?? input.fixturePlayable,
-    fixtureValidation ? !fixtureValidation.errors.includes('MATCH_NOT_PLAYABLE') : null,
-    fixtureValid,
+    displayable,
+    decisionEligible,
   )
   const analysisComplete = booleanOr(input.analysisComplete, input.analysis ? true : null, false)
   const analysisValid = booleanOr(input.analysisValid, analysisValidation?.valid, false)
@@ -131,6 +166,8 @@ function buildDecisionContext(input) {
   const finalPickRetryable = input.finalPickRetryable !== false
   const canonicalFinalPick = buildCanonicalFinalPick({
     ...input,
+    decisionEligible,
+    fixtureValidation,
     marketType,
     marketReady,
     marketFresh,
@@ -144,6 +181,12 @@ function buildDecisionContext(input) {
 
   return {
     fixtureValid,
+    decisionEligible,
+    displayable,
+    statusCategory,
+    startedMatch,
+    terminalMatch,
+    retryableMatch,
     matchPlayable,
     supportedLeague: input.supportedLeague !== false,
     analysisComplete,
@@ -176,8 +219,13 @@ function buildDecisionContext(input) {
 
 function collectReasonCodes(context) {
   const reasons = []
-  if (!context.matchPlayable) reasons.push(REASON_CODE.REJECT_MATCH_NOT_PLAYABLE)
   if (!context.fixtureValid) reasons.push(REASON_CODE.REJECT_FIXTURE_INVALID)
+  if (context.terminalMatch) reasons.push(REASON_CODE.REJECT_MATCH_NOT_PLAYABLE)
+  if (context.startedMatch) reasons.push(REASON_CODE.REJECT_MATCH_ALREADY_STARTED)
+  if (context.retryableMatch) reasons.push(REASON_CODE.WAIT_MATCH_RESCHEDULE)
+  if (!context.decisionEligible && !context.terminalMatch && !context.startedMatch && !context.retryableMatch) {
+    reasons.push(REASON_CODE.REJECT_MATCH_NOT_PLAYABLE)
+  }
   if (!context.supportedLeague) reasons.push(REASON_CODE.REJECT_UNSUPPORTED_LEAGUE)
   if (context.riskLevel === RISK_LEVEL.CRITICAL) reasons.push(REASON_CODE.REJECT_RISK_CRITICAL)
   if (context.dataQualityHardFail) reasons.push(REASON_CODE.REJECT_DATA_QUALITY_FAILED)
@@ -253,6 +301,11 @@ function decision(status, reasonCodes, context) {
     confidence: context.confidence,
     audit: {
       fixtureValid: context.fixtureValid,
+      decisionEligible: context.decisionEligible,
+      displayable: context.displayable,
+      retryable: context.retryableMatch,
+      terminal: context.terminalMatch,
+      statusCategory: context.statusCategory,
       matchPlayable: context.matchPlayable,
       supportedLeague: context.supportedLeague,
       analysisComplete: context.analysisComplete,
@@ -298,6 +351,35 @@ function reasonPriority(reason) {
 function confidenceScore(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   return strictFiniteNumber(value?.score)
+}
+
+function allowsNewDecision(input) {
+  if (typeof input.fixtureValidation?.statusCategory === 'string') {
+    return input.fixtureValidation.statusCategory === MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE
+      && input.fixtureValidation.decisionEligible === true
+      && input.decisionEligible !== false
+  }
+  const status = decisionMatchStatus(input)
+  if (status !== undefined) return isEligibleForNewDecision(status) && input.decisionEligible !== false
+  return input.statusCategory === MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE
+    && input.decisionEligible !== false
+}
+
+function decisionMatchStatus(input) {
+  const fixture = isRecord(input.fixture) ? input.fixture : {}
+  const value = firstDefined(
+    fixture.statusShort,
+    fixture.status_short,
+    fixture.matchStatus,
+    fixture.match_status,
+    fixture.status,
+    input.statusShort,
+    input.status_short,
+    input.matchStatus,
+    input.match_status,
+    input.status,
+  )
+  return isRecord(value) ? firstDefined(value.short, value.long) : value
 }
 
 function marketNeedsLine(marketType) {

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 
-import { DECISION_STATUS, PIPELINE_STAGE, REQUIRED_PIPELINE_SEQUENCE } from '../supabase/functions/_shared/cleanCore/contracts.js'
+import {
+  DECISION_STATUS,
+  MATCH_STATUS_CATEGORY,
+  PIPELINE_STAGE,
+  REQUIRED_PIPELINE_SEQUENCE,
+} from '../supabase/functions/_shared/cleanCore/contracts.js'
 import { calculateDecisionConfidence } from '../supabase/functions/_shared/cleanCore/confidence.js'
 import { classifyDecision } from '../supabase/functions/_shared/cleanCore/decision.js'
 import { validatePipelineCompletion } from '../supabase/functions/_shared/cleanCore/pipeline.js'
@@ -37,6 +42,12 @@ for (const output of [
   classifyDecision(decisionInput({ fixtureValid: false })),
 ]) assertDecisionInvariant(output)
 
+for (const status of ['1H', 'HT', '2H', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE', 'IN_PLAY', 'FT', 'AET', 'PEN', 'CANC', 'ABD', 'AWD', 'WO', 'PST', 'UNKNOWN_STATUS']) {
+  const output = classifyDecision(decisionInput({ fixture: fixture(999, 90, { status }) }))
+  assert.notEqual(output.status, DECISION_STATUS.READY, `${status} must never produce READY`)
+  assert.equal(output.finalPick, null, `${status} must never produce an actionable Final Pick`)
+}
+
 const candidates = [
   fixture(1, 90),
   fixture('1', 80),
@@ -66,6 +77,7 @@ function assertDecisionInvariant(output) {
     assert.equal(output.marketReady, true)
     assert.ok(output.finalPick)
     assert.equal(output.finalPick.actionable, true)
+    assert.equal(output.audit.statusCategory, MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE)
   } else {
     assert.equal(output.finalPick, null)
   }
@@ -78,6 +90,7 @@ function decisionInput(overrides = {}) {
   const readinessScore = overrides.readinessScore ?? 86
   const actionable = ['AH', 'OU'].includes(marketType)
   return {
+    fixture: fixture(100, 90),
     fixtureValid: true,
     matchPlayable: true,
     supportedLeague: true,

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   DECISION_STATUS,
   DEFAULT_DECISION_THRESHOLDS,
+  MATCH_STATUS_CATEGORY,
   REASON_CODE,
 } from '../supabase/functions/_shared/cleanCore/contracts.js'
 import { buildCanonicalFinalPick, classifyDecision } from '../supabase/functions/_shared/cleanCore/decision.js'
@@ -13,6 +14,49 @@ assert.equal(ready.marketReady, true)
 assert.ok(ready.finalPick)
 assert.equal(ready.finalPick.actionable, true)
 assert.equal(ready.reasonCode, REASON_CODE.READY_ALL_GATES_PASSED)
+assert.equal(ready.audit.statusCategory, MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE)
+
+for (const status of ['NS', 'TBD', 'SCHEDULED', ' ns ', ' scheduled ']) {
+  const output = classifyDecision(validInput({ fixture: fixture({ status }) }))
+  assert.equal(output.status, DECISION_STATUS.READY, status)
+  assert.ok(output.finalPick, status)
+  assert.equal(output.audit.decisionEligible, true, status)
+}
+
+for (const status of ['1H', 'HT', '2H', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE', 'IN_PLAY']) {
+  const input = validInput({
+    fixture: fixture({ status }),
+    readinessScore: 100,
+    confidence: { score: 100 },
+    finalPick: { marketType: 'AH', selection: 'HOME', line: -0.5, confidence: 100, riskLevel: 'LOW' },
+  })
+  const output = classifyDecision(input)
+  assert.equal(output.status, DECISION_STATUS.REJECTED, status)
+  assert.equal(output.reasonCode, REASON_CODE.REJECT_MATCH_ALREADY_STARTED, status)
+  assert.equal(output.reasonMessageTh, 'การแข่งขันเริ่มแล้ว จึงไม่สร้างคำแนะนำใหม่', status)
+  assert.equal(output.finalPick, null, status)
+  assert.equal(output.audit.displayable, true, status)
+  assert.equal(output.audit.decisionEligible, false, status)
+  assert.equal(buildCanonicalFinalPick(input), null, `${status} must not build an actionable pick`)
+}
+
+for (const status of ['FT', 'AET', 'PEN', 'CANC', 'ABD', 'AWD', 'WO']) {
+  const input = validInput({ fixture: fixture({ status }) })
+  const output = classifyDecision(input)
+  assert.equal(output.status, DECISION_STATUS.REJECTED, status)
+  assert.equal(output.reasonCode, REASON_CODE.REJECT_MATCH_NOT_PLAYABLE, status)
+  assert.equal(output.finalPick, null, status)
+  assert.equal(output.audit.terminal, true, status)
+  assert.equal(buildCanonicalFinalPick(input), null, `${status} must not build an actionable pick`)
+}
+
+const postponed = classifyDecision(validInput({ fixture: fixture({ status: 'PST' }) }))
+assert.equal(postponed.status, DECISION_STATUS.WAIT)
+assert.equal(postponed.reasonCode, REASON_CODE.WAIT_MATCH_RESCHEDULE)
+assert.equal(postponed.reasonMessageTh, 'การแข่งขันถูกเลื่อน รอกำหนดเวลาใหม่')
+assert.equal(postponed.finalPick, null)
+assert.equal(postponed.audit.retryable, true)
+assert.equal(buildCanonicalFinalPick(validInput({ fixture: fixture({ status: 'PST' }) })), null)
 
 const zeroLinePick = buildCanonicalFinalPick(validInput({
   marketType: 'OU',
@@ -57,9 +101,13 @@ const dataBeforeAnalysis = classifyDecision(validInput({ dataQuality: 10, analys
 assert.equal(dataBeforeAnalysis.reasonCode, REASON_CODE.REJECT_DATA_QUALITY_FAILED)
 assert.ok(dataBeforeAnalysis.reasonCodes.includes(REASON_CODE.REJECT_ANALYSIS_INVALID))
 const statusBeforeFixture = classifyDecision(validInput({ matchPlayable: false, fixtureValid: false }))
-assert.equal(statusBeforeFixture.reasonCode, REASON_CODE.REJECT_MATCH_NOT_PLAYABLE)
+assert.equal(statusBeforeFixture.reasonCode, REASON_CODE.REJECT_FIXTURE_INVALID)
 const staleBeforeRefresh = classifyDecision(validInput({ marketFresh: false, marketRefreshPending: true }))
 assert.equal(staleBeforeRefresh.reasonCode, REASON_CODE.WAIT_MARKET_STALE)
+const terminalBeforeStale = classifyDecision(validInput({ fixture: fixture({ status: 'FT' }), marketFresh: false }))
+assert.equal(terminalBeforeStale.reasonCode, REASON_CODE.REJECT_MATCH_NOT_PLAYABLE)
+const malformedBeforeStarted = classifyDecision(validInput({ fixture: fixture({ id: '', status: 'LIVE' }) }))
+assert.equal(malformedBeforeStarted.reasonCode, REASON_CODE.REJECT_FIXTURE_INVALID)
 
 const lowConfidence = classifyDecision(validInput({ readinessScore: 74, confidence: { score: 74 } }))
 assert.equal(lowConfidence.status, DECISION_STATUS.WATCH)
@@ -124,6 +172,7 @@ console.log('clean core decision unit tests passed')
 
 function validInput(overrides = {}) {
   return {
+    fixture: fixture(),
     fixtureValid: true,
     matchPlayable: true,
     supportedLeague: true,
@@ -148,6 +197,18 @@ function validInput(overrides = {}) {
     watchThreshold: 70,
     riskLevel: 'LOW',
     blockingReasonCodes: [],
+    ...overrides,
+  }
+}
+
+function fixture(overrides = {}) {
+  return {
+    id: 101,
+    homeTeam: { id: 1, name: 'Alpha' },
+    awayTeam: { id: 2, name: 'Beta' },
+    kickoffAt: '2030-07-20T12:00:00.000Z',
+    league: { id: 99, name: 'Test League' },
+    status: 'NS',
     ...overrides,
   }
 }

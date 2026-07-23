@@ -1,10 +1,12 @@
 import { deepFreeze } from './immutable.js'
+import { MATCH_STATUS_CATEGORY } from './contracts.js'
 
 const STATUS_GROUPS = deepFreeze({
-  scheduled: ['NS', 'TBD', 'SCHEDULED'],
-  live: ['1H', 'HT', '2H', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE'],
+  prematchDecisionEligible: ['NS', 'TBD', 'SCHEDULED'],
+  startedOrLive: ['1H', 'HT', '2H', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE', 'IN_PLAY'],
   finished: ['FT', 'AET', 'PEN'],
-  void: ['PST', 'CANC', 'ABD', 'AWD', 'WO'],
+  void: ['CANC', 'ABD', 'AWD', 'WO'],
+  retryableNotReady: ['PST'],
 })
 
 const STATUS_ALIASES = deepFreeze({
@@ -39,17 +41,47 @@ export function normalizeMatchStatus(value) {
 
 export function getMatchStatusKind(value) {
   const status = normalizeMatchStatus(value)
-  if (STATUS_GROUPS.scheduled.includes(status)) return 'SCHEDULED'
-  if (STATUS_GROUPS.live.includes(status)) return 'LIVE'
+  if (STATUS_GROUPS.prematchDecisionEligible.includes(status)) return 'SCHEDULED'
+  if (STATUS_GROUPS.startedOrLive.includes(status)) return 'LIVE'
   if (STATUS_GROUPS.finished.includes(status)) return 'FINISHED'
   if (STATUS_GROUPS.void.includes(status)) return 'VOID'
+  if (STATUS_GROUPS.retryableNotReady.includes(status)) return 'RETRYABLE'
   return 'UNKNOWN'
 }
 
-export function isPlayableMatchStatus(value) {
-  return ['SCHEDULED', 'LIVE'].includes(getMatchStatusKind(value))
+export function getMatchStatusCategory(value) {
+  const status = normalizeMatchStatus(value)
+  if (STATUS_GROUPS.prematchDecisionEligible.includes(status)) {
+    return MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE
+  }
+  if (STATUS_GROUPS.startedOrLive.includes(status)) return MATCH_STATUS_CATEGORY.STARTED_OR_LIVE
+  if ([...STATUS_GROUPS.finished, ...STATUS_GROUPS.void].includes(status)) {
+    return MATCH_STATUS_CATEGORY.TERMINAL_OR_VOID
+  }
+  if (STATUS_GROUPS.retryableNotReady.includes(status)) return MATCH_STATUS_CATEGORY.RETRYABLE_NOT_READY
+  return MATCH_STATUS_CATEGORY.UNKNOWN
+}
+
+export function isEligibleForNewDecision(value) {
+  return getMatchStatusCategory(value) === MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE
+}
+
+export function isStartedMatchStatus(value) {
+  return getMatchStatusCategory(value) === MATCH_STATUS_CATEGORY.STARTED_OR_LIVE
 }
 
 export function isTerminalMatchStatus(value) {
-  return ['FINISHED', 'VOID'].includes(getMatchStatusKind(value))
+  return getMatchStatusCategory(value) === MATCH_STATUS_CATEGORY.TERMINAL_OR_VOID
+}
+
+export function isRetryableMatchStatus(value) {
+  return getMatchStatusCategory(value) === MATCH_STATUS_CATEGORY.RETRYABLE_NOT_READY
+}
+
+export function isDisplayableMatchStatus(value) {
+  return [
+    MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE,
+    MATCH_STATUS_CATEGORY.STARTED_OR_LIVE,
+    MATCH_STATUS_CATEGORY.RETRYABLE_NOT_READY,
+  ].includes(getMatchStatusCategory(value))
 }

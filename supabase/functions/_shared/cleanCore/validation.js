@@ -1,5 +1,19 @@
-import { DEFAULT_DECISION_THRESHOLDS, MARKET_TYPE, RISK_LEVEL } from './contracts.js'
-import { isPlayableMatchStatus, isTerminalMatchStatus, normalizeMatchStatus } from './matchStatus.js'
+import {
+  DEFAULT_DECISION_THRESHOLDS,
+  MATCH_STATUS_CATEGORY,
+  MARKET_TYPE,
+  REASON_CODE,
+  RISK_LEVEL,
+} from './contracts.js'
+import {
+  getMatchStatusCategory,
+  isDisplayableMatchStatus,
+  isEligibleForNewDecision,
+  isRetryableMatchStatus,
+  isStartedMatchStatus,
+  isTerminalMatchStatus,
+  normalizeMatchStatus,
+} from './matchStatus.js'
 import { isActionableMarket, normalizeMarketType } from './markets.js'
 
 export function validateFixture(fixture = {}) {
@@ -29,10 +43,24 @@ export function validateFixture(fixture = {}) {
   if (!isValidDateValue(kickoff)) errors.push('KICKOFF_INVALID')
   if (!league) errors.push('LEAGUE_MISSING')
   if (leagueId === null) errors.push('LEAGUE_ID_MISSING')
-  if (!isPlayableMatchStatus(status)) errors.push('MATCH_NOT_PLAYABLE')
+  if (getMatchStatusCategory(status) === MATCH_STATUS_CATEGORY.UNKNOWN) errors.push('MATCH_STATUS_UNKNOWN')
 
-  const terminal = isTerminalMatchStatus(status) || errors.includes('FIXTURE_TEAM_IDS_IDENTICAL')
-  return validationResult(errors, warnings, { retryable: errors.length > 0 && !terminal, terminal })
+  const structurallyValid = errors.length === 0
+  if (structurallyValid && isTerminalMatchStatus(status)) errors.push('MATCH_NOT_PLAYABLE')
+  const valid = errors.length === 0
+  const decisionEligible = valid && isEligibleForNewDecision(status)
+  const displayable = valid && isDisplayableMatchStatus(status)
+  const retryable = valid && isRetryableMatchStatus(status)
+  const terminal = isTerminalMatchStatus(status)
+  const reasonCode = fixtureReasonCode({ structurallyValid, status })
+  return validationResult(errors, warnings, {
+    decisionEligible,
+    displayable,
+    reasonCode,
+    retryable,
+    statusCategory: getMatchStatusCategory(status),
+    terminal,
+  })
 }
 
 export function validateAnalysis(analysis, options = {}) {
@@ -243,6 +271,14 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+function fixtureReasonCode({ structurallyValid, status }) {
+  if (!structurallyValid) return REASON_CODE.REJECT_FIXTURE_INVALID
+  if (isTerminalMatchStatus(status)) return REASON_CODE.REJECT_MATCH_NOT_PLAYABLE
+  if (isStartedMatchStatus(status)) return REASON_CODE.REJECT_MATCH_ALREADY_STARTED
+  if (isRetryableMatchStatus(status)) return REASON_CODE.WAIT_MATCH_RESCHEDULE
+  return null
+}
+
 function validationResult(errors, warnings, classification = {}) {
   const reasonCodes = [...new Set(errors)]
   return {
@@ -250,7 +286,15 @@ function validationResult(errors, warnings, classification = {}) {
     errors: reasonCodes,
     warnings: [...new Set(warnings)],
     reasonCodes,
-    retryable: reasonCodes.length > 0 && classification.retryable === true,
-    terminal: reasonCodes.length > 0 && classification.terminal === true,
+    ...(Object.hasOwn(classification, 'decisionEligible') ? {
+      decisionEligible: classification.decisionEligible === true,
+      displayable: classification.displayable === true,
+      statusCategory: classification.statusCategory,
+      reasonCode: classification.reasonCode ?? null,
+    } : {}),
+    retryable: Object.hasOwn(classification, 'decisionEligible')
+      ? classification.retryable === true
+      : reasonCodes.length > 0 && classification.retryable === true,
+    terminal: classification.terminal === true,
   }
 }

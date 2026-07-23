@@ -6,30 +6,89 @@ import {
   validateFixture,
   validateMarket,
 } from '../supabase/functions/_shared/cleanCore/validation.js'
+import {
+  MATCH_STATUS_CATEGORY,
+  REASON_CODE,
+} from '../supabase/functions/_shared/cleanCore/contracts.js'
+import {
+  getMatchStatusCategory,
+  isDisplayableMatchStatus,
+  isEligibleForNewDecision,
+  isRetryableMatchStatus,
+  isStartedMatchStatus,
+  isTerminalMatchStatus,
+  normalizeMatchStatus,
+} from '../supabase/functions/_shared/cleanCore/matchStatus.js'
+
+assert.equal(normalizeMatchStatus('  not started  '), 'NS')
+assert.equal(normalizeMatchStatus('match interrupted'), 'INT')
+assert.equal(normalizeMatchStatus('match finished'), 'FT')
+assert.equal(normalizeMatchStatus('postponed'), 'PST')
+assert.equal(getMatchStatusCategory('scheduled'), MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE)
+assert.equal(isEligibleForNewDecision(' tbd '), true)
+assert.equal(isStartedMatchStatus('in play'), true)
+assert.equal(isTerminalMatchStatus('after extra time'), true)
+assert.equal(isRetryableMatchStatus('pst'), true)
+assert.equal(isDisplayableMatchStatus('live'), true)
+assert.equal(isDisplayableMatchStatus('ft'), false)
 
 const baseFixture = fixture()
-for (const value of [
-  baseFixture,
-  fixture({ id: 0 }),
-  fixture({ id: 'fixture-101' }),
-  fixture({ status: 'ns' }),
-  fixture({ status: 'TBD' }),
-  fixture({ status: 'LIVE' }),
-  fixture({ status: 'INT' }),
-  fixture({ kickoffAt: new Date('2030-07-20T12:00:00.000Z') }),
-]) {
-  const result = validateFixture(value)
+for (const status of ['NS', 'TBD', 'SCHEDULED', 'ns', '  tbd  ', ' scheduled ']) {
+  const result = validateFixture(fixture({ status }))
   assert.equal(result.valid, true, result.errors.join(', '))
+  assert.equal(result.decisionEligible, true, status)
+  assert.equal(result.displayable, true, status)
   assert.equal(result.retryable, false)
   assert.equal(result.terminal, false)
+  assert.equal(result.statusCategory, MATCH_STATUS_CATEGORY.PREMATCH_DECISION_ELIGIBLE)
+  assert.equal(result.reasonCode, null)
 }
 
-for (const status of ['FT', 'AET', 'PEN', 'CANC', 'ABD', 'PST', 'AWD', 'WO']) {
-  const result = validateFixture(fixture({ status }))
-  assert.ok(result.errors.includes('MATCH_NOT_PLAYABLE'), `${status} must not be playable`)
-  assert.equal(result.terminal, true)
-  assert.equal(result.retryable, false)
+for (const value of [baseFixture, fixture({ id: 0 }), fixture({ id: 'fixture-101' }), fixture({ kickoffAt: new Date('2030-07-20T12:00:00.000Z') })]) {
+  assert.equal(validateFixture(value).valid, true)
 }
+
+for (const status of ['1H', 'HT', '2H', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE', 'IN_PLAY', ' in play ']) {
+  const result = validateFixture(fixture({ status }))
+  assert.equal(result.valid, true, status)
+  assert.equal(result.decisionEligible, false, status)
+  assert.equal(result.displayable, true, status)
+  assert.equal(result.retryable, false)
+  assert.equal(result.terminal, false)
+  assert.equal(result.statusCategory, MATCH_STATUS_CATEGORY.STARTED_OR_LIVE)
+  assert.equal(result.reasonCode, REASON_CODE.REJECT_MATCH_ALREADY_STARTED)
+}
+
+for (const status of ['FT', 'AET', 'PEN', 'CANC', 'ABD', 'AWD', 'WO']) {
+  const result = validateFixture(fixture({ status }))
+  assert.equal(result.valid, false, status)
+  assert.ok(result.errors.includes('MATCH_NOT_PLAYABLE'), status)
+  assert.equal(result.decisionEligible, false, status)
+  assert.equal(result.displayable, false, status)
+  assert.equal(result.retryable, false, status)
+  assert.equal(result.terminal, true, status)
+  assert.equal(result.statusCategory, MATCH_STATUS_CATEGORY.TERMINAL_OR_VOID)
+  assert.equal(result.reasonCode, REASON_CODE.REJECT_MATCH_NOT_PLAYABLE)
+}
+
+const postponedFixture = validateFixture(fixture({ status: 'PST' }))
+assert.equal(postponedFixture.valid, true)
+assert.equal(postponedFixture.decisionEligible, false)
+assert.equal(postponedFixture.displayable, true)
+assert.equal(postponedFixture.retryable, true)
+assert.equal(postponedFixture.terminal, false)
+assert.equal(postponedFixture.statusCategory, MATCH_STATUS_CATEGORY.RETRYABLE_NOT_READY)
+assert.equal(postponedFixture.reasonCode, REASON_CODE.WAIT_MATCH_RESCHEDULE)
+
+const unknownStatusFixture = validateFixture(fixture({ status: 'something-new' }))
+assert.equal(unknownStatusFixture.valid, false)
+assert.equal(unknownStatusFixture.decisionEligible, false)
+assert.equal(unknownStatusFixture.displayable, false)
+assert.equal(unknownStatusFixture.retryable, false)
+assert.equal(unknownStatusFixture.terminal, false)
+assert.equal(unknownStatusFixture.statusCategory, MATCH_STATUS_CATEGORY.UNKNOWN)
+assert.equal(unknownStatusFixture.reasonCode, REASON_CODE.REJECT_FIXTURE_INVALID)
+assert.ok(unknownStatusFixture.errors.includes('MATCH_STATUS_UNKNOWN'))
 
 for (const id of ['', '   ', null, undefined]) assert.ok(validateFixture(fixture({ id })).errors.includes('FIXTURE_ID_MISSING'))
 assert.ok(validateFixture(fixture({ homeTeam: { id: 2, name: 'Alpha' } })).errors.includes('FIXTURE_TEAM_IDS_IDENTICAL'))
@@ -38,7 +97,7 @@ assert.ok(validateFixture(fixture({ kickoffAt: 'not-a-date' })).errors.includes(
 assert.ok(validateFixture(fixture({ league: { name: 'Test League' } })).errors.includes('LEAGUE_ID_MISSING'))
 assert.ok(validateFixture({}).errors.includes('HOME_TEAM_MISSING'))
 const retryableFixture = validateFixture(fixture({ id: '' }))
-assert.equal(retryableFixture.retryable, true)
+assert.equal(retryableFixture.retryable, false)
 assert.equal(retryableFixture.terminal, false)
 
 const frozenFixture = deepFreeze(fixture())
