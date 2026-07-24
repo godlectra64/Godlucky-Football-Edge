@@ -3,6 +3,11 @@ import { getBangkokDayRange } from '../_shared/bangkokDateRange.ts'
 import { buildOddsNaturalKey, evaluateMarketFreshness, isActionableMarketType, normalizeMarketRow, normalizeMarketSelection, normalizeMarketType } from '../_shared/marketContract.js'
 import { classifyDecisionState } from '../_shared/decisionContract.js'
 import {
+  CLEAN_CORE_DECISION_ADAPTER_VERSION,
+  CLEAN_CORE_SHADOW_LOG_PREFIX,
+  runCleanCoreDecisionShadow,
+} from '../_shared/cleanCoreDecisionAdapter.js'
+import {
   buildCachedFinalDailySummary,
   buildDailyRunSummaryCached,
   buildDailySyncStartPayload,
@@ -3583,17 +3588,23 @@ async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRa
     .select(`
       id,
       api_sports_fixture_id,
+      api_sports_league_id,
       api_sports_home_team_id,
       api_sports_away_team_id,
       kickoff_at,
+      status,
+      status_short,
+      status_long,
+      match_status,
       odds_updated_at,
       has_market_data,
       has_fixture_detail,
       data_readiness_status,
       raw,
+      league:football_leagues(id, api_league_id, name),
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, data_quality_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
     `)
     .gte('kickoff_at', dayRange.startUtc)
     .lt('kickoff_at', dayRange.endUtc)
@@ -3613,7 +3624,7 @@ async function recomputeAiFinalPicks(dayRange: ReturnType<typeof getBangkokDayRa
   for (const match of rows) {
     if (shouldStopForExecutionBudget(context)) break
     try {
-      await upsertAiFinalPickForMatch(match)
+      await upsertAiFinalPickForMatch(match, { invocationMode: context.mode })
       processed += 1
       rowsSaved += 1
     } catch (error) {
@@ -3629,7 +3640,10 @@ async function recomputeAiFinalPicksForSelectionDate(dayRange: ReturnType<typeof
   return { ...result, selectionDate: dayRange.dateKey, source: 'canonical_market_ready_window' }
 }
 
-async function upsertAiFinalPickForMatch(match: any) {
+async function upsertAiFinalPickForMatch(
+  match: any,
+  options: { invocationMode?: string; lockMetadata?: Record<string, unknown> } = {},
+) {
   const odds = await fetchStoredMatchOdds(match.id)
   const pick = buildEdgeAiFinalPick({ ...match, odds })
   const payload = {
@@ -3674,6 +3688,34 @@ async function upsertAiFinalPickForMatch(match: any) {
     ...systemVersions,
     raw: pick,
     updated_at: new Date().toISOString(),
+  }
+  try {
+    // Shadow-only: lock metadata is observed here; preservation enforcement remains a later phase.
+    const shadow = runCleanCoreDecisionShadow({
+      fixture: match,
+      analysis: getAnalysis(match),
+      marketState: {
+        rows: odds,
+        present: odds.length > 0,
+        source: 'API_FOOTBALL',
+        referenceTime: new Date().toISOString(),
+      },
+      legacyResult: pick,
+      legacyWritePayload: payload,
+      invocationMode: options.invocationMode,
+      lockMetadata: options.lockMetadata,
+    })
+    if (shadow.comparison.mismatchCodes.length > 0) {
+      console.warn(CLEAN_CORE_SHADOW_LOG_PREFIX, shadow.comparison)
+    }
+  } catch (error) {
+    console.warn(CLEAN_CORE_SHADOW_LOG_PREFIX, {
+      matchId: match.id ?? null,
+      invocationMode: options.invocationMode ?? null,
+      mismatchCodes: ['CORE_INPUT_INCOMPLETE'],
+      adapterVersion: CLEAN_CORE_DECISION_ADAPTER_VERSION,
+      errorType: error instanceof Error ? error.name : 'UNKNOWN',
+    })
   }
   const upsert = await upsertAiFinalPickPayload(payload)
   if (upsert.error) throw upsert.error
@@ -3739,7 +3781,10 @@ async function lockDailyTop10(dayRange: ReturnType<typeof getBangkokDayRange>) {
 
   for (const item of selected) {
     try {
-      item.pick = await upsertAiFinalPickForMatch(item.match)
+      item.pick = await upsertAiFinalPickForMatch(item.match, {
+        invocationMode: 'lock-daily-top10',
+        lockMetadata: { locked: false },
+      })
     } catch (error) {
       console.warn('lock-daily-top10 ai final pick refresh failed', { matchId: item.match?.id, error: formatErrorMessage(error, 'ai final pick failed') })
     }
@@ -3813,7 +3858,10 @@ async function refreshLockedTop10Signals(dayRange: ReturnType<typeof getBangkokD
       } catch (error) {
         failures.push({ matchId: row.match_id, rank: row.rank, stage: 'odds', message: formatErrorMessage(error, 'odds refresh failed') })
       }
-      const pick = await upsertAiFinalPickForMatch(match)
+      const pick = await upsertAiFinalPickForMatch(match, {
+        invocationMode: context.mode,
+        lockMetadata: { locked: true },
+      })
       const patch = await supabase
         .from('daily_top10_selections')
         .update({
@@ -4346,15 +4394,23 @@ async function fetchMatchForAiFinalPick(matchId: string) {
     .select(`
       id,
       api_sports_fixture_id,
+      api_sports_league_id,
+      api_sports_home_team_id,
+      api_sports_away_team_id,
       kickoff_at,
+      status,
+      status_short,
+      status_long,
+      match_status,
       odds_updated_at,
       has_market_data,
       has_fixture_detail,
       data_readiness_status,
       raw,
+      league:football_leagues(id, api_league_id, name),
       homeTeam:football_teams!football_matches_home_team_id_fkey(id, api_team_id, name),
       awayTeam:football_teams!football_matches_away_team_id_fkey(id, api_team_id, name),
-      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
+      analysis:match_analysis(id, match_id, recommendation, confidence_score, calibrated_confidence_score, risk_level, ranking_score, final_rank, is_top_pick, team_strength_score, form_score, home_advantage_score, away_weakness_score, goal_scoring_score, defensive_stability_score, market_reading_score, market_edge_score, odds_confidence_score, odds_movement_score, data_depth_score, data_quality_score, value_market, value_side, value_line, latest_line, latest_odds, raw, ${analysisReadinessMetadataSelect})
     `)
     .eq('id', matchId)
     .maybeSingle()
